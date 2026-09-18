@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Study Seats</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="auth-page" data-mode="{{mode}}">
+  <div class="card auth-card">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="5" width="12" height="6" rx="1.5" fill="#fff"/><circle cx="4" cy="2.6" r="1.6" fill="#fff"/><circle cx="12" cy="13.4" r="1.6" fill="#fff"/></svg></span>
+      <span>Study Seats</span>
+    </div>
+    <nav class="tabs" aria-label="Account" {{signup}}>
+      <a href="/login" class="tab-signin">Sign in</a>
+      <a href="/signup" class="tab-signup">Create account</a>
+    </nav>
+
+    <section class="pane-signin">
+      <h1>Find a free seat</h1>
+      <p class="sub">Live seat availability across campus study spaces.</p>
+      {{error}}
+      <form method="post" action="/login">
+        <label class="field"><span>University email</span><input type="email" name="email" value="{{email}}" autocomplete="username" required autofocus></label>
+        <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <section class="pane-signup">
+      <h1>Create your account</h1>
+      <p class="sub">Use your {{domains}} address.</p>
+      {{error}}
+      <form method="post" action="/signup">
+        <label class="field"><span>Name</span><input type="text" name="name" autocomplete="name" maxlength="60"></label>
+        <label class="field"><span>University email</span><input type="email" name="email" value="{{email}}" autocomplete="username" required></label>
+        <label class="field"><span>Password (10+ characters)</span><input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
+        <button class="primary" type="submit">Create account</button>
+      </form>
+    </section>
+
+    <p class="fine">Seats are counted by ceiling heat sensors. No cameras, and nothing that can identify you.</p>
+  </div>
+</body>
+</html>

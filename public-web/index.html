@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Study Seats</title>
+  <meta name="description" content="Live free seats in campus study spaces">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/js/dashboard-client/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="5" width="12" height="6" rx="1.5" fill="#fff"/><circle cx="4" cy="2.6" r="1.6" fill="#fff"/><circle cx="12" cy="13.4" r="1.6" fill="#fff"/></svg></span>
+      <span class="brand-text">Study Seats</span>
+    </div>
+    <label class="floor-picker"><span class="sr-only">Study space</span><select id="floor"></select></label>
+    <span class="spacer"></span>
+    <div class="live" id="live" data-state="connecting" role="status" aria-live="polite"><span class="live-dot"></span><span id="live-text">Connecting…</span></div>
+    <div class="user"><span class="user-name" id="user-name"></span><form method="post" action="/logout"><button class="link-button" type="submit">Sign out</button></form></div>
+  </header>
+
+  <main>
+    <div class="banner" id="banner" hidden></div>
+
+    <section class="overview" aria-label="Overview">
+      <div class="stat stat-free"><div class="stat-label">Free seats</div><div class="stat-value" id="s-free">–</div></div>
+      <div class="stat"><div class="stat-label">Empty tables</div><div class="stat-value" id="s-tables">–</div></div>
+      <div class="stat"><div class="stat-label">How busy</div><div class="stat-value" id="s-busy">–</div><div class="meter"><span id="s-busy-bar"></span></div></div>
+      <div class="stat"><div class="stat-label">People here now</div><div class="stat-value" id="s-people">–</div></div>
+    </section>
+
+    <div class="workspace">
+      <section class="card" aria-labelledby="plan-title">
+        <div class="card-head"><h2 id="plan-title">Floor plan</h2><span class="hint" id="plan-hint">Select a table for details</span></div>
+        <div class="plan-wrap"><svg id="plan" role="img" aria-labelledby="plan-title"></svg></div>
+        <div class="legend">
+          <span><i class="dot free"></i>Free seat</span>
+          <span><i class="dot taken"></i>Taken</span>
+          <span><i class="dot unknown"></i>No data</span>
+          <span><i class="dot pick"></i>Suggested for your group</span>
+        </div>
+      </section>
+
+      <aside class="card search" aria-labelledby="search-title">
+        <div class="card-head"><h2 id="search-title">Find seats together</h2></div>
+        <div class="search-form">
+          <label for="group-size">How many of you?</label>
+          <div class="stepper">
+            <button type="button" id="group-dec" aria-label="Fewer people">−</button>
+            <output id="group-size" aria-live="polite">2 people</output>
+            <button type="button" id="group-inc" aria-label="More people">+</button>
+          </div>
+        </div>
+        <ul class="results" id="results" aria-live="polite"></ul>
+        <p class="empty-note" id="results-empty" hidden></p>
+        <div class="detail" id="detail" hidden></div>
+      </aside>
+    </div>
+
+    <section class="card" aria-labelledby="tables-title">
+      <div class="card-head"><h2 id="tables-title">All tables</h2><span class="hint" id="tables-hint"></span></div>
+      <div class="tables" id="tables"></div>
+    </section>
+  </main>
+  <footer>Counted by ceiling heat sensors — no cameras, nothing that identifies you. Seats with no data are never shown as free.</footer>
+</body>
+</html>

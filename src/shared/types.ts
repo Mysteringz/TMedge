@@ -90,6 +90,20 @@ export interface OccupancySnapshot {
   floors: FloorState[];
 }
 
+/** What the web tier serves: every floor from every edge, with freshness. */
+export interface CampusFloor extends FloorState {
+  edgeId: string;
+  /** When the web tier last heard from this floor's edge, ms since epoch. */
+  updatedAt: number;
+  /** The edge has gone quiet: every table is shown unknown. */
+  stale: boolean;
+}
+
+export interface CampusView {
+  generatedAt: number;
+  floors: CampusFloor[];
+}
+
 /** One suggested place to sit, as returned by the seat search. */
 export interface SeatSuggestion {
   floorId: string;

@@ -1,0 +1,21 @@
+# systemd unit for the edge on the NUC:
+#   sudo cp deploy/tmedge-edge.service /etc/systemd/system/ && sudo systemctl enable --now tmedge-edge
+[Unit]
+Description=TMedge edge (TMnode ingest, occupancy, debug console)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tmedge
+WorkingDirectory=/opt/tmedge
+EnvironmentFile=/opt/tmedge/.env
+ExecStart=/usr/bin/node dist/src/edge/main.js
+Restart=always
+RestartSec=3
+# Nothing it needs outside its own directory.
+ProtectSystem=strict
+ReadWritePaths=/opt/tmedge/data
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -19,7 +19,7 @@
  *    only after RELEASE_MS without anyone on it, so a student leaning back or
  *    a blob flickering between frames does not flip the seat.
  */
-import { floorToPixel, pixelToFloor, pointInPolygon } from '../shared/geometry.js';
+import { floorToPixel, pixelAreaCm2, pixelToFloor, pointInPolygon } from '../shared/geometry.js';
 import type {
   ConsoleDetection,
   CoverageStatus,
@@ -55,7 +55,14 @@ export const DEFAULT_OCCUPANCY: OccupancyOptions = {
 interface NodeState {
   lastReportAt: number;
   healthy: boolean;
-  /** Recent blob heats; the median is one person's heat in this view. */
+  /**
+   * Recent blob heats, normalised to floor area (C*m^2); the median is one
+   * person. Raw heat (C*px) cannot be compared across the view: at 110 deg a
+   * pixel at the edge covers ~2x the floor of one under the node, so the same
+   * person is ~2x the heat in the middle -- which read as "two people merged"
+   * and put phantom neighbours on the seats nearest each node (measured: 86%
+   * seat accuracy against simulator truth before this, see git history).
+   */
   heats: number[];
   /** Everyone this node counted outside tables, per zone, over recent frames. */
   zoneHistory: Map<string, number[]>;
@@ -103,7 +110,7 @@ export class OccupancyEngine {
     }
   }
 
-  /** Heat of a typical single person in this node's view, once learned. */
+  /** Floor-normalised heat (C*m^2) of a typical single person in this node's view, once learned. */
   refHeat(uid: string): number | null {
     const st = this.nodes.get(uid);
     if (!st || st.heats.length < HEAT_MIN_SAMPLES) return null;
@@ -145,15 +152,16 @@ export class OccupancyEngine {
     }
 
     const ref = this.refHeat(report.uid);
+    const normHeat = (d: { x: number; y: number; heat: number }) => (d.heat * pixelAreaCm2(node.pose, d.x, d.y)) / 10_000;
     for (const d of report.detections) {
-      st.heats.push(d.heat);
+      st.heats.push(normHeat(d));
       if (st.heats.length > HEAT_SAMPLES) st.heats.shift();
     }
 
     const floor = this.reg.floors.find((f) => f.id === node.floorId);
     const dets: ConsoleDetection[] = report.detections.map((d) => {
       const [fx, fy] = pixelToFloor(node.pose, d.x, d.y);
-      const ratio = ref ? d.heat / ref : 1;
+      const ratio = ref ? normHeat(d) / ref : 1;
       const persons = ratio < 1.6 ? 1 : ratio < 2.5 ? 2 : 3;
       return { ...d, floorX: fx, floorY: fy, tableId: this.nearestTable(node.floorId, fx, fy), counted: false, persons };
     });
