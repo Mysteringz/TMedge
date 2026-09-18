@@ -1,0 +1,163 @@
+{
+  "nodes": [
+    {
+      "uid": "02:00:00:00:00:01",
+      "label": "Above M1 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 206,
+        "y": 156,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M1"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "02:00:00:00:00:02",
+      "label": "Above M2 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 426,
+        "y": 156,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M2"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "30:ed:a0:cb:f5:f8",
+      "label": "Above M3",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 654,
+        "y": 156,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M3"
+      ]
+    },
+    {
+      "uid": "02:00:00:00:00:04",
+      "label": "Above M4 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 874,
+        "y": 156,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M4"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "02:00:00:00:00:05",
+      "label": "Above M5 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 1110,
+        "y": 156,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M5"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "02:00:00:00:00:06",
+      "label": "Above M6 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 206,
+        "y": 378,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M6"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "02:00:00:00:00:07",
+      "label": "Above M7 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 426,
+        "y": 378,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M7"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "02:00:00:00:00:08",
+      "label": "Above M8 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 654,
+        "y": 378,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M8"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "02:00:00:00:00:09",
+      "label": "Above M9 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 874,
+        "y": 378,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M9"
+      ],
+      "simulated": true
+    },
+    {
+      "uid": "02:00:00:00:00:0a",
+      "label": "Above M10 (sim)",
+      "floor": "iw-maker-a",
+      "pose": {
+        "x": 1110,
+        "y": 378,
+        "heightCm": 350,
+        "yawDeg": 0,
+        "mirror": false
+      },
+      "owns": [
+        "M10"
+      ],
+      "simulated": true
+    }
+  ]
+}

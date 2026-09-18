@@ -1,0 +1,28 @@
+{
+  "name": "tmedge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TMedge: occupancy processing for TMnode thermal sensors, debug console, and the student web app",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && tsc -p tsconfig.dashboard.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && tsc -p tsconfig.dashboard.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test dist/test/",
+    "crosscheck": "tsc -p tsconfig.json && node dist/src/tools/crosscheck.js",
+    "edge": "node --env-file-if-exists=.env dist/src/edge/main.js",
+    "web": "node --env-file-if-exists=.env dist/src/web/main.js",
+    "simulate": "node --env-file-if-exists=.env dist/src/tools/simulator.js",
+    "user": "node --env-file-if-exists=.env dist/src/tools/user.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}

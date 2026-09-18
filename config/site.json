@@ -1,0 +1,159 @@
+{
+  "site": {
+    "id": "hku-innowing",
+    "name": "HKU Innovation Wing"
+  },
+  "floors": [
+    {
+      "id": "iw-maker-a",
+      "building": "Innovation Wing",
+      "name": "Maker space A",
+      "width": 1300,
+      "height": 580,
+      "outline": [
+        [
+          59,
+          33
+        ],
+        [
+          1221,
+          33
+        ],
+        [
+          1221,
+          532
+        ],
+        [
+          59,
+          532
+        ]
+      ],
+      "zones": [
+        {
+          "id": "makerspace",
+          "name": "Common makerspace area",
+          "polygon": [
+            [
+              59,
+              33
+            ],
+            [
+              1221,
+              33
+            ],
+            [
+              1221,
+              532
+            ],
+            [
+              59,
+              532
+            ]
+          ]
+        }
+      ],
+      "tables": [
+        {
+          "id": "M1",
+          "name": "M1",
+          "zone": "makerspace",
+          "x": 154,
+          "y": 72,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M2",
+          "name": "M2",
+          "zone": "makerspace",
+          "x": 374,
+          "y": 72,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M3",
+          "name": "M3",
+          "zone": "makerspace",
+          "x": 601,
+          "y": 72,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M4",
+          "name": "M4",
+          "zone": "makerspace",
+          "x": 821,
+          "y": 72,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M5",
+          "name": "M5",
+          "zone": "makerspace",
+          "x": 1057,
+          "y": 72,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M6",
+          "name": "M6",
+          "zone": "makerspace",
+          "x": 154,
+          "y": 295,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M7",
+          "name": "M7",
+          "zone": "makerspace",
+          "x": 374,
+          "y": 295,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M8",
+          "name": "M8",
+          "zone": "makerspace",
+          "x": 601,
+          "y": 295,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M9",
+          "name": "M9",
+          "zone": "makerspace",
+          "x": 821,
+          "y": 295,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        },
+        {
+          "id": "M10",
+          "name": "M10",
+          "zone": "makerspace",
+          "x": 1057,
+          "y": 295,
+          "width": 105,
+          "height": 167,
+          "capacity": 6
+        }
+      ]
+    }
+  ]
+}
