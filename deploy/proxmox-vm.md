@@ -34,6 +34,7 @@ Tunnels → this tunnel → Public Hostname), not in a file:
 |---|---|
 | `hkumyseat.com` | `http://localhost:8080` (student dashboard) |
 | `console.hkumyseat.com` | `http://localhost:8090` (debug console; also behind a Cloudflare Access policy) |
+| `gw.hkumyseat.com` | `http://localhost:5210` (access gateways over WebSocket, path `/tmgw`; Access policy **Service Auth** with the gateways' service token) |
 
 The web tier runs with `TRUST_PROXY=1`. It trusts `X-Forwarded-*` from
 loopback only, and it sets the session cookie `Secure` on HTTPS requests.

@@ -22,6 +22,13 @@
  *   0x30 PING / 0x31 PONG       u64 LE ms (either direction; the other echoes)
  *   0x40 STATS     gw -> edge   JSON, gateway-defined counters (shown in the console)
  *
+ * Transports, on the same port: raw TCP, or a WebSocket at path /tmgw
+ * carrying the same frames as binary messages (one or more frames per
+ * message). The WebSocket form is what Cloudflare Tunnel carries
+ * (wss://gw.<domain>/tmgw), so a gateway needs nothing but outbound HTTPS.
+ * The two cannot be confused: an HTTP request starts "GET ", which as a frame
+ * length is 542 MB, far beyond MAX_FRAME.
+ *
  * Nodes heard through a gateway get the address "gw:<gatewayId>|<ip>:<port>",
  * which is how the edge routes their commands back. The port is the node's
  * source port and informational only: gateways deliver commands to the node's
@@ -29,7 +36,9 @@
  * have heard from at that address -- a gateway is not an open relay.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createServer as createHttpServer, type IncomingMessage } from 'node:http';
 import { createServer, type Server, type Socket } from 'node:net';
+import { WebSocketServer, type WebSocket } from 'ws';
 
 export const TMGW_VERSION = 1;
 export const T_HELLO = 0x01;
@@ -92,6 +101,7 @@ export class FrameReader {
 export interface GatewayInfo {
   id: string;
   remote: string;
+  transport: 'tcp' | 'websocket';
   connectedAt: number;
   lastSeen: number;
   uplink: number;
@@ -112,19 +122,78 @@ export interface GatewayServerOptions {
   now?: () => number;
 }
 
+/** One gateway session, whatever carries it. */
+interface Link {
+  transport: 'tcp' | 'websocket';
+  remote: string;
+  write(b: Buffer): void;
+  end(b: Buffer): void;
+  destroy(): void;
+  onData(cb: (b: Buffer) => void): void;
+  onClose(cb: () => void): void;
+}
+
 interface Conn {
-  socket: Socket;
+  link: Link;
   info: GatewayInfo;
+}
+
+const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
+
+function tcpLink(socket: Socket): Link {
+  socket.setNoDelay(true);
+  socket.setKeepAlive(true, 15_000);
+  socket.on('error', () => undefined);
+  return {
+    transport: 'tcp',
+    remote: socket.remoteAddress ?? '?',
+    write: (b) => void socket.write(b),
+    end: (b) => void socket.end(b),
+    destroy: () => socket.destroy(),
+    onData: (cb) => void socket.on('data', cb),
+    onClose: (cb) => void socket.on('close', cb),
+  };
+}
+
+function wsLink(ws: WebSocket, req: IncomingMessage): Link {
+  // Through Cloudflare Tunnel the socket is cloudflared on loopback; the
+  // gateway's own address arrives in CF-Connecting-IP, trusted only then.
+  const peer = req.socket.remoteAddress ?? '?';
+  const cf = req.headers['cf-connecting-ip'];
+  const remote = LOOPBACK.test(peer) && typeof cf === 'string' ? `${cf} via Cloudflare` : peer;
+  ws.on('error', () => undefined);
+  return {
+    transport: 'websocket',
+    remote,
+    write: (b) => ws.send(b, { binary: true }),
+    end: (b) => ws.send(b, { binary: true }, () => ws.close(1008)),
+    destroy: () => ws.terminate(),
+    onData: (cb) => void ws.on('message', (d: Buffer | ArrayBuffer | Buffer[]) => cb(Buffer.isBuffer(d) ? d : Array.isArray(d) ? Buffer.concat(d) : Buffer.from(d))),
+    onClose: (cb) => void ws.on('close', cb),
+  };
 }
 
 export class GatewayServer {
   private readonly server: Server;
+  private readonly http = createHttpServer((_req, res) => {
+    res.writeHead(426, { 'content-type': 'text/plain' });
+    res.end('TMGW: connect with a WebSocket to /tmgw\n');
+  });
+  private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   private readonly conns = new Map<string, Conn>();
   private readonly now: () => number;
 
   constructor(private readonly opts: GatewayServerOptions) {
     this.now = opts.now ?? Date.now;
     this.server = createServer((s) => this.accept(s));
+    this.http.on('upgrade', (req, socket, head) => {
+      if (new URL(req.url ?? '/', 'http://x').pathname !== '/tmgw') {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.session(wsLink(ws, req)));
+    });
   }
 
   listen(): Promise<number> {
@@ -135,7 +204,8 @@ export class GatewayServer {
   }
 
   close(): Promise<void> {
-    for (const c of this.conns.values()) c.socket.destroy();
+    for (const c of this.conns.values()) c.link.destroy();
+    this.wss.close();
     return new Promise((resolve) => this.server.close(() => resolve()));
   }
 
@@ -150,29 +220,44 @@ export class GatewayServer {
     const [, id, addr, port] = m;
     const c = this.conns.get(id ?? '');
     if (!c || !addr || !port) return false;
-    c.socket.write(frame(T_DOWNLINK, addressed(addr, Number(port), datagram)));
+    c.link.write(frame(T_DOWNLINK, addressed(addr, Number(port), datagram)));
     c.info.downlink += 1;
     return true;
   }
 
+  /** Sniff the first bytes: an HTTP request goes to the WebSocket server, anything else is raw TMGW. */
   private accept(socket: Socket): void {
     const remote = socket.remoteAddress ?? '?';
     if (this.opts.allowRemote && !this.opts.allowRemote(remote)) {
       socket.destroy();
       return;
     }
-    socket.setNoDelay(true);
-    socket.setKeepAlive(true, 15_000);
+    socket.on('error', () => undefined);
+    const sniff = setTimeout(() => socket.destroy(), 5000);
+    socket.once('data', (first: Buffer) => {
+      clearTimeout(sniff);
+      socket.pause();
+      socket.unshift(first);
+      if (first.length >= 4 && first.subarray(0, 4).toString('latin1') === 'GET ') {
+        this.http.emit('connection', socket);
+      } else {
+        this.session(tcpLink(socket));
+      }
+      socket.resume();
+    });
+  }
+
+  private session(link: Link): void {
     const reader = new FrameReader();
     let conn: Conn | null = null;
-    // An unauthenticated connection gets a few seconds to say HELLO.
-    const helloTimer = setTimeout(() => socket.destroy(), 5000);
+    // An unauthenticated session gets a few seconds to say HELLO.
+    const helloTimer = setTimeout(() => link.destroy(), 5000);
     const deny = (reason: string) => {
-      this.opts.log?.(`gateway from ${remote} refused: ${reason}`);
-      socket.end(frame(T_DENY, Buffer.from(JSON.stringify({ reason }))));
+      this.opts.log?.(`gateway from ${link.remote} refused: ${reason}`);
+      link.end(frame(T_DENY, Buffer.from(JSON.stringify({ reason }))));
     };
 
-    socket.on('data', (chunk) => {
+    link.onData((chunk) => {
       try {
         reader.push(chunk, (type, payload) => {
           if (!conn) {
@@ -192,12 +277,12 @@ export class GatewayServer {
             const got = Buffer.from(String(h.mac ?? ''));
             if (want.length !== got.length || !timingSafeEqual(want, got)) return deny('bad token');
             clearTimeout(helloTimer);
-            // A gateway that reconnects replaces its old connection.
-            this.conns.get(id)?.socket.destroy();
-            conn = { socket, info: { id, remote, connectedAt: this.now(), lastSeen: this.now(), uplink: 0, downlink: 0, rttMs: null, stats: null } };
+            // A gateway that reconnects (or fails over to its other route) replaces its old session.
+            this.conns.get(id)?.link.destroy();
+            conn = { link, info: { id, remote: link.remote, transport: link.transport, connectedAt: this.now(), lastSeen: this.now(), uplink: 0, downlink: 0, rttMs: null, stats: null } };
             this.conns.set(id, conn);
-            socket.write(frame(T_WELCOME, Buffer.from(JSON.stringify({ v: TMGW_VERSION, edgeId: this.opts.edgeId }))));
-            this.opts.log?.(`gateway ${id} connected from ${remote}`);
+            link.write(frame(T_WELCOME, Buffer.from(JSON.stringify({ v: TMGW_VERSION, edgeId: this.opts.edgeId }))));
+            this.opts.log?.(`gateway ${id} connected over ${link.transport} from ${link.remote}`);
             return undefined;
           }
           conn.info.lastSeen = this.now();
@@ -210,7 +295,7 @@ export class GatewayServer {
               return undefined;
             }
             case T_PING:
-              socket.write(frame(T_PONG, payload));
+              link.write(frame(T_PONG, payload));
               return undefined;
             case T_PONG:
               if (payload.length >= 8) conn.info.rttMs = this.now() - Number(payload.readBigUInt64LE(0));
@@ -227,17 +312,16 @@ export class GatewayServer {
           }
         });
       } catch (err) {
-        this.opts.log?.(`gateway ${conn?.info.id ?? remote}: ${(err as Error).message}; closing`);
-        socket.destroy();
+        this.opts.log?.(`gateway ${conn?.info.id ?? link.remote}: ${(err as Error).message}; closing`);
+        link.destroy();
       }
     });
     const ping = setInterval(() => {
       const b = Buffer.alloc(8);
       b.writeBigUInt64LE(BigInt(this.now()));
-      if (conn) socket.write(frame(T_PING, b));
+      if (conn) link.write(frame(T_PING, b));
     }, 10_000);
-    socket.on('error', () => undefined);
-    socket.on('close', () => {
+    link.onClose(() => {
       clearTimeout(helloTimer);
       clearInterval(ping);
       if (conn && this.conns.get(conn.info.id) === conn) {

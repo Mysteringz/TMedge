@@ -217,7 +217,7 @@ export interface EdgeHealth {
   unknownSources: { address: string; uid: string | null; count: number; lastSeen: number; reason: string }[];
   publish: { target: string; ok: boolean; lastOkAt: number | null; lastError: string | null }[];
   recorder: { dir: string; bytesToday: number; rawEnabled: boolean };
-  gateways: { id: string; remote: string; connectedAt: number; lastSeen: number; uplink: number; downlink: number; rttMs: number | null; stats: Record<string, unknown> | null }[];
+  gateways: { id: string; remote: string; transport: 'tcp' | 'websocket'; connectedAt: number; lastSeen: number; uplink: number; downlink: number; rttMs: number | null; stats: Record<string, unknown> | null }[];
   gatewayPort: number | null;
   udp: { port: number; iface: string | null };
 }

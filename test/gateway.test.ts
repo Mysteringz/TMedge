@@ -92,3 +92,38 @@ test('gateway: forwarded datagrams are judged like direct ones, and commands rou
     await gw.close();
   }
 });
+
+test('gateway over WebSocket on the same port: same auth, relay and commands; CF-Connecting-IP trusted only from loopback', async () => {
+  const ing = new Ingest({
+    port: 0, host: '127.0.0.1', verify: { keys: [KEY], allowUnsigned: false }, commandKey: KEY,
+    routeViaGateway: (address, buf) => gw.sendDownlink(address, buf),
+  });
+  const seen: string[] = [];
+  ing.on('report', (_p, address) => seen.push(address));
+  const { gw, port } = await server((d, src) => ing.handle(d, src));
+  try {
+    // A plain HTTP request to the port is not mistaken for TMGW.
+    assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 426);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/tmgw`, { headers: { 'CF-Connecting-IP': '203.0.113.7' } } as unknown as string[]);
+    ws.binaryType = 'arraybuffer';
+    const got: { type: number; payload: Buffer }[] = [];
+    const reader = new FrameReader();
+    ws.onmessage = (e) => reader.push(Buffer.from(e.data as ArrayBuffer), (type, payload) => got.push({ type, payload: Buffer.from(payload) }));
+    await new Promise<void>((r) => { ws.onopen = () => r(); });
+    const ts = Date.now();
+    ws.send(frame(T_HELLO, Buffer.from(JSON.stringify({ v: 1, gatewayId: 'cf-gw', ts, nonce: 'w', mac: helloMac(TOKEN, 'cf-gw', ts, 'w') }))));
+    ws.send(frame(T_UPLINK, addressed('192.168.0.9', 58000, report(identity(NODE), [], 1))));
+    await new Promise((r) => setTimeout(r, 150));
+    assert.ok(got.some((f) => f.type === T_WELCOME));
+    assert.deepEqual(seen, ['gw:cf-gw|192.168.0.9:58000']);
+    const info = gw.gateways()[0];
+    assert.equal(info?.transport, 'websocket');
+    assert.equal(info?.remote, '203.0.113.7 via Cloudflare', 'from loopback (cloudflared), the header names the gateway');
+    await ing.sendCommand(NODE, CMD_IDENTIFY, 0, 5);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.ok(got.some((f) => f.type === T_DOWNLINK), 'command came down the WebSocket');
+    ws.close();
+  } finally {
+    await gw.close();
+  }
+});
