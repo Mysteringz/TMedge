@@ -70,6 +70,7 @@ lib.tmd_init.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.
 lib.tmd_step.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int,
                          ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float)]
 lib.tmd_step.restype = ctypes.c_int
+lib.tmd_seed.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]
 PARAMS = dict(min_contrast=0.6, min_peak=1.2, noise_k=4.0, min_area=1, max_area=60, bg_tau=90, bg_frames=20, split_sep=1.9)
 lib.tmd_init(*PARAMS.values())
 out = (ctypes.c_float * (6 * 24))()
@@ -95,16 +96,40 @@ def read_packet(ser):
     return data if len(data) == n else None
 
 def repair(t):
-    """The v1 firmware's first row carries a few corrupt pixels; replace any
-    pixel far from its neighbours' median, like the node's bad-pixel repair."""
-    pad = np.pad(t, 1, mode='edge')
-    neigh = np.median(np.stack([pad[:-2, 1:-1], pad[2:, 1:-1], pad[1:-1, :-2], pad[1:-1, 2:]]), axis=0)
-    bad = np.abs(t - neigh) > 6.0
-    bad[1:, :] = False          # only the first row is known-corrupt; people elsewhere are real contrast
-    t[bad] = neigh[bad]
+    """The v1 firmware corrupts the first few pixels of row 0 (they are the
+    frame's first bytes on a 57600-baud stream). Those pixels border each
+    other, so comparing them with their neighbours cannot catch them: take the
+    pixel below instead. 8 edge pixels of 768, at the rim of the view."""
+    t[0, :8] = t[1, :8]
     return t
 
 stats = {'frames': 0, 'fps': 0.0, 'serial_err': 0, 'rgb_sent': 0, 'rgb_err': 0, 'last_frame': 0.0}
+
+# Empty-room background (relative to the scene median), built offline from the
+# lab's archive as a per-pixel 20th percentile: at any spot the room is empty
+# most of the time. Seeding from it means an intern already seated when the
+# bridge starts is seen at once, rather than learned as part of the room --
+# measured: +1.25 C (almost invisible) learned live vs +2.3 C against this.
+EMPTY_BG = os.path.join(HERE, 'empty_bg_rel.npy')
+EMPTY_SIGMA = os.path.join(HERE, 'empty_sigma.npy')
+seed_frames = []
+
+def maybe_seed(t):
+    """After a few frames, place the empty background at today's scene level and seed the detector."""
+    if not os.path.exists(EMPTY_BG) or len(seed_frames) > 5:
+        return
+    seed_frames.append(t.copy())
+    if len(seed_frames) < 5:
+        return
+    now = np.median(np.stack(seed_frames), axis=0)
+    empty = np.load(EMPTY_BG).astype(np.float32)
+    d = now - empty
+    level = float(np.median(d[d <= np.percentile(d, 60)]))   # match on the cooler 60%: people only ever add heat
+    bg = np.ascontiguousarray(empty + level, dtype=np.float32)
+    sig = np.ascontiguousarray(np.load(EMPTY_SIGMA), dtype=np.float32)
+    lib.tmd_seed(bg.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), sig.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+    seed_frames.append(None)   # done
+    log(f'background seeded from the empty-room map (level {level:+.2f} C)')
 
 def thermal_loop():
     frame_no = 0
@@ -119,6 +144,7 @@ def thermal_loop():
                     continue
                 t = (10.0 + np.frombuffer(data[:768], dtype=np.uint8).astype(np.float32) / 255.0 * 25.0).reshape(24, 32)
                 t = np.ascontiguousarray(repair(t), dtype=np.float32)
+                maybe_seed(t)
                 n = lib.tmd_step(t.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), out, 24, ctypes.byref(flags), ctypes.byref(bg_mean))
                 now = time.monotonic()
                 if stats['last_frame']:

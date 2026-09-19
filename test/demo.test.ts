@@ -91,15 +91,16 @@ test('demo: RGB frames need a valid signature, a fresh timestamp, and an RGB-ena
   }
 });
 
-test('demo: an intern at the bench beside the desk does not take a desk seat (per-table seat radius)', () => {
+test('demo: someone 75 cm from a seat of a compact desk does not take it (per-table seat radius)', () => {
   const reg = buildRegistry(siteJson(), nodesJson());
   const eng = new OccupancyEngine(reg, 'test');
   const pose = reg.nodes.get(RIG)!.pose;
   const id = identity(RIG);
-  // Measured on the rig: a blob from an intern at the bench lands ~79 cm from
-  // seat B, towards the bench. Put one 75 cm from it in that direction.
+  // Found on the rig: a person at the next piece of furniture landed 79 cm
+  // from a desk seat -- inside the site-wide 80 cm -- and took it. Put someone
+  // 75 cm from seat B, towards the middle of the room (away from seat A).
   const b = reg.seatIndex.get('D1-B')!.seat;
-  const benchPx = floorToPixel(pose, b.x - 30, b.y + 69)!;
+  const benchPx = floorToPixel(pose, b.x + 30, b.y - 69)!;
   const bench = { x: benchPx[0], y: benchPx[1], area: 9, contrast: 3, peak: 31, heat: 30 };
   const [bx, by] = pixelToFloor(pose, bench.x, bench.y);
   assert.ok(Math.hypot(b.x - bx, b.y - by) < 80, 'inside the old site-wide radius');

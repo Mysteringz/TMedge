@@ -22,6 +22,20 @@ void tmd_init(float min_contrast, float min_peak, float noise_k, int min_area, i
     tm_detector_init(&g_det, &p);
 }
 
+/**
+ * Start from a known empty-room background instead of learning one live, so
+ * people already seated when the bridge starts are not learned as furniture.
+ * bg in C, sigma = per-pixel noise in C (768 each).
+ */
+void tmd_seed(const float* bg, const float* sigma) {
+    for (int i = 0; i < TM_GRID_SIZE; ++i) {
+        g_det.background[i] = bg[i];
+        g_det.variance[i] = sigma[i] * sigma[i];
+    }
+    g_det.frames_learned = g_det.params.bg_learn_frames;
+    g_det.background_ready = true;
+}
+
 /** Returns the detection count; out gets 6 floats per detection: x y area contrast peak heat. flags: bit0 ready, bit1 shift, bit2 truncated. */
 int tmd_step(const float* frame, float* out, int max_out, int* flags, float* bg_mean) {
     const int n = tm_detector_step(&g_det, frame);

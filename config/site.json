@@ -209,26 +209,26 @@
           "id": "D1",
           "name": "Intern desk",
           "zone": "intern-desk",
-          "x": 402,
-          "y": 81,
-          "width": 304,
-          "height": 188,
+          "x": 135,
+          "y": 337,
+          "width": 171,
+          "height": 51,
           "capacity": 2,
+          "seatRadiusCm": 50,
           "seats": [
             {
               "id": "A",
-              "x": 373,
-              "y": 161,
-              "side": "L"
+              "x": 219,
+              "y": 278,
+              "side": "T"
             },
             {
               "id": "B",
-              "x": 373,
-              "y": 212,
-              "side": "L"
+              "x": 296,
+              "y": 309,
+              "side": "T"
             }
-          ],
-          "seatRadiusCm": 50
+          ]
         }
       ]
     }
