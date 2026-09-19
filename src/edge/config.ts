@@ -20,6 +20,9 @@ export interface EdgeConfig {
   pushUrls: string[];
   pushToken: string;
   publishMs: number;
+  /** TCP port for access gateways (TMWAccess / TMLAccess); 0 disables. */
+  gatewayPort: number;
+  gatewayToken: Buffer | null;
 }
 
 export class EnvError extends Error {}
@@ -73,5 +76,11 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     pushUrls,
     pushToken,
     publishMs: int(env, 'PUBLISH_MS', 2000, 200, 60000),
+    gatewayPort: int(env, 'GATEWAY_PORT', 5210, 0, 65535),
+    gatewayToken: (() => {
+      const t = env.TMGW_TOKEN ?? '';
+      if (t && t.length < 16) throw new EnvError('TMGW_TOKEN must be 16+ chars');
+      return t ? Buffer.from(t, 'utf8') : null;
+    })(),
   };
 }

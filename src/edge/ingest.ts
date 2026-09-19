@@ -59,6 +59,11 @@ export interface IngestOptions {
   /** Key used to sign commands. Commands are refused if absent. */
   commandKey: Buffer | null;
   now?: () => number;
+  /**
+   * Delivers a command to a node heard through an access gateway (address
+   * "gw:..."). Returns false if that gateway is not connected.
+   */
+  routeViaGateway?: (address: string, datagram: Buffer) => boolean;
 }
 
 export declare interface Ingest {
@@ -229,6 +234,11 @@ export class Ingest extends EventEmitter {
     this.lastCommandSeq = seq;
     const cmd: Command = { seq, opcode, arg0, value };
     const buf = buildCommand(uid, cmd, this.opts.commandKey);
+    if (link.address.startsWith('gw:')) {
+      return this.opts.routeViaGateway?.(link.address, buf)
+        ? Promise.resolve()
+        : Promise.reject(new Error(`gateway for ${uid} is not connected`));
+    }
     return new Promise((resolve, reject) =>
       this.socket.send(buf, DOWNLINK_PORT, link.address, (err) => (err ? reject(err) : resolve())),
     );

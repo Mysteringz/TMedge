@@ -8,6 +8,7 @@ import { footprint } from '../shared/geometry.js';
 import type { ConsoleDetection, EdgeHealth, NodeHealth, OccupancySnapshot, RawFrameMessage } from '../shared/types.js';
 import type { EdgeConfig } from './config.js';
 import { DwellMap } from './dwell.js';
+import { GatewayServer } from './gwlink.js';
 import { HostMonitor } from './health.js';
 import { Ingest } from './ingest.js';
 import { DEFAULT_OCCUPANCY, OccupancyEngine, type OccupancyOptions } from './occupancy.js';
@@ -40,6 +41,7 @@ export class EdgeRuntime extends EventEmitter {
   readonly publisher: Publisher;
   readonly host = new HostMonitor();
   readonly dwell = new Map<string, DwellMap>();
+  readonly gateways: GatewayServer | null;
   private readonly info = new Map<string, NodeInfo>();
   private publishTimer: NodeJS.Timeout | null = null;
   private lastRecordedMinute = -1;
@@ -56,7 +58,18 @@ export class EdgeRuntime extends EventEmitter {
       host: cfg.udpHost,
       verify: { keys: cfg.keys, allowUnsigned: cfg.allowUnsigned },
       commandKey: cfg.keys[0] ?? null,
+      routeViaGateway: (address, buf) => this.gateways?.sendDownlink(address, buf) ?? false,
     });
+    // Access gateways only if a token is configured: an unauthenticated
+    // uplink port would let anyone on the tailnet inject datagrams (still
+    // signed per node, but a flood is a flood).
+    this.gateways = cfg.gatewayPort > 0 && cfg.gatewayToken
+      ? new GatewayServer({
+        port: cfg.gatewayPort, host: '0.0.0.0', token: cfg.gatewayToken, edgeId: cfg.edgeId,
+        onUplink: (datagram, source) => this.ingest.handle(datagram, source),
+        log: (m) => console.log(`[edge] ${m}`),
+      })
+      : null;
     this.ingest.on('report', (p, _a, at) => this.onReport(p, at));
     this.ingest.on('raw', (p, _a, at) => this.onRaw(p, at));
     this.ingest.on('status', (p, _a, at) => this.onStatus(p, at));
@@ -65,12 +78,14 @@ export class EdgeRuntime extends EventEmitter {
 
   start(): void {
     this.ingest.start();
+    void this.gateways?.listen().then((p) => console.log(`[edge] access gateways: TCP 0.0.0.0:${p} (TMGW v1)`));
     this.publishTimer = setInterval(() => this.tick(Date.now()), this.cfg.publishMs);
   }
 
   async stop(): Promise<void> {
     if (this.publishTimer) clearInterval(this.publishTimer);
     await this.ingest.stop();
+    await this.gateways?.close();
     await this.recorder.close();
   }
 
@@ -202,6 +217,8 @@ export class EdgeRuntime extends EventEmitter {
       publish: this.publisher.status,
       recorder: { dir: this.recorder.dir, bytesToday: this.recorder.bytesToday(), rawEnabled: this.recorder.rawEnabled },
       udp: { port: this.cfg.udpPort, iface: this.cfg.udpHost },
+      gateways: this.gateways?.gateways() ?? [],
+      gatewayPort: this.gateways ? this.cfg.gatewayPort : null,
     };
   }
 

@@ -26,6 +26,7 @@ function runtime() {
     edgeId: 'test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1',
     sitePath: '', nodesPath: '', dataDir: mkdtempSync(join(tmpdir(), 'tmedge-')), recordRaw: false,
     consolePort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', pushUrls: [], pushToken: '', publishMs: 1000,
+    gatewayPort: 0, gatewayToken: null,
   };
   return new EdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
 }

@@ -9,7 +9,8 @@ Deployed 2026-09-19.
 | LAN | **192.168.0.250**/22, gateway 192.168.0.1 (cluster site). Reserve it in that router's DHCP. |
 | Tailscale | **100.106.57.2** (`tmedge.tailc29e8b.ts.net`). This address follows the VM when HA moves it. |
 | Dashboards | student `http://100.106.57.2:8080`, console `http://100.106.57.2:8090` (or the LAN address) |
-| Sensor uplink | UDP `100.106.57.2:5200` / `192.168.0.250:5200` |
+| Sensor uplink | UDP `100.106.57.2:5200` / `192.168.0.250:5200` (nodes on the cluster LAN) |
+| Access gateways | TCP `5210` (TMGW v1, `TMGW_TOKEN` in `.env`): TMWAccess at other sites |
 | SSH | `debian@` the VM, key `~/.ssh/tmedge_ed25519` on the dev Mac |
 
 ## Layout inside the VM
@@ -20,7 +21,7 @@ Deployed 2026-09-19.
 - `/opt/tmedge/data`: recordings and `users.json`. This is the only writable path.
 - systemd units `tmedge-edge`, `tmedge-web` and `tmedge-sim` run as the
   unprivileged `tmedge` user with `ProtectSystem=strict`.
-- `/etc/nftables.conf`: inbound traffic is dropped except SSH/8080/8090/UDP 5200
+- `/etc/nftables.conf`: inbound traffic is dropped except SSH/5210/8080/8090/UDP 5200
   from 192.168.0.0/22 and 100.64.0.0/10 (the tailnet), plus Tailscale's own UDP
   41641.
 
@@ -43,8 +44,7 @@ they can't reach each other's LAN. Consequences:
   Mac blocks tailnet traffic, so use `deploy/open-dashboards-from-mac.sh`
   (a tunnel to `localhost:8080`/`8090`) or `curl --socks5-hostname localhost:1055`.
 - The Pi rig (Innovation Wing) reaches the VM directly over Tailscale.
-- The bench ESP32 (`30:ed:a0:cb:f5:f8`, "Above M3") can't reach the VM from
-  EsanHouse Wi-Fi and is offline. Table M3 is counted by a neighbouring node
-  as fallback. To bring it back, provision it on the cluster site's Wi-Fi
-  (`set edges 192.168.0.250`), or run a UDP relay on an always-on tailnet
-  device at EsanHouse.
+- The bench ESP32 (`30:ed:a0:cb:f5:f8`, "Above M3") on EsanHouse Wi-Fi reaches
+  the VM through **TMWAccess** (`../TMWAccess`), which runs on the dev Mac for
+  now and moves to a mini PC later. The console shows it as
+  `gw:esanhouse-mac|192.168.0.9`.
