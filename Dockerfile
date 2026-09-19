@@ -1,11 +1,21 @@
-# One image, two roles: `web` (EC2 / any container host) or `edge` (the NUC).
+# syntax=docker/dockerfile:1
+#
+# TMedge -- one image, three roles:
+#   edge  UDP 5200 (TMnodes), TCP 5210 (access gateways), 8090 (debug console)
+#   web   8080 (student site)
+#   sim   virtual TMnodes for testing (sends to the edge)
+#
+# Builds on any machine with Docker, for linux/amd64 and linux/arm64:
 #   docker build -t tmedge .
-#   docker run -p 8080:8080 --env-file .env -v tmdata:/app/data tmedge web
-#   docker run --network host --env-file .env -v tmdata:/app/data tmedge edge
-FROM node:22-alpine AS build
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+#   docker buildx build --platform linux/amd64,linux/arm64 -t <registry>/tmedge:1.0 --push .
+# Run with docker compose (see docker-compose.yml and DOCKER.md).
+
+ARG NODE_VERSION=22
+
+FROM node:${NODE_VERSION}-alpine AS build
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY tsconfig*.json ./
 COPY src ./src
 COPY test ./test
@@ -13,16 +23,25 @@ COPY public-web ./public-web
 COPY public-console ./public-console
 RUN npm run build && npm prune --omit=dev
 
-FROM node:22-alpine
+FROM node:${NODE_VERSION}-alpine
+LABEL org.opencontainers.image.title="TMedge" \
+      org.opencontainers.image.description="Thermal occupancy edge, student web tier and debug console"
+ENV NODE_ENV=production DATA_DIR=/data
 WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/public-web ./public-web
-COPY --from=build /app/public-console ./public-console
+COPY --from=build /src/node_modules ./node_modules
+COPY --from=build /src/dist ./dist
+COPY --from=build /src/public-web ./public-web
+COPY --from=build /src/public-console ./public-console
 COPY package.json ./
+# Default site layout; mount your own over /app/config to change it.
 COPY config ./config
+COPY docker/entrypoint.sh /usr/local/bin/tmedge
+# Recordings, the user list and learned state live in /data: a volume, owned by
+# the unprivileged runtime user so the container never needs root.
+RUN chmod 755 /usr/local/bin/tmedge && mkdir -p /data && chown node:node /data
+VOLUME ["/data"]
 USER node
-EXPOSE 8080 8090 5200/udp
-ENTRYPOINT ["sh", "-c", "exec node dist/src/$0/main.js"]
+EXPOSE 5200/udp 5210 8080 8090
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["tmedge", "health"]
+ENTRYPOINT ["tmedge"]
 CMD ["web"]

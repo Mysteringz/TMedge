@@ -35,7 +35,12 @@ export interface WebConfig {
   allowedDomains: string[];
   signupOpen: boolean;
   cookieSecure: boolean;
-  trustProxy: boolean;
+  /**
+   * Which proxies may set X-Forwarded-*: false (none), true (loopback only --
+   * cloudflared on the same host), or an Express trust-proxy string such as
+   * "loopback, uniquelocal" when cloudflared runs in its own container.
+   */
+  trustProxy: boolean | string;
   staleMs: number;
 }
 
@@ -53,7 +58,7 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
     allowedDomains: (env.ALLOWED_EMAIL_DOMAINS ?? 'hku.hk,connect.hku.hk').split(',').map((d) => d.trim().toLowerCase()).filter(Boolean),
     signupOpen: env.SIGNUP_OPEN !== '0',
     cookieSecure: env.COOKIE_SECURE === '1',
-    trustProxy: env.TRUST_PROXY === '1',
+    trustProxy: !env.TRUST_PROXY || env.TRUST_PROXY === '0' ? false : env.TRUST_PROXY === '1' ? true : env.TRUST_PROXY,
     staleMs: Number(env.STALE_MS || 30_000),
   };
 }
@@ -72,7 +77,7 @@ export function createWebApp(cfg: WebConfig) {
   // Behind Cloudflare Tunnel the proxy is cloudflared on this machine: trust
   // X-Forwarded-* (client IP for the login limiter, https for the cookie)
   // only from loopback, never from anyone who can reach the port directly.
-  if (cfg.trustProxy) app.set('trust proxy', 'loopback');
+  if (cfg.trustProxy) app.set('trust proxy', cfg.trustProxy === true ? 'loopback' : cfg.trustProxy);
 
   app.use((_req, res, next) => {
     res.set({

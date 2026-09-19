@@ -22,6 +22,7 @@
  *   --truth file.json rewrite the true seat states every second (for accuracy checks)
  */
 import dgram from 'node:dgram';
+import { lookup } from 'node:dns/promises';
 import { writeFileSync } from 'node:fs';
 import { floorToPixel, pixelAreaCm2 } from '../shared/geometry.js';
 import { buildRaw, buildReport, buildStatus, REPORT_BACKGROUND_READY, STATUS_SENSOR_OK, STATUS_BACKGROUND_READY, STATUS_SIGNED, type Detection, type Identity } from '../edge/protocol.js';
@@ -210,7 +211,7 @@ function renderRaw(dets: Detection[], r: ReturnType<typeof rng>, t: number): Flo
   return img;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const a = parseArgs(process.argv.slice(2));
   const key = process.env.TM_KEY ? Buffer.from(process.env.TM_KEY) : null;
   if (!key) console.warn('[sim] TM_KEY not set: sending UNSIGNED packets (the edge rejects them unless ALLOW_UNSIGNED=1)');
@@ -227,7 +228,11 @@ function main(): void {
   const ids = new Map<string, Identity>(nodes.map((n) => [n.uid, { uid: n.uid, boot, seq: 0, key }]));
   const start = Date.now();
   let frame = 0;
-  const send = (b: Buffer) => sock.send(b, a.port, a.host);
+  // Resolve once: given a hostname, dgram does an async lookup per send, and
+  // datagrams can then leave out of order -- which the edge rightly rejects as
+  // replays (seen with --edge edge:5200 under Docker).
+  const addr = (await lookup(a.host, { family: 4 })).address;
+  const send = (b: Buffer) => sock.send(b, a.port, addr);
 
   console.log(`[sim] ${nodes.length} virtual nodes -> ${a.host}:${a.port}, load ${a.load}, speed x${a.speed}, ${a.walkers} walkers` +
     (a.kills.size ? `, killing ${[...a.kills].map(([u, s]) => `${u}@${s}s`).join(' ')}` : ''));
@@ -275,4 +280,7 @@ function main(): void {
   }, 1000);
 }
 
-main();
+main().catch((err: unknown) => {
+  console.error('[sim]', err instanceof Error ? err.message : err);
+  process.exit(1);
+});

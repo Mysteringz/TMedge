@@ -1,0 +1,78 @@
+# TMedge on any Docker host.
+#
+#   cp .env.example .env          # fill in the secrets (see DOCKER.md)
+#   docker compose up -d --build  # edge + web
+#   docker compose --profile sim up -d      # ...plus the 9 simulated nodes
+#   docker compose --profile tunnel up -d   # ...plus Cloudflare Tunnel (CLOUDFLARE_TUNNEL_TOKEN in .env)
+#
+# Security: Docker publishes ports around the host firewall (ufw/nftables
+# INPUT rules do not apply to them). Set BIND_ADDR in .env to the one
+# address the ports should listen on -- e.g. the host's LAN or Tailscale IP --
+# rather than leaving them open on every interface. With the Cloudflare Tunnel
+# profile, nothing needs to be published for public access at all.
+
+x-tmedge: &tmedge
+  build: .
+  image: tmedge:1.0
+  restart: unless-stopped
+  env_file: .env
+  volumes:
+    # Your site layout (floors, tables, node positions). Remove to use the
+    # example layout baked into the image.
+    - ./config:/app/config:ro
+
+services:
+  edge:
+    <<: *tmedge
+    command: ["edge"]
+    environment:
+      WEB_PUSH_URLS: http://web:8080
+      DATA_DIR: /data
+    volumes:
+      - ./config:/app/config:ro
+      - edge-data:/data
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:5200:5200/udp"   # TMnodes sending directly
+      - "${BIND_ADDR:-127.0.0.1}:5210:5210"       # access gateways (TMWAccess), raw TCP or WebSocket
+      - "${BIND_ADDR:-127.0.0.1}:8090:8090"       # debug console (admin)
+    # Nodes that talk to the edge directly (not through a gateway) are sent
+    # commands at their source address; on Linux, uncomment host networking
+    # so that address is the node's, not Docker's NAT. Gateways do not need it.
+    # network_mode: host
+
+  web:
+    <<: *tmedge
+    command: ["web"]
+    environment:
+      DATA_DIR: /data
+      # Trust X-Forwarded-* from loopback and private addresses: the
+      # cloudflared container (tunnel profile) reaches web over the Docker network.
+      TRUST_PROXY: "loopback, uniquelocal"
+    volumes:
+      - web-data:/data
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:8080:8080"       # student site
+
+  sim:
+    <<: *tmedge
+    profiles: ["sim"]
+    command: ["sim", "--edge", "edge:5200", "--load", "0.55", "--walkers", "2"]
+    depends_on: [edge]
+    # The image's healthcheck probes web/console, which this role does not serve.
+    healthcheck:
+      disable: true
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on: [web, edge]
+    # In the Cloudflare dashboard, point the tunnel's public hostnames at the
+    # service names: http://web:8080, http://edge:8090, http://edge:5210.
+
+volumes:
+  edge-data:
+  web-data:

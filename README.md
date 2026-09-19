@@ -78,11 +78,13 @@ release delay.
 
 - **NUC (edge):** `deploy/tmedge-edge.service` (systemd). Put the NUC on the
   sensor network. `UDP_HOST` binds the uplink to that interface.
-- **EC2 (web):** the `Dockerfile` (`docker run ... tmedge web`) behind an ALB
-  with HTTPS, and `COOKIE_SECURE=1 TRUST_PROXY=1`. Point the edge's
-  `WEB_PUSH_URLS` at it. The edge pushes outbound, so the NUC needs no inbound
-  ports. The Dockerfile has not been built yet (no Docker daemon was running
-  on the dev Mac).
+- **Docker (any host, amd64 or arm64):** `docker compose up -d --build` runs
+  the edge and web tiers, with optional simulator and Cloudflare Tunnel
+  profiles. See **[DOCKER.md](DOCKER.md)** for installation and how the image
+  and stack work.
+- **EC2 (web):** the same image (`tmedge web`) behind an ALB with HTTPS and
+  `COOKIE_SECURE=1 TRUST_PROXY=1`. Point the edge's `WEB_PUSH_URLS` at it. The
+  edge pushes outbound, so the NUC needs no inbound ports.
 - Sign-in is local accounts limited to university email domains, as a
   stand-in for HKU SSO. Swap `UserStore` for OIDC before launch; sessions and
   everything else stay as they are.
@@ -90,7 +92,7 @@ release delay.
 ## Tests
 
 ```bash
-npm test          # 26 tests: geometry, config strictness, replay/auth, occupancy rules, web access, search
+npm test          # 39 tests: geometry, config strictness, replay/auth, occupancy rules, web access, search
 npm run crosscheck  # parses bytes from TMnode's own C serializer, and vice versa for commands
 npm run typecheck
 ```
