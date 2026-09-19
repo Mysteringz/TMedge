@@ -311,7 +311,7 @@ function renderNodes(): void {
       <td>${n.backgroundReady ? (n.globalShift ? 'shift' : 'ready') : 'learning'}</td>
       <td>${n.sceneMin?.toFixed(1) ?? '–'}–${n.sceneMax?.toFixed(1) ?? '–'} °C</td>
       <td>${s ? `${s.rssi} dBm` : '–'}</td><td>${s ? `${(s.heap / 1024).toFixed(0)} kB` : '–'}</td>
-      <td>${s?.fw ?? '–'}</td><td>${n.signed ? 'signed' : '<b style="color:var(--bad)">UNSIGNED</b>'}</td>
+      <td>${s?.fw ?? '–'}</td><td>${n.lastSeen === null ? '–' : n.signed ? 'signed' : '<b style="color:var(--bad)">UNSIGNED</b>'}</td>
       <td>${n.address ?? '–'}</td><td>${fmtAge(n.lastSeen)}</td></tr>`;
   }).join('');
   $('#nodes').innerHTML = `<thead><tr><th>Node</th><th>MAC</th><th>fps</th><th>loss</th><th>blobs</th><th>counting</th><th>background</th><th>scene</th><th>RSSI</th><th>heap</th><th>firmware</th><th>auth</th><th>address</th><th>last seen</th></tr></thead><tbody>${rows}</tbody>`;
@@ -336,7 +336,34 @@ function renderThumbs(): void {
     (card.querySelector('.name') as HTMLElement).textContent = n.label;
     const raw = raws.get(n.uid);
     (card.querySelector('.info') as HTMLElement).textContent = raw ? `${n.lastPeople ?? 0} blob(s) · ${fmtAge(raw.receivedAt)}` : n.online ? 'no RAW (raw_every=0?)' : 'offline';
+
+    // Verification rigs also get an RGB tile, right after their thermal one.
+    // Only nodes flagged "rgb" in nodes.json ever have one.
+    if (layout?.nodes.some((x) => x.uid === n.uid && x.rgb)) {
+      let rgbCard = wrap.querySelector<HTMLElement>(`[data-rgb-uid="${n.uid}"]`);
+      if (!rgbCard) {
+        rgbCard = document.createElement('div');
+        rgbCard.className = 'thumb rgb';
+        rgbCard.dataset.rgbUid = n.uid;
+        rgbCard.innerHTML = `<img alt="Live RGB camera"><div class="cap"><span class="name"></span><span class="info"></span></div>`;
+        rgbCard.addEventListener('click', () => select(n.uid));
+        card.after(rgbCard);
+      }
+      rgbCard.classList.toggle('sel', n.uid === selected);
+      (rgbCard.querySelector('.name') as HTMLElement).textContent = `${n.label} · RGB`;
+      const f = rgbFrames.get(n.uid);
+      (rgbCard.querySelector('.info') as HTMLElement).textContent = f ? fmtAge(f.at) : 'waiting for camera';
+    }
   }
+}
+
+/** Show the latest RGB frame everywhere it appears: grid tile, detail panel, demo tab. */
+function showRgb(uid: string, url: string): void {
+  const tile = document.querySelector<HTMLImageElement>(`#thumbs [data-rgb-uid="${uid}"] img`);
+  if (tile) tile.src = url;
+  if (uid === selected) $<HTMLImageElement>('#rgb-detail-img').src = url;
+  const rig = layout?.nodes.find((n) => n.uid === uid);
+  if (rig && rig.floorId === (floorTab ?? layout?.floors[0]?.id)) $<HTMLImageElement>('#demo-rgb').src = url;
 }
 
 function drawThumb(raw: RawFrameMessage): void {
@@ -359,6 +386,10 @@ function renderDetail(): void {
   const n = last?.nodes.find((x) => x.uid === selected);
   if (!n) return;
   $('#detail-title').textContent = n.label;
+  const isRig = layout?.nodes.some((x) => x.uid === n.uid && x.rgb) ?? false;
+  $('#rgb-detail').hidden = !isRig;
+  const f = isRig ? rgbFrames.get(n.uid) : undefined;
+  if (f) $<HTMLImageElement>('#rgb-detail-img').src = f.url;
   $('#detail-sub').textContent = `${n.uid}${n.pose ? ` · h=${n.pose.heightCm} cm` : ''}`;
   const s = n.status;
   const rows: [string, string][] = [
@@ -451,9 +482,9 @@ async function connect(): Promise<void> {
         const prev = rgbFrames.get(m.uid);
         const url = URL.createObjectURL(new Blob([Uint8Array.from(atob(m.jpeg), (ch) => ch.charCodeAt(0))], { type: 'image/jpeg' }));
         rgbFrames.set(m.uid, { at: m.at, url });
-        const rig = layout?.nodes.find((n) => n.uid === m.uid);
-        if (rig && rig.floorId === (floorTab ?? layout?.floors[0]?.id)) $<HTMLImageElement>('#demo-rgb').src = url;
+        showRgb(m.uid, url);
         if (prev) URL.revokeObjectURL(prev.url);
+        if (m.uid === selected) $('#rgb-detail-age').textContent = `· ${fmtAge(m.at)}`;
         renderDemo();
       }
     };

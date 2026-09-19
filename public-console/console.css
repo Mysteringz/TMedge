@@ -93,6 +93,10 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
 .thumb { background: var(--panel-2); border-radius: 8px; padding: 6px; cursor: pointer; border: 1px solid transparent; }
 .thumb.sel { border-color: var(--accent); }
 .thumb canvas { width: 100%; image-rendering: pixelated; display: block; border-radius: 5px; background: #000; }
+.thumb.rgb img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; border-radius: 5px; background: #000; }
+.rgb-detail { margin: 10px 0 0; }
+.rgb-detail img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; border-radius: 8px; background: #000; }
+.rgb-detail figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .thumb .cap { display: flex; justify-content: space-between; gap: 6px; margin-top: 4px; color: var(--muted); font-size: 11px; }
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .cols h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
