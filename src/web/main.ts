@@ -69,7 +69,10 @@ export function createWebApp(cfg: WebConfig) {
 
   const app = express();
   app.disable('x-powered-by');
-  if (cfg.trustProxy) app.set('trust proxy', 1);
+  // Behind Cloudflare Tunnel the proxy is cloudflared on this machine: trust
+  // X-Forwarded-* (client IP for the login limiter, https for the cookie)
+  // only from loopback, never from anyone who can reach the port directly.
+  if (cfg.trustProxy) app.set('trust proxy', 'loopback');
 
   app.use((_req, res, next) => {
     res.set({
@@ -81,8 +84,10 @@ export function createWebApp(cfg: WebConfig) {
   });
 
   const userOf = (req: IncomingMessage) => sessions.read(parseCookies(req.headers.cookie)[COOKIE]);
-  const setSession = (res: Response, email: string) => {
-    res.cookie(COOKIE, sessions.issue(email), { httpOnly: true, sameSite: 'lax', secure: cfg.cookieSecure, maxAge: 14 * 24 * 3600 * 1000, path: '/' });
+  const setSession = (req: Request, res: Response, email: string) => {
+    // Secure whenever the student reached us over HTTPS (the public site), so
+    // the cookie never travels in clear; plain http still works on the LAN.
+    res.cookie(COOKIE, sessions.issue(email), { httpOnly: true, sameSite: 'lax', secure: cfg.cookieSecure || req.secure, maxAge: 14 * 24 * 3600 * 1000, path: '/' });
   };
   const renderLogin = (res: Response, opts: { error?: string; email?: string; mode?: 'signin' | 'signup' } = {}, status = 200) => {
     res.status(status).type('html').send(loginPage
@@ -111,7 +116,7 @@ export function createWebApp(cfg: WebConfig) {
     if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email }, 429);
     const user = await users.verify(email, password);
     if (!user) return renderLogin(res, { error: 'That email and password do not match.', email }, 401);
-    setSession(res, user.email);
+    setSession(req, res, user.email);
     return res.redirect('/');
   });
   app.post('/signup', form, sameOrigin, async (req, res) => {
@@ -120,7 +125,7 @@ export function createWebApp(cfg: WebConfig) {
     if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email, mode: 'signup' }, 429);
     try {
       const user = await users.create(email, name, password);
-      setSession(res, user.email);
+      setSession(req, res, user.email);
       return res.redirect('/');
     } catch (err) {
       if (err instanceof AuthError) return renderLogin(res, { error: err.message, email, mode: 'signup' }, 400);

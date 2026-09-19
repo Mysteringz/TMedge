@@ -13,6 +13,31 @@ Deployed 2026-09-19.
 | Access gateways | TCP `5210` (TMGW v1, `TMGW_TOKEN` in `.env`): TMWAccess at other sites |
 | SSH | `debian@` the VM, key `~/.ssh/tmedge_ed25519` on the dev Mac |
 
+## Public access: Cloudflare Tunnel (hkumyseat.com)
+
+`cloudflared` (Cloudflare apt repo) runs in the VM as the systemd service
+`cloudflared`, a remotely managed tunnel installed with the tunnel token.
+It opens outbound QUIC connections only (4 connections, spread over the
+bkk08, sin02 and sin07 data centres), so:
+
+- no port is forwarded on the cluster site's router, and none is open from
+  the internet (probed from outside: 22/80/443/5210/8006/8080/8090 are all
+  filtered);
+- DNS records point at Cloudflare, never at the site's public IP;
+- the VM's nftables still admits only LAN and tailnet sources, and cloudflared
+  reaches the services on loopback.
+
+Public hostnames are set in the Cloudflare dashboard (Zero Trust → Networks →
+Tunnels → this tunnel → Public Hostname), not in a file:
+
+| Hostname | Service |
+|---|---|
+| `hkumyseat.com` | `http://localhost:8080` (student dashboard) |
+| `console.hkumyseat.com` | `http://localhost:8090` (debug console; also behind a Cloudflare Access policy) |
+
+The web tier runs with `TRUST_PROXY=1`. It trusts `X-Forwarded-*` from
+loopback only, and it sets the session cookie `Secure` on HTTPS requests.
+
 ## Layout inside the VM
 
 - `/opt/tmedge`: this repo (built `dist/`, `npm ci --omit=dev`). `.env` is

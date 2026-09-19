@@ -181,3 +181,26 @@ test('search: a group bigger than any table is offered two neighbouring tables',
   const results = searchSeats(snap.floors, 8);
   assert.ok(results.length > 0 && results.every((r) => r.tableIds.length === 2 && r.seatIds.length === 8));
 });
+
+test('web behind Cloudflare Tunnel: the session cookie is Secure over https, and X-Forwarded-* is trusted only from the local proxy', async () => {
+  const web = createWebApp({
+    port: 0, host: '127.0.0.1', pushToken: TOKEN, sessionSecret: Buffer.from('s'.repeat(40)),
+    usersPath: join(mkdtempSync(join(tmpdir(), 'tmweb-')), 'users.json'),
+    allowedDomains: ['connect.hku.hk'], signupOpen: true, cookieSecure: false, trustProxy: true, staleMs: 30_000,
+  });
+  await new Promise<void>((r) => web.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  const signupVia = (headers: Record<string, string>, email: string) => fetch(`${base}/signup`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    body: new URLSearchParams({ email, name: 'T', password: 'correct horse battery' }),
+  });
+  try {
+    const viaTunnel = await signupVia({ 'x-forwarded-proto': 'https', 'x-forwarded-for': '203.0.113.9' }, 'p@connect.hku.hk');
+    assert.match(viaTunnel.headers.get('set-cookie') ?? '', /;\s*Secure/i, 'https via the local proxy -> Secure');
+    const onLan = await signupVia({}, 'q@connect.hku.hk');
+    assert.doesNotMatch(onLan.headers.get('set-cookie') ?? '', /;\s*Secure/i, 'plain http on the LAN still works');
+  } finally {
+    await new Promise<void>((r) => web.server.close(() => r()));
+  }
+});
