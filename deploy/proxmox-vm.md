@@ -71,6 +71,6 @@ they can't reach each other's LAN. Consequences:
   (a tunnel to `localhost:8080`/`8090`) or `curl --socks5-hostname localhost:1055`.
 - The Pi rig (Innovation Wing) reaches the VM directly over Tailscale.
 - The bench ESP32 (`30:ed:a0:cb:f5:f8`, "Above M3") on EsanHouse Wi-Fi reaches
-  the VM through **TMWAccess** (`../TMWAccess`), which runs on the dev Mac for
-  now and moves to a mini PC later. The console shows it as
-  `gw:esanhouse-mac|192.168.0.9`.
+  the VM through **TMWAccess** (`../TMWAccess`) on the EsanHouse NUC
+  (`192.168.0.43`, Tailscale `100.122.39.52`), over Cloudflare Tunnel with
+  Tailscale as fallback. The console shows it as `gw:esanhouse-nuc|192.168.0.9`.
