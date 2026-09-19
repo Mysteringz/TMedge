@@ -154,6 +154,83 @@
           "capacity": 6
         }
       ]
+    },
+    {
+      "id": "iw-intern-demo",
+      "visibility": "console",
+      "building": "Innovation Wing",
+      "name": "Intern Space Demo",
+      "width": 840,
+      "height": 470,
+      "outline": [
+        [
+          20,
+          20
+        ],
+        [
+          820,
+          20
+        ],
+        [
+          820,
+          450
+        ],
+        [
+          20,
+          450
+        ]
+      ],
+      "zones": [
+        {
+          "id": "intern-desk",
+          "name": "Intern desk (RGB-verified)",
+          "polygon": [
+            [
+              20,
+              20
+            ],
+            [
+              820,
+              20
+            ],
+            [
+              820,
+              450
+            ],
+            [
+              20,
+              450
+            ]
+          ]
+        }
+      ],
+      "tables": [
+        {
+          "id": "D1",
+          "name": "Intern desk",
+          "zone": "intern-desk",
+          "x": 402,
+          "y": 81,
+          "width": 304,
+          "height": 188,
+          "capacity": 2,
+          "seats": [
+            {
+              "id": "A",
+              "x": 373,
+              "y": 161,
+              "side": "L"
+            },
+            {
+              "id": "B",
+              "x": 373,
+              "y": 212,
+              "side": "L"
+            }
+          ],
+          "seatRadiusCm": 50
+        }
+      ]
     }
   ]
 }

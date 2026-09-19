@@ -22,6 +22,12 @@ export interface TableDef {
   rect: Rect;
   capacity: number;
   seats: SeatSpec[];
+  /**
+   * How far from a seat a person can be and still be on it, cm. Overrides the
+   * site default (80) for compact layouts, where a person at the next piece of
+   * furniture would otherwise land inside a seat's radius.
+   */
+  seatRadiusCm: number | null;
   /** Nodes that see every seat of this table: the owner first, then fallbacks. */
   coveredBy: string[];
   owner: string | null;
@@ -33,8 +39,16 @@ export interface ZoneDef {
   polygon: Point[];
 }
 
+/**
+ * public   published to the web tier (students)
+ * console  edge console only: demo and test spaces that must never reach
+ *          students, e.g. the RGB-verified intern desk
+ */
+export type Visibility = 'public' | 'console';
+
 export interface FloorDef {
   id: string;
+  visibility: Visibility;
   building: string;
   name: string;
   width: number;
@@ -51,6 +65,12 @@ export interface NodeDef {
   pose: NodePose;
   owns: string[];
   simulated: boolean;
+  /**
+   * The node also streams an RGB camera image (verification rigs only). The
+   * edge accepts RGB from no other node, keeps it in memory only, and shows
+   * it only in the admin console.
+   */
+  rgb: boolean;
 }
 
 export interface Registry {
@@ -128,9 +148,13 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   root.floors.forEach((fv, fi) => {
     const w = `floors[${fi}]`;
     const f = obj(fv, w);
-    only(f, w, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables']);
+    only(f, w, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'visibility']);
+    if (f.visibility !== undefined && f.visibility !== 'public' && f.visibility !== 'console') {
+      throw new ConfigError(`${w}.visibility: expected "public" or "console"`);
+    }
     const floor: FloorDef = {
       id: str(f, 'id', w),
+      visibility: f.visibility === 'console' ? 'console' : 'public',
       building: str(f, 'building', w),
       name: str(f, 'name', w),
       width: num(f, 'width', w, 100, 100000),
@@ -155,7 +179,7 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
     f.tables.forEach((tv, ti) => {
       const tw = `${w}.tables[${ti}]`;
       const t = obj(tv, tw);
-      only(t, tw, ['id', 'name', 'zone', 'x', 'y', 'width', 'height', 'capacity']);
+      only(t, tw, ['id', 'name', 'zone', 'x', 'y', 'width', 'height', 'capacity', 'seats', 'seatRadiusCm']);
       const id = str(t, 'id', tw);
       if (tables.has(id)) throw new ConfigError(`${tw}: duplicate table id "${id}" (table ids are unique site-wide)`);
       const zoneId = str(t, 'zone', tw);
@@ -178,7 +202,8 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
         zoneId,
         rect,
         capacity,
-        seats: generateSeats(id, rect, capacity),
+        seats: t.seats === undefined ? generateSeats(id, rect, capacity) : explicitSeats(t.seats, id, capacity, floor, tw),
+        seatRadiusCm: t.seatRadiusCm === undefined ? null : num(t, 'seatRadiusCm', tw, 20, 150),
         coveredBy: [],
         owner: null,
       };
@@ -196,7 +221,7 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   nroot.nodes.forEach((nv, ni) => {
     const w = `nodes[${ni}]`;
     const n = obj(nv, w);
-    only(n, w, ['uid', 'label', 'floor', 'pose', 'owns', 'simulated']);
+    only(n, w, ['uid', 'label', 'floor', 'pose', 'owns', 'simulated', 'rgb']);
     const uid = str(n, 'uid', w).toLowerCase();
     if (!UID_RE.test(uid)) throw new ConfigError(`${w}.uid: expected a MAC like 30:ed:a0:cb:f5:f8, got "${uid}"`);
     if (nodes.has(uid)) throw new ConfigError(`${w}: duplicate uid ${uid}`);
@@ -225,6 +250,11 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
       t.owner = uid;
     }
     if (n.simulated !== undefined && typeof n.simulated !== 'boolean') throw new ConfigError(`${w}.simulated: expected true/false`);
+    if (n.rgb !== undefined && typeof n.rgb !== 'boolean') throw new ConfigError(`${w}.rgb: expected true/false`);
+    // A camera image must never sit on a floor students can see.
+    if (n.rgb === true && floor.visibility !== 'console') {
+      throw new ConfigError(`${w}.rgb: an RGB node is only allowed on a floor with "visibility": "console"`);
+    }
     nodes.set(uid, {
       uid,
       label: typeof n.label === 'string' && n.label ? n.label : uid,
@@ -232,6 +262,7 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
       pose,
       owns,
       simulated: n.simulated === true,
+      rgb: n.rgb === true,
     });
   });
 
@@ -252,6 +283,38 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   }
 
   return { site, floors, tables, nodes, seatIndex };
+}
+
+/**
+ * Seats placed by hand (or, later, learned) rather than generated: for tables
+ * whose chairs do not follow the "along both long sides" pattern -- e.g. a
+ * desk against a wall with every chair on one side. Seats within a metre of
+ * each other count as neighbours for the "sit together" search.
+ */
+function explicitSeats(v: unknown, tableId: string, capacity: number, floor: FloorDef, where: string): SeatSpec[] {
+  if (!Array.isArray(v) || v.length !== capacity) {
+    throw new ConfigError(`${where}.seats: expected exactly ${capacity} seats (the table's capacity)`);
+  }
+  const seats: SeatSpec[] = v.map((sv, i) => {
+    const sw = `${where}.seats[${i}]`;
+    const o = obj(sv, sw);
+    only(o, sw, ['id', 'x', 'y', 'side']);
+    const side = o.side === undefined ? 'L' : o.side;
+    if (side !== 'L' && side !== 'R' && side !== 'T' && side !== 'B') throw new ConfigError(`${sw}.side: expected L, R, T or B`);
+    return {
+      id: `${tableId}-${str(o, 'id', sw)}`,
+      x: num(o, 'x', sw, 0, floor.width),
+      y: num(o, 'y', sw, 0, floor.height),
+      side,
+      index: i,
+      neighbors: [],
+    };
+  });
+  if (new Set(seats.map((s) => s.id)).size !== seats.length) throw new ConfigError(`${where}.seats: duplicate seat id`);
+  for (const a of seats) {
+    for (const b of seats) if (a !== b && Math.hypot(a.x - b.x, a.y - b.y) <= 100) a.neighbors.push(b.id);
+  }
+  return seats;
 }
 
 function seesWithMargin(pose: NodePose, x: number, y: number): boolean {

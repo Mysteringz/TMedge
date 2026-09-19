@@ -29,8 +29,10 @@ async function start() {
   return { ...web, base, close: () => new Promise<void>((r) => web.server.close(() => r())) };
 }
 
+/** What an edge publishes: public floors only (see EdgeRuntime.publicSnapshot). */
 function snapshot(edgeId = 'edge-a'): OccupancySnapshot {
-  return new OccupancyEngine(makerspace(), edgeId).snapshot(Date.now());
+  const s = new OccupancyEngine(makerspace(), edgeId).snapshot(Date.now());
+  return { ...s, floors: s.floors.filter((f) => f.id === 'iw-maker-a') };
 }
 
 async function signup(base: string, email: string): Promise<string> {

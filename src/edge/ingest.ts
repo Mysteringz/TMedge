@@ -217,6 +217,12 @@ export class Ingest extends EventEmitter {
     const link = this.links.get(uid);
     if (!link) return Promise.reject(new Error(`node ${uid} has not been heard from; no address to send to`));
     if (!this.opts.commandKey) return Promise.reject(new Error('no TM_KEY: commands cannot be signed'));
+    // A node heard through a local proxy (e.g. a userspace Tailscale client)
+    // appears to come from loopback: there is no route back to it, and
+    // "sent" would be a lie.
+    if (/^(127\.|::1$|::ffff:127\.)/.test(link.address)) {
+      return Promise.reject(new Error(`node ${uid} is reached through a local proxy (${link.address}); it cannot receive commands`));
+    }
     // Unix seconds, but strictly increasing even for two commands in the same
     // second: the node ignores anything not newer than the last one it applied.
     const seq = Math.max(Math.floor(this.now() / 1000), this.lastCommandSeq + 1);

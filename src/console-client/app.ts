@@ -15,10 +15,10 @@ const $ = <T extends Element = HTMLElement>(sel: string): T => {
 interface Layout {
   site: { id: string; name: string };
   floors: {
-    id: string; name: string; building: string; width: number; height: number; outline: Point[];
+    id: string; visibility: 'public' | 'console'; name: string; building: string; width: number; height: number; outline: Point[];
     tables: { id: string; name: string; rect: { x: number; y: number; width: number; height: number }; seats: { id: string; x: number; y: number }[]; owner: string | null; coveredBy: string[] }[];
   }[];
-  nodes: { uid: string; label: string; floorId: string; pose: NodePose; owns: string[]; simulated: boolean; footprint: Point[] }[];
+  nodes: { uid: string; label: string; floorId: string; pose: NodePose; owns: string[]; simulated: boolean; rgb: boolean; footprint: Point[] }[];
 }
 
 interface Dwell { cellCm: number; cols: number; rows: number; max: number; cells: number[] }
@@ -38,6 +38,8 @@ const dets = new Map<string, { at: number; dets: ConsoleDetection[] }>();
 const raws = new Map<string, RawFrameMessage>();
 const backgrounds = new Map<string, Float32Array>();
 let mode: 'temp' | 'diff' = 'temp';
+let floorTab: string | null = null;
+const rgbFrames = new Map<string, { at: number; url: string }>();
 
 // --- colour --------------------------------------------------------------------
 
@@ -137,8 +139,9 @@ function svgEl<K extends keyof SVGElementTagNameMap>(name: K, attrs: Record<stri
 
 function renderFusion(): void {
   if (!layout || !last) return;
-  const floor = layout.floors[0];
+  const floor = layout.floors.find((f) => f.id === floorTab) ?? layout.floors[0];
   if (!floor) return;
+  renderTabs(floor.id);
   const svg = $<SVGSVGElement>('#fusion');
   const pad = 40;
   svg.setAttribute('viewBox', `${-pad} ${-pad} ${floor.width + 2 * pad} ${floor.height + 2 * pad}`);
@@ -183,8 +186,10 @@ function renderFusion(): void {
 
   if (($<HTMLInputElement>('#t-dets')).checked) {
     const now = Date.now();
+    // Each node's detections are in its own floor's plan coordinates: never draw them on another floor.
+    const here = new Set(layout.nodes.filter((n) => n.floorId === floor.id).map((n) => n.uid));
     for (const [uid, d] of dets) {
-      if (now - d.at > 3000) continue;
+      if (now - d.at > 3000 || !here.has(uid)) continue;
       for (const x of d.dets) {
         if (!Number.isFinite(x.floorX)) continue;
         const c = svgEl('circle', { class: `det ${x.counted ? 'counted' : 'ignored'}`, cx: x.floorX, cy: x.floorY, r: x.counted ? 13 : 18 }, svg);
@@ -199,6 +204,55 @@ function renderFusion(): void {
     c.style.cursor = 'pointer';
     c.addEventListener('click', () => select(n.uid));
     svgEl('title', {}, c).textContent = `${n.label} (${n.uid}) h=${n.pose.heightCm} cm`;
+  }
+}
+
+function renderTabs(active: string): void {
+  if (!layout) return;
+  const wrap = $('#floor-tabs');
+  if (wrap.childElementCount !== layout.floors.length) {
+    wrap.replaceChildren(...layout.floors.map((f) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', 'tab');
+      b.dataset.floor = f.id;
+      b.textContent = f.visibility === 'console' ? `${f.name} · console only` : f.name;
+      b.addEventListener('click', () => {
+        floorTab = f.id;
+        const rig = layout?.nodes.find((n) => n.floorId === f.id && n.rgb);
+        if (rig) select(rig.uid);
+        renderFusion();
+        renderDemo();
+      });
+      return b;
+    }));
+  }
+  wrap.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.floor === active)));
+}
+
+/** The RGB + thermal pair, shown only on a floor that has an RGB verification rig. */
+function renderDemo(): void {
+  if (!layout) return;
+  const floorId = floorTab ?? layout.floors[0]?.id;
+  const rig = layout.nodes.find((n) => n.floorId === floorId && n.rgb);
+  const box = $('#demo');
+  box.hidden = !rig;
+  if (!rig) return;
+  $('#demo-title').textContent = rig.label;
+  $('#demo-sub').textContent = `${rig.uid} · h=${rig.pose.heightCm} cm${rig.pose.mirror ? ' · mirrored' : ''}`;
+  const f = rgbFrames.get(rig.uid);
+  $('#demo-rgb-age').textContent = f ? `· ${fmtAge(f.at)}` : '· waiting for the rig';
+  const raw = raws.get(rig.uid);
+  const d = dets.get(rig.uid)?.dets ?? [];
+  $('#demo-blobs').textContent = String(d.length);
+  if (raw) {
+    // Draw mirrored when the rig is mounted mirrored, so the two images line up.
+    const c = $<HTMLCanvasElement>('#demo-thermal');
+    const flipped = rig.pose.mirror
+      ? { ...raw, pixels: raw.pixels.map((_, i) => raw.pixels[Math.floor(i / 32) * 32 + (31 - (i % 32))] ?? 0) }
+      : raw;
+    const flippedDets = rig.pose.mirror ? d.map((x) => ({ ...x, x: 32 - x.x })) : d;
+    drawThermal(c, flipped, flippedDets, true);
   }
 }
 
@@ -322,7 +376,11 @@ function renderDetail(): void {
   ];
   $('#detail-kv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
   const controls = $('#controls');
-  controls.hidden = !n.online;
+  // Heard through a local proxy (the RGB rig via userspace Tailscale): there is
+  // no route back, so offering commands would only produce errors.
+  const proxied = n.address !== null && /^(127\.|::1$|::ffff:127\.)/.test(n.address);
+  controls.hidden = !n.online || proxied;
+  $('#cmd-result').textContent = proxied ? 'Commands unavailable: this node is reached through a local proxy.' : $('#cmd-result').textContent;
   const params = $('#params');
   if (s && params.dataset.uid !== n.uid) {
     params.dataset.uid = n.uid;
@@ -368,6 +426,7 @@ async function connect(): Promise<void> {
       const msg = JSON.parse(String(e.data)) as { type: string } & Record<string, unknown>;
       if (msg.type === 'state') {
         last = msg as unknown as StateMsg;
+        // Every online node's RAW, plus the RGB rigs (their RGB is sent to subscribers only).
         ws.send(JSON.stringify({ type: 'subscribe', uids: last.nodes.filter((n) => n.online).map((n) => n.uid) }));
         if (!selected) {
           // Default to a real node if one is online: that is usually what someone opening the console is checking.
@@ -386,6 +445,16 @@ async function connect(): Promise<void> {
         const raw = msg as unknown as RawFrameMessage;
         raws.set(raw.uid, raw);
         drawThumb(raw);
+        if (layout?.nodes.some((n) => n.uid === raw.uid && n.rgb)) renderDemo();
+      } else if (msg.type === 'rgb') {
+        const m = msg as unknown as { uid: string; at: number; jpeg: string };
+        const prev = rgbFrames.get(m.uid);
+        const url = URL.createObjectURL(new Blob([Uint8Array.from(atob(m.jpeg), (ch) => ch.charCodeAt(0))], { type: 'image/jpeg' }));
+        rgbFrames.set(m.uid, { at: m.at, url });
+        const rig = layout?.nodes.find((n) => n.uid === m.uid);
+        if (rig && rig.floorId === (floorTab ?? layout?.floors[0]?.id)) $<HTMLImageElement>('#demo-rgb').src = url;
+        if (prev) URL.revokeObjectURL(prev.url);
+        renderDemo();
       }
     };
     ws.onclose = () => {

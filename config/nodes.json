@@ -158,6 +158,22 @@
         "M10"
       ],
       "simulated": true
+    },
+    {
+      "uid": "2c:cf:67:0b:c0:94",
+      "label": "Intern desk rig (Pi, RGB-verified)",
+      "floor": "iw-intern-demo",
+      "pose": {
+        "x": 420,
+        "y": 235,
+        "heightCm": 280,
+        "yawDeg": 0,
+        "mirror": true
+      },
+      "owns": [
+        "D1"
+      ],
+      "rgb": true
     }
   ]
 }

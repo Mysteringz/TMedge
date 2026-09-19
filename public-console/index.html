@@ -22,6 +22,7 @@
     <section class="panel span2">
       <div class="panel-head">
         <h2>Floor fusion</h2>
+        <div class="tabs" id="floor-tabs" role="tablist"></div>
         <div class="toggles">
           <label><input type="checkbox" id="t-footprints"> footprints</label>
           <label><input type="checkbox" id="t-dwell" checked> dwell heatmap</label>
@@ -29,6 +30,14 @@
         </div>
       </div>
       <svg id="fusion"></svg>
+      <div class="demo" id="demo" hidden>
+        <div class="demo-head"><h3 id="demo-title">Verification rig</h3><span class="muted small" id="demo-sub"></span></div>
+        <div class="demo-pair">
+          <figure><img id="demo-rgb" alt="Live RGB from the verification rig"><figcaption>RGB camera <span class="muted" id="demo-rgb-age"></span></figcaption></figure>
+          <figure><canvas id="demo-thermal" width="512" height="384"></canvas><figcaption>Thermal, mirrored to match the camera · blobs: <span class="muted" id="demo-blobs"></span></figcaption></figure>
+        </div>
+        <p class="muted small">RGB exists only for this verification rig. It is kept in memory on the edge, shown only here, never recorded, and never sent to the student site.</p>
+      </div>
       <p class="legend"><span class="sw counted"></span>counted <span class="sw ignored"></span>seen, not counted (another node is authority) <span class="sw ok"></span>owner counting <span class="sw fallback"></span>fallback node counting <span class="sw unknown"></span>unknown</p>
     </section>
 
@@ -53,8 +62,8 @@
           <button data-op="save">Save params</button>
           <button data-op="reboot" class="danger">Reboot</button>
         </div>
-        <p class="muted small" id="cmd-result"></p>
       </div>
+      <p class="muted small" id="cmd-result"></p>
     </section>
 
     <section class="panel span3">

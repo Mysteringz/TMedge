@@ -33,6 +33,17 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 ui-s
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-width: 0; }
 .panel-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .panel-head h2 { font-size: 14px; margin: 0; }
+.tabs { display: inline-flex; gap: 2px; background: var(--panel-2); border-radius: 8px; padding: 3px; }
+.tabs button { border: 0; background: transparent; padding: 4px 10px; border-radius: 6px; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+.demo { margin-top: 12px; }
+.demo-head { display: flex; gap: 10px; align-items: baseline; }
+.demo-head h3 { margin: 0 0 6px; font-size: 13px; }
+.demo-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.demo-pair figure { margin: 0; }
+.demo-pair img, .demo-pair canvas { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; border-radius: 8px; background: #000; image-rendering: auto; }
+.demo-pair canvas { image-rendering: pixelated; }
+.demo-pair figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .toggles { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
 .toggles label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
 #fusion { width: 100%; height: auto; display: block; background: var(--panel-2); border-radius: 8px; }

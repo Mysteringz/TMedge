@@ -30,6 +30,7 @@ export declare interface EdgeRuntime {
   on(event: 'report', l: (uid: string, dets: ConsoleDetection[], at: number) => void): this;
   on(event: 'raw', l: (msg: RawFrameMessage) => void): this;
   on(event: 'snapshot', l: (s: OccupancySnapshot) => void): this;
+  on(event: 'rgb', l: (uid: string, jpeg: Buffer, at: number) => void): this;
 }
 
 export class EdgeRuntime extends EventEmitter {
@@ -75,7 +76,7 @@ export class EdgeRuntime extends EventEmitter {
 
   tick(now: number): OccupancySnapshot {
     this.latest = this.engine.snapshot(now);
-    this.publisher.publish(this.latest);
+    this.publisher.publish(this.publicSnapshot(this.latest));
     const minute = Math.floor(now / 60_000);
     if (minute !== this.lastRecordedMinute) {
       this.lastRecordedMinute = minute;
@@ -83,6 +84,23 @@ export class EdgeRuntime extends EventEmitter {
     }
     this.emit('snapshot', this.latest);
     return this.latest;
+  }
+
+  /**
+   * What the web tier gets: public floors only. Console-only floors (demo
+   * rigs, test spaces) stay on the edge -- students never see them.
+   */
+  publicSnapshot(s: OccupancySnapshot): OccupancySnapshot {
+    const pub = new Set(this.reg.floors.filter((f) => f.visibility === 'public').map((f) => f.id));
+    return { ...s, floors: s.floors.filter((f) => pub.has(f.id)) };
+  }
+
+  /** Latest RGB frame per RGB-enabled node: memory only, never recorded. */
+  readonly rgb = new Map<string, { jpeg: Buffer; at: number }>();
+
+  acceptRgb(uid: string, jpeg: Buffer, at: number): void {
+    this.rgb.set(uid, { jpeg, at });
+    this.emit('rgb', uid, jpeg, at);
   }
 
   private infoFor(uid: string): NodeInfo {
@@ -192,12 +210,12 @@ export class EdgeRuntime extends EventEmitter {
     return {
       site: this.reg.site,
       floors: this.reg.floors.map((f) => ({
-        id: f.id, building: f.building, name: f.name, width: f.width, height: f.height, outline: f.outline,
+        id: f.id, visibility: f.visibility, building: f.building, name: f.name, width: f.width, height: f.height, outline: f.outline,
         zones: f.zones,
         tables: f.tables.map((t) => ({ id: t.id, name: t.name, rect: t.rect, capacity: t.capacity, seats: t.seats, owner: t.owner, coveredBy: t.coveredBy })),
       })),
       nodes: [...this.reg.nodes.values()].map((n) => ({
-        uid: n.uid, label: n.label, floorId: n.floorId, pose: n.pose, owns: n.owns, simulated: n.simulated,
+        uid: n.uid, label: n.label, floorId: n.floorId, pose: n.pose, owns: n.owns, simulated: n.simulated, rgb: n.rgb,
         footprint: footprint(n.pose),
         floorFootprint: footprint(n.pose, 0),
       })),

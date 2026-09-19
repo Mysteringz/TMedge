@@ -270,12 +270,13 @@ export class OccupancyEngine {
 
   private nearestTable(floorId: string, x: number, y: number): string | null {
     let best: string | null = null;
-    let bestD = this.opts.seatRadiusCm;
+    let bestD = Infinity;
     for (const t of this.reg.tables.values()) {
       if (t.floorId !== floorId) continue;
+      const radius = t.seatRadiusCm ?? this.opts.seatRadiusCm;
       for (const s of t.seats) {
         const d = Math.hypot(s.x - x, s.y - y);
-        if (d <= bestD) {
+        if (d <= radius && d < bestD) {
           bestD = d;
           best = t.id;
         }
@@ -305,7 +306,7 @@ export class OccupancyEngine {
       for (const s of table.seats) {
         const dist = Math.hypot(s.x - det.floorX, s.y - det.floorY);
         // A blob holding two people spans two seats; let it reach one seat further.
-        if (dist <= this.opts.seatRadiusCm + (det.persons > 1 ? 60 : 0)) pairs.push({ d: dist, det, seat: s.id });
+        if (dist <= (table.seatRadiusCm ?? this.opts.seatRadiusCm) + (det.persons > 1 ? 60 : 0)) pairs.push({ d: dist, det, seat: s.id });
       }
     }
     pairs.sort((a, b) => a.d - b.d);

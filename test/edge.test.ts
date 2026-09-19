@@ -78,9 +78,10 @@ test('geometry: a higher mount sees further for the same pixel', () => {
 
 test('registry: the makerspace config loads as 10 tables, 60 seats, 10 nodes', () => {
   const reg = makerspace();
-  assert.equal(reg.tables.size, 10);
-  assert.equal([...reg.tables.values()].reduce((a, t) => a + t.seats.length, 0), 60);
-  assert.equal(reg.nodes.size, 10);
+  const maker = [...reg.tables.values()].filter((t) => t.floorId === 'iw-maker-a');
+  assert.equal(maker.length, 10);
+  assert.equal(maker.reduce((a, t) => a + t.seats.length, 0), 60);
+  assert.equal([...reg.nodes.values()].filter((n) => n.floorId === 'iw-maker-a').length, 10);
   assert.equal(reg.tables.get('M3')?.owner, REAL);
   assert.deepEqual(reg.tables.get('M3')?.coveredBy.slice(0, 1), [REAL]);
 });
