@@ -1,5 +1,5 @@
 /**
- * TMnode wire protocol v1 -- mirror of TMnode/include/tm_protocol.h, which is
+ * TMnode wire protocol v1 -- mirror of TMsense/include/tm_protocol.h, which is
  * the source of truth. Change both together and run `npm run crosscheck`,
  * which parses bytes produced by the firmware's own serializer.
  */

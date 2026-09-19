@@ -1,8 +1,8 @@
 /**
  * Firmware bytes vs edge parser, both directions: `npm run crosscheck`.
  *
- * Compiles TMnode's own tm_packet.cpp on this machine (TMNODE_DIR, default
- * ../TMnode), has it emit REPORT / RAW / STATUS packets, and parses each with
+ * Compiles TMnode's own tm_packet.cpp on this machine (TMSENSE_DIR, default
+ * ../TMsense), has it emit REPORT / RAW / STATUS packets, and parses each with
  * the edge's protocol.ts. Then the edge builds COMMANDs and the firmware's
  * parser must accept them -- and reject a tampered one and one for another node.
  *
@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { buildCommand, CMD_SET_PARAM, parsePacket, REPORT_TRUNCATED, type Report, type Raw, type Status } from '../edge/protocol.js';
 
-const tmnode = resolve(process.env.TMNODE_DIR ?? '../TMnode');
+const tmnode = resolve(process.env.TMSENSE_DIR ?? process.env.TMNODE_DIR ?? '../TMsense');
 const bin = execFileSync(`${tmnode}/test/host/build_packet_host.sh`, [resolve('dist/packet_host')], { encoding: 'utf8' }).trim();
 const key = Buffer.from('crosscheck-key');
 const verify = { keys: [key], allowUnsigned: false };

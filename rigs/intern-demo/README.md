@@ -16,7 +16,7 @@ while running and restarts it afterwards. Everything of ours lives in
 `bridge.py` reads the ESP32's original v1 serial frames. These are 8-bit,
 mapped from 10 to 35 °C, and the first row has a few corrupt pixels, which the
 bridge repairs. It runs TMnode's detector (`libtmdetector.so`, built from
-`TMnode/src/tm_detector.cpp` unchanged) and sends signed protocol-v1
+`TMsense/src/tm_detector.cpp` unchanged) and sends signed protocol-v1
 REPORT/RAW/STATUS packets to the edge, so the rig behaves like any other node.
 It also pushes a signed 640×480 JPEG about twice a second to the console's
 `/api/demo/rgb/<uid>`.

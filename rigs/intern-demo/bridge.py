@@ -5,7 +5,7 @@ Makes the rig look like any other TMnode to TMedge:
   * reads the ESP32's thermal frames from USB serial (the original v1 serial
     format: FE 01 FE 01, 8-bit image mapped 10..35 C),
   * runs TMnode's own detector on them (libtmdetector.so, built from
-    TMnode/src/tm_detector.cpp unchanged),
+    TMsense/src/tm_detector.cpp unchanged),
   * sends signed protocol-v1 REPORT / RAW / STATUS datagrams to the edge,
 and, because this is a verification rig, also pushes a signed RGB JPEG to the
 edge's console (and nowhere else) a couple of times a second.

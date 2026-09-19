@@ -1,12 +1,12 @@
 # TMedge — notes for AI coding sessions
 
 Edge processing + student web app for TMnode thermal sensors. Firmware lives
-in `../TMnode`.
+in `../TMsense` (the thermal node, formerly TMnode).
 
 ## Map
 
 ```
-src/edge/protocol.ts     wire format reader — mirrors TMnode/include/tm_protocol.h
+src/edge/protocol.ts     wire format reader — mirrors TMsense/include/tm_protocol.h
 src/edge/ingest.ts       UDP, HMAC, replay by (boot, seq), per-node loss, commands
 src/edge/registry.ts     site/nodes config + strict validation, coverage per table
 src/edge/occupancy.ts    projection -> authority per table -> seats -> smoothing
@@ -25,7 +25,7 @@ src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for 
 
 ```bash
 npm run build && npm test && npm run typecheck
-npm run crosscheck           # needs ../TMnode and g++
+npm run crosscheck           # needs ../TMsense and g++
 npm run edge | web | simulate
 ```
 
