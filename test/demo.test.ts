@@ -112,3 +112,43 @@ test('demo: someone 75 cm from a seat of a compact desk does not take it (per-ta
   for (let f = 10; f < 20; f++) eng.ingest(parsePacket(report(id, [{ ...bench, x: px[0], y: px[1] }], f), { keys: [KEY], allowUnsigned: false }) as Report, f * 1000);
   assert.equal(eng.snapshot(19000).floors.find((x) => x.id === 'iw-intern-demo')!.tables[0]!.occupied, 1);
 });
+
+test('occupancy: one hunched person split into two blobs 46 cm apart takes one seat, not two', () => {
+  const reg = buildRegistry(siteJson(), nodesJson());
+  const eng = new OccupancyEngine(reg, 'test');
+  const id = identity(RIG);
+  // What the rig reported for one intern in a brown jacket: a small head blob
+  // and a larger back blob, 46 cm apart -- here placed straddling the desk's
+  // two seats, the way it put that one person in both of them.
+  const pose = reg.nodes.get(RIG)!.pose;
+  const a = reg.seatIndex.get('D1-A')!.seat;
+  const b = reg.seatIndex.get('D1-B')!.seat;
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const ux = (b.x - a.x) / len;
+  const uy = (b.y - a.y) / len;
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  const hp = floorToPixel(pose, mx - 23 * ux, my - 23 * uy)!;
+  const bp = floorToPixel(pose, mx + 23 * ux, my + 23 * uy)!;
+  const head = { x: hp[0], y: hp[1], area: 4, contrast: 1.25, peak: 24, heat: 4 };
+  const back = { x: bp[0], y: bp[1], area: 18, contrast: 1.65, peak: 24.5, heat: 20 };
+  for (let f = 0; f < 10; f++) eng.ingest(parsePacket(report(id, [head, back], f), { keys: [KEY], allowUnsigned: false }) as Report, f * 1000);
+  const d1 = eng.snapshot(9000).floors.find((x) => x.id === 'iw-intern-demo')!.tables[0]!;
+  assert.equal(d1.occupied, 1);
+});
+
+test('occupancy: a static warm object elsewhere in view does not make one seated person count as two', () => {
+  const reg = buildRegistry(siteJson(), nodesJson());
+  const eng = new OccupancyEngine(reg, 'test');
+  const pose = reg.nodes.get(RIG)!.pose;
+  const id = identity(RIG);
+  const a = reg.seatIndex.get('D1-A')!.seat;
+  const b = reg.seatIndex.get('D1-B')!.seat;
+  const mid = floorToPixel(pose, (a.x + b.x) / 2, (a.y + b.y) / 2)!;
+  // The warm chair by the computer desk: a small blob, every frame, far from any seat.
+  const chair = { x: 17, y: 9.9, area: 8, contrast: 1.95, peak: 25.5, heat: 7.6 };
+  const person = { x: mid[0], y: mid[1], area: 22, contrast: 2.15, peak: 25, heat: 25.5 };
+  for (let f = 0; f < 60; f++) eng.ingest(parsePacket(report(id, [chair], f), { keys: [KEY], allowUnsigned: false }) as Report, f * 1000);
+  for (let f = 60; f < 72; f++) eng.ingest(parsePacket(report(id, [chair, person], f), { keys: [KEY], allowUnsigned: false }) as Report, f * 1000);
+  assert.equal(eng.snapshot(71000).floors.find((x) => x.id === 'iw-intern-demo')!.tables[0]!.occupied, 1);
+});

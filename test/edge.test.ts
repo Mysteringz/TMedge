@@ -231,7 +231,7 @@ test('occupancy: a one-frame flicker does not take a seat; a brief absence does 
 test('occupancy: a table never reports more people than seats, but the zone counts everyone', () => {
   const { reg, eng } = engine();
   const seats = reg.tables.get('M3')!.seats.map((s) => [s.x, s.y] as [number, number]);
-  const seven: [number, number][] = [...seats, [seats[0]![0], seats[0]![1] + 25]];   // a 7th squeezed in
+  const seven: [number, number][] = [...seats, [seats[0]![0], seats[0]![1] - 55]];   // a 7th standing at the table's end
   // Every node reports everyone it can see, so M3's people are seen several times over.
   const sources = [...reg.nodes.values()].map((n) => ({
     uid: n.uid,
@@ -278,4 +278,20 @@ test('occupancy: one person under the node is one person, even though they cover
   const [x, y] = seat(reg, 'M3-R2');
   for (let f = 40; f < 52; f++) eng.ingest(parse(report(id, [physical(x, y)], f)), f * 1000);
   assert.deepEqual(table(eng, 'M3', 51000).seats.filter((s) => s.occupied).map((s) => s.id), ['M3-R2']);
+});
+
+test('occupancy: two people in back-to-back chairs of neighbouring tables (45 cm apart) are two people', () => {
+  const { reg, eng } = engine();
+  const pose = reg.nodes.get(M2_NODE)!.pose;
+  const id = identity(M2_NODE);
+  const [x1, y1] = seat(reg, 'M1-R2');                          // M1's right side...
+  const [x2, y2] = seat(reg, 'M2-L2');                          // ...backs onto M2's left side
+  assert.ok(Math.hypot(x1 - x2, y1 - y2) < 50, 'chairs are within the merge distance');
+  // Two whole people of similar heat, both seen by M2's node.
+  for (let f = 0; f < 10; f++) {
+    eng.ingest(parse(report(id, [personAt(pose, x1, y1, 60), personAt(pose, x2, y2, 57)], f)), f * 1000);
+  }
+  const snap = eng.snapshot(9000).floors[0]!;
+  assert.equal(snap.tables.find((t) => t.id === 'M2')?.occupied, 1);
+  assert.deepEqual(snap.tables.find((t) => t.id === 'M2')?.seats.filter((s) => s.occupied).map((s) => s.id), ['M2-L2']);
 });

@@ -42,6 +42,19 @@ export interface OccupancyOptions {
   /** Frames considered for taking a seat, and how many must show someone. */
   enterWindow: number;
   enterMin: number;
+  /**
+   * Blobs from one node closer than this on the floor are one person. The
+   * detector splits in pixels, and near the edge of a 110 deg view one hunched
+   * person (head and back) can come out as two peaks ~45 cm apart -- measured
+   * on the intern rig, where it put one person in both seats of a desk. Two
+   * Distance alone cannot decide it: chairs back to back at neighbouring
+   * makerspace tables are 45 cm apart, and merging on distance fused those two
+   * real people (seat accuracy fell from 98% to 86.5% in simulation). A split
+   * piece is small next to the rest of its person, while a neighbour is a whole
+   * person of similar heat -- so blobs merge only when close AND the smaller
+   * one carries under FRAGMENT_RATIO of the larger one's heat.
+   */
+  mergeCm: number;
 }
 
 export const DEFAULT_OCCUPANCY: OccupancyOptions = {
@@ -50,6 +63,7 @@ export const DEFAULT_OCCUPANCY: OccupancyOptions = {
   seatRadiusCm: 80,
   enterWindow: 5,
   enterMin: 3,
+  mergeCm: 50,
 };
 
 interface NodeState {
@@ -91,6 +105,7 @@ function median(a: number[]): number {
 }
 
 const HEAT_SAMPLES = 300;
+const FRAGMENT_RATIO = 0.4;
 const HEAT_MIN_SAMPLES = 30;
 const ZONE_WINDOW = 7;
 
@@ -153,17 +168,25 @@ export class OccupancyEngine {
 
     const ref = this.refHeat(report.uid);
     const normHeat = (d: { x: number; y: number; heat: number }) => (d.heat * pixelAreaCm2(node.pose, d.x, d.y)) / 10_000;
-    for (const d of report.detections) {
-      st.heats.push(normHeat(d));
-      if (st.heats.length > HEAT_SAMPLES) st.heats.shift();
-    }
 
     const floor = this.reg.floors.find((f) => f.id === node.floorId);
-    const dets: ConsoleDetection[] = report.detections.map((d) => {
+    const dets: ConsoleDetection[] = this.mergeClose(report.detections.map((d) => {
       const [fx, fy] = pixelToFloor(node.pose, d.x, d.y);
-      const ratio = ref ? normHeat(d) / ref : 1;
+      return { ...d, floorX: fx, floorY: fy, norm: normHeat(d) };
+    })).map(({ norm, ...d }) => {
+      const ratio = ref ? norm / ref : 1;
       const persons = ratio < 1.6 ? 1 : ratio < 2.5 ? 2 : 3;
-      return { ...d, floorX: fx, floorY: fy, tableId: this.nearestTable(node.floorId, fx, fy), counted: false, persons };
+      return { ...d, tableId: this.nearestTable(node.floorId, d.floorX, d.floorY), counted: false, persons, norm };
+    }).map(({ norm, ...d }) => {
+      // Learn "one person" only from blobs on a seat. Anything else -- a warm
+      // chair, a laptop, a radiator -- sits in view every frame and would drag
+      // the reference down until every real person read as two (seen on the
+      // intern rig: one seated intern took both seats of the desk).
+      if (d.tableId) {
+        st.heats.push(norm);
+        if (st.heats.length > HEAT_SAMPLES) st.heats.shift();
+      }
+      return d;
     });
 
     // Tables this node is currently the authority for get this frame's seats.
@@ -266,6 +289,49 @@ export class OccupancyEngine {
   private statusFor(table: TableDef, authority: string | null): CoverageStatus {
     if (!authority) return 'unknown';
     return authority === table.owner ? 'ok' : 'fallback';
+  }
+
+  /**
+   * Single-linkage clustering of one node's blobs on the floor: anything
+   * within mergeCm of a blob already in a cluster joins it. The cluster keeps
+   * the pixel position of its largest member (for the console overlay), a
+   * heat-weighted floor position, and the summed heat and area.
+   */
+  private mergeClose<T extends { x: number; y: number; area: number; contrast: number; peak: number; heat: number; floorX: number; floorY: number; norm: number }>(blobs: T[]): T[] {
+    const n = blobs.length;
+    const group = blobs.map((_, i) => i);
+    const root = (i: number): number => (group[i] === i ? i : (group[i] = root(group[i] ?? i)));
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = blobs[i];
+        const b = blobs[j];
+        if (!a || !b || Math.hypot(a.floorX - b.floorX, a.floorY - b.floorY) >= this.opts.mergeCm) continue;
+        const small = Math.min(a.norm, b.norm);
+        const large = Math.max(a.norm, b.norm);
+        if (large > 0 && small / large < FRAGMENT_RATIO) group[root(i)] = root(j);
+      }
+    }
+    const byRoot = new Map<number, T[]>();
+    blobs.forEach((b, i) => {
+      const list = byRoot.get(root(i)) ?? [];
+      list.push(b);
+      byRoot.set(root(i), list);
+    });
+    return [...byRoot.values()].map((members) => {
+      if (members.length === 1) return members[0] as T;
+      const largest = members.reduce((a, b) => (b.area > a.area ? b : a));
+      const w = members.reduce((a, b) => a + Math.max(b.norm, 1e-6), 0);
+      return {
+        ...largest,
+        floorX: members.reduce((a, b) => a + b.floorX * Math.max(b.norm, 1e-6), 0) / w,
+        floorY: members.reduce((a, b) => a + b.floorY * Math.max(b.norm, 1e-6), 0) / w,
+        area: members.reduce((a, b) => a + b.area, 0),
+        heat: members.reduce((a, b) => a + b.heat, 0),
+        norm: members.reduce((a, b) => a + b.norm, 0),
+        contrast: Math.max(...members.map((b) => b.contrast)),
+        peak: Math.max(...members.map((b) => b.peak)),
+      };
+    });
   }
 
   private nearestTable(floorId: string, x: number, y: number): string | null {
