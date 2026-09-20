@@ -11,8 +11,8 @@
  * needs the edge's bearer token. No endpoint lets a browser change what
  * other people see.
  */
-import { timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,26 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /**
+ * A stamp for the front end, from the size and mtime of the files a browser
+ * has to re-fetch after a deploy. The pages ask for `/styles.css?v=<stamp>`,
+ * so a new build is a new URL: no student is left on last week's stylesheet
+ * by their browser or by the CDN in front of us.
+ */
+function assetVersion(): string {
+  const files = ['styles.css', 'ds-modernist.css', 'js/dashboard-client/app.js', 'vendor/floor-viewer.js'];
+  const h = createHash('sha256');
+  for (const f of files) {
+    try {
+      const st = statSync(join(PUBLIC, f));
+      h.update(`${f}:${st.size}:${st.mtimeMs}`);
+    } catch {
+      h.update(`${f}:missing`);   // not built yet: still a stable stamp
+    }
+  }
+  return h.digest('hex').slice(0, 10);
+}
+
+/**
  * Students know themselves by HKU Portal UID, so the sign-in field takes one;
  * accounts are still keyed by email. A bare "u3587219" becomes
  * u3587219@<student domain>, and anyone typing a full address is untouched.
@@ -82,7 +102,9 @@ export function createWebApp(cfg: WebConfig) {
   const sessions = new Sessions(cfg.sessionSecret);
   const store = new SnapshotStore(cfg.staleMs);
   const loginLimiter = new RateLimiter(10, 5 * 60_000);
+  const version = assetVersion();
   const loginPage = readFileSync(join(PUBLIC, 'login.html'), 'utf8');
+  const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8');
 
   const app = express();
   app.disable('x-powered-by');
@@ -112,7 +134,8 @@ export function createWebApp(cfg: WebConfig) {
       .replaceAll('{{email}}', escapeHtml(opts.email ?? ''))
       .replaceAll('{{mode}}', opts.mode ?? 'signin')
       .replaceAll('{{domains}}', escapeHtml(cfg.allowedDomains.map((d) => '@' + d).join(' or ')))
-      .replaceAll('{{signup}}', cfg.signupOpen ? '' : 'hidden'));
+      .replaceAll('{{signup}}', cfg.signupOpen ? '' : 'hidden')
+      .replaceAll('{{v}}', version));
   };
   // Cross-site form posts: the session cookie is SameSite=Lax, and the auth
   // forms additionally require a same-origin Origin header when one is sent.
@@ -178,7 +201,8 @@ export function createWebApp(cfg: WebConfig) {
   // One page, three screens: the client routes /search, /spaces and
   // /spaces/:floorId itself, so every one of them must serve the app shell
   // (a student may open or reload any of them, or share the link).
-  app.get(['/', '/search', '/spaces', '/spaces/:floorId'], requireUser, (_req, res) => res.sendFile(join(PUBLIC, 'index.html')));
+  app.get(['/', '/search', '/spaces', '/spaces/:floorId'], requireUser, (_req, res) =>
+    res.type('html').set('Cache-Control', 'no-store').send(appPage.replaceAll('{{v}}', version)));
   app.get('/api/me', requireUser, (req, res) => {
     const u = users.get(userOf(req) ?? '');
     res.json({ email: u?.email, name: u?.name });
@@ -192,7 +216,16 @@ export function createWebApp(cfg: WebConfig) {
   });
 
   // Static assets (css, js, icons) are public; the data is not.
-  app.use(express.static(PUBLIC, { index: false }));
+  app.use(express.static(PUBLIC, {
+    index: false,
+    setHeaders: (res, path) => {
+      // Photographs, floor models and three.js never change without their name
+      // changing; the app's own code must be revalidated, or a student can end
+      // up running one half of a deploy against the other.
+      const immutable = /\/(assets|vendor\/three)\//.test(path);
+      res.set('Cache-Control', immutable ? 'public, max-age=86400' : 'no-cache');
+    },
+  }));
 
   const server = createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });

@@ -138,7 +138,14 @@ test('every portal screen serves the app, and none of them without signing in', 
     for (const path of ['/', '/search', '/spaces', '/spaces/iw-maker-a']) {
       const out = await fetch(base + path, { headers: { cookie } });
       assert.equal(out.status, 200, `${path} serves the portal to a student`);
-      assert.match(await out.text(), /HKUMySeat/);
+      const html = await out.text();
+      assert.match(html, /HKUMySeat/);
+      // A stale stylesheet is how a deploy half-lands on a student: the page
+      // is never cached, and it asks for this build's assets by name.
+      assert.equal(out.headers.get('cache-control'), 'no-store', `${path} is never cached`);
+      assert.match(html, /\/styles\.css\?v=[0-9a-f]{10}/, `${path} asks for this build's stylesheet`);
+      assert.match(html, /app\.js\?v=[0-9a-f]{10}/);
+      assert.ok(!html.includes('{{v}}'), 'the stamp is filled in');
     }
   } finally {
     await new Promise<void>((r) => web.server.close(() => r()));
