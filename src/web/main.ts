@@ -65,6 +65,18 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
+/**
+ * Students know themselves by HKU Portal UID, so the sign-in field takes one;
+ * accounts are still keyed by email. A bare "u3587219" becomes
+ * u3587219@<student domain>, and anyone typing a full address is untouched.
+ * (UIDs are "u3" and six to eight digits, which covers every year group.)
+ */
+export function asEmail(raw: string, domains: string[]): string {
+  const uid = raw.trim().toLowerCase();
+  if (!/^u3\d{6,8}$/.test(uid)) return raw;
+  return `${uid}@${domains.find((d) => d.startsWith('connect.')) ?? domains[0] ?? 'connect.hku.hk'}`;
+}
+
 export function createWebApp(cfg: WebConfig) {
   const users = new UserStore(cfg.usersPath, cfg.allowedDomains);
   const sessions = new Sessions(cfg.sessionSecret);
@@ -117,23 +129,25 @@ export function createWebApp(cfg: WebConfig) {
 
   const form = express.urlencoded({ extended: false, limit: '4kb' });
   app.post('/login', form, sameOrigin, async (req, res) => {
-    const { email = '', password = '' } = req.body as Record<string, string>;
-    if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email }, 429);
+    const { email: raw = '', password = '' } = req.body as Record<string, string>;
+    const email = asEmail(raw, cfg.allowedDomains);
+    if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email: raw }, 429);
     const user = await users.verify(email, password);
-    if (!user) return renderLogin(res, { error: 'That email and password do not match.', email }, 401);
+    if (!user) return renderLogin(res, { error: 'That UID and PIN do not match.', email: raw }, 401);
     setSession(req, res, user.email);
     return res.redirect('/');
   });
   app.post('/signup', form, sameOrigin, async (req, res) => {
     if (!cfg.signupOpen) return res.status(403).send('sign-up is closed');
-    const { email = '', name = '', password = '' } = req.body as Record<string, string>;
-    if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email, mode: 'signup' }, 429);
+    const { email: raw = '', name = '', password = '' } = req.body as Record<string, string>;
+    const email = asEmail(raw, cfg.allowedDomains);
+    if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email: raw, mode: 'signup' }, 429);
     try {
       const user = await users.create(email, name, password);
       setSession(req, res, user.email);
       return res.redirect('/');
     } catch (err) {
-      if (err instanceof AuthError) return renderLogin(res, { error: err.message, email, mode: 'signup' }, 400);
+      if (err instanceof AuthError) return renderLogin(res, { error: err.message, email: raw, mode: 'signup' }, 400);
       throw err;
     }
   });
@@ -161,7 +175,10 @@ export function createWebApp(cfg: WebConfig) {
     return res.redirect('/login');
   };
 
-  app.get('/', requireUser, (_req, res) => res.sendFile(join(PUBLIC, 'index.html')));
+  // One page, three screens: the client routes /search, /spaces and
+  // /spaces/:floorId itself, so every one of them must serve the app shell
+  // (a student may open or reload any of them, or share the link).
+  app.get(['/', '/search', '/spaces', '/spaces/:floorId'], requireUser, (_req, res) => res.sendFile(join(PUBLIC, 'index.html')));
   app.get('/api/me', requireUser, (req, res) => {
     const u = users.get(userOf(req) ?? '');
     res.json({ email: u?.email, name: u?.name });

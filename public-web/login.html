@@ -3,45 +3,112 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in · Study Seats</title>
+  <title>Sign in · HKUMySeat</title>
+  <meta name="description" content="Live free seats in HKU study spaces">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap">
+  <link rel="stylesheet" href="/ds-modernist.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body class="auth-page" data-mode="{{mode}}">
-  <div class="card auth-card">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="5" width="12" height="6" rx="1.5" fill="#fff"/><circle cx="4" cy="2.6" r="1.6" fill="#fff"/><circle cx="12" cy="13.4" r="1.6" fill="#fff"/></svg></span>
-      <span>Study Seats</span>
+  <div class="auth">
+    <div class="auth-photos" aria-hidden="true">
+      <img class="slide grayscale" src="/assets/images/Library.jpg" alt="">
+      <img class="slide grayscale" src="/assets/images/chi-wah.jpg" alt="">
+      <img class="slide grayscale" src="/assets/images/twf-innovation-wing.jpg" alt="">
+      <div class="auth-veil"></div>
     </div>
-    <nav class="tabs" aria-label="Account" {{signup}}>
-      <a href="/login" class="tab-signin">Sign in</a>
-      <a href="/signup" class="tab-signup">Create account</a>
-    </nav>
 
-    <section class="pane-signin">
-      <h1>Find a free seat</h1>
-      <p class="sub">Live seat availability across campus study spaces.</p>
-      {{error}}
-      <form method="post" action="/login">
-        <label class="field"><span>University email</span><input type="email" name="email" value="{{email}}" autocomplete="username" required autofocus></label>
-        <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
-        <button class="primary" type="submit">Sign in</button>
-      </form>
-    </section>
+    <div class="auth-hero">
+      <div class="brandline">
+        <div class="mark"></div>
+        <div class="name">HKUMySeat</div>
+        <div class="bar"></div>
+        <div class="uni">The University of Hong Kong</div>
+      </div>
+      <div class="auth-copy">
+        <div class="rule"></div>
+        <h1>Every vacant seat<br>on campus, live.</h1>
+        <p>Real-time occupancy for HKU libraries and co-working spaces. Search for the number of seats your group needs and get told exactly which table to take.</p>
+        <div class="stats">
+          <div>
+            <div class="n">3</div>
+            <div class="k">Study venues</div>
+          </div>
+          <div>
+            <div class="n">10</div>
+            <div class="k">Tracked tables</div>
+          </div>
+          <div>
+            <div class="n"><span class="pulse"></span>1s</div>
+            <div class="k">Refresh interval</div>
+          </div>
+        </div>
+      </div>
+      <div class="auth-foot">Pilot — Tam Wing Fan Innovation Wing</div>
+    </div>
 
-    <section class="pane-signup">
-      <h1>Create your account</h1>
-      <p class="sub">Use your {{domains}} address.</p>
-      {{error}}
-      <form method="post" action="/signup">
-        <label class="field"><span>Name</span><input type="text" name="name" autocomplete="name" maxlength="60"></label>
-        <label class="field"><span>University email</span><input type="email" name="email" value="{{email}}" autocomplete="username" required></label>
-        <label class="field"><span>Password (10+ characters)</span><input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
-        <button class="primary" type="submit">Create account</button>
-      </form>
-    </section>
+    <div class="auth-panel">
+      <nav class="tabs" aria-label="Account" {{signup}}>
+        <a href="/login" class="tab-signin">Sign in</a>
+        <a href="/signup" class="tab-signup">Create account</a>
+      </nav>
 
-    <p class="fine">Seats are counted by ceiling heat sensors. No cameras, and nothing that can identify you.</p>
+      <section class="pane-signin">
+        <h2>Student sign in</h2>
+        <p class="sub text-muted">Use your HKU Portal credentials to see live seat availability.</p>
+        {{error}}
+        <form method="post" action="/login">
+          <div class="fields">
+            <div class="field">
+              <label class="field-label" for="uid">HKU Portal UID</label>
+              <input class="input" id="uid" type="text" name="email" value="{{email}}" placeholder="u3xxxxxxx" autocomplete="username" required autofocus>
+            </div>
+            <div class="field">
+              <label class="field-label" for="pin">PIN</label>
+              <input class="input" id="pin" type="password" name="password" placeholder="••••••••" autocomplete="current-password" required>
+            </div>
+          </div>
+          <button class="btn btn-primary" type="submit">Sign in</button>
+        </form>
+        <div class="auth-links">
+          <a href="https://hkuportal.hku.hk/">Forgotten PIN?</a>
+          <span class="text-muted">HKU credentials only</span>
+        </div>
+      </section>
+
+      <section class="pane-signup">
+        <h2>New student account</h2>
+        <p class="sub text-muted">Register with your HKU Portal UID — your {{domains}} address works too.</p>
+        {{error}}
+        <form method="post" action="/signup">
+          <div class="fields">
+            <div class="field">
+              <label class="field-label" for="name">Full name</label>
+              <input class="input" id="name" type="text" name="name" placeholder="Chan Tai Man" autocomplete="name" maxlength="60">
+            </div>
+            <div class="field">
+              <label class="field-label" for="uid2">HKU Portal UID</label>
+              <input class="input" id="uid2" type="text" name="email" value="{{email}}" placeholder="u3xxxxxxx" autocomplete="username" required>
+            </div>
+            <div class="field">
+              <label class="field-label" for="pin2">PIN (10+ characters)</label>
+              <input class="input" id="pin2" type="password" name="password" placeholder="••••••••" autocomplete="new-password" minlength="10" required>
+            </div>
+          </div>
+          <button class="btn btn-primary" type="submit">Create account</button>
+        </form>
+        <div class="auth-links">
+          <span class="text-muted">Verification is instant on the campus network</span>
+        </div>
+      </section>
+
+      <div class="auth-spacer"></div>
+      <hr class="hr">
+      <p class="fine text-muted">Seats are counted by ceiling heat sensors: temperature only, no cameras, and nothing that can identify you. Occupancy data is anonymous and aggregated.</p>
+    </div>
   </div>
 </body>
 </html>
