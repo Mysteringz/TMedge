@@ -33,7 +33,7 @@ interface State {
 const state: State = {
   view: null,
   screen: 'search',
-  seats: 4,
+  seats: 1,
   venueId: null,
   floorId: null,
   showRoute: false,
