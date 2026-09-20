@@ -107,7 +107,9 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); }
   .auth-hero { padding: 28px 24px 32px; min-height: 340px }
   .auth-copy h1 { font-size: 38px }
   .auth-panel { border-left: 0; border-top: 2px solid var(--color-text); padding: 28px 24px 40px }
-  .stats { gap: 24px }
+  .stats { gap: 24px; margin-top: 28px }
+  /* Stacked, the hero has no spare height for space-between to open up. */
+  .auth-foot { margin-top: 20px }
 }
 
 /* ── app chrome ───────────────────────────────────────────────────────── */
