@@ -9,7 +9,26 @@
  * form controls in dark mode, so the page looks the same either way.
  */
 
-:root { color-scheme: light; }
+:root {
+  color-scheme: light;
+
+  /* HKU green replaces the design system's red, per the handoff. Same ramp
+     roles: hover 600, pressed 700, accent-coloured body text 700. */
+  --color-accent: #006F62;
+  --color-accent-100: #e6f2f0;
+  --color-accent-200: #c5e3dd;
+  --color-accent-300: #9bcfc5;
+  --color-accent-400: #5cab9e;
+  --color-accent-500: #0b8b7a;
+  --color-accent-600: #005b50;
+  --color-accent-700: #00463d;
+  --color-accent-800: #00332c;
+  --color-accent-900: #00211c;
+  --color-accent-2: #006F62;
+}
+
+/* Photographs are shown in full colour (the design system greys them). */
+.grayscale { filter: none; }
 
 body { margin: 0; background: var(--color-bg); color: var(--color-text); }
 
@@ -100,16 +119,6 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); }
   content: '!'; width: 22px; height: 22px; background: var(--color-accent); color: var(--color-bg);
   font-family: var(--font-heading); font-weight: 800; font-size: 14px;
   display: flex; align-items: center; justify-content: center; flex: none;
-}
-
-@media (max-width: 900px) {
-  .auth { grid-template-columns: 1fr; min-height: 100vh }
-  .auth-hero { padding: 28px 24px 32px; min-height: 340px }
-  .auth-copy h1 { font-size: 38px }
-  .auth-panel { border-left: 0; border-top: 2px solid var(--color-text); padding: 28px 24px 40px }
-  .stats { gap: 24px; margin-top: 28px }
-  /* Stacked, the hero has no spare height for space-between to open up. */
-  .auth-foot { margin-top: 20px }
 }
 
 /* ── app chrome ───────────────────────────────────────────────────────── */
@@ -231,6 +240,17 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); }
 .assign-no .side { font-size: 13px; margin-top: 6px; max-width: none }
 
 .panel { border: 2px solid var(--color-text); background: var(--color-surface); padding: 24px; margin-bottom: 24px }
+/* The 3D card lays out by area, so the two buttons sit beside the title on a
+   desktop and under the map on a phone, where a thumb can reach them. */
+.panel-3d {
+  display: grid; gap: 16px; align-items: center;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "title tools" "map map" "caption caption";
+}
+.panel-3d .panel-title { grid-area: title }
+.panel-3d .panel-tools { grid-area: tools }
+.panel-3d .viewport { grid-area: map }
+.panel-3d .caption { grid-area: caption; margin-top: 0 }
 .panel-head {
   display: flex; justify-content: space-between; align-items: center;
   flex-wrap: wrap; gap: 12px; margin-bottom: 16px;
@@ -248,7 +268,7 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); }
 .legend .full { background: var(--color-neutral-300); border: 2px dashed var(--color-neutral-500) }
 .legend .dark { background: transparent; border: 2px dashed var(--color-neutral-400) }
 
-.plan { display: grid; gap: 14px }
+.plan { display: grid; gap: 14px; grid-template-columns: repeat(var(--plan-columns, 5), minmax(0, 1fr)) }
 .cell {
   border: 2px solid var(--color-text); background: var(--color-bg); padding: 14px;
   min-height: 96px; display: flex; flex-direction: column; justify-content: space-between;
@@ -280,15 +300,127 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); }
 
 .notice { display: flex; gap: 12px; align-items: flex-start; border: 2px dashed var(--color-neutral-400); padding: 14px 16px; margin-bottom: 24px; font-size: 13px }
 
-@media (max-width: 720px) {
-  .topbar { padding: 12px 16px; gap: 10px }
-  .topbar .right { gap: 12px; width: 100%; justify-content: space-between }
-  .screen { padding: 28px 16px 56px }
-  .screen-head h1 { font-size: 30px }
-  .viewport { height: 320px }
-  .venue-photo img { height: 200px }
-  .assign .h { font-size: 24px }
-  .route { margin-top: -24px }
+/* ── the mobile build ─────────────────────────────────────────────────────
+   Phones and iPads. Fluid, no inner breakpoints: one column that grows into
+   two on a tablet, sticky header and action bar, nothing tappable under 44px,
+   16px inputs so iOS does not zoom on focus. The client switches its copy on
+   the same query. */
+
+@media (max-width: 900px), (pointer: coarse) {
+  body { -webkit-text-size-adjust: 100% }
+
+  /* sign in */
+  .auth { grid-template-columns: 1fr; min-height: 100vh; background: var(--color-bg); display: flex; flex-direction: column }
+  .auth-photos { position: relative; height: clamp(260px, 42vh, 440px); flex: none; background: var(--color-text) }
+  .auth-veil { background: linear-gradient(180deg, rgba(20,18,17,.72) 0%, rgba(20,18,17,.35) 40%, rgba(20,18,17,.88) 100%) }
+  /* The hero sits over the photo strip only -- .auth is the positioned
+     ancestor, so inset:0 would lay it over the sign-in panel as well. */
+  .auth-hero {
+    position: absolute; top: 0; left: 0; right: 0;
+    height: clamp(260px, 42vh, 440px);
+    z-index: 2; padding: 20px 20px 22px; justify-content: space-between;
+  }
+  .brandline .mark { width: 18px; height: 18px }
+  .brandline .name { font-size: 16px }
+  .brandline .uni { font-size: 10px }
+  .auth-copy .rule { width: 64px; margin-bottom: 14px }
+  .auth-copy h1 { font-size: clamp(28px, 7vw, 46px); line-height: 1.04; margin-bottom: 10px }
+  .auth-copy p { font-size: 14px; max-width: 42ch }
+  .stats, .auth-foot { display: none }   /* the hero is short; the panel is what matters here */
+  .auth-panel {
+    border-left: 0; padding: 22px 20px 40px; width: 100%; max-width: 560px;
+    margin: 0 auto; flex: 1;
+  }
+  .tabs { margin-bottom: 22px }
+  .tabs a { min-height: 48px; display: flex; align-items: center; justify-content: center }
+  .auth-panel h2 { font-size: 24px }
+  .auth-panel .input, .input { font-size: 16px; min-height: 48px }
+  .auth-panel .btn-primary { min-height: 54px; font-size: 15px; padding: 0 18px; margin-top: 22px }
+  .auth-links { min-height: 44px; font-size: 13px }
+  .auth-spacer { display: none }
+
+  /* app chrome */
+  .topbar {
+    position: sticky; top: 0; z-index: 20; background: var(--color-bg);
+    min-height: 56px; padding: 10px 16px; gap: 10px; flex-wrap: nowrap;
+  }
+  .topbar .left { gap: 8px; min-width: 0 }
+  .topbar .right { gap: 10px; flex: none }
+  .topbar .mark { width: 16px; height: 16px; flex: none }
+  .topbar .name { font-size: 15px }
+  .crumb { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .livetag { font-size: 10px }
+  .livetag .pulse { width: 7px; height: 7px }
+  .who { display: none }
+  .topbar .btn-secondary { min-height: 44px; white-space: nowrap; padding: 0 12px }
+
+  .screen { max-width: 760px; padding: 20px 16px 24px }
+  .screen-head { gap: 4px; flex-direction: column; align-items: flex-start; margin-bottom: 4px }
+  .screen-head h1 { font-size: clamp(26px, 6vw, 36px) }
+
+  /* search */
+  .venue-photo img { height: clamp(160px, 30vw, 280px) }
+  .venues { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 28px }
+  .venue { padding: 16px; min-height: 84px; gap: 4px }
+  .venue .kicker { font-size: 10px }
+  .venue .vname { font-size: 17px }
+  .seatrow { flex-direction: column; gap: 12px; margin-bottom: 4px }
+  .stepper { width: 100% }
+  .stepper button { width: 72px; height: 72px; font-size: 26px }
+  .stepper .value { flex: 1; width: auto; font-size: 32px }
+  .quick { gap: 12px }
+  .quick .chips { gap: 8px }
+  .quick .chips .btn { flex: 1; min-width: 56px; min-height: 48px }
+  .quick > .text-muted { display: none }
+  .seathint { max-width: none }
+
+  /* Sticky action bar, full-bleed across the content padding. */
+  .actions, .live-actions {
+    position: sticky; bottom: 0; z-index: 15;
+    margin: 24px -16px 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--color-bg); border-top: 2px solid var(--color-text);
+    flex-direction: column-reverse; align-items: stretch; gap: 8px;
+  }
+  .actions .btn, .live-actions .btn { min-height: 54px; font-size: 15px; padding: 0 18px }
+  .actions .text-muted { font-size: 12px }
+  .live-actions { flex-direction: row }
+  .live-actions .btn-primary { flex: 2 }
+  .live-actions .btn-secondary { flex: 1; justify-content: center }
+
+  /* spaces */
+  .spaces { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px }
+  .space-head { padding: 14px 16px }
+  .space-head .sname { font-size: 19px }
+  .space-head .floor { font-size: 10px }
+  .space-head .count .n { font-size: 22px }
+  .space-body { padding: 16px; gap: 12px }
+  .space-body .btn { min-height: 50px; padding: 0 16px }
+
+  /* live view */
+  .assign { padding: 16px; gap: 6px; flex-direction: column; align-items: flex-start; margin-bottom: 16px }
+  .assign .h { font-size: clamp(22px, 6vw, 30px) }
+  .assign .side { max-width: none; line-height: 1.5 }
+  .assign-no { padding: 16px; margin-bottom: 16px }
+  .assign-no .h { font-size: 21px }
+  .panel { padding: 14px; margin-bottom: 16px }
+  .panel-3d { grid-template-columns: 1fr; grid-template-areas: "title" "map" "tools" "caption"; gap: 10px }
+  .panel-3d .panel-tools { display: flex; gap: 8px }
+  .panel-3d .panel-tools .btn { flex: 1; min-height: 48px; justify-content: center }
+  .panel-title { font-size: 10px }
+  .viewport { height: clamp(280px, 48vw, 460px) }
+  .legend { gap: 12px; font-size: 10px }
+  .legend i { width: 11px; height: 11px }
+  .plan { grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 10px }
+  .cell { padding: 10px; min-height: 76px }
+  .cell .t { font-size: 18px }
+  .cell .m { font-size: 10px }
+  .plan-foot { margin-top: 14px; padding-top: 12px }
+  .route { padding: 14px; margin-bottom: 16px }
+  .route-head { margin-bottom: 12px }
+  .route-head h2 { font-size: 19px }
+  .steps { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)) }
+  .step { padding: 12px 12px 12px 0; gap: 10px }
+  .step .n { min-width: 22px; height: 22px; font-size: 12px }
 }
 
 /* The server renders one page for both modes and marks which is showing. */

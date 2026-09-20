@@ -77,6 +77,14 @@ function h<K extends keyof HTMLElementTagNameMap>(
 
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
+/**
+ * Phones and tablets get the mobile build: one fluid column, sticky bars,
+ * bigger targets and shorter copy. Touch is a better signal than width alone
+ * -- an iPad in landscape is 1194px wide and still wants thumbs, not a mouse.
+ */
+const compactQuery = matchMedia('(max-width: 900px), (pointer: coarse)');
+const compact = (): boolean => compactQuery.matches;
+
 // --- data helpers ----------------------------------------------------------
 
 function floorsOf(venue: Venue): CampusFloor[] {
@@ -101,8 +109,9 @@ function venues(): { venue: Venue; floors: CampusFloor[]; open: boolean }[] {
   if (extra.length > 0) {
     out.unshift({
       venue: {
-        id: 'other', name: extra[0]?.building ?? 'Other spaces', kicker: 'Campus',
-        photo: '', caption: '', floorIds: extra.map((f) => f.id), open: true, entrance: 'Follow the signs to the study area.',
+        id: 'other', name: extra[0]?.building ?? 'Other spaces', shortName: extra[0]?.building ?? 'Other spaces',
+        kicker: 'Campus', photo: '', caption: '', floorIds: extra.map((f) => f.id), open: true,
+        entrance: 'Follow the signs to the study area.',
       },
       floors: extra,
       open: true,
@@ -138,7 +147,8 @@ function capacityOf(floor: CampusFloor): number {
 
 const searchSummary = (): string => {
   const v = currentVenue();
-  return v ? `${plural(state.seats, 'seat')} · ${v.venue.name}` : 'Select a location to continue';
+  if (!v) return 'Select a location to continue';
+  return `${plural(state.seats, 'seat')} · ${compact() ? v.venue.shortName : v.venue.name}`;
 };
 
 // --- navigation ------------------------------------------------------------
@@ -169,7 +179,8 @@ function readRoute(): void {
 // --- chrome ----------------------------------------------------------------
 
 function renderChrome(): void {
-  $('#crumb').textContent = state.screen === 'search' ? 'Search' : state.screen === 'spaces' ? 'Available spaces' : 'Live view';
+  $('#crumb').textContent = state.screen === 'search' ? 'Search'
+    : state.screen === 'spaces' ? (compact() ? 'Spaces' : 'Available spaces') : 'Live view';
   const live = $('#live');
   const floor = currentFloor();
   const clock = new Date(state.lastMessageAt || Date.now());
@@ -203,17 +214,18 @@ function screenSearch(): HTMLElement {
   root.append(
     h('div', { class: 'screen-head' },
       h('h1', {}, 'Find a seat'),
-      h('span', { class: 'note text-muted' }, 'Step 1 of 2 — choose where, and for how many')),
+      h('span', { class: 'note text-muted' },
+        compact() ? 'Step 1 of 2 — where, and for how many' : 'Step 1 of 2 — choose where, and for how many')),
     h('hr', { class: 'hr' }));
 
   if (picked && picked.venue.photo) {
     const free = picked.floors.reduce((sum, f) => sum + (isDark(f) ? 0 : knownFree(f)), 0);
     const anyDark = picked.floors.some(isDark);
     root.append(h('figure', { class: 'venue-photo' },
-      h('img', { class: 'grayscale', src: picked.venue.photo, alt: picked.venue.name }),
+      h('img', { src: picked.venue.photo, alt: picked.venue.name }),
       h('figcaption', { class: 'text-muted' },
-        h('span', {}, picked.venue.caption),
-        h('span', {}, anyDark && free === 0 ? 'Live data unavailable' : `${free} seats free now`))));
+        h('span', {}, (compact() && picked.venue.shortCaption) || picked.venue.caption),
+        h('span', {}, anyDark && free === 0 ? 'Live data unavailable' : `${free} seats free${compact() ? '' : ' now'}`))));
   }
 
   root.append(h('div', { class: 'section-label' }, 'Location'));
@@ -292,7 +304,7 @@ function screenSpaces(): HTMLElement {
   }
   root.append(
     h('div', { class: 'screen-head' },
-      h('h1', {}, picked.venue.name),
+      h('h1', {}, compact() ? picked.venue.shortName : picked.venue.name),
       h('span', { class: 'note text-muted' }, searchSummary())),
     h('hr', { class: 'hr' }));
 
@@ -328,7 +340,7 @@ function screenSpaces(): HTMLElement {
           h('div', { class: 'k' }, 'Available'),
           h('div', { class: 'h' }, `${alloc.label} — ${plural(state.seats, 'seat')} together`)),
         h('p', { class: 'detail text-muted' },
-          `${cap}-seat tables · ${plural(alloc.shares.length, 'table')} for your group, nearest the entrance.`));
+          `${cap}-seat tables · ${plural(alloc.shares.length, 'table')} nearest the entrance.`));
     } else {
       body.append(
         h('div', { class: 'flag flag-no' },
@@ -355,7 +367,9 @@ function screenSpaces(): HTMLElement {
     root.append(h('p', { class: 'text-muted' }, 'No sensed spaces are online in this venue right now.'));
   }
   root.append(h('p', { class: 'results-note text-muted' }, anyFits
-    ? 'Availability is recalculated every time the sensors report. Tables are not held, so head over now — the live view keeps updating while you walk.'
+    ? (compact()
+      ? 'Availability is recalculated every time the sensors report; tables are not held.'
+      : 'Availability is recalculated every time the sensors report. Tables are not held, so head over now — the live view keeps updating while you walk.')
     : 'Nothing fits right now. Try a smaller group, or check back after the hour when classes change over.'));
   return root;
 }
@@ -385,7 +399,7 @@ function screenLive(): HTMLElement {
     h('div', { class: 'screen-head' },
       h('h1', {}, floor.name),
       h('span', { class: 'note text-muted' },
-        [info.floorLabel || floor.building, 'live view', searchSummary()].filter(Boolean).join(' · '))),
+        [info.floorLabel || floor.building, compact() ? 'live' : 'live view', searchSummary()].filter(Boolean).join(' · '))),
     h('hr', { class: 'hr' }));
 
   // Assignment
@@ -395,7 +409,7 @@ function screenLive(): HTMLElement {
         h('div', { class: 'k' }, 'Your assignment'),
         h('div', { class: 'h' }, `Sit at ${alloc.label}`)),
       h('div', { class: 'side' },
-        `Walk in — ${alloc.label.toLowerCase()} ${alloc.shares.length === 1 ? 'is' : 'are'} marked in red on the plan below.`)));
+        `Walk in — ${alloc.label.toLowerCase()} ${alloc.shares.length === 1 ? 'is' : 'are'} marked in green ${compact() ? 'below' : 'on the plan below'}.`)));
   } else if (dark) {
     root.append(h('div', { class: 'assign-no' },
       h('div', { class: 'k' }, 'No live data'),
@@ -424,20 +438,24 @@ function screenLive(): HTMLElement {
     viewer.setAttribute('dark', ordered.map((t, i) => (t.status === 'unknown' || t.free === null ? i + 1 : 0)).filter(Boolean).join(','));
     viewer.style.width = '100%';
     viewer.style.height = '100%';
-    root.append(h('div', { class: 'panel' },
-      h('div', { class: 'panel-head' },
-        h('div', { class: 'panel-title' }, '3D map — drag to rotate, scroll to zoom'),
-        h('div', { class: 'panel-tools' },
-          h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => viewer?.zoomToSeat?.() }, 'Zoom to my table'),
-          h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => viewer?.resetView?.() }, 'Reset view'))),
+    // Grid areas: the two buttons sit beside the title on a desktop and under
+    // the map on a phone, where a thumb can reach them.
+    root.append(h('div', { class: 'panel panel-3d' },
+      h('div', { class: 'panel-title' }, compact() ? '3D map — drag to rotate, pinch to zoom' : '3D map — drag to rotate, scroll to zoom'),
+      h('div', { class: 'panel-tools' },
+        h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => viewer?.zoomToSeat?.() }, 'Zoom to my table'),
+        h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => viewer?.resetView?.() }, 'Reset view')),
       h('div', { class: 'viewport' }, viewer),
-      h('div', { class: 'caption text-muted' },
-        `Red pin and disc mark your table inside ${floor.name}; grey discs are occupied tables, outlined discs are free, faint discs have no sensor data. Model: ${venue?.name ?? floor.building}, ${info.floorLabel || floor.name}.`)));
+      h('div', { class: 'caption text-muted' }, compact()
+        ? 'Green pin marks your table; grey discs are occupied tables, outlined discs are free, faint discs have no sensor data.'
+        : `Green pin and disc mark your table inside ${floor.name}; grey discs are occupied tables, outlined discs are free, faint discs have no sensor data. Model: ${venue?.name ?? floor.building}, ${info.floorLabel || floor.name}.`)));
   }
 
   // 2D plan
   const columns = gridPosition(floor.tables, ordered[0]?.id ?? '')?.columns ?? 5;
-  const plan = h('div', { class: 'plan', style: `grid-template-columns: repeat(${columns}, minmax(0, 1fr))` });
+  // A custom property, so the mobile sheet can switch to auto-fit instead of
+  // fighting an inline grid-template-columns.
+  const plan = h('div', { class: 'plan', style: `--plan-columns: ${columns}` });
   for (const t of ordered) {
     const take = mine.get(t.id);
     const unknown = t.status === 'unknown' || t.free === null;
@@ -450,7 +468,7 @@ function screenLive(): HTMLElement {
   const unknown = unknownTables(floor);
   root.append(h('div', { class: 'panel' },
     h('div', { class: 'panel-head' },
-      h('div', { class: 'panel-title' }, 'Floor plan — top-down'),
+      h('div', { class: 'panel-title' }, compact() ? 'Floor plan' : 'Floor plan — top-down'),
       h('div', { class: 'legend' },
         h('span', {}, h('i', { class: 'mine' }), 'Yours'),
         h('span', {}, h('i', { class: 'free' }), 'Free'),
@@ -461,7 +479,7 @@ function screenLive(): HTMLElement {
       h('span', { class: 'text-muted' }, `↑ ${info.entranceNote} Sensor data ${floor.stale ? 'last seen' : 'refreshed'} ${new Date(floor.updatedAt).toLocaleTimeString()}.`),
       h('span', { class: 'text-muted' }, dark
         ? 'No live counts for this space'
-        : `${free} of ${floor.totals.seats} seats free · ${cap} seats per table${unknown.length > 0 ? ` · ${plural(unknown.length, 'table')} without data` : ''}`))));
+        : `${free} of ${floor.totals.seats} seats free${compact() ? '' : ` · ${cap} seats per table`}${unknown.length > 0 ? ` · ${plural(unknown.length, 'table')} without data` : ''}`))));
 
   // Directions
   if (alloc && state.showRoute) {
@@ -470,7 +488,7 @@ function screenLive(): HTMLElement {
       h('div', { class: 'route-head' },
         h('h2', {}, `Directions to ${alloc.label}`),
         h('span', { class: 'meta text-muted' },
-          `${floor.name} · ${info.floorLabel || floor.building} · about ${info.walkMinutes} min walk from the entrance`)),
+          `${floor.name} · ${info.floorLabel || floor.building} · about ${info.walkMinutes} min walk${compact() ? '' : ' from the entrance'}`)),
       h('div', { class: 'steps' }, ...steps.map((t, i) =>
         h('div', { class: 'step' }, h('span', { class: 'n' }, String(i + 1)), h('span', { class: 't' }, t))))));
   }
@@ -507,7 +525,7 @@ function directions(floor: CampusFloor, alloc: Allocation, venue: Venue | null):
     venue?.entrance || 'Enter the building and follow the signs to the study area.',
     info.approach,
     `From the doorway, walk ${rowText}.`,
-    `${alloc.label}${side}, marked red on the plan.`,
+    `${alloc.label}${side}, marked green on the ${compact() ? 'map' : 'plan'}.`,
   ];
 }
 
@@ -521,7 +539,7 @@ function screenKey(): string {
   const relevant = state.screen === 'live' && floor
     ? [floor.id, floor.stale, floor.updatedAt, floor.tables.map((t) => `${t.id}:${t.status}:${t.free}`).join()]
     : (currentVenue()?.floors ?? []).map((f) => `${f.id}:${f.stale}:${knownFree(f)}:${f.tables.map((t) => t.free ?? 'u').join()}`);
-  return JSON.stringify([state.screen, state.seats, state.venueId, state.floorId, state.showRoute, state.warn,
+  return JSON.stringify([state.screen, state.seats, state.venueId, state.floorId, state.showRoute, state.warn, compact(),
     (state.view?.floors ?? []).map((f) => f.id), relevant]);
 }
 
@@ -587,6 +605,9 @@ async function start(): Promise<void> {
     readRoute();
     render(true);
   });
+  // Rotating a tablet or narrowing a window swaps the build: both the layout
+  // and the copy change, so re-render rather than wait for the next snapshot.
+  compactQuery.addEventListener('change', () => render(true));
   connect();
   // The "Live · HH:MM" clock and the age of the data keep ticking between pushes.
   setInterval(renderChrome, 10_000);

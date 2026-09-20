@@ -14,11 +14,14 @@
 export interface Venue {
   id: string;
   name: string;
+  /** Short form for phone screens and breadcrumbs. */
+  shortName: string;
   /** Small uppercase line above the name. */
   kicker: string;
-  /** Photograph, greyscale in the design. */
+  /** Photograph, shown in full colour. */
   photo: string;
   caption: string;
+  shortCaption?: string;
   /** Floors published by an edge that belong to this venue. */
   floorIds: string[];
   /** False = tile shown disabled ("Sensors coming soon"). */
@@ -43,9 +46,12 @@ export const VENUES: Venue[] = [
   {
     id: 'twf',
     name: 'Tam Wing Fan Innovation Wing',
+    shortName: 'Innovation Wing',
     kicker: 'Haking Wong · G & LG',
     photo: '/assets/images/twf-innovation-wing.jpg',
     caption: 'Tam Wing Fan Innovation Wing — G & LG floors, Haking Wong Building',
+    /** Shorter caption for phones. */
+    shortCaption: 'Haking Wong Building · G & LG',
     floorIds: ['iw-maker-a', 'iw-event-lg'],
     open: true,
     entrance: 'Enter the Innovation Wing from the Haking Wong Building podium, G floor.',
@@ -53,6 +59,7 @@ export const VENUES: Venue[] = [
   {
     id: 'cw',
     name: 'Chi Wah Learning Commons',
+    shortName: 'Chi Wah',
     kicker: 'Centennial Campus',
     photo: '/assets/images/chi-wah.jpg',
     caption: 'Chi Wah Learning Commons — Centennial Campus',
@@ -63,6 +70,7 @@ export const VENUES: Venue[] = [
   {
     id: 'ml',
     name: 'HKU Main Library',
+    shortName: 'Main Library',
     kicker: 'Main Campus',
     photo: '/assets/images/Library.jpg',
     caption: 'HKU Main Library — Main Campus',
@@ -82,8 +90,8 @@ export const SPACES: Record<string, SpaceInfo> = {
   },
   'iw-event-lg': {
     floorLabel: 'LG Floor',
-    model: { src: '/assets/floors/event-floor.glb', room: 'Open event area floor', columns: 5, rows: 2 },
-    approach: 'Take the red stair (or lift) down one level to LG — the Open Event Area is straight ahead.',
+    model: { src: '/assets/floors/event-floor.glb', room: 'Event floor', columns: 5, rows: 2 },
+    approach: 'Take the main stair (or lift) down one level to LG — the Open Event Area is straight ahead.',
     walkMinutes: 3,
     entranceNote: 'Stair and lift at the top of the plan.',
   },

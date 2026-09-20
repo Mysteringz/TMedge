@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#006F62"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="HKUMySeat">
+  <rect width="512" height="512" rx="128" ry="128" fill="#006F62"/>
   <circle cx="179" cy="148" r="35" fill="#ffffff"/>
   <rect x="138" y="200" width="230" height="107" rx="26" ry="26" fill="#ffffff"/>
   <circle cx="338" cy="364" r="31" fill="#ffffff"/>

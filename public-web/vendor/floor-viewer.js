@@ -31,7 +31,19 @@
   class FloorViewer extends HTMLElement {
     static get observedAttributes() { return ['src', 'room', 'highlight', 'occupied', 'dark', 'columns', 'rows']; }
     connectedCallback() {
-      if (this._init) return;
+      // The app re-renders the live screen whenever the sensors report, which
+      // moves this element: a disconnect immediately followed by a connect.
+      clearTimeout(this._teardown);
+      this._teardown = null;
+      if (this._init) {
+        if (this._stopped) {   // a real teardown had already run: start over
+          this._stopped = false;
+          this._init = false;
+          this.replaceChildren();
+          this.connectedCallback();
+        }
+        return;
+      }
       this._init = true;
       this.style.display = 'block';
       this.style.position = 'relative';
@@ -52,9 +64,14 @@
       else if (this._room) this.layoutMarkers();
     }
     disconnectedCallback() {
-      this._stopped = true;
-      if (this._ro) this._ro.disconnect();
-      if (this._renderer) this._renderer.dispose();
+      // Only tear down if we are still detached on the next turn of the event
+      // loop -- otherwise a move would dispose a live WebGL context.
+      this._teardown = setTimeout(() => {
+        this._teardown = null;
+        this._stopped = true;
+        if (this._ro) this._ro.disconnect();
+        if (this._renderer) this._renderer.dispose();
+      }, 0);
     }
 
     async boot() {
@@ -152,7 +169,7 @@
       const { box, size, centre } = this._room;
       if (this._marks) { scene.remove(this._marks); this._marks = null; }
       this._focus = null;
-      const accent = new THREE.Color(this.getAttribute('accent') || '#ec3013');
+      const accent = new THREE.Color(this.getAttribute('accent') || '#006F62');
       const marks = new THREE.Group();
       const highlight = nums(this.getAttribute('highlight'));
       const occupied = nums(this.getAttribute('occupied'));
@@ -187,7 +204,7 @@
         marks.add(pad);
         const ring = new THREE.Mesh(
           new THREE.RingGeometry(Math.min(tw, th) * 0.42, Math.min(tw, th) * 0.5, 32),
-          new THREE.MeshBasicMaterial({ color: isMine ? 0x7c1405 : 0x201e1d, transparent: true, opacity: isMine ? 1 : (isDark ? 0.18 : 0.5) })
+          new THREE.MeshBasicMaterial({ color: isMine ? 0x00332c : 0x201e1d, transparent: true, opacity: isMine ? 1 : (isDark ? 0.18 : 0.5) })
         );
         ring.rotation.x = -Math.PI / 2;
         ring.position.set(x, y + 0.001, z);

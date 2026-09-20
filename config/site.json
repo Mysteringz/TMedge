@@ -231,6 +231,157 @@
           ]
         }
       ]
+    },
+    {
+      "id": "iw-event-lg",
+      "building": "Innovation Wing",
+      "name": "Open Event Area",
+      "width": 1300,
+      "height": 580,
+      "outline": [
+        [
+          59,
+          33
+        ],
+        [
+          1221,
+          33
+        ],
+        [
+          1221,
+          532
+        ],
+        [
+          59,
+          532
+        ]
+      ],
+      "zones": [
+        {
+          "id": "event-area",
+          "name": "Open event area",
+          "polygon": [
+            [
+              59,
+              33
+            ],
+            [
+              1221,
+              33
+            ],
+            [
+              1221,
+              532
+            ],
+            [
+              59,
+              532
+            ]
+          ]
+        }
+      ],
+      "tables": [
+        {
+          "id": "E1",
+          "name": "E1",
+          "zone": "event-area",
+          "x": 154,
+          "y": 96,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E2",
+          "name": "E2",
+          "zone": "event-area",
+          "x": 374,
+          "y": 96,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E3",
+          "name": "E3",
+          "zone": "event-area",
+          "x": 601,
+          "y": 96,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E4",
+          "name": "E4",
+          "zone": "event-area",
+          "x": 821,
+          "y": 96,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E5",
+          "name": "E5",
+          "zone": "event-area",
+          "x": 1057,
+          "y": 96,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E6",
+          "name": "E6",
+          "zone": "event-area",
+          "x": 154,
+          "y": 319,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E7",
+          "name": "E7",
+          "zone": "event-area",
+          "x": 374,
+          "y": 319,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E8",
+          "name": "E8",
+          "zone": "event-area",
+          "x": 601,
+          "y": 319,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E9",
+          "name": "E9",
+          "zone": "event-area",
+          "x": 821,
+          "y": 319,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        },
+        {
+          "id": "E10",
+          "name": "E10",
+          "zone": "event-area",
+          "x": 1057,
+          "y": 319,
+          "width": 105,
+          "height": 120,
+          "capacity": 4
+        }
+      ]
     }
   ]
 }

@@ -36,7 +36,8 @@ test('demo: a console-only floor is never in what the web tier receives', () => 
   const full = rt.engine.snapshot(Date.now());
   assert.ok(full.floors.some((f) => f.id === 'iw-intern-demo'), 'the console still sees it');
   const pub = rt.publicSnapshot(full);
-  assert.deepEqual(pub.floors.map((f) => f.id), ['iw-maker-a']);
+  assert.ok(!pub.floors.some((f) => f.id === 'iw-intern-demo'), 'students never do');
+  assert.ok(pub.floors.some((f) => f.id === 'iw-maker-a'), 'the public floors still come through');
 });
 
 test('demo: an RGB node on a student-visible floor is refused at startup', () => {
