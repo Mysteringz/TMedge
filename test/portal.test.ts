@@ -144,7 +144,9 @@ test('every portal screen serves the app, and none of them without signing in', 
       // is never cached, and it asks for this build's assets by name.
       assert.equal(out.headers.get('cache-control'), 'no-store', `${path} is never cached`);
       assert.match(html, /\/styles\.css\?v=[0-9a-f]{10}/, `${path} asks for this build's stylesheet`);
-      assert.match(html, /app\.js\?v=[0-9a-f]{10}/);
+      // The stamp is a path segment, so the modules app.js imports are busted
+      // with it rather than left on an older copy.
+      assert.match(html, /\/js\/v[0-9a-f]{10}\/dashboard-client\/app\.js/);
       assert.ok(!html.includes('{{v}}'), 'the stamp is filled in');
     }
   } finally {

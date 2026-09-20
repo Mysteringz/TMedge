@@ -90,7 +90,7 @@ export const SPACES: Record<string, SpaceInfo> = {
   },
   'iw-event-lg': {
     floorLabel: 'LG Floor',
-    model: { src: '/assets/floors/event-floor.glb', room: 'Event floor', columns: 5, rows: 2 },
+    model: { src: '/assets/floors/event-floor.glb', room: 'Open event area floor', columns: 5, rows: 2 },
     approach: 'Take the main stair (or lift) down one level to LG — the Open Event Area is straight ahead.',
     walkMinutes: 3,
     entranceNote: 'Stair and lift at the top of the plan.',

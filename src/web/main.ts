@@ -215,6 +215,16 @@ export function createWebApp(cfg: WebConfig) {
     return res.json({ seats: n, results: searchSeats(store.view().floors, n, floor).slice(0, 20) });
   });
 
+  // The client is a tree of ES modules that import each other by relative
+  // path, so a query string on the entry point would leave every module it
+  // imports on the old copy -- which is exactly how half a deploy reaches a
+  // student. The stamp goes in the path instead: /js/v<stamp>/... covers the
+  // whole tree, and each build is a new URL that no cache can confuse.
+  app.use('/js/:stamp', express.static(join(PUBLIC, 'js'), {
+    index: false,
+    setHeaders: (res) => res.set('Cache-Control', 'public, max-age=31536000, immutable'),
+  }));
+
   // Static assets (css, js, icons) are public; the data is not.
   app.use(express.static(PUBLIC, {
     index: false,
