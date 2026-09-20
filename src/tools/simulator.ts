@@ -21,11 +21,12 @@
  *   --seed 1
  *   --truth file.json rewrite the true seat states every second (for accuracy checks)
  */
+import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
 import { lookup } from 'node:dns/promises';
 import { writeFileSync } from 'node:fs';
 import { floorToPixel, pixelAreaCm2 } from '../shared/geometry.js';
-import { buildRaw, buildReport, buildStatus, REPORT_BACKGROUND_READY, STATUS_SENSOR_OK, STATUS_BACKGROUND_READY, STATUS_SIGNED, type Detection, type Identity } from '../edge/protocol.js';
+import { buildOtaStatus, buildRaw, buildReport, buildStatus, REPORT_BACKGROUND_READY, STATUS_SENSOR_OK, STATUS_BACKGROUND_READY, STATUS_SIGNED, type Detection, type Identity } from '../edge/protocol.js';
 import { loadRegistry, type NodeDef, type Registry } from '../edge/registry.js';
 
 interface Args {
@@ -233,6 +234,56 @@ async function main(): Promise<void> {
   // replays (seen with --edge edge:5200 under Docker).
   const addr = (await lookup(a.host, { family: 4 })).address;
   const send = (b: Buffer) => sock.send(b, a.port, addr);
+
+  // Virtual nodes take firmware updates too: they fetch the image the edge
+  // points them at, check it against the hash in the request, and report the
+  // same progress a real node would. It exercises the whole path -- the
+  // gateway's or the edge's image server included -- without hardware.
+  const down = dgram.createSocket('udp4');
+  down.bind(5201, '0.0.0.0', () => console.log('[sim] listening for commands and updates on udp/5201'));
+  down.on('error', (err) => console.warn(`[sim] downlink: ${err.message} (updates will not be simulated)`));
+  down.on('message', (msg, from) => {
+    if (msg.length < 22 || msg[3] !== 0x11) return;   // only OTA requests
+    const uid = [...msg.subarray(4, 10)].map((x) => x.toString(16).padStart(2, '0')).join(':');
+    const id = ids.get(uid);
+    if (!id) return;
+    const p = msg.subarray(22);
+    const port = p.readUInt16LE(4);
+    const size = p.readUInt32LE(6);
+    const sha = p.subarray(10, 42).toString('hex');
+    // The path is a fixed 48-byte NUL-padded field; anything after it is the
+    // signature, not the path.
+    const path = p.subarray(42, 90).toString('latin1').replace(/\0[\s\S]*$/, '');
+    const image = sha.slice(0, 8);
+    const say = (state: 'downloading' | 'verifying' | 'applying' | 'rebooting' | 'confirmed' | 'failed',
+                 percent: number, error?: 'http' | 'size' | 'sha') => {
+      send(buildOtaStatus(id, Date.now() - start, { state, percent, image, ...(error ? { error } : {}) }));
+    };
+    void (async () => {
+      say('downloading', 0);
+      try {
+        const url = `http://${from.address}:${port}${path}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          console.warn(`[sim] ${uid}: ${url} -> ${res.status}`);
+          return say('failed', 0, 'http');
+        }
+        const bytes = Buffer.from(await res.arrayBuffer());
+        say('downloading', 100);
+        if (bytes.length !== size) return say('failed', 100, 'size');
+        say('verifying', 100);
+        if (createHash('sha256').update(bytes).digest('hex') !== sha) return say('failed', 100, 'sha');
+        say('applying', 100);
+        say('rebooting', 100);
+        // A real node reboots and proves itself before confirming; a virtual
+        // one waits the same sort of moment.
+        setTimeout(() => say('confirmed', 100), 3000);
+      } catch (err) {
+        console.warn(`[sim] ${uid}: update failed: ${(err as Error).message}`);
+        say('failed', 0, 'http');
+      }
+    })();
+  });
 
   console.log(`[sim] ${nodes.length} virtual nodes -> ${a.host}:${a.port}, load ${a.load}, speed x${a.speed}, ${a.walkers} walkers` +
     (a.kills.size ? `, killing ${[...a.kills].map(([u, s]) => `${u}@${s}s`).join(' ')}` : ''));

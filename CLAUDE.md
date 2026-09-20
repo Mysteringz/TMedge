@@ -46,6 +46,11 @@ npm run edge | web | simulate
   reach a browser only in the authenticated admin console on the edge.
 - **Students can't write.** The only write on the web tier is the edge's
   bearer-token push.
+- **An update is never a broadcast.** One node is flashed first and must
+  report the new image, a working sensor and an accepted packet before any
+  other node is touched; a failed pilot stops the rollout. See rollout.ts.
+- **The node trusts the hash, not the carrier.** The OTA request is signed and
+  carries the SHA-256; gateways only hold and serve bytes.
 - **Config is strict.** Add validation for any new field.
 - **Wire format changes touch both repos** and `npm run crosscheck`.
 

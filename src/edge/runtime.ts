@@ -15,7 +15,10 @@ import { DEFAULT_OCCUPANCY, OccupancyEngine, type OccupancyOptions } from './occ
 import { REPORT_BACKGROUND_READY, REPORT_GLOBAL_SHIFT, type Raw, type Report, type Status } from './protocol.js';
 import { Publisher } from './publisher.js';
 import { Recorder } from './recorder.js';
+import { FirmwareStore } from './firmware.js';
+import { join } from 'node:path';
 import type { Registry } from './registry.js';
+import { Rollouts } from './rollout.js';
 
 export const EDGE_VERSION = '1.0.0';
 
@@ -44,6 +47,9 @@ export class EdgeRuntime extends EventEmitter {
   readonly gateways: GatewayServer | null;
   private readonly info = new Map<string, NodeInfo>();
   private publishTimer: NodeJS.Timeout | null = null;
+  private rolloutTimer: NodeJS.Timeout | null = null;
+  readonly firmware: FirmwareStore;
+  readonly rollouts: Rollouts;
   private lastRecordedMinute = -1;
   latest: OccupancySnapshot;
 
@@ -67,23 +73,47 @@ export class EdgeRuntime extends EventEmitter {
       ? new GatewayServer({
         port: cfg.gatewayPort, host: '0.0.0.0', token: cfg.gatewayToken, edgeId: cfg.edgeId,
         onUplink: (datagram, source) => this.ingest.handle(datagram, source),
+        onImageReady: (gatewayId, result) => this.rollouts.onImageReady(gatewayId, result),
         log: (m) => console.log(`[edge] ${m}`),
       })
       : null;
+    // Firmware uploads, builds and rollouts. The console drives these; the
+    // runtime owns them so a rollout survives the console being closed.
+    this.firmware = new FirmwareStore(join(cfg.dataDir, 'firmware'), { log: (m) => console.log(`[edge] ${m}`) });
+    this.rollouts = new Rollouts({
+      image: (buildId) => {
+        const build = this.firmware.get(buildId);
+        const bytes = this.firmware.bytes(buildId);
+        return build && bytes ? { bytes, sha256: build.sha256, size: build.size, version: build.version } : null;
+      },
+      nodes: () => this.nodes().filter((n) => n.registered).map((n) => ({
+        uid: n.uid, label: n.label, floorId: n.floorId, address: n.address, online: n.online,
+      })),
+      sendImageToGateway: (id, meta, bytes) => this.gateways?.sendImage(id, meta, bytes) ?? false,
+      sendOta: (uid, image) => this.ingest.sendOta(uid, image),
+      directPort: cfg.consolePort,
+      log: (m) => console.log(`[edge] ${m}`),
+    });
     this.ingest.on('report', (p, _a, at) => this.onReport(p, at));
     this.ingest.on('raw', (p, _a, at) => this.onRaw(p, at));
     this.ingest.on('status', (p, _a, at) => this.onStatus(p, at));
+    this.ingest.on('ota', (p) => this.rollouts.onOtaStatus(p.uid, p));
     this.latest = this.engine.snapshot(Date.now());
   }
 
   start(): void {
     this.ingest.start();
+    // A rollout moves on its own: nodes report, gateways take delivery, and
+    // stalled nodes have to time out even when nobody is watching a console.
+    this.rolloutTimer = setInterval(() => this.rollouts.tick(), 1000);
+    this.rolloutTimer.unref();
     void this.gateways?.listen().then((p) => console.log(`[edge] access gateways: TCP 0.0.0.0:${p} (TMGW v1)`));
     this.publishTimer = setInterval(() => this.tick(Date.now()), this.cfg.publishMs);
   }
 
   async stop(): Promise<void> {
     if (this.publishTimer) clearInterval(this.publishTimer);
+    if (this.rolloutTimer) clearInterval(this.rolloutTimer);
     await this.ingest.stop();
     await this.gateways?.close();
     await this.recorder.close();

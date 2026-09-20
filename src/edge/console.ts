@@ -15,7 +15,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { FirmwareStore } from './firmware.js';
 import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_NAMES } from './protocol.js';
+import type { RolloutTarget } from './rollout.js';
 import type { EdgeRuntime } from './runtime.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -55,6 +57,22 @@ export function startConsole(rt: EdgeRuntime): Server {
     lastRgbTs.set(uid, ts);
     rt.acceptRgb(uid, body, now);
     return res.status(204).end();
+  });
+
+  /**
+   * The firmware image itself, for a node that talks to this edge directly;
+   * one behind a gateway fetches from its gateway instead. Before the admin
+   * check for the same reason as the RGB endpoint: the caller is a node, not
+   * a person. It is safe to serve: the release build bakes in no secrets, and
+   * the node accepts the bytes only if they hash to the SHA-256 in the signed
+   * request that sent it here.
+   */
+  app.get('/fw/:image', (req, res) => {
+    const id = /^([0-9a-f]{16})\.bin$/.exec(req.params.image ?? '')?.[1];
+    const bytes = id ? rt.firmware.bytes(id) : null;
+    if (!bytes) return res.status(404).end();
+    res.set('Content-Type', 'application/octet-stream');
+    return res.end(bytes);
   });
 
   app.use((req: Request, res: Response, next: NextFunction) => {
@@ -117,6 +135,77 @@ export function startConsole(rt: EdgeRuntime): Server {
   });
 
   // A short-lived token for the WebSocket, which cannot carry basic auth reliably.
+  // --- firmware updates ----------------------------------------------------
+  // The console uploads a PlatformIO project file by file, builds it here,
+  // and rolls the image out. Raw bodies, one file per request: multipart
+  // would mean a parser dependency for no gain.
+
+  let building: { uploadId: string; startedAt: number; log: string[]; error?: string } | null = null;
+
+  app.get('/api/firmware', (_req, res) => res.json({
+    pio: FirmwareStore.findPio() !== null,
+    builds: rt.firmware.list(),
+    building: building ? { startedAt: building.startedAt, log: building.log.slice(-40), error: building.error } : null,
+    rollout: rt.rollouts.current(),
+    history: rt.rollouts.history(),
+    diskBytes: rt.firmware.diskBytes(),
+  }));
+
+  app.post('/api/firmware/uploads', mutating, (_req, res) => {
+    rt.firmware.sweep();
+    res.json({ uploadId: rt.firmware.startUpload('console') });
+  });
+
+  app.post('/api/firmware/uploads/:id/files', mutating, express.raw({ type: '*/*', limit: '8mb' }), (req, res) => {
+    const path = typeof req.query.path === 'string' ? req.query.path : '';
+    try {
+      rt.firmware.addFile(req.params.id ?? '', path, Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
+      return res.json({ ok: true });
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/firmware/uploads/:id/build', mutating, (req, res) => {
+    // A build that failed is history, not a queue: starting another one is
+    // exactly what someone does next.
+    if (building && !building.error) return res.status(409).json({ error: 'a build is already running' });
+    const uploadId = req.params.id ?? '';
+    building = { uploadId, startedAt: Date.now(), log: [] };
+    // Compiling takes minutes; the console polls /api/firmware for progress.
+    void rt.firmware.build(uploadId, 'console')
+      .then(() => { building = null; })
+      .catch((err: unknown) => {
+        const log = (err as { log?: string[] }).log ?? [];
+        building = { uploadId, startedAt: building?.startedAt ?? Date.now(), log, error: (err as Error).message };
+        setTimeout(() => { if (building?.error) building = null; }, 5 * 60_000).unref();
+      });
+    return res.status(202).json({ ok: true });
+  });
+
+  app.delete('/api/firmware/:id', mutating, (req, res) => {
+    const current = rt.rollouts.current();
+    if (current && current.buildId === req.params.id && current.stage !== 'done' && current.stage !== 'stopped') {
+      return res.status(409).json({ error: 'that image is rolling out right now' });
+    }
+    return res.json({ ok: rt.firmware.remove(req.params.id ?? '') });
+  });
+
+  app.post('/api/firmware/rollout', mutating, (req, res) => {
+    const body = (req.body ?? {}) as { buildId?: string; target?: RolloutTarget };
+    if (!body.buildId || !body.target) return res.status(400).json({ error: 'buildId and target are required' });
+    try {
+      return res.json(rt.rollouts.start(body.buildId, body.target, 'console'));
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/firmware/rollout/cancel', mutating, (_req, res) => {
+    rt.rollouts.cancel('console');
+    res.json({ ok: true });
+  });
+
   app.get('/api/ws-token', (_req, res) => {
     const exp = Date.now() + 60_000;
     res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(String(exp)).digest('hex')}` });

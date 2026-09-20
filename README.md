@@ -89,6 +89,41 @@ release delay.
   stand-in for HKU SSO. Swap `UserStore` for OIDC before launch; sessions and
   everything else stay as they are.
 
+## Firmware updates
+
+The console can build and roll out TMsense firmware without anyone visiting a
+ceiling. Open **Firmware**, pick the TMsense project folder, and press
+*Upload and build*: the edge compiles it with PlatformIO's `tmflash`
+environment (the release build, which bakes in no Wi-Fi password or key) and
+keeps the image under its SHA-256.
+
+Then choose an image and a target — one node, one space, or every node — and
+press *Update*.
+
+**One node goes first.** The pilot has to come back running the new image,
+with a working sensor and a packet accepted by the edge, before any other node
+is touched. If it fails, the rollout stops and every other node keeps the
+firmware it has. The rest then follow a few at a time.
+
+How an image reaches a node that can only talk to its gateway:
+
+```
+console ──upload──► edge ──build──► image (sha256)
+                      │
+                      ├─ image in 32 kB frames ─► TMWAccess ─ serves http://<gw>:5282/fw/<id>.bin
+                      └─ signed OTA request ────► node ─ downloads, checks the hash, flashes,
+                                                          reboots, proves itself, confirms
+```
+
+The node trusts the hash, not the gateway: an image whose bytes do not match
+what the edge signed is thrown away before it can boot. A freshly flashed
+image is on probation for three minutes — if it cannot join Wi-Fi, read its
+sensor and get a packet accepted, the node puts the old image back and reboots.
+
+Requirements: PlatformIO on the edge (`PIO_PATH` in `.env` if it is not in the
+usual place), and TMWAccess 1.1+ at each site. A node that talks to the edge
+directly downloads from the edge's own console port instead.
+
 ## Tests
 
 ```bash

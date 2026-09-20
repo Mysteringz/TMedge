@@ -15,7 +15,9 @@ export const MAX_DETECTIONS = 24;
 export const TYPE_REPORT = 0x01;
 export const TYPE_RAW = 0x02;
 export const TYPE_STATUS = 0x03;
+export const TYPE_OTA_STATUS = 0x04;
 export const TYPE_COMMAND = 0x10;
+export const TYPE_OTA = 0x11;
 
 export const REPORT_BACKGROUND_READY = 0x01;
 export const REPORT_GLOBAL_SHIFT = 0x02;
@@ -30,6 +32,14 @@ export const CMD_RESET_BACKGROUND = 2;
 export const CMD_IDENTIFY = 3;
 export const CMD_REBOOT = 4;
 export const CMD_SAVE_PARAMS = 5;
+
+/** OTA_STATUS states, in the order a healthy update passes through them. */
+export const OTA_STATES = ['idle', 'downloading', 'verifying', 'applying', 'rebooting', 'confirmed', 'failed', 'reverted'] as const;
+export type OtaState = (typeof OTA_STATES)[number];
+export const OTA_ERRORS = ['none', 'http', 'size', 'sha', 'flash', 'no-wifi', 'busy'] as const;
+export type OtaError = (typeof OTA_ERRORS)[number];
+/** Room for "/fw/<64 hex>.bin" is not needed: the id is the first 16 hex. */
+export const OTA_PATH_LEN = 48;
 
 /** TM_PARAM_* order. Append only. */
 export const PARAM_NAMES = [
@@ -97,7 +107,16 @@ export interface Status extends Header {
   params: Partial<Record<ParamName, number>>;
 }
 
-export type Packet = Report | Raw | Status;
+export interface OtaStatus extends Header {
+  kind: 'ota';
+  state: OtaState;
+  percent: number;
+  error: OtaError;
+  /** First four bytes of the image SHA-256, as hex: which image this is about. */
+  image: string;
+}
+
+export type Packet = Report | Raw | Status | OtaStatus;
 
 export function uidToString(b: Buffer): string {
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join(':');
@@ -219,6 +238,17 @@ export function parsePacket(buf: Buffer, verify: VerifyOptions): Packet {
         params,
       };
     }
+    case TYPE_OTA_STATUS: {
+      if (p.length !== 8) throw new ProtocolError('ota status length');
+      return {
+        ...header,
+        kind: 'ota',
+        state: OTA_STATES[p[0] ?? 0] ?? 'idle',
+        percent: p[1] ?? 0,
+        error: OTA_ERRORS[p[2] ?? 0] ?? 'none',
+        image: p.subarray(4, 8).toString('hex'),
+      };
+    }
     default:
       throw new ProtocolError(`unexpected packet type ${header.type}`);
   }
@@ -243,6 +273,45 @@ export function buildCommand(uid: string, cmd: Command, key: Buffer): Buffer {
   buf[27] = cmd.arg0;
   buf.writeInt32LE(cmd.value | 0, 28);
   tag(key, buf.subarray(0, HEADER_SIZE + 10)).copy(buf, HEADER_SIZE + 10);
+  return buf;
+}
+
+export interface OtaRequest {
+  /** Replay counter, shared with commands: unix seconds. */
+  seq: number;
+  /** HTTP port the node's own gateway serves the image on. */
+  port: number;
+  size: number;
+  /** Hex SHA-256 of the image. */
+  sha256: string;
+  /** Path on the gateway, e.g. "/fw/9f3a12....bin". */
+  path: string;
+}
+
+/**
+ * "Fetch this image from your gateway and flash it." There is no host in the
+ * packet: the node downloads from wherever this packet came from, which is
+ * the gateway it already talks to. The SHA-256 is what it trusts.
+ */
+export function buildOta(uid: string, ota: OtaRequest, key: Buffer): Buffer {
+  const sha = Buffer.from(ota.sha256, 'hex');
+  if (sha.length !== 32) throw new ProtocolError('sha256 must be 32 bytes of hex');
+  const path = Buffer.from(ota.path, 'latin1');
+  if (path.length >= OTA_PATH_LEN) throw new ProtocolError(`path longer than ${OTA_PATH_LEN - 1}`);
+  const size = 42 + OTA_PATH_LEN;
+  const buf = Buffer.alloc(HEADER_SIZE + size + TAG_SIZE);
+  MAGIC.copy(buf, 0);
+  buf[2] = VERSION;
+  buf[3] = TYPE_OTA;
+  uidFromString(uid).copy(buf, 4);
+  buf.writeUInt16LE(size, 20);
+  const p = buf.subarray(HEADER_SIZE);
+  p.writeUInt32LE(ota.seq >>> 0, 0);
+  p.writeUInt16LE(ota.port, 4);
+  p.writeUInt32LE(ota.size, 6);
+  sha.copy(p, 10);
+  path.copy(p, 42);
+  tag(key, buf.subarray(0, HEADER_SIZE + size)).copy(buf, HEADER_SIZE + size);
   return buf;
 }
 
@@ -313,6 +382,17 @@ export function buildRaw(id: Identity, uptimeMs: number, frame: number, temps: F
   buf.writeInt16LE(loC, HEADER_SIZE + 4);
   buf.writeUInt16LE(stepQ, HEADER_SIZE + 6);
   for (let i = 0; i < GRID_SIZE; i++) buf[HEADER_SIZE + 8 + i] = clampU8(((temps[i] ?? lo) - loC / 100) / (stepQ / 10000));
+  return seal(buf, id.key);
+}
+
+/** OTA progress, as a node reports it (simulator and tests). */
+export function buildOtaStatus(id: Identity, uptimeMs: number, st: { state: OtaState; percent: number; error?: OtaError; image: string }): Buffer {
+  const buf = header(TYPE_OTA_STATUS, id.uid, id.boot, id.seq++, uptimeMs, 8);
+  const p = HEADER_SIZE;
+  buf[p] = Math.max(0, OTA_STATES.indexOf(st.state));
+  buf[p + 1] = st.percent;
+  buf[p + 2] = Math.max(0, OTA_ERRORS.indexOf(st.error ?? 'none'));
+  Buffer.from(st.image, 'hex').copy(buf, p + 4, 0, 4);
   return seal(buf, id.key);
 }
 

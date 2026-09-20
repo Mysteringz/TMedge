@@ -49,6 +49,10 @@ export const T_DOWNLINK = 0x20;
 export const T_PING = 0x30;
 export const T_PONG = 0x31;
 export const T_STATS = 0x40;
+/** Firmware images on their way to a gateway, for an over-the-air update. */
+export const T_IMAGE_META = 0x50;
+export const T_IMAGE_CHUNK = 0x51;
+export const T_IMAGE_READY = 0x52;
 export const MAX_FRAME = 64 * 1024;
 const HELLO_WINDOW_MS = 60_000;
 
@@ -118,6 +122,8 @@ export interface GatewayServerOptions {
   allowRemote?: (address: string) => boolean;
   /** A node datagram arrived via a gateway; `source` is "gw:<id>|<ip>:<port>". */
   onUplink: (datagram: Buffer, source: string) => void;
+  /** A gateway has taken delivery of a firmware image (or refused it). */
+  onImageReady?: (gatewayId: string, result: { id: string; ok: boolean; error?: string; port: number }) => void;
   log?: (msg: string) => void;
   now?: () => number;
 }
@@ -214,6 +220,33 @@ export class GatewayServer {
   }
 
   /** Route a command to a node heard through a gateway. False if that gateway is not connected. */
+  /**
+   * Push a firmware image to one gateway, which holds it and serves it to the
+   * nodes on its own network. 32 kB a frame: big enough to move 700 kB in a
+   * couple of dozen writes, small enough to stay under MAX_FRAME.
+   */
+  sendImage(gatewayId: string, meta: { id: string; size: number; sha256: string }, bytes: Buffer): boolean {
+    const c = this.conns.get(gatewayId);
+    if (!c) return false;
+    c.link.write(frame(T_IMAGE_META, Buffer.from(JSON.stringify(meta))));
+    const CHUNK = 32 * 1024;
+    const idBytes = Buffer.from(meta.id, 'latin1');
+    for (let off = 0; off < bytes.length; off += CHUNK) {
+      const part = bytes.subarray(off, Math.min(off + CHUNK, bytes.length));
+      const head = Buffer.alloc(1 + idBytes.length + 4);
+      head[0] = idBytes.length;
+      idBytes.copy(head, 1);
+      head.writeUInt32LE(off, 1 + idBytes.length);
+      c.link.write(frame(T_IMAGE_CHUNK, Buffer.concat([head, part])));
+    }
+    return true;
+  }
+
+  /** Which gateway a node is heard through, from its `gw:<id>|addr:port` address. */
+  static gatewayOf(source: string): string | null {
+    return /^gw:([^|]+)\|/.exec(source)?.[1] ?? null;
+  }
+
   sendDownlink(source: string, datagram: Buffer): boolean {
     const m = /^gw:([^|]+)\|(.+):(\d+)$/.exec(source);
     if (!m) return false;
@@ -299,6 +332,14 @@ export class GatewayServer {
               return undefined;
             case T_PONG:
               if (payload.length >= 8) conn.info.rttMs = this.now() - Number(payload.readBigUInt64LE(0));
+              return undefined;
+            case T_IMAGE_READY:
+              try {
+                const r = JSON.parse(payload.toString('utf8')) as { id: string; ok: boolean; error?: string; port: number };
+                this.opts.onImageReady?.(conn.info.id, r);
+              } catch {
+                /* a gateway that cannot answer properly is handled by the rollout's timeout */
+              }
               return undefined;
             case T_STATS:
               try {

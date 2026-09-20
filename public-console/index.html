@@ -80,6 +80,39 @@
       <div class="thumbs" id="thumbs"></div>
     </section>
 
+    <section class="panel span3" id="firmware">
+      <div class="panel-head">
+        <h2>Firmware</h2>
+        <span class="muted small" id="fw-sub">upload a TMsense PlatformIO folder, build it here, roll it out</span>
+      </div>
+      <div class="cols">
+        <div class="fw-col">
+          <h3>New build</h3>
+          <p class="muted small">Pick the TMsense project folder. It is compiled with the <code>tmflash</code>
+            environment, which bakes in no Wi-Fi password or key.</p>
+          <input type="file" id="fw-folder" webkitdirectory directory multiple>
+          <div class="row">
+            <button id="fw-build" disabled>Upload and build</button>
+            <span class="muted small" id="fw-build-state"></span>
+          </div>
+          <pre class="log" id="fw-log" aria-live="polite"></pre>
+        </div>
+        <div class="fw-col">
+          <h3>Roll out</h3>
+          <div class="row">
+            <label>Image <select id="fw-build-pick"></select></label>
+            <label>To <select id="fw-target"></select></label>
+            <button id="fw-start" disabled>Update</button>
+            <button id="fw-cancel" hidden>Stop</button>
+          </div>
+          <p class="muted small" id="fw-plan"></p>
+          <div id="fw-progress"></div>
+          <h3>Images on this edge</h3>
+          <table class="fw-table" id="fw-builds"></table>
+        </div>
+      </div>
+    </section>
+
     <section class="panel span3">
       <div class="panel-head"><h2>Edge detail</h2></div>
       <div class="cols" id="edge-detail"></div>

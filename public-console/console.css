@@ -102,3 +102,22 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
 .cols h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .cols ul { margin: 0; padding-left: 16px; }
 @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } .span2, .span3 { grid-column: auto; } }
+
+/* --- firmware updates --- */
+.fw-col { min-width: 0; display: flex; flex-direction: column; gap: 8px }
+.fw-col h3 { margin: 4px 0 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted) }
+.fw-col .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
+.fw-col label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted) }
+.log {
+  margin: 0; padding: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel-2, #11161d); border: 1px solid var(--line, #263041); border-radius: 6px;
+}
+.fw-table { width: 100%; border-collapse: collapse; font-size: 12px }
+.fw-table td, .fw-table th { padding: 4px 6px; border-bottom: 1px solid var(--line, #263041); text-align: left }
+.fw-node { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 6px 0; border-bottom: 1px solid var(--line, #263041) }
+.fw-node .bar { grid-column: 1 / -1; height: 4px; background: var(--line, #263041); border-radius: 2px; overflow: hidden }
+.fw-node .bar span { display: block; height: 100%; background: var(--accent, #4ea1ff) }
+.fw-node .state { font-size: 11px; color: var(--muted) }
+.fw-node .state.bad { color: #ff6b5e }
+.fw-node .state.good { color: #49c17a }

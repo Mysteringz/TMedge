@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { buildCommand, CMD_SET_PARAM, parsePacket, REPORT_TRUNCATED, type Report, type Raw, type Status } from '../edge/protocol.js';
+import { buildCommand, buildOta, CMD_SET_PARAM, parsePacket, REPORT_TRUNCATED, type OtaStatus, type Report, type Raw, type Status } from '../edge/protocol.js';
 
 const tmnode = resolve(process.env.TMSENSE_DIR ?? process.env.TMNODE_DIR ?? '../TMsense');
 const bin = execFileSync(`${tmnode}/test/host/build_packet_host.sh`, [resolve('dist/packet_host')], { encoding: 'utf8' }).trim();
@@ -104,6 +104,18 @@ const near = (a: number, b: number, eps: number, what: string) => assert.ok(Math
   ok('one flipped byte, a wrong key, and an unsigned packet are all rejected');
 }
 
+// Firmware -> edge: how a node reports an update in flight.
+{
+  const o = parsePacket(get('ota_status'), verify) as OtaStatus;
+  assert.equal(o.kind, 'ota');
+  assert.equal(o.state, 'downloading');
+  assert.equal(o.percent, 42);
+  assert.equal(o.error, 'none');
+  assert.equal(o.image, 'c4123a9f');
+  assert.ok(get('ota_status').length <= 222, 'OTA_STATUS must fit a LoRa frame');
+  ok('OTA_STATUS from the firmware reads back with the same state, percent and image');
+}
+
 // Edge -> firmware: commands.
 const parse = (buf: Buffer) => JSON.parse(execFileSync(bin, ['parse', buf.toString('hex')], { encoding: 'utf8' })) as
   { result: number; seq: number; opcode: number; arg0: number; value: number };
@@ -117,6 +129,25 @@ const parse = (buf: Buffer) => JSON.parse(execFileSync(bin, ['parse', buf.toStri
   assert.equal(parse(buildCommand('01:02:03:04:05:07', { seq: 1, opcode: 2, arg0: 0, value: 0 }, key)).result, -5);
   assert.equal(parse(buildCommand('01:02:03:04:05:06', { seq: 1, opcode: 2, arg0: 0, value: 0 }, Buffer.from('wrong'))).result, -7);
   ok('firmware rejects a tampered command, one for another node, and one with the wrong key');
+}
+
+// Edge -> firmware: the update request itself.
+const parseOta = (buf: Buffer) => JSON.parse(execFileSync(bin, ['parse-ota', buf.toString('hex')], { encoding: 'utf8' })) as
+  { result: number; seq: number; port: number; size: number; sha0: string; path: string };
+{
+  const sha = 'c4123a9f' + '00'.repeat(28);
+  const req = { seq: 1789755000, port: 5282, size: 739648, sha256: sha, path: '/fw/c4123a9f00000000.bin' };
+  const ota = buildOta('01:02:03:04:05:06', req, key);
+  assert.deepEqual(parseOta(ota), { result: 0, seq: req.seq, port: req.port, size: req.size, sha0: 'c4123a9f', path: req.path });
+  ok('OTA request built by the edge is accepted by the firmware with identical fields');
+  const tampered = Buffer.from(ota);
+  // Flip a byte of the SHA-256: the node must not treat it as authentic, or a
+  // gateway could serve any image it liked.
+  tampered[22 + 10] = (tampered[22 + 10] ?? 0) ^ 0x01;
+  assert.equal(parseOta(tampered).result, -7);
+  assert.equal(parseOta(buildOta('01:02:03:04:05:07', req, key)).result, -5, 'an OTA for another node is refused');
+  assert.equal(parseOta(buildOta('01:02:03:04:05:06', req, Buffer.from('wrong'))).result, -7);
+  ok('firmware rejects a tampered image hash, an OTA for another node, and one with the wrong key');
 }
 
 console.log(`\ncrosscheck: ${checks} checks passed against ${tmnode}`);

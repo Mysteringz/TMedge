@@ -4,6 +4,7 @@
  * edge health, and sends commands to nodes.
  */
 import type { ConsoleDetection, EdgeHealth, NodeHealth, NodePose, OccupancySnapshot, Point, RawFrameMessage } from '../shared/types.js';
+import { initFirmware, setFirmwareTargets } from './firmware.js';
 
 const SVG = 'http://www.w3.org/2000/svg';
 const $ = <T extends Element = HTMLElement>(sel: string): T => {
@@ -503,6 +504,7 @@ async function connect(): Promise<void> {
 
 async function start(): Promise<void> {
   layout = (await (await fetch('/api/layout')).json()) as Layout;
+  initFirmware();
   for (const id of ['#t-footprints', '#t-dwell', '#t-dets']) $(id).addEventListener('change', renderFusion);
   $('#t-overlay').addEventListener('change', drawBig);
   document.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach((r) => r.addEventListener('change', () => {
@@ -516,6 +518,14 @@ async function start(): Promise<void> {
   }));
   await connect();
   setInterval(renderFusion, 1000);
+  // The rollout targets are the nodes and floors this console already knows.
+  setInterval(() => {
+    if (!layout || !last) return;
+    setFirmwareTargets({
+      floors: layout.floors.map((f) => ({ id: f.id, name: f.name })),
+      nodes: last.nodes.filter((n) => n.registered).map((n) => ({ uid: n.uid, label: n.label, floorId: n.floorId, online: n.online })),
+    });
+  }, 2000);
 }
 
 void start();

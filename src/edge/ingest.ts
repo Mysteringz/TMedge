@@ -12,11 +12,13 @@ import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import {
   buildCommand,
+  buildOta,
   parsePacket,
   ProtocolError,
   type Command,
   type Raw,
   type Report,
+  type OtaStatus,
   type Status,
   type VerifyOptions,
 } from './protocol.js';
@@ -70,6 +72,7 @@ export declare interface Ingest {
   on(event: 'report', l: (p: Report, address: string, at: number) => void): this;
   on(event: 'raw', l: (p: Raw, address: string, at: number) => void): this;
   on(event: 'status', l: (p: Status, address: string, at: number) => void): this;
+  on(event: 'ota', l: (p: OtaStatus, address: string, at: number) => void): this;
   on(event: 'rejected', l: (address: string, reason: string) => void): this;
   on(event: 'listening', l: (addr: { address: string; port: number }) => void): this;
   on(event: 'error', l: (err: Error) => void): this;
@@ -172,6 +175,9 @@ export class Ingest extends EventEmitter {
         link.reportTimes.push(now);
         this.emit('report', packet, address, now);
         break;
+      case 'ota':
+        this.emit('ota', packet, address, now);
+        break;
       case 'raw':
         link.raws += 1;
         this.emit('raw', packet, address, now);
@@ -234,6 +240,31 @@ export class Ingest extends EventEmitter {
     this.lastCommandSeq = seq;
     const cmd: Command = { seq, opcode, arg0, value };
     const buf = buildCommand(uid, cmd, this.opts.commandKey);
+    if (link.address.startsWith('gw:')) {
+      return this.opts.routeViaGateway?.(link.address, buf)
+        ? Promise.resolve()
+        : Promise.reject(new Error(`gateway for ${uid} is not connected`));
+    }
+    return new Promise((resolve, reject) =>
+      this.socket.send(buf, DOWNLINK_PORT, link.address, (err) => (err ? reject(err) : resolve())),
+    );
+  }
+
+  /**
+   * Tell a node to fetch and flash an image. It travels the same signed,
+   * replay-protected path as a command, and the node downloads from whatever
+   * address the packet arrives from -- its own gateway.
+   */
+  sendOta(uid: string, image: { port: number; size: number; sha256: string; path: string }): Promise<void> {
+    const link = this.links.get(uid);
+    if (!link) return Promise.reject(new Error(`node ${uid} has not been heard from; no address to send to`));
+    if (!this.opts.commandKey) return Promise.reject(new Error('no TM_KEY: an update cannot be signed'));
+    if (/^(127\.|::1$|::ffff:127\.)/.test(link.address)) {
+      return Promise.reject(new Error(`node ${uid} is reached through a local proxy (${link.address}); it cannot be updated`));
+    }
+    const seq = Math.max(Math.floor(this.now() / 1000), this.lastCommandSeq + 1);
+    this.lastCommandSeq = seq;
+    const buf = buildOta(uid, { seq, ...image }, this.opts.commandKey);
     if (link.address.startsWith('gw:')) {
       return this.opts.routeViaGateway?.(link.address, buf)
         ? Promise.resolve()
