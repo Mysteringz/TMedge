@@ -459,8 +459,18 @@ async function connect(): Promise<void> {
       const msg = JSON.parse(String(e.data)) as { type: string } & Record<string, unknown>;
       if (msg.type === 'state') {
         last = msg as unknown as StateMsg;
-        // Every online node's RAW, plus the RGB rigs (their RGB is sent to subscribers only).
-        ws.send(JSON.stringify({ type: 'subscribe', uids: last.nodes.filter((n) => n.online).map((n) => n.uid) }));
+        // Every online node's RAW, plus the RGB rigs (their RGB is sent to
+        // subscribers only). The node being inspected and the real hardware go
+        // first: if the edge ever truncates the list, it must not be the node
+        // someone is actually looking at that goes blank.
+        const sim = new Set(layout?.nodes.filter((n) => n.simulated).map((n) => n.uid));
+        const online = last.nodes.filter((n) => n.online).map((n) => n.uid);
+        const uids = [...new Set([
+          ...(selected ? [selected] : []),
+          ...online.filter((u) => !sim.has(u)),
+          ...online,
+        ])];
+        ws.send(JSON.stringify({ type: 'subscribe', uids }));
         if (!selected) {
           // Default to a real node if one is online: that is usually what someone opening the console is checking.
           const real = new Set(layout?.nodes.filter((n) => !n.simulated).map((n) => n.uid));

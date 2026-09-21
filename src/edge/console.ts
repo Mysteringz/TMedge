@@ -28,6 +28,9 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+/** How many nodes one console may watch raw frames from at once. */
+const MAX_SUBSCRIPTIONS = 64;
+
 export function startConsole(rt: EdgeRuntime): Server {
   const { adminPassword, consolePort, consoleHost } = rt.cfg;
   const wsSecret = randomBytes(32);
@@ -231,7 +234,12 @@ export function startConsole(rt: EdgeRuntime): Server {
         try {
           const msg = JSON.parse(String(data)) as { type?: string; uids?: unknown };
           if (msg.type === 'subscribe' && Array.isArray(msg.uids)) {
-            subs.set(ws, new Set(msg.uids.filter((u): u is string => typeof u === 'string').slice(0, 16)));
+            // The cap is there so one console cannot ask the edge to fan out
+            // every node's raw frames forever; it has to be above the number
+            // of nodes a site actually has, or the console quietly stops
+            // showing the ones past the limit. 21 nodes (two sites' worth of
+            // simulation plus the real ones) already passed the old 16.
+            subs.set(ws, new Set(msg.uids.filter((u): u is string => typeof u === 'string').slice(0, MAX_SUBSCRIPTIONS)));
           }
         } catch {
           /* ignore malformed client messages */
