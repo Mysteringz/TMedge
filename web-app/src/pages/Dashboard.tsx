@@ -89,7 +89,7 @@ export default function Dashboard() {
                 : <div className="detail-empty text-muted">No photograph for this venue yet.</div>}
               <figcaption className="text-muted">
                 <span>{shown?.venue.caption ?? ''}</span>
-                <span>{!shown ? '' : allDark ? 'Live data unavailable' : `${free} seats free now`}</span>
+                <span>{!shown ? '' : allDark ? 'Live data unavailable' : `${plural(free, 'seat')} free now`}</span>
               </figcaption>
             </figure>
           </div>

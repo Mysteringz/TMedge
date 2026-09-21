@@ -1,5 +1,9 @@
 # TMedge on the Proxmox cluster (HomeDataCenter)
 
+> **Superseded on 2026-09-21.** The live system is AWS EC2; see `aws-ec2.md`.
+> This VM keeps its install and data, with its services stopped and disabled,
+> as the rollback described there.
+
 Deployed 2026-09-19.
 
 | | |

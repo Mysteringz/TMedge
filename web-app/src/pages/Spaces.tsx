@@ -99,7 +99,7 @@ function SpaceBlock({ floor, seats, selected, onOpen }: {
         </span>
         <span className="count">
           <span className="n">{dark ? '—' : fit ? `${plural(seats, 'seat')} together` : 'No seats together'}</span>
-          <span className="k">{dark ? 'no live data' : `${free} free seats`}</span>
+          <span className="k">{dark ? 'no live data' : `${plural(free, 'free seat')}`}</span>
         </span>
       </span>
     </button>
