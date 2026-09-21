@@ -99,8 +99,22 @@ export class Sessions {
     return `${body}.${this.mac(body)}`;
   }
 
+  /** How long a fresh cookie lasts, so callers can decide when to renew one. */
+  get ttl(): number {
+    return this.ttlMs;
+  }
+
   /** The session's email, or null if missing, forged or expired. */
   read(token: string | undefined, now = Date.now()): string | null {
+    return this.detail(token, now)?.email ?? null;
+  }
+
+  /**
+   * The same check, but keeping the expiry: the web tier renews a cookie that
+   * is past halfway so a daily user is never signed out mid-term, while an
+   * abandoned one still dies on its own.
+   */
+  detail(token: string | undefined, now = Date.now()): { email: string; expiresAt: number } | null {
     if (!token) return null;
     const [body, mac] = token.split('.');
     if (!body || !mac) return null;
@@ -109,7 +123,8 @@ export class Sessions {
     if (want.length !== got.length || !timingSafeEqual(want, got)) return null;
     try {
       const { e, x } = JSON.parse(Buffer.from(body, 'base64url').toString()) as { e: string; x: number };
-      return typeof e === 'string' && typeof x === 'number' && x > now ? e : null;
+      if (typeof e !== 'string' || typeof x !== 'number' || x <= now) return null;
+      return { email: e, expiresAt: x };
     } catch {
       return null;
     }

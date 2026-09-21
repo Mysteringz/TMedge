@@ -63,16 +63,16 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
   };
 }
 
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-
 /**
- * A stamp for the front end, from the size and mtime of the files a browser
- * has to re-fetch after a deploy. The pages ask for `/styles.css?v=<stamp>`,
- * so a new build is a new URL: no student is left on last week's stylesheet
- * by their browser or by the CDN in front of us.
+ * A stamp for the hand-written files that keep their names across deploys.
+ * The app bundle needs no help -- Vite gives every build's chunks a content
+ * hash -- but `/vendor/floor-viewer.js` and the three.js beside it would
+ * otherwise sit in a browser, or in the CDN in front of us, for as long as it
+ * pleased them. The shell carries the stamp in a meta tag and the app asks for
+ * `/vendor/v<stamp>/...`, which is a new URL on every build.
  */
 function assetVersion(): string {
-  const files = ['styles.css', 'ds-modernist.css', 'js/dashboard-client/app.js', 'vendor/floor-viewer.js'];
+  const files = ['vendor/floor-viewer.js'];
   const h = createHash('sha256');
   for (const f of files) {
     try {
@@ -83,6 +83,17 @@ function assetVersion(): string {
     }
   }
   return h.digest('hex').slice(0, 10);
+}
+
+/**
+ * Where to send a student after signing in. Only a path on this site: an
+ * absolute URL, or the "//host" form a browser also reads as one, would turn
+ * our sign-in page into somebody else's redirector.
+ */
+export function safeNext(raw: unknown): string {
+  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//')) return '/dashboard/';
+  if (raw.startsWith('/login') || raw.startsWith('/signup')) return '/dashboard/';
+  return raw;
 }
 
 /**
@@ -103,8 +114,8 @@ export function createWebApp(cfg: WebConfig) {
   const store = new SnapshotStore(cfg.staleMs);
   const loginLimiter = new RateLimiter(10, 5 * 60_000);
   const version = assetVersion();
-  const loginPage = readFileSync(join(PUBLIC, 'login.html'), 'utf8');
-  const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8');
+  // One shell for every screen; the React app decides which one to draw.
+  const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8').replaceAll('{{v}}', version);
 
   const app = express();
   app.disable('x-powered-by');
@@ -126,57 +137,81 @@ export function createWebApp(cfg: WebConfig) {
   const setSession = (req: Request, res: Response, email: string) => {
     // Secure whenever the student reached us over HTTPS (the public site), so
     // the cookie never travels in clear; plain http still works on the LAN.
-    res.cookie(COOKIE, sessions.issue(email), { httpOnly: true, sameSite: 'lax', secure: cfg.cookieSecure || req.secure, maxAge: 14 * 24 * 3600 * 1000, path: '/' });
+    res.cookie(COOKIE, sessions.issue(email), { httpOnly: true, sameSite: 'lax', secure: cfg.cookieSecure || req.secure, maxAge: sessions.ttl, path: '/' });
   };
-  const renderLogin = (res: Response, opts: { error?: string; email?: string; mode?: 'signin' | 'signup' } = {}, status = 200) => {
-    res.status(status).type('html').send(loginPage
-      .replaceAll('{{error}}', opts.error ? `<p class="form-error" role="alert">${escapeHtml(opts.error)}</p>` : '')
-      .replaceAll('{{email}}', escapeHtml(opts.email ?? ''))
-      .replaceAll('{{mode}}', opts.mode ?? 'signin')
-      .replaceAll('{{domains}}', escapeHtml(cfg.allowedDomains.map((d) => '@' + d).join(' or ')))
-      .replaceAll('{{signup}}', cfg.signupOpen ? '' : 'hidden')
-      .replaceAll('{{v}}', version));
+  /**
+   * Which page a browser gets depends on a cookie, so no page and no redirect
+   * on this site may be stored anywhere: a cached "/ -> /login/" would send a
+   * signed-in student to sign in again, and a cached "/ -> /dashboard/" would
+   * bounce a stranger between the two until they gave up. The assets have
+   * their own stamped URLs and are cached hard; the decisions never are.
+   */
+  const noStore = (res: Response) => res.set('Cache-Control', 'no-store').set('Vary', 'Cookie');
+  const sendApp = (res: Response, status = 200) => {
+    noStore(res);
+    res.status(status).type('html').send(appPage);
   };
-  // Cross-site form posts: the session cookie is SameSite=Lax, and the auth
-  // forms additionally require a same-origin Origin header when one is sent.
+  // Cross-site posts: the session cookie is SameSite=Lax, and the auth
+  // endpoints additionally require a same-origin Origin header when one is sent.
   const sameOrigin = (req: Request, res: Response, next: NextFunction) => {
     const origin = req.get('origin');
-    if (origin && new URL(origin).host !== req.get('host')) return res.status(403).send('cross-origin form post refused');
+    if (origin && new URL(origin).host !== req.get('host')) return res.status(403).json({ error: 'cross-origin post refused' });
     return next();
   };
 
   app.get('/healthz', (_req, res) => res.json({ ok: true, edges: store.edges() }));
 
-  app.get('/login', (req, res) => (userOf(req) ? res.redirect('/') : renderLogin(res)));
-  app.get('/signup', (req, res) => (userOf(req) ? res.redirect('/') : renderLogin(res, { mode: 'signup' })));
-
-  const form = express.urlencoded({ extended: false, limit: '4kb' });
-  app.post('/login', form, sameOrigin, async (req, res) => {
-    const { email: raw = '', password = '' } = req.body as Record<string, string>;
-    const email = asEmail(raw, cfg.allowedDomains);
-    if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email: raw }, 429);
-    const user = await users.verify(email, password);
-    if (!user) return renderLogin(res, { error: 'That UID and PIN do not match.', email: raw }, 401);
-    setSession(req, res, user.email);
-    return res.redirect('/');
+  // hkumyseat.com is a gateway, not a screen: it decides where you belong and
+  // sends you there, which leaves the bare domain free for a public homepage.
+  app.get('/', (req, res) => {
+    noStore(res);
+    res.redirect(userOf(req) ? '/dashboard/' : '/login/');
   });
-  app.post('/signup', form, sameOrigin, async (req, res) => {
-    if (!cfg.signupOpen) return res.status(403).send('sign-up is closed');
-    const { email: raw = '', name = '', password = '' } = req.body as Record<string, string>;
+
+  // Sign-in and sign-up are the app too; a student who already has a session
+  // is sent on rather than shown a form they do not need.
+  app.get(['/login', '/login/', '/signup', '/signup/'], (req, res) => {
+    if (userOf(req)) {
+      noStore(res);
+      return res.redirect(safeNext(req.query.next));
+    }
+    if (req.path.startsWith('/signup') && !cfg.signupOpen) {
+      noStore(res);
+      return res.redirect('/login/');
+    }
+    return sendApp(res);
+  });
+
+  const body = [express.json({ limit: '8kb' }), express.urlencoded({ extended: false, limit: '8kb' })];
+  app.post('/login', body, sameOrigin, async (req: Request, res: Response) => {
+    noStore(res);
+    const { email: raw = '', password = '', next } = req.body as Record<string, string>;
     const email = asEmail(raw, cfg.allowedDomains);
-    if (!loginLimiter.allow(req.ip ?? 'unknown')) return renderLogin(res, { error: 'Too many attempts. Wait a few minutes and try again.', email: raw, mode: 'signup' }, 429);
+    if (!loginLimiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
+    const user = await users.verify(email, password);
+    if (!user) return res.status(401).json({ error: 'That UID and PIN do not match.' });
+    setSession(req, res, user.email);
+    return res.json({ redirect: safeNext(next) });
+  });
+  app.post('/signup', body, sameOrigin, async (req: Request, res: Response) => {
+    noStore(res);
+    if (!cfg.signupOpen) return res.status(403).json({ error: 'Sign-up is closed.' });
+    const { email: raw = '', name = '', password = '', next } = req.body as Record<string, string>;
+    const email = asEmail(raw, cfg.allowedDomains);
+    if (!loginLimiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
     try {
       const user = await users.create(email, name, password);
       setSession(req, res, user.email);
-      return res.redirect('/');
+      return res.json({ redirect: safeNext(next) });
     } catch (err) {
-      if (err instanceof AuthError) return renderLogin(res, { error: err.message, email: raw, mode: 'signup' }, 400);
+      if (err instanceof AuthError) return res.status(400).json({ error: err.message });
       throw err;
     }
   });
-  app.post('/logout', sameOrigin, (_req, res) => {
+  app.post('/logout', body, sameOrigin, (_req: Request, res: Response) => {
     res.clearCookie(COOKIE, { path: '/' });
-    res.redirect('/login');
+    noStore(res);
+    res.json({ redirect: '/login/' });
   });
 
   // The edge's push. Bearer token, compared in constant time.
@@ -192,17 +227,28 @@ export function createWebApp(cfg: WebConfig) {
 
   // Everything below needs a signed-in student.
   const requireUser = (req: Request, res: Response, next: NextFunction) => {
-    const email = userOf(req);
-    if (email && users.get(email)) return next();
+    const detail = sessions.detail(parseCookies(req.headers.cookie)[COOKIE]);
+    if (detail && users.get(detail.email)) {
+      // Renew a cookie past halfway, so a student who uses the site every week
+      // is never signed out on the walk to the library -- and one who stops
+      // still expires on schedule rather than staying signed in for ever.
+      if (detail.expiresAt - Date.now() < sessions.ttl / 2) setSession(req, res, detail.email);
+      return next();
+    }
     if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'sign in first' });
-    return res.redirect('/login');
+    noStore(res);
+    // Come back to the page they asked for, not to a generic landing.
+    return res.redirect(`/login/?next=${encodeURIComponent(req.originalUrl)}`);
   };
 
-  // One page, three screens: the client routes /search, /spaces and
-  // /spaces/:floorId itself, so every one of them must serve the app shell
-  // (a student may open or reload any of them, or share the link).
-  app.get(['/', '/search', '/spaces', '/spaces/:floorId'], requireUser, (_req, res) =>
-    res.type('html').set('Cache-Control', 'no-store').send(appPage.replaceAll('{{v}}', version)));
+  // The old shapes, from before the dashboard moved under its own prefix.
+  app.get('/search', (req, res) => res.redirect(301, `/dashboard/${req.url.slice('/search'.length)}`));
+  app.get('/spaces', (_req, res) => res.redirect(301, '/dashboard/spaces/'));
+  app.get('/spaces/:floorId', (req, res) => res.redirect(301, `/dashboard/spaces/${encodeURIComponent(req.params.floorId)}`));
+
+  // Every screen under /dashboard/ is routed in the browser, so each of them
+  // must serve the shell: a student may open, reload or share any of them.
+  app.get(['/dashboard', '/dashboard/', '/dashboard/*'], requireUser, (_req, res) => sendApp(res));
   app.get('/api/me', requireUser, (req, res) => {
     const u = users.get(userOf(req) ?? '');
     res.json({ email: u?.email, name: u?.name });
@@ -215,25 +261,26 @@ export function createWebApp(cfg: WebConfig) {
     return res.json({ seats: n, results: searchSeats(store.view().floors, n, floor).slice(0, 20) });
   });
 
-  // The client is a tree of ES modules that import each other by relative
+  // The 3D viewer is a tree of ES modules that import each other by relative
   // path, so a query string on the entry point would leave every module it
   // imports on the old copy -- which is exactly how half a deploy reaches a
-  // student. The stamp goes in the path instead: /js/v<stamp>/... covers the
-  // whole tree, and each build is a new URL that no cache can confuse.
-  app.use('/js/:stamp', express.static(join(PUBLIC, 'js'), {
+  // student. The stamp goes in the path instead: /vendor/v<stamp>/... covers
+  // the whole tree, and each build is a URL no cache has seen before.
+  app.use('/vendor/:stamp', express.static(join(PUBLIC, 'vendor'), {
     index: false,
     setHeaders: (res) => res.set('Cache-Control', 'public, max-age=31536000, immutable'),
   }));
 
-  // Static assets (css, js, icons) are public; the data is not.
+  // Static assets (bundle, photographs, models, icons) are public; the data is not.
   app.use(express.static(PUBLIC, {
     index: false,
     setHeaders: (res, path) => {
-      // Photographs, floor models and three.js never change without their name
-      // changing; the app's own code must be revalidated, or a student can end
-      // up running one half of a deploy against the other.
-      const immutable = /\/(assets|vendor\/three)\//.test(path);
-      res.set('Cache-Control', immutable ? 'public, max-age=86400' : 'no-cache');
+      // The bundle's file names carry a content hash and the photographs and
+      // floor models never change without their name changing. Anything else
+      // must be revalidated, or a student can end up running one half of a
+      // deploy against the other.
+      const immutable = /\/(app|assets)\//.test(path);
+      res.set('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : 'no-cache');
     },
   }));
 

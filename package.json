@@ -6,10 +6,11 @@
   "type": "module",
   "engines": { "node": ">=20" },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && tsc -p tsconfig.dashboard.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && tsc -p tsconfig.dashboard.json --noEmit",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && npm run build:app",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck",
     "test": "tsc -p tsconfig.json && node --test dist/test/",
     "crosscheck": "tsc -p tsconfig.json && node dist/src/tools/crosscheck.js",
+    "build:app": "npm --prefix web-app run build",
     "edge": "node --env-file-if-exists=.env dist/src/edge/main.js",
     "web": "node --env-file-if-exists=.env dist/src/web/main.js",
     "simulate": "node --env-file-if-exists=.env dist/src/tools/simulator.js",

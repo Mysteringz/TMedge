@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { allocate, floorIsDark, gridPosition, knownFree, label, largestTableFree, walkOrder } from '../src/shared/allocate.js';
 import { spaceInfo, VENUES } from '../src/shared/venues.js';
+import { Sessions } from '../src/web/auth.js';
 import { asEmail, createWebApp } from '../src/web/main.js';
 import type { FloorState, TableState } from '../src/shared/types.js';
 
@@ -119,7 +120,7 @@ test('sign-in takes an HKU Portal UID or a full address', () => {
   assert.equal(asEmail('u312345678', domains), 'u312345678@connect.hku.hk', 'longer year groups too');
 });
 
-test('every portal screen serves the app, and none of them without signing in', async () => {
+test('the bare domain is a gateway, and every screen behind it needs a session', async () => {
   const web = createWebApp({
     port: 0, host: '127.0.0.1', pushToken: 'edge-token-for-tests-0123456789', sessionSecret: Buffer.from('s'.repeat(40)),
     usersPath: join(mkdtempSync(join(tmpdir(), 'tmportal-')), 'users.json'),
@@ -128,28 +129,89 @@ test('every portal screen serves the app, and none of them without signing in', 
   await new Promise<void>((r) => web.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
   try {
-    for (const path of ['/', '/search', '/spaces', '/spaces/iw-maker-a']) {
+    // A stranger at the door is sent to sign in, and told where they were going.
+    const cold = await fetch(`${base}/`, { redirect: 'manual' });
+    assert.equal(cold.headers.get('location'), '/login/');
+    assert.equal(cold.headers.get('cache-control'), 'no-store', 'a cached redirect sends the wrong people to the wrong screen');
+    for (const path of ['/dashboard/', '/dashboard/spaces/iw-maker-a?seats=4']) {
       const out = await fetch(base + path, { redirect: 'manual' });
       assert.equal(out.status, 302, `${path} sends a stranger to sign in`);
-      assert.equal(out.headers.get('location'), '/login');
+      assert.equal(out.headers.get('location'), `/login/?next=${encodeURIComponent(path)}`, 'and back to the page they asked for');
     }
+    // Sign-in and sign-up are screens of the same app, served without a session.
+    for (const path of ['/login/', '/signup/']) {
+      const out = await fetch(base + path);
+      assert.equal(out.status, 200);
+      assert.match(await out.text(), /HKUMySeat/);
+    }
+
     await web.users.create('u3587219@connect.hku.hk', 'Chan Tai Man', 'a-long-enough-pin');
     const cookie = `tm_session=${web.sessions.issue('u3587219@connect.hku.hk')}`;
-    for (const path of ['/', '/search', '/spaces', '/spaces/iw-maker-a']) {
+    const warm = await fetch(`${base}/`, { headers: { cookie }, redirect: 'manual' });
+    assert.equal(warm.headers.get('location'), '/dashboard/', 'a signed-in student goes straight to the dashboard');
+    // Signed in, the sign-in screen is not a screen they need.
+    const back = await fetch(`${base}/login/?next=%2Fdashboard%2Fspaces%2F`, { headers: { cookie }, redirect: 'manual' });
+    assert.equal(back.headers.get('location'), '/dashboard/spaces/');
+
+    for (const path of ['/dashboard/', '/dashboard/spaces/', '/dashboard/spaces/iw-maker-a']) {
       const out = await fetch(base + path, { headers: { cookie } });
       assert.equal(out.status, 200, `${path} serves the portal to a student`);
       const html = await out.text();
       assert.match(html, /HKUMySeat/);
-      // A stale stylesheet is how a deploy half-lands on a student: the page
-      // is never cached, and it asks for this build's assets by name.
+      // A stale bundle is how a deploy half-lands on a student: the shell is
+      // never cached, and it names this build's assets and viewer.
       assert.equal(out.headers.get('cache-control'), 'no-store', `${path} is never cached`);
-      assert.match(html, /\/styles\.css\?v=[0-9a-f]{10}/, `${path} asks for this build's stylesheet`);
-      // The stamp is a path segment, so the modules app.js imports are busted
-      // with it rather than left on an older copy.
-      assert.match(html, /\/js\/v[0-9a-f]{10}\/dashboard-client\/app\.js/);
+      assert.match(html, /\/app\/index-[A-Za-z0-9_-]+\.js/, `${path} asks for this build's bundle`);
+      assert.match(html, /<meta name="build" content="[0-9a-f]{10}">/, 'the stamp the viewer is fetched under');
       assert.ok(!html.includes('{{v}}'), 'the stamp is filled in');
+    }
+
+    // The first version's URLs still lead somewhere sensible.
+    for (const [from, to] of [['/search?seats=4', '/dashboard/?seats=4'], ['/spaces', '/dashboard/spaces/'], ['/spaces/iw-maker-a', '/dashboard/spaces/iw-maker-a']] as const) {
+      const out = await fetch(base + from, { headers: { cookie }, redirect: 'manual' });
+      assert.equal(out.headers.get('location'), to, `${from} still works`);
     }
   } finally {
     await new Promise<void>((r) => web.server.close(() => r()));
   }
+});
+
+test('sign-in answers the app in JSON, and will not forward you off-site', async () => {
+  const web = createWebApp({
+    port: 0, host: '127.0.0.1', pushToken: 'edge-token-for-tests-0123456789', sessionSecret: Buffer.from('s'.repeat(40)),
+    usersPath: join(mkdtempSync(join(tmpdir(), 'tmportal-')), 'users.json'),
+    allowedDomains: ['connect.hku.hk'], signupOpen: true, cookieSecure: false, trustProxy: false, staleMs: 30_000,
+  });
+  await new Promise<void>((r) => web.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  const post = (path: string, payload: unknown) => fetch(base + path, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), redirect: 'manual',
+  });
+  try {
+    const made = await post('/signup', { email: 'u3587219', name: 'Chan Tai Man', password: 'a-long-enough-pin', next: '/dashboard/spaces/' });
+    assert.equal(made.status, 200);
+    assert.deepEqual(await made.json(), { redirect: '/dashboard/spaces/' });
+    assert.match(made.headers.get('set-cookie') ?? '', /tm_session=/);
+
+    const wrong = await post('/login', { email: 'u3587219', password: 'not-the-pin' });
+    assert.equal(wrong.status, 401);
+    assert.equal((await wrong.json() as { error: string }).error, 'That UID and PIN do not match.');
+
+    // An open redirect on a sign-in page is a phishing kit; only paths here.
+    for (const next of ['https://evil.example/', '//evil.example/', '/login/']) {
+      const out = await post('/login', { email: 'u3587219', password: 'a-long-enough-pin', next });
+      assert.deepEqual(await out.json(), { redirect: '/dashboard/' }, `${next} is not somewhere we send people`);
+    }
+  } finally {
+    await new Promise<void>((r) => web.server.close(() => r()));
+  }
+});
+
+test('a session in daily use is renewed, an abandoned one still expires', async () => {
+  const sessions = new Sessions(Buffer.from('s'.repeat(40)));
+  const fresh = sessions.issue('u3587219@connect.hku.hk');
+  const detail = sessions.detail(fresh);
+  assert.equal(detail?.email, 'u3587219@connect.hku.hk');
+  assert.ok((detail?.expiresAt ?? 0) - Date.now() > sessions.ttl / 2, 'a new cookie is not up for renewal');
+  assert.equal(sessions.detail(fresh, Date.now() + sessions.ttl + 1), null, 'and it does not last for ever');
 });

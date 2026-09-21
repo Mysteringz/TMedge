@@ -16,7 +16,7 @@ src/edge/recorder.ts     daily JSONL logs = Phase 3 calibration data
 src/shared/geometry.ts   110° f-theta pixel <-> floor, height-aware
 src/shared/seats.ts      seat layout + "N seats together" (server and client share it)
 src/web/                 student web tier (auth, snapshot store, API, WS)
-src/dashboard-client/    student UI (tsc only, no framework)
+web-app/                 student UI: React + Vite, builds into public-web/app/
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
 ```
@@ -56,7 +56,10 @@ npm run edge | web | simulate
 
 ## Conventions
 
-TypeScript `strict` + `noUncheckedIndexedAccess`; runtime deps are only
-`express` and `ws`. Comments explain *why*. Plan units are cm, origin top-left.
+TypeScript `strict` + `noUncheckedIndexedAccess`; the server's runtime deps
+are only `express` and `ws` (the student UI's React lives in `web-app/` and
+ships as static files). `hkumyseat.com` is a gateway: `/` redirects to
+`/login/` or `/dashboard/`, every screen behind it is under `/dashboard/`, and
+no page or redirect that depends on the session cookie may be cached. Comments explain *why*. Plan units are cm, origin top-left.
 Tests read as claims about behaviour. Add one that fails without your change.
 On the dev Mac, NordVPN may block LAN traffic; bind to `en0` if packets stop.

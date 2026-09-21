@@ -5,7 +5,9 @@
 data/
 node_modules/
 dist/
-public-web/js/
+public-web/app/
+web-app/node_modules/
+web-app/dist/
 public-console/js/
 .git/
 *.log

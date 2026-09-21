@@ -49,7 +49,7 @@ test('web: occupancy is only served to signed-in students', async () => {
   const w = await start();
   try {
     assert.equal((await fetch(`${w.base}/api/occupancy`)).status, 401);
-    assert.equal((await fetch(`${w.base}/`, { redirect: 'manual' })).headers.get('location'), '/login');
+    assert.equal((await fetch(`${w.base}/`, { redirect: 'manual' })).headers.get('location'), '/login/');
     const cookie = await signup(w.base, 'a@connect.hku.hk');
     assert.ok(cookie.startsWith('tm_session='));
     assert.equal((await fetch(`${w.base}/api/occupancy`, { headers: { cookie } })).status, 200);

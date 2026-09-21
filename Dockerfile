@@ -16,6 +16,11 @@ FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
+# The student UI is a separate React/Vite project; its dependencies never
+# reach the runtime image, only the static files it builds.
+COPY web-app/package.json web-app/package-lock.json ./web-app/
+RUN npm --prefix web-app ci --no-audit --no-fund
+COPY web-app ./web-app
 COPY tsconfig*.json ./
 COPY src ./src
 COPY test ./test
