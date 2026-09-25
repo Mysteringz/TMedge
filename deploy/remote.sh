@@ -36,6 +36,9 @@ OWNER="${TM_OWNER:-root:root}"
 ENV_OWNER="${TM_ENV_OWNER:-tmedge:tmedge}"
 WEB_HEALTH="${TM_WEB_HEALTH:-http://127.0.0.1:8080/healthz}"
 CONSOLE_HEALTH="${TM_CONSOLE_HEALTH:-http://127.0.0.1:8090/}"
+# The algo debugger, which runs inside the edge process. Empty skips the check,
+# for a box that runs with ALGO_PORT=0.
+ALGO_HEALTH="${TM_ALGO_HEALTH:-http://127.0.0.1:8091/api/catalogue}"
 # How long a service must stay up without systemd restarting it. Restart=always
 # makes a crash-looping unit look "active" between attempts, so a plain
 # is-active right after restart would pass a release that dies in 2 s.
@@ -78,10 +81,10 @@ restarts_of() { "$SYSTEMCTL" show -p NRestarts --value "$1" 2>/dev/null || echo 
 http_status() { curl -s -o /dev/null -m 4 -w '%{http_code}' "$1" 2>/dev/null || true; }
 
 # Healthy = every unit active and not restarted by systemd during SETTLE,
-# the student site's /healthz answers 200, and the console answers at all
-# (401 is correct: it wants the admin password).
+# the student site's /healthz answers 200, and the console and the algo
+# debugger answer at all (401 is correct: they want the admin password).
 healthy() {
-  local s before=() i=0 web console
+  local s before=() i=0 web console algo
   for s in $SERVICES; do before+=("$(restarts_of "$s")"); done
   sleep "$SETTLE"
   for s in $SERVICES; do
@@ -92,13 +95,18 @@ healthy() {
   for i in $(seq 15); do
     web="$(http_status "$WEB_HEALTH")"
     console="$(http_status "$CONSOLE_HEALTH")"
-    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ]; }; then
-      say "healthy: web $web, console $console"
+    algo=ok
+    [ -z "$ALGO_HEALTH" ] || case "$(http_status "$ALGO_HEALTH")" in
+      200|401) algo=ok ;;
+      *) algo="$(http_status "$ALGO_HEALTH")" ;;
+    esac
+    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ]; } && [ "$algo" = ok ]; then
+      say "healthy: web $web, console $console, algo $algo"
       return 0
     fi
     sleep 2
   done
-  say "unhealthy: web ${web:-none}, console ${console:-none}"
+  say "unhealthy: web ${web:-none}, console ${console:-none}, algo ${algo:-none}"
   return 1
 }
 

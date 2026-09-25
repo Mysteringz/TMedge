@@ -103,7 +103,11 @@ cmd_deploy() {
   mkdir -p "$stage/public-web" "$stage/public-console"
   cp -R public-web/app "$stage/public-web/"
   cp -R public-console/js "$stage/public-console/"
-  rm -rf "$stage/.env" "$stage/data" "$stage/node_modules" "$stage/web-app/node_modules"
+  # The algo debugger's editor is built whole into public-algo, which is
+  # git-ignored like the others; without this the API ships and its UI does not.
+  [ -d public-algo ] && cp -R public-algo "$stage/"
+  rm -rf "$stage/.env" "$stage/data" "$stage/node_modules" \
+         "$stage/web-app/node_modules" "$stage/algo-app/node_modules"
   printf '{"id":"%s","commit":"%s","deployedAt":"%s"}\n' \
     "$id" "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/RELEASE.json"
 
