@@ -33,8 +33,10 @@ group needs no port but 22 — and should not be given one.
 
 ## Layout
 
-- `/opt/tmedge` — the checkout, root-owned and read-only to the service.
+- `/opt/tmedge` — the code, root-owned and read-only to the service.
   `.env` is `tmedge:600` and git-ignored; it is the only secret on the box.
+  After `deploy.sh migrate`, `/opt/tmedge` is a symlink to
+  `/opt/tmedge-releases/<id>/` and `.env` lives in `/opt/tmedge-shared/`.
 - `/var/lib/tmedge` — the 22 GB volume: `users.json`, `detections/`,
   `occupancy/`, `firmware/`, and PlatformIO's toolchains in `platformio/`.
   `DATA_DIR` and `PLATFORMIO_CORE_DIR` in `.env` point here, because a
@@ -43,7 +45,12 @@ group needs no port but 22 — and should not be given one.
 
 ## Updating
 
-From the dev Mac, `npm run build && npm test` in this repo, then:
+**Use `deploy/deploy.sh`** — see `pipeline.md`. It runs every check, uploads
+a new release beside the live one, switches with one rename, health-checks,
+and rolls itself back if the new release is unhealthy.
+
+The box needs converting to that layout once (`deploy/deploy.sh migrate`,
+steps in `pipeline.md`). **Until that has been done**, update the old way:
 
 ```sh
 rsync -a --delete --rsync-path="sudo rsync" \
@@ -56,12 +63,12 @@ ssh -i TMcloudkey.pem ec2-user@ec2-13-251-45-51.ap-southeast-1.compute.amazonaws
    && sudo systemctl restart tmedge-edge tmedge-web tmedge-sim'
 ```
 
+**Never run that rsync after migrating.** `/opt/tmedge` is then a symlink to
+the live release: rsync would write straight into it, bypassing every check,
+and `--delete` would remove its `.env` link, so the units would not start.
+
 `--rsync-path="sudo rsync"` is needed because `/opt/tmedge` is root-owned:
 the service may read its own code and never write it.
-
-`public-web/app/` is build output and is git-ignored, so rsync (not git) is
-what carries the built site; run `npm run build` first or the shell will ask
-for chunk names that are not there.
 
 ## The connectors, and what each one points at
 

@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && npm run build:app",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck",
-    "test": "tsc -p tsconfig.json && node --test dist/test/",
+    "test": "tsc -p tsconfig.json && node --test dist/test/*.test.js",
     "crosscheck": "tsc -p tsconfig.json && node dist/src/tools/crosscheck.js",
     "build:app": "npm --prefix web-app run build",
     "edge": "node --env-file-if-exists=.env dist/src/edge/main.js",
