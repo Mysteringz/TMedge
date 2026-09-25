@@ -49,26 +49,10 @@ group needs no port but 22 — and should not be given one.
 a new release beside the live one, switches with one rename, health-checks,
 and rolls itself back if the new release is unhealthy.
 
-The box needs converting to that layout once (`deploy/deploy.sh migrate`,
-steps in `pipeline.md`). **Until that has been done**, update the old way:
-
-```sh
-rsync -a --delete --rsync-path="sudo rsync" \
-  --exclude node_modules --exclude data --exclude .env \
-  --exclude .git --exclude web-app/node_modules \
-  -e "ssh -i TMcloudkey.pem" ./ ec2-user@ec2-13-251-45-51.ap-southeast-1.compute.amazonaws.com:/opt/tmedge/
-ssh -i TMcloudkey.pem ec2-user@ec2-13-251-45-51.ap-southeast-1.compute.amazonaws.com \
-  'cd /opt/tmedge && sudo /usr/local/bin/npm ci --omit=dev \
-   && sudo chown tmedge:tmedge /opt/tmedge/.env && sudo chmod 600 /opt/tmedge/.env \
-   && sudo systemctl restart tmedge-edge tmedge-web tmedge-sim'
-```
-
-**Never run that rsync after migrating.** `/opt/tmedge` is then a symlink to
-the live release: rsync would write straight into it, bypassing every check,
-and `--delete` would remove its `.env` link, so the units would not start.
-
-`--rsync-path="sudo rsync"` is needed because `/opt/tmedge` is root-owned:
-the service may read its own code and never write it.
+The box was migrated on 2026-09-24. `/opt/tmedge` is a symlink to a release.
+The old overwrite-in-place rsync command is retired; never use it on this box.
+For CI receiver installation, native approval, manual artifact deployment and
+rollback, follow [pipeline.md](pipeline.md).
 
 ## The connectors, and what each one points at
 

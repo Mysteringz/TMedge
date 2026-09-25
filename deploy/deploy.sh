@@ -3,6 +3,7 @@
 # you run it from the dev Mac or CI runs it after a merge.
 #
 #   deploy/deploy.sh                 check, build, upload, switch, health-check
+#   deploy/deploy.sh artifact <archive>  promote a tested runtime archive
 #   deploy/deploy.sh migrate         one-time: convert the box to releases/
 #   deploy/deploy.sh rollback [id]   back to the previous release (or <id>)
 #   deploy/deploy.sh list            releases on the box, current marked
@@ -14,6 +15,7 @@
 # Environment:
 #   DEPLOY_HOST     ssh target (default: the Singapore EC2 box)
 #   DEPLOY_SSH_KEY  identity file (default: ../TMcloudkey.pem if present)
+#   DEPLOY_RESTRICTED_KEY=1 uses the CI forced-command key for artifacts.
 #   DEPLOY_HOST=local runs remote.sh here against $TM_BASE -- test only.
 #
 # What it guarantees: nothing that failed a check is uploaded; the running
@@ -32,26 +34,21 @@ REMOTE_BASE="${TM_BASE:-/opt}"
 say() { printf '\033[1m[deploy]\033[0m %s\n' "$*"; }
 die() { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 
-SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20)
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=yes)
 [ -n "$KEY" ] && SSH+=(-i "$KEY")
 
 # Runs remote.sh on the box as root. Over ssh nothing from this shell's
 # environment goes along; locally the TM_* test overrides do.
 remote() {
+  case "${1:-}" in
+    rollback|activate) [ "$#" -le 2 ] || die "too many arguments"; if [ -n "${2:-}" ]; then [[ "$2" =~ ^[0-9]{8}T[0-9]{6}Z-[a-zA-Z0-9-]+$ ]] || die "invalid release id"; fi ;;
+    list|preflight|migrate) [ "$#" -eq 1 ] || die "unexpected argument" ;;
+    *) die "unknown remote command" ;;
+  esac
   if [ "$HOST" = local ]; then
     bash "$REPO/deploy/remote.sh" "$@"
   else
     "${SSH[@]}" "$HOST" "sudo bash -s -- $*" < "$REPO/deploy/remote.sh"
-  fi
-}
-
-upload() {
-  local src="$1" id="$2"
-  if [ "$HOST" = local ]; then
-    mkdir -p "$REMOTE_BASE/tmedge-releases/$id"
-    rsync -a "$src/" "$REMOTE_BASE/tmedge-releases/$id/"
-  else
-    rsync -az -e "${SSH[*]}" --rsync-path="sudo rsync" "$src/" "$HOST:$REMOTE_BASE/tmedge-releases/$id/"
   fi
 }
 
@@ -65,13 +62,9 @@ cmd_deploy() {
     esac
   done
 
-  local sha dirty=""
-  sha="$(git rev-parse --short=10 HEAD)"
   if [ -n "$(git status --porcelain)" ]; then
     [ "$allow_dirty" = 1 ] || die "uncommitted changes; commit them, or pass --allow-dirty to deploy them anyway"
-    dirty="-dirty"
   fi
-  local id; id="$(date -u +%Y%m%dT%H%M%SZ)-$sha$dirty"
 
   # Before any build or upload, so a box that is not ready costs nothing.
   say "preflight on $HOST"
@@ -88,40 +81,38 @@ cmd_deploy() {
   fi
   say "build"; npm run build >/dev/null
 
-  # Stage exactly what runs: tracked files as they are on disk, plus the
-  # git-ignored build output. Never node_modules (installed on the box for its
-  # platform), never data/ or .env (they live on the box and stay there).
-  # Global, not local: the EXIT trap runs after this function has returned.
   STAGE="$(mktemp -d)"
   trap 'rm -rf "$STAGE"' EXIT
-  # mktemp -d is 0700 and rsync -a carries that onto the release directory,
-  # which the service user then cannot even enter (systemd: status=200/CHDIR).
-  chmod 755 "$STAGE"
-  local stage="$STAGE"
-  git ls-files -z | tar --null -T - -cf - | tar -C "$stage" -xf -
-  cp -R dist "$stage/"
-  mkdir -p "$stage/public-web" "$stage/public-console"
-  cp -R public-web/app "$stage/public-web/"
-  cp -R public-console/js "$stage/public-console/"
-  # The algo debugger's editor is built whole into public-algo, which is
-  # git-ignored like the others; without this the API ships and its UI does not.
-  [ -d public-algo ] && cp -R public-algo "$stage/"
-  rm -rf "$stage/.env" "$stage/data" "$stage/node_modules" \
-         "$stage/web-app/node_modules" "$stage/algo-app/node_modules"
-  printf '{"id":"%s","commit":"%s","deployedAt":"%s"}\n' \
-    "$id" "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stage/RELEASE.json"
+  python3 deploy/release.py package "$REPO" "$STAGE/tmedge.tar.gz" >/dev/null
+  say "upload artifact"
+  say "activate artifact"
+  cmd_artifact "$STAGE/tmedge.tar.gz"
+  say "done: release is live"
+}
 
-  say "upload $id"
-  upload "$stage" "$id"
-  say "activate $id"
-  remote activate "$id"
-  say "done: $id is live"
+cmd_artifact() {
+  local archive="${1:?archive required}" digest id
+  digest="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$archive")"
+  if [ "$HOST" = local ]; then
+    local incoming; incoming="$(mktemp -d "$REMOTE_BASE/tmedge-releases/.incoming-XXXXXX")"
+    python3 deploy/release.py extract "$archive" "$incoming/stage" >/dev/null
+    id="$(node -p 'require(process.argv[1]).id' "$incoming/stage/RELEASE.json")"
+    [ ! -e "$REMOTE_BASE/tmedge-releases/$id" ] || die "release already exists"
+    mv "$incoming/stage" "$REMOTE_BASE/tmedge-releases/$id"
+    rmdir "$incoming"
+    remote activate "$id"
+  elif [ "${DEPLOY_RESTRICTED_KEY:-0}" = 1 ]; then
+    "${SSH[@]}" "$HOST" "deploy $digest" < "$archive"
+  else
+    "${SSH[@]}" "$HOST" "sudo /opt/tmedge-deploy/ci-receiver.py 'deploy $digest'" < "$archive"
+  fi
 }
 
 cmd="${1:-deploy}"
 case "$cmd" in
   deploy)   shift || true; cmd_deploy "$@" ;;
   --*)      cmd_deploy "$@" ;;
+  artifact) shift; cmd_artifact "$@" ;;
   migrate)  remote migrate ;;
   rollback) shift; remote rollback "$@" ;;
   list)     remote list ;;

@@ -15,7 +15,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
 export DEPLOY_HOST=local TM_BASE="$T/opt" TM_SETTLE=2 TM_KEEP=3
 export TM_SYSTEMCTL="$T/bin/systemctl" TM_OWNER="$(id -u):$(id -g)" TM_ENV_OWNER="$(id -u):$(id -g)"
-export TM_WEB_HEALTH=http://127.0.0.1:18080/healthz TM_CONSOLE_HEALTH=http://127.0.0.1:18090/
+export TM_WEB_HEALTH=http://127.0.0.1:18080/healthz TM_CONSOLE_HEALTH=http://127.0.0.1:18090/ TM_ALGO_HEALTH=http://127.0.0.1:18091/api/catalogue
 TM_NPM="$(command -v npm)"; export TM_NPM
 export FAKE_RUN="$T/run"
 mkdir -p "$T/bin" "$T/run" "$T/var" "$TM_BASE"
@@ -49,7 +49,7 @@ start() {
   echo $! > "$FAKE_RUN/$1.pid"
 }
 case "$1" in
-  restart) shift; for s in "$@"; do stop "$s"; start "$s"; done ;;
+  restart) [ ! -f "$TM_BASE/tmedge/FAIL_RESTART" ] || exit 1; shift; for s in "$@"; do stop "$s"; start "$s"; done ;;
   is-active) s="${!#}"; [ -f "$FAKE_RUN/$s.noop" ] && exit 0
              [ -f "$FAKE_RUN/$s.pid" ] && kill -0 "$(cat "$FAKE_RUN/$s.pid")" 2>/dev/null ;;
   show) echo 0 ;;
@@ -78,6 +78,8 @@ WEB_PORT=18080
 WEB_HOST=127.0.0.1
 CONSOLE_PORT=18090
 CONSOLE_HOST=127.0.0.1
+ALGO_PORT=18091
+ALGO_HOST=127.0.0.1
 UDP_PORT=15200
 UDP_HOST=127.0.0.1
 GATEWAY_PORT=0
@@ -116,7 +118,7 @@ for step in preflight typecheck test crosscheck build upload activate; do
 done
 second="$(live)"
 [ "$second" != "$first" ] || fail "live did not change"
-[ -f "$TM_BASE/tmedge/RELEASE.json" ] && grep -q "\"id\":\"$second\"" "$TM_BASE/tmedge/RELEASE.json" || fail "RELEASE.json missing or wrong"
+[ -f "$TM_BASE/tmedge/RELEASE.json" ] && [ "$(node -p 'require(process.argv[1]).id' "$TM_BASE/tmedge/RELEASE.json")" = "$second" ] || fail "RELEASE.json missing or wrong"
 [ -L "$TM_BASE/tmedge/.env" ] || fail ".env in the release is not the shared symlink"
 [ -z "$(find "$TM_BASE/tmedge-releases/$second" -name .env -type f)" ] || fail "a real .env file was uploaded"
 grep -q "copying node_modules" "$T/deploy1.log" || fail "unchanged lockfile still ran npm ci"
@@ -131,9 +133,19 @@ rel="$TM_BASE/tmedge-releases/$second"
 web_up || fail "site down after deploy"
 ok "all seven steps ran; live = $second; no .env uploaded; deps reused; site up"
 
+echo "claim: a corrupted retained release cannot be activated"
+corrupt="29990101T000003Z-corrupt"
+cp -R "$TM_BASE/tmedge-releases/$second" "$TM_BASE/tmedge-releases/$corrupt"
+printf '\n// corrupted\n' >> "$TM_BASE/tmedge-releases/$corrupt/dist/src/web/main.js"
+bash "$REPO/deploy/remote.sh" rollback "$corrupt" >/dev/null 2>&1 && fail "corrupt rollback accepted"
+[ "$(live)" = "$second" ] && web_up || fail "corrupt rollback disturbed live services"
+rm -rf "$TM_BASE/tmedge-releases/$corrupt"
+ok "manifest rejects changed files before activation"
+
 echo "claim: a release that cannot start is switched back automatically"
 bad="29990101T000000Z-broken"
 cp -R "$TM_BASE/tmedge-releases/$second" "$TM_BASE/tmedge-releases/$bad"
+rm -f "$TM_BASE/tmedge-releases/$bad/MANIFEST.json"
 rm -rf "$TM_BASE/tmedge-releases/$bad/node_modules" "$TM_BASE/tmedge-releases/$bad/.env"
 echo 'process.exit(1);' > "$TM_BASE/tmedge-releases/$bad/dist/src/web/main.js"
 out="$(bash "$REPO/deploy/remote.sh" activate "$bad" 2>&1)" && fail "a broken release activated"
@@ -143,9 +155,25 @@ grep -q "rolled back to $second" <<<"$out" || fail "no rollback message: $out"
 [ ! -d "$TM_BASE/tmedge-releases/$bad" ] || fail "the failed release was kept (a later rollback could land on it)"
 ok "broken release refused and deleted; live back on $second and answering"
 
+echo "claim: a systemctl restart error restores the previous release"
+failed_restart="29990101T000002Z-restart-error"
+cp -R "$TM_BASE/tmedge-releases/$second" "$TM_BASE/tmedge-releases/$failed_restart"
+rm -f "$TM_BASE/tmedge-releases/$failed_restart/MANIFEST.json"
+touch "$TM_BASE/tmedge-releases/$failed_restart/FAIL_RESTART"
+rm -rf "$TM_BASE/tmedge-releases/$failed_restart/node_modules"
+bash "$REPO/deploy/remote.sh" activate "$failed_restart" >/dev/null 2>&1 && fail "restart failure accepted"
+[ "$(live)" = "$second" ] && web_up || fail "restart error did not restore the working release"
+[ ! -d "$TM_BASE/tmedge-releases/$failed_restart" ] || fail "failed restart release retained"
+ok "restart error restores previous release"
+
+out="$("$REPO/deploy/deploy.sh" rollback '../escape' 2>&1)" && fail "unsafe release id accepted"
+grep -q 'invalid release id' <<<"$out" || fail "unexpected unsafe id result"
+ok "unsafe release id rejected before SSH"
+
 echo "claim: a release that starts and then dies is caught too (not just a failed start)"
 late="29990101T000001Z-dies-late"
 cp -R "$TM_BASE/tmedge-releases/$second" "$TM_BASE/tmedge-releases/$late"
+rm -f "$TM_BASE/tmedge-releases/$late/MANIFEST.json"
 rm -rf "$TM_BASE/tmedge-releases/$late/node_modules" "$TM_BASE/tmedge-releases/$late/.env"
 printf 'setTimeout(() => process.exit(1), 1000);\n' > "$TM_BASE/tmedge-releases/$late/dist/src/web/main.js"
 bash "$REPO/deploy/remote.sh" activate "$late" >/dev/null 2>&1 && fail "a release that dies after 1 s activated"

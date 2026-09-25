@@ -30,6 +30,8 @@ LIVE="$BASE/tmedge"
 RELEASES="$BASE/tmedge-releases"
 SHARED="$BASE/tmedge-shared"
 KEEP="${TM_KEEP:-5}"
+RELEASE_TOOL="$(dirname "$0")/release.py"
+[ -f "$RELEASE_TOOL" ] || RELEASE_TOOL=/opt/tmedge-deploy/release.py
 SERVICES="${TM_SERVICES:-tmedge-edge tmedge-web tmedge-sim}"
 SYSTEMCTL="${TM_SYSTEMCTL:-systemctl}"
 OWNER="${TM_OWNER:-root:root}"
@@ -38,7 +40,7 @@ WEB_HEALTH="${TM_WEB_HEALTH:-http://127.0.0.1:8080/healthz}"
 CONSOLE_HEALTH="${TM_CONSOLE_HEALTH:-http://127.0.0.1:8090/}"
 # The algo debugger, which runs inside the edge process. Empty skips the check,
 # for a box that runs with ALGO_PORT=0.
-ALGO_HEALTH="${TM_ALGO_HEALTH:-http://127.0.0.1:8091/api/catalogue}"
+ALGO_HEALTH="${TM_ALGO_HEALTH-http://127.0.0.1:8091/api/catalogue}"
 # How long a service must stay up without systemd restarting it. Restart=always
 # makes a crash-looping unit look "active" between attempts, so a plain
 # is-active right after restart would pass a release that dies in 2 s.
@@ -50,18 +52,20 @@ NPM="${TM_NPM:-/usr/local/bin/npm}"
 say() { printf '[remote] %s\n' "$*"; }
 die() { printf '[remote] ERROR: %s\n' "$*" >&2; exit 1; }
 
+valid_id() { [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[a-zA-Z0-9-]+$ ]] || die "invalid release id"; }
 current_id() { basename "$(readlink "$LIVE")"; }
 
 # Newest first. Only directories whose names look like release ids.
 release_ids() {
   [ -d "$RELEASES" ] || return 0
-  find "$RELEASES" -mindepth 1 -maxdepth 1 -type d -name '20*' -exec basename {} \; | sort -r
+  find "$RELEASES" -mindepth 1 -maxdepth 1 -type d -name '20*' ! -exec test -f '{}/QUARANTINED' \; -exec basename {} \; | sort -r
 }
 
 # Point $LIVE at a release with a single rename, so no request ever finds the
 # path missing or half-switched. BSD mv (the test Mac) has no -T; ln -sfh is
 # its non-atomic stand-in and only ever runs in the test.
 point_live_at() {
+  valid_id "$1"
   local target="$RELEASES/$1"
   ln -sfn "$target" "$LIVE.next"
   if mv -T "$LIVE.next" "$LIVE" 2>/dev/null; then :; else
@@ -79,6 +83,21 @@ restart_services() {
 restarts_of() { "$SYSTEMCTL" show -p NRestarts --value "$1" 2>/dev/null || echo 0; }
 
 http_status() { curl -s -o /dev/null -m 4 -w '%{http_code}' "$1" 2>/dev/null || true; }
+
+snapshot_ready() {
+  python3 - "$WEB_HEALTH" <<'PYTHON'
+import json, sys, urllib.request
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=4) as response:
+        body = json.load(response)
+    ready = body.get('ok') is True and any(
+        isinstance(e.get('ageMs'), (int, float)) and 0 <= e['ageMs'] < 15000
+        for e in body.get('edges', []))
+    sys.exit(0 if ready else 1)
+except (OSError, ValueError, TypeError, AttributeError):
+    sys.exit(1)
+PYTHON
+}
 
 # Healthy = every unit active and not restarted by systemd during SETTLE,
 # the student site's /healthz answers 200, and the console and the algo
@@ -100,7 +119,7 @@ healthy() {
       200|401) algo=ok ;;
       *) algo="$(http_status "$ALGO_HEALTH")" ;;
     esac
-    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ]; } && [ "$algo" = ok ]; then
+    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ]; } && [ "$algo" = ok ] && snapshot_ready; then
       say "healthy: web $web, console $console, algo $algo"
       return 0
     fi
@@ -147,23 +166,28 @@ cmd_migrate() {
   mv "$LIVE" "$RELEASES/$id"
   link_shared "$RELEASES/$id"
   point_live_at "$id"
-  restart_services
-  if healthy; then say "migrated; live = $id"; return 0; fi
+  if restart_services && healthy; then say "migrated; live = $id"; return 0; fi
   # Undo exactly, so a failed migration leaves the box as it was found.
   say "unhealthy after migration; restoring the original layout"
   rm -f "$LIVE" "$RELEASES/$id/.env"
   [ -L "$RELEASES/$id/data" ] && rm -f "$RELEASES/$id/data" && mv "$SHARED/data" "$RELEASES/$id/data"
   mv "$RELEASES/$id" "$LIVE"
   mv "$SHARED/.env" "$LIVE/.env"
-  restart_services
+  restart_services || say "WARNING: original services failed to restart"
   die "migration rolled back; nothing changed"
 }
 
 cmd_activate() {
   local id="${1:?release id}" dir prev cur
   require_migrated
+  valid_id "$id"
   dir="$RELEASES/$id"
+  [ ! -L "$dir" ] || die "release directory must not be a symlink"
   [ -f "$dir/dist/src/web/main.js" ] || die "$dir has no build (dist/src/web/main.js)"
+  [ ! -f "$dir/QUARANTINED" ] || die "release is quarantined"
+  if [ -f "$dir/MANIFEST.json" ]; then
+    python3 "$RELEASE_TOOL" verify "$dir"
+  fi
   prev="$(current_id)"
   [ "$prev" != "$id" ] || die "$id is already live"
 
@@ -174,7 +198,7 @@ cmd_activate() {
     cp -a "$RELEASES/$prev/node_modules" "$dir/"
   else
     say "installing runtime dependencies"
-    (cd "$dir" && "$NPM" ci --omit=dev --no-audit --no-fund)
+    (cd "$dir" && env PATH="$(dirname "$NPM"):$PATH" "$NPM" ci --omit=dev --ignore-scripts --no-audit --no-fund)
   fi
   link_shared "$dir"
   # rsync as root keeps the uploader's uid and modes; the service may read its
@@ -187,16 +211,14 @@ cmd_activate() {
 
   say "switching $prev -> $id"
   point_live_at "$id"
-  restart_services
-  if healthy; then
+  if restart_services && healthy; then
     say "live: $id"
     prune "$prev"
     return 0
   fi
   say "rolling back to $prev"
   point_live_at "$prev"
-  restart_services
-  healthy || say "WARNING: $prev is not healthy either; look at journalctl -u tmedge-web -u tmedge-edge"
+  if ! restart_services || ! healthy; then say "WARNING: $prev is not healthy either; look at journalctl -u tmedge-web -u tmedge-edge"; fi
   # A release that failed its health check is deleted, so a later
   # "rollback" (which picks the release before the live one) can never land
   # on it. Its id stays in this output and the journal.
@@ -209,19 +231,23 @@ cmd_rollback() {
   require_migrated
   cur="$(current_id)"
   if [ -z "$target" ]; then
-    target="$(release_ids | awk -v c="$cur" 'found { print; exit } $0 == c { found = 1 }')"
+    target="$(release_ids | awk -v c="$cur" 'found && !printed { print; printed = 1 } $0 == c { found = 1 }')"
     [ -n "$target" ] || die "no release older than $cur to roll back to"
   fi
+  valid_id "$target"
+  [ ! -L "$RELEASES/$target" ] || die "release directory must not be a symlink"
   [ -d "$RELEASES/$target" ] || die "no release $target"
   [ "$target" != "$cur" ] || die "$target is already live"
+  [ ! -f "$RELEASES/$target/QUARANTINED" ] || die "release is quarantined"
+  if [ -f "$RELEASES/$target/MANIFEST.json" ]; then
+    python3 "$RELEASE_TOOL" verify "$RELEASES/$target"
+  fi
   say "rolling back $cur -> $target"
   point_live_at "$target"
-  restart_services
-  if healthy; then say "live: $target"; return 0; fi
+  if restart_services && healthy; then say "live: $target"; return 0; fi
   say "$target is unhealthy; switching back to $cur"
   point_live_at "$cur"
-  restart_services
-  healthy || say "WARNING: $cur is not healthy either; look at journalctl -u tmedge-web -u tmedge-edge"
+  if ! restart_services || ! healthy; then say "WARNING: $cur is not healthy either; look at journalctl -u tmedge-web -u tmedge-edge"; fi
   die "rollback to $target failed; $cur is live again"
 }
 
@@ -237,7 +263,7 @@ cmd="${1:-}"; shift || true
 
 # One deploy at a time: CI and a hand deploy racing would each roll back onto
 # the other's half-switched state. flock is util-linux; the test Mac lacks it.
-if [ "$cmd" != list ] && [ "$cmd" != preflight ] && command -v flock >/dev/null; then
+if [ "${TM_LOCK_HELD:-0}" != 1 ] && [ "$cmd" != list ] && [ "$cmd" != preflight ] && command -v flock >/dev/null; then
   mkdir -p "$RELEASES"
   exec 9>"$RELEASES/.lock"
   flock -n 9 || die "another deploy is running"

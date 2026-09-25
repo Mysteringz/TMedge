@@ -26,7 +26,9 @@ changing what the system knows about anyone.
 ## Run it
 
 ```bash
-npm install
+npm ci
+npm --prefix web-app ci
+npm --prefix algo-app ci
 cp .env.example .env        # fill in TM_KEY, WEB_PUSH_TOKEN, SESSION_SECRET, ADMIN_PASSWORD
 npm run build
 npm run web                 # http://localhost:8080
@@ -97,7 +99,12 @@ deploy/deploy.sh list         # releases on the box, * = live
 deploy/deploy.sh rollback     # back to the previous release (or: rollback <id>)
 ```
 
-It refuses uncommitted changes, re-runs typecheck, tests and the crosscheck,
+Merging a PR runs CI and packages an immutable release. GitHub then queues
+a production deployment for the repository owner to approve. The exact
+tested artifact is promoted, with no rebuild during deployment.
+
+For a manual deployment, the script refuses uncommitted changes, re-runs
+typecheck, tests and the crosscheck,
 uploads a new release beside the live one, switches with one rename, and
 switches back by itself if the new release is unhealthy. Details, and the
 GitHub settings that go with CI, are in
@@ -107,7 +114,7 @@ GitHub settings that go with CI, are in
 > …:/opt/tmedge/`, from earlier versions of the runbook). Since 2026-09-24
 > `/opt/tmedge` is a symlink to the live release, not a plain directory, so
 > that rsync would write straight into the running release with no checks
-> and no way back, and `--delete` would remove the release's `.env` link:
+> and can corrupt the release or its shared-file links:
 > the units would then fail to start and the site would go down.
 > `.env` now lives in `/opt/tmedge-shared/`.
 
@@ -149,7 +156,7 @@ directly downloads from the edge's own console port instead.
 ## Tests
 
 ```bash
-npm test          # 39 tests: geometry, config strictness, replay/auth, occupancy rules, web access, search
+npm test          # geometry, config, replay/auth, occupancy, web and algo behavior
 npm run crosscheck  # parses bytes from TMnode's own C serializer, and vice versa for commands
 npm run typecheck
 ```
