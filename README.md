@@ -82,12 +82,34 @@ release delay.
   the edge and web tiers, with optional simulator and Cloudflare Tunnel
   profiles. See **[DOCKER.md](DOCKER.md)** for installation and how the image
   and stack work.
-- **EC2 (web):** the same image (`tmedge web`) behind an ALB with HTTPS and
-  `COOKIE_SECURE=1 TRUST_PROXY=1`. Point the edge's `WEB_PUSH_URLS` at it. The
-  edge pushes outbound, so the NUC needs no inbound ports.
+- **EC2 (the live system, hkumyseat.com):** edge, web and simulator as
+  systemd units on one box, published through a Cloudflare Tunnel. Runbook:
+  **[deploy/aws-ec2.md](deploy/aws-ec2.md)**.
 - Sign-in is local accounts limited to university email domains, as a
   stand-in for HKU SSO. Swap `UserStore` for OIDC before launch; sessions and
   everything else stay as they are.
+
+### Updating the live box: `deploy/deploy.sh` only
+
+```sh
+deploy/deploy.sh              # checks, build, upload, switch, health-check
+deploy/deploy.sh list         # releases on the box, * = live
+deploy/deploy.sh rollback     # back to the previous release (or: rollback <id>)
+```
+
+It refuses uncommitted changes, re-runs typecheck, tests and the crosscheck,
+uploads a new release beside the live one, switches with one rename, and
+switches back by itself if the new release is unhealthy. Details, and the
+GitHub settings that go with CI, are in
+**[deploy/pipeline.md](deploy/pipeline.md)**.
+
+> **Never use the old rsync command on EC2** (`rsync -a --delete … ./
+> …:/opt/tmedge/`, from earlier versions of the runbook). Since 2026-09-24
+> `/opt/tmedge` is a symlink to the live release, not a plain directory, so
+> that rsync would write straight into the running release with no checks
+> and no way back, and `--delete` would remove the release's `.env` link:
+> the units would then fail to start and the site would go down.
+> `.env` now lives in `/opt/tmedge-shared/`.
 
 ## Firmware updates
 
