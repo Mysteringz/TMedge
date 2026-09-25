@@ -27,7 +27,13 @@ src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for 
 npm run build && npm test && npm run typecheck
 npm run crosscheck           # needs ../TMsense and g++
 npm run edge | web | simulate
+deploy/deploy.sh             # the only way to production; see deploy/pipeline.md
+deploy/test-deploy.sh        # rehearses deploy/rollback locally; CI runs it
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above on Linux + Node 22 for
+every PR. The Mac runs a newer Node and CommonCrypto, so "passes here" alone
+has hidden Linux failures before.
 
 ## Invariants
 

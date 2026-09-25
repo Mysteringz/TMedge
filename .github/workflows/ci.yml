@@ -1,0 +1,85 @@
+# Every PR and every push to main runs the checks that "before calling work
+# done" asks for, on a clean Linux machine: the same OS family and Node major
+# as the EC2 box, so "passes on the dev Mac" stops being the only evidence.
+# Branch protection on main should require the "check" job (see
+# deploy/pipeline.md).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Run by hand to test this repo against a TMsense branch before that
+  # branch is merged (the wire format has to agree in both).
+  workflow_dispatch:
+    inputs:
+      tmsense_ref:
+        description: TMsense branch, tag or commit to crosscheck against
+        default: main
+
+permissions:
+  contents: read
+
+# A newer push to the same PR supersedes the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: TMedge
+
+      # The wire format lives in two repos, so the crosscheck needs the
+      # firmware's sources next to this one (it looks in ../TMsense). TMsense
+      # is public, so no token is needed.
+      - uses: actions/checkout@v5
+        with:
+          repository: Mysteringz/TMsense
+          ref: ${{ inputs.tmsense_ref || 'main' }}
+          path: TMsense
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            TMedge/package-lock.json
+            TMedge/web-app/package-lock.json
+
+      - name: Install
+        working-directory: TMedge
+        run: |
+          npm ci --no-audit --no-fund
+          npm --prefix web-app ci --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: TMedge
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: TMedge
+        run: npm test
+
+      # Compiles the firmware's own packet code (g++ + OpenSSL, both on the
+      # runner image) and parses its bytes with the edge's parser.
+      - name: Crosscheck against TMsense
+        working-directory: TMedge
+        run: npm run crosscheck
+
+      # Proves the site (server, console and the Vite app) actually builds.
+      - name: Build
+        working-directory: TMedge
+        run: npm run build
+
+      # The deploy script is what touches production, so it is tested like
+      # code: migrate, deploy, automatic rollback of a broken release, manual
+      # rollback, pruning and the lock, against a scratch /opt on the runner.
+      # It never contacts a server.
+      - name: Deploy pipeline (local rehearsal)
+        working-directory: TMedge
+        run: deploy/test-deploy.sh
