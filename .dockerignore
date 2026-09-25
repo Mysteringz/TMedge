@@ -13,3 +13,5 @@ public-console/js/
 *.log
 .DS_Store
 rigs/
+public-algo/
+algo-app/node_modules/

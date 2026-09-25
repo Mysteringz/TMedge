@@ -17,6 +17,8 @@ src/shared/geometry.ts   110° f-theta pixel <-> floor, height-aware
 src/shared/seats.ts      seat layout + "N seats together" (server and client share it)
 src/web/                 student web tier (auth, snapshot store, API, WS)
 web-app/                 student UI: React + Vite, builds into public-web/app/
+src/algo/                algo debugger: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
+algo-app/                its editor: React + React Flow, builds into public-algo/
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
 ```
@@ -57,6 +59,13 @@ has hidden Linux failures before.
   other node is touched; a failed pilot stops the rollout. See rollout.ts.
 - **The node trusts the hash, not the carrier.** The OTA request is signed and
   carries the SHA-256; gateways only hold and serve bytes.
+- **The debugger never re-implements the detector.** Its preview runs
+  `../TMsense/src/tm_detector.cpp` compiled for the host. A copy of that file
+  in this repo is a test failure, because a debugger that drifts from the
+  firmware lies about the thing it is debugging.
+- **A live parameter change is temporary.** The algo dashboard's writes revert
+  after 15 minutes unless committed, flash writes are a separate act, and
+  every change is in `data/algo/audit.jsonl` with its old value.
 - **Config is strict.** Add validation for any new field.
 - **Wire format changes touch both repos** and `npm run crosscheck`.
 

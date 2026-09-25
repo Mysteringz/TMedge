@@ -117,12 +117,37 @@ export class OccupancyEngine {
   constructor(
     private readonly reg: Registry,
     private readonly edgeId: string,
-    private readonly opts: OccupancyOptions = DEFAULT_OCCUPANCY,
+    private opts: OccupancyOptions = DEFAULT_OCCUPANCY,
   ) {
     for (const t of reg.tables.values()) {
       this.tables.set(t.id, { authority: null, peopleHistory: [], unknownSince: null });
       for (const s of t.seats) this.seats.set(s.id, { window: [], occupied: false, lastSeenAt: 0, framesSeen: 0 });
     }
+  }
+
+  /** What the engine is running on right now. */
+  options(): OccupancyOptions {
+    return { ...this.opts };
+  }
+
+  /**
+   * Change a tuning value while the edge is running, for the algo debugger.
+   * Every field is clamped here rather than trusted: these numbers decide what
+   * students are told about a real room, and the caller is a web request.
+   */
+  setOptions(patch: Partial<OccupancyOptions>): OccupancyOptions {
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+    const next = { ...this.opts };
+    if (patch.staleMs !== undefined) next.staleMs = clamp(patch.staleMs, 2_000, 120_000);
+    if (patch.releaseMs !== undefined) next.releaseMs = clamp(patch.releaseMs, 2_000, 300_000);
+    if (patch.seatRadiusCm !== undefined) next.seatRadiusCm = clamp(patch.seatRadiusCm, 20, 300);
+    if (patch.enterWindow !== undefined) next.enterWindow = Math.round(clamp(patch.enterWindow, 1, 60));
+    if (patch.enterMin !== undefined) next.enterMin = Math.round(clamp(patch.enterMin, 1, 60));
+    if (patch.mergeCm !== undefined) next.mergeCm = clamp(patch.mergeCm, 0, 200);
+    // A window that needs more frames than it holds would never seat anyone.
+    next.enterMin = Math.min(next.enterMin, next.enterWindow);
+    this.opts = next;
+    return { ...next };
   }
 
   /** Floor-normalised heat (C*m^2) of a typical single person in this node's view, once learned. */

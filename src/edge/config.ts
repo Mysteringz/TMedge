@@ -16,6 +16,8 @@ export interface EdgeConfig {
   recordRaw: boolean;
   consolePort: number;
   consoleHost: string;
+  /** The algo debugger, 0 to leave it off. Same password and bind rule as the console. */
+  algoPort: number;
   adminPassword: string | null;
   pushUrls: string[];
   pushToken: string;
@@ -69,6 +71,7 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     dataDir: env.DATA_DIR || 'data',
     recordRaw: env.RECORD_RAW === '1',
     consolePort: int(env, 'CONSOLE_PORT', 8090, 1, 65535),
+    algoPort: int(env, 'ALGO_PORT', 8091, 0, 65535),
     // Without a password the console shows raw thermal frames to anyone who
     // can reach it, so it is then only reachable from this machine.
     consoleHost: env.CONSOLE_HOST || (adminPassword ? '0.0.0.0' : '127.0.0.1'),

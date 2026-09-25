@@ -8,5 +8,5 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["src/shared", "src/edge", "src/web", "src/tools", "test"]
+  "include": ["src/shared", "src/edge", "src/algo", "src/web", "src/tools", "test"]
 }

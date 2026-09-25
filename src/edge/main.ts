@@ -1,5 +1,6 @@
 /** TMedge entry point: `npm run edge`. */
 import { loadEdgeConfig, EnvError } from './config.js';
+import { startAlgo } from '../algo/server.js';
 import { startConsole } from './console.js';
 import { ConfigError, loadRegistry } from './registry.js';
 import { EdgeRuntime } from './runtime.js';
@@ -35,6 +36,17 @@ function main(): void {
     const where = typeof a === 'object' && a ? `${a.address}:${a.port}` : String(a);
     console.log(`[edge] debug console http://${where}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);
   });
+
+  // The algo debugger: thermal imagery and live parameter writes, so it sits
+  // beside the console on the edge and never on the student tier.
+  if (cfg.algoPort > 0) {
+    const { server: algoServer } = startAlgo(rt, cfg.algoPort, cfg.consoleHost);
+    algoServer.on('listening', () => {
+      const a = algoServer.address();
+      const where = typeof a === 'object' && a ? `${a.address}:${a.port}` : String(a);
+      console.log(`[edge] algo debugger http://${where}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);
+    });
+  }
 
   const tables = [...reg.tables.values()];
   console.log(`[edge] ${cfg.edgeId}: ${reg.floors.length} floor(s), ${tables.length} tables, ` +

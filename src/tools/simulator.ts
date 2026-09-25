@@ -26,7 +26,7 @@ import dgram from 'node:dgram';
 import { lookup } from 'node:dns/promises';
 import { writeFileSync } from 'node:fs';
 import { floorToPixel, pixelAreaCm2 } from '../shared/geometry.js';
-import { buildOtaStatus, buildRaw, buildReport, buildStatus, REPORT_BACKGROUND_READY, STATUS_SENSOR_OK, STATUS_BACKGROUND_READY, STATUS_SIGNED, type Detection, type Identity } from '../edge/protocol.js';
+import { buildOtaStatus, buildRaw, buildReport, buildStatus, PARAM_NAMES, REPORT_BACKGROUND_READY, STATUS_SENSOR_OK, STATUS_BACKGROUND_READY, STATUS_SIGNED, type Detection, type Identity } from '../edge/protocol.js';
 import { loadRegistry, type NodeDef, type Registry } from '../edge/registry.js';
 
 interface Args {
@@ -239,10 +239,54 @@ async function main(): Promise<void> {
   // points them at, check it against the hash in the request, and report the
   // same progress a real node would. It exercises the whole path -- the
   // gateway's or the edge's image server included -- without hardware.
+  /**
+   * What each virtual node believes its settings are. A real node keeps these
+   * in RAM (and in flash on SAVE), reports them in STATUS, and changes them
+   * when told: the debugger's whole apply-and-confirm loop depends on that,
+   * so the simulator has to do the same.
+   */
+  interface SimNode { params: Record<string, number>; lastCmd: number; relearnFrom: number }
+  const sim = new Map<string, SimNode>();
+  const seed = (uid: string, rawEvery: number): SimNode => {
+    const st: SimNode = {
+      params: {
+        min_contrast: 60, min_peak: 120, noise_k: 40, min_area: 1, max_area: 60,
+        bg_tau: 90, bg_frames: 20, raw_every: rawEvery, refresh: 2, split_sep: 19,
+      },
+      lastCmd: 0,
+      relearnFrom: 0,
+    };
+    sim.set(uid, st);
+    return st;
+  };
+
   const down = dgram.createSocket('udp4');
   down.bind(5201, '0.0.0.0', () => console.log('[sim] listening for commands and updates on udp/5201'));
   down.on('error', (err) => console.warn(`[sim] downlink: ${err.message} (updates will not be simulated)`));
   down.on('message', (msg, from) => {
+    // COMMAND: a real node applies it and shows the new value in its next
+    // STATUS, which is how the algo debugger knows a change landed. Without
+    // this, tuning could only ever be tried against real hardware.
+    if (msg.length >= 32 && msg[3] === 0x10) {
+      const uid = [...msg.subarray(4, 10)].map((x) => x.toString(16).padStart(2, '0')).join(':');
+      const id = ids.get(uid);
+      if (!id) return;
+      const body = msg.subarray(22);
+      const cmdSeq = body.readUInt32LE(0);
+      const opcode = body[4];
+      const arg0 = body[5] ?? 0;
+      const value = body.readInt32LE(6);
+      const st = sim.get(uid);
+      if (!st) return;
+      if (opcode === 1) {
+        const name = PARAM_NAMES[arg0];
+        if (name) st.params[name] = value;
+      } else if (opcode === 2) {
+        st.relearnFrom = frame;   // background comes back after bg_frames
+      }
+      st.lastCmd = cmdSeq;
+      return;
+    }
     if (msg.length < 22 || msg[3] !== 0x11) return;   // only OTA requests
     const uid = [...msg.subarray(4, 10)].map((x) => x.toString(16).padStart(2, '0')).join(':');
     const id = ids.get(uid);
@@ -308,14 +352,16 @@ async function main(): Promise<void> {
         frame, ta: 33.5, sceneMin: 22.5, sceneMax: 27 + (dets.length ? 4 : 0), bgMean: 23.2,
         flags: learning ? 0 : REPORT_BACKGROUND_READY, detections: learning ? [] : dets,
       }));
-      if (a.rawEvery > 0 && frame % a.rawEvery === 0) send(buildRaw(id, uptime, frame, renderRaw(learning ? [] : dets, r, elapsed)));
+      const st = sim.get(n.uid) ?? seed(n.uid, a.rawEvery);
+      const rawEvery = st.params.raw_every ?? 0;
+      if (rawEvery > 0 && frame % rawEvery === 0) send(buildRaw(id, uptime, frame, renderRaw(learning ? [] : dets, r, elapsed)));
       if (frame % 10 === 0) {
         send(buildStatus(id, uptime, {
           fw: 'sim-1.0.0', ip: '127.0.0.1', rssi: -50 - Math.round(10 * r.next()), channel: 6,
           freeHeap: 238000, minHeap: 230000, stackFree: 5700, wifiDrops: 0, sensorErrors: 0, frames: frame,
-          fps: 1, vdd: 3.3, ta: 33.5, lastCmd: 0,
+          fps: 1, vdd: 3.3, ta: 33.5, lastCmd: st.lastCmd,
           flags: STATUS_SENSOR_OK | (learning ? 0 : STATUS_BACKGROUND_READY) | (key ? STATUS_SIGNED : 0),
-          params: { min_contrast: 60, min_peak: 120, noise_k: 40, min_area: 1, max_area: 60, bg_tau: 90, bg_frames: 20, raw_every: a.rawEvery, refresh: 2, split_sep: 19 },
+          params: { ...st.params },
         }));
       }
     }

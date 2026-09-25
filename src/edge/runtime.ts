@@ -189,6 +189,15 @@ export class EdgeRuntime extends EventEmitter {
     return this.info.get(uid)?.lastRaw ?? null;
   }
 
+  /**
+   * The node's own last REPORT. The algo debugger pairs it with the RAW of
+   * the same `frame`, which is the only way to show what the sensor decided
+   * about a picture rather than what something here would decide.
+   */
+  lastReport(uid: string): Report | null {
+    return this.info.get(uid)?.lastReport ?? null;
+  }
+
   nodes(now = Date.now()): NodeHealth[] {
     const uids = new Set([...this.reg.nodes.keys(), ...this.ingest.links.keys()]);
     return [...uids].sort().map((uid) => {
