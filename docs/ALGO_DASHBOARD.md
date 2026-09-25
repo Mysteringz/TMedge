@@ -138,6 +138,26 @@ POST /api/node/reset-background  make the sensor relearn the room
 WS   /ws?token=                  frame results, pipeline state
 ```
 
+## Deploying it
+
+Through `deploy/deploy.sh` like everything else — never rsync (see
+`deploy/pipeline.md`). Two things the box needs that the release does not
+carry, because they are the firmware's, not this repo's:
+
+```sh
+sudo dnf install -y gcc-c++                    # the preview compiles C++
+sudo rsync -a --relative \
+  TMsense/./include TMsense/./src/tm_detector.cpp \
+  TMsense/./test/host/detector_host.cpp  <box>:/opt/
+echo 'TMSENSE_DIR=/opt/TMsense' >> /opt/tmedge-shared/.env
+```
+
+`TMSENSE_DIR` matters because `/opt/tmedge` is a symlink into a release
+directory, so the relative `../TMsense` the debugger would otherwise use
+resolves inside `/opt/tmedge-releases/`. Keep `/opt/TMsense` in step with the
+firmware the nodes are running, or the preview will answer for a version they
+are not.
+
 ## Running it
 
 ```sh
