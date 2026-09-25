@@ -80,6 +80,10 @@ export default function App() {
   const [frames, setFrames] = useState<{ frame: number; at: number; detections: number | null }[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, number>>({});
+  /** Where the thumb is while dragging, before any request has come back. */
+  const [scrub, setScrub] = useState<number | null>(null);
+  const runSeq = useRef(0);
+  const scrubTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const ws = useRef<WebSocket | null>(null);
@@ -109,8 +113,8 @@ export default function App() {
         sock.onmessage = (ev) => {
           const msg = JSON.parse(String(ev.data)) as RunResult & { type: string; pipeline?: Pipeline; live?: boolean; pending?: PendingChange[] };
           if (msg.type === 'frame') {
-            setRun(msg);
-            if (msg.pending) setPending(msg.pending);
+            // A live frame must not overwrite the one being looked at.
+            setScrub((s) => { if (s === null) { setRun(msg); if (msg.pending) setPending(msg.pending); } return s; });
           } else if (msg.type === 'pipeline_state') {
             if (msg.pipeline) setPipeline((cur) => (cur && cur.updatedAt >= msg.pipeline!.updatedAt ? cur : msg.pipeline!));
             if (typeof msg.live === 'boolean') setLive(msg.live);
@@ -125,6 +129,18 @@ export default function App() {
     void open();
     return () => { closed = true; ws.current?.close(); };
   }, []);
+
+  // The ring shifts under us as frames arrive, so an index into a list fetched
+  // at mount stops meaning what it did. Refresh it while live; never mid-drag,
+  // which would move the thumb out from under the pointer.
+  useEffect(() => {
+    if (!pipeline || !live) return;
+    const id = setInterval(() => {
+      if (scrub !== null) return;
+      void api.frames(pipeline.uid).then((f) => setFrames(f.frames)).catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [pipeline, live, scrub]);
 
   // Graph -> React Flow, refreshed whenever results or edits change.
   useEffect(() => {
@@ -183,6 +199,32 @@ export default function App() {
   const envelope = run?.envelopes.find((e) => e.nodeId === selected) ?? null;
   const source = sources.find((s) => s.uid === pipeline?.uid) ?? null;
 
+  /**
+   * Ask for one frame. Dragging the slider fires an event per pixel, and each
+   * run replays the ring through the detector, so the request is debounced to
+   * the end of the gesture and only the newest answer is allowed to land --
+   * otherwise a slow early reply overwrites the frame you stopped on.
+   */
+  const showFrame = useCallback((frame: number, immediate = false) => {
+    setScrub(frame);
+    if (scrubTimer.current) clearTimeout(scrubTimer.current);
+    const fire = async () => {
+      const seq = ++runSeq.current;
+      try {
+        await api.mode('step', frame);
+        const result = await api.run(frame);
+        if (seq === runSeq.current) {
+          setRun(result);
+          setScrub(null);
+        }
+      } catch (e) {
+        if (seq === runSeq.current) setNotice((e as Error).message);
+      }
+    };
+    if (immediate) void fire();
+    else scrubTimer.current = setTimeout(() => void fire(), 140);
+  }, []);
+
   const applyParam = async (paramId: string, value: number) => {
     if (!pipeline) return;
     try {
@@ -196,14 +238,14 @@ export default function App() {
     }
   };
 
-  const step = async (delta: number) => {
+  const step = (delta: number) => {
     const list = frames.map((f) => f.frame);
-    const at = run ? list.indexOf(run.frameId) : list.length - 1;
+    const current = scrub ?? run?.frameId;
+    const at = current === undefined ? list.length - 1 : list.indexOf(current);
     const next = list[Math.max(0, Math.min(list.length - 1, (at < 0 ? list.length - 1 : at) + delta))];
     if (next === undefined) return;
-    await api.mode('step', next);
     setLive(false);
-    setRun(await api.run(next));
+    showFrame(next, true);
   };
 
   return (
@@ -232,8 +274,8 @@ export default function App() {
         <div className="modes">
           <button className={`btn ${live ? 'on' : ''}`} onClick={() => { void api.mode('live'); setLive(true); }}>● Live</button>
           <button className={`btn ${live ? '' : 'on'}`} onClick={() => { void api.mode('pause', run?.frameId); setLive(false); }}>Pause</button>
-          <button className="btn" onClick={() => void step(-1)}>◀ Prev</button>
-          <button className="btn" onClick={() => void step(1)}>Next ▶</button>
+          <button className="btn" onClick={() => step(-1)}>◀ Prev</button>
+          <button className="btn" onClick={() => step(1)}>Next ▶</button>
           <button className="btn" onClick={() => void api.resetPipeline().then((r) => setPipeline(r.pipeline))}>Reset graph</button>
           <button className="btn" onClick={() => {
             const name = prompt('Save this pipeline as:');
@@ -365,14 +407,16 @@ export default function App() {
       <footer className="timeline">
         <span className="muted">{frames.length} frames held</span>
         <input type="range" min={0} max={Math.max(0, frames.length - 1)}
-          value={Math.max(0, frames.findIndex((f) => f.frame === run?.frameId))}
+          value={Math.max(0, frames.findIndex((f) => f.frame === (scrub ?? run?.frameId)))}
           onChange={(e) => {
             const f = frames[Number(e.target.value)];
             if (!f) return;
             setLive(false);
-            void api.mode('step', f.frame).then(async () => setRun(await api.run(f.frame)));
+            showFrame(f.frame);
           }} />
-        <span className="muted">frame {run?.frameId ?? '—'}</span>
+        <span className="muted">
+          frame {scrub ?? run?.frameId ?? '—'}{scrub !== null && scrub !== run?.frameId ? ' …' : ''}
+        </span>
       </footer>
     </div>
   );
@@ -383,7 +427,16 @@ function Output({ envelope }: { envelope: Envelope }) {
   const o = envelope.outputs;
   const d = envelope.debug;
   if (envelope.error) return <div className="error-box">{envelope.error}</div>;
+  const warning = typeof d.warning === 'string' ? d.warning : null;
+  return (
+    <>
+      {warning && <div className="warn-box">{warning}</div>}
+      <Viewer envelope={envelope} o={o} d={d} />
+    </>
+  );
+}
 
+function Viewer({ envelope, o, d }: { envelope: Envelope; o: Record<string, unknown>; d: Record<string, unknown> }) {
   switch (envelope.type) {
     case 'thermal_input': {
       const f = o.frame as { pixels: string; min: number; max: number; mean: number } | undefined;

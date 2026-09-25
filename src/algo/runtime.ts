@@ -49,8 +49,40 @@ export class AlgoRuntime {
   readonly frames = new FrameStore();
   readonly detector = new DetectorHost();
   private pipelines = new Map<string, Pipeline>();
+  /**
+   * Replaying the ring through the detector costs a process and tens of
+   * milliseconds, and dragging the frame slider asks for one per pixel. Two
+   * guards: identical work in flight is shared rather than duplicated, and
+   * the last few answers are kept, so scrubbing back and forth over frames
+   * already seen costs nothing.
+   */
+  private readonly runCache = new Map<string, FrameResult | null>();
+  private readonly inFlight = new Map<string, Promise<FrameResult | null>>();
 
   constructor(private readonly rt: EdgeRuntime, private readonly broker: ParamBroker) {}
+
+  private async detect(uid: string, frame: number, params: DetectorParams): Promise<FrameResult | null> {
+    const key = `${uid}:${frame}:${JSON.stringify(params)}`;
+    const cached = this.runCache.get(key);
+    if (cached !== undefined) return cached;
+    const running = this.inFlight.get(key);
+    if (running) return running;
+    const work = (async () => {
+      const history = this.frames.historyTo(uid, frame);
+      const results = await this.detector.run(history, params, true);
+      return results[results.length - 1] ?? null;
+    })();
+    this.inFlight.set(key, work);
+    try {
+      const out = await work;
+      this.runCache.set(key, out);
+      // Small: each entry holds four 768-element planes.
+      if (this.runCache.size > 12) this.runCache.delete(this.runCache.keys().next().value as string);
+      return out;
+    } finally {
+      this.inFlight.delete(key);
+    }
+  }
 
   setPipeline(p: Pipeline): void {
     this.pipelines.set(p.id, p);
@@ -89,11 +121,9 @@ export class AlgoRuntime {
     let previewUnavailable: string | null = this.detector.unavailable;
     let detectorMs = 0;
     if (!previewUnavailable && (bgNode || humanNode)) {
-      const history = this.frames.historyTo(uid, pair.frame);
       const t0 = Date.now();
       try {
-        const results = await this.detector.run(history, params, true);
-        preview = results[results.length - 1] ?? null;
+        preview = await this.detect(uid, pair.frame, params);
       } catch (err) {
         previewUnavailable = (err as Error).message;
       }
@@ -154,6 +184,11 @@ export class AlgoRuntime {
               backgroundMean: round(preview.backgroundMean),
               globalShift: preview.globalShift,
               detectorMs,
+              // Early frames in the ring have no background yet, so every
+              // stage downstream reads zero. Say so, or it looks broken.
+              ...(preview.backgroundReady ? {} : {
+                warning: `the background model needs ${params.bg_frames} frames and this one is ${this.frames.historyTo(uid, pair.frame).length} into the ring — nothing can be detected yet`,
+              }),
             }, {
               'foreground px': countMask(preview.foreground),
               'max difference C': round(diffMax),
@@ -165,6 +200,7 @@ export class AlgoRuntime {
           case 'human_detection': {
             if (!preview) throw new Error(previewUnavailable ?? 'no preview');
             const observed = pair.deviceDetections ?? [];
+            const warming = !preview.backgroundReady;
             const blobs = preview.detections.map((d, i) => ({
               id: i + 1,
               ...d,
@@ -188,6 +224,7 @@ export class AlgoRuntime {
               // max_area and the real detector drops the component. Only on
               // hardware does a disagreement mean something is wrong.
               simulated: node?.simulated ?? false,
+              ...(warming ? { warning: 'the background model is still learning at this frame; scrub later in the ring' } : {}),
               ...(node?.simulated
                 ? { why: 'this node is simulated: its REPORT is ground truth and its RAW is a rendering, so the two need not agree' }
                 : {}),
