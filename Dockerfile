@@ -21,6 +21,9 @@ RUN npm ci --no-audit --no-fund
 COPY web-app/package.json web-app/package-lock.json ./web-app/
 RUN npm --prefix web-app ci --no-audit --no-fund
 COPY web-app ./web-app
+COPY algo-app/package.json algo-app/package-lock.json ./algo-app/
+RUN npm --prefix algo-app ci --no-audit --no-fund
+COPY algo-app ./algo-app
 COPY tsconfig*.json ./
 COPY src ./src
 COPY test ./test
@@ -37,6 +40,7 @@ COPY --from=build /src/node_modules ./node_modules
 COPY --from=build /src/dist ./dist
 COPY --from=build /src/public-web ./public-web
 COPY --from=build /src/public-console ./public-console
+COPY --from=build /src/public-algo ./public-algo
 COPY package.json ./
 # Default site layout; mount your own over /app/config to change it.
 COPY config ./config
