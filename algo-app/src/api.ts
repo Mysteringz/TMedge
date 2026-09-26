@@ -39,6 +39,9 @@ export interface RunResult {
 export interface PendingChange {
   uid: string; nodeId: string; param: string; binding: string;
   from: number | null; to: number; at: number; revertAt: number;
+  /** Null until the node's STATUS shows it took the command. */
+  confirmedAt: number | null;
+  cmdSeq: number | null;
 }
 export interface SourceNode {
   uid: string; label: string; floorId: string; simulated: boolean;

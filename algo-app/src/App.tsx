@@ -264,10 +264,13 @@ export default function App() {
     if (!pipeline) return;
     try {
       await api.apply(selected, paramId, value, pipeline.uid);
-      setEdits((e) => { const { [`${selected}.${paramId}`]: _drop, ...rest } = e; return rest; });
       const p = await api.params();
       setPending(p.pending);
+      // Drop the local edit only once a run has come back carrying the new
+      // value, otherwise the box shows the node's last report -- the old
+      // number -- for the frame in between, and the change looks discarded.
       setRun(await api.run());
+      setEdits((e) => { const { [`${selected}.${paramId}`]: _drop, ...rest } = e; return rest; });
     } catch (e) {
       setNotice((e as Error).message);
     }
@@ -422,9 +425,22 @@ export default function App() {
                         <button className="btn" onClick={() => void applyParam(p.id, value)}>Set</button>
                       )}
                     </div>
+                    {held && held.binding === 'device' && held.confirmedAt === null && (
+                      // A command is a datagram to a ceiling and the node only
+                      // reports every 10s. Saying so beats showing the old
+                      // number back, which read as the change being dropped.
+                      <div className="held held-waiting">
+                        asked for {held.to} · waiting for the sensor to confirm
+                        {Date.now() - held.at > 30_000 && (
+                          <strong> — no confirmation in {Math.round((Date.now() - held.at) / 1000)}s; it may be offline or refusing this value</strong>
+                        )}
+                      </div>
+                    )}
                     {held && (
                       <div className="held">
-                        was {held.from ?? '—'} · goes back in {Math.max(0, Math.round((held.revertAt - Date.now()) / 60000))} min
+                        was {held.from ?? '—'}
+                        {held.binding === 'device' && held.confirmedAt !== null && ' · the sensor confirmed it'}
+                        {' '}· goes back in {Math.max(0, Math.round((held.revertAt - Date.now()) / 60000))} min
                         <button className="link" onClick={() => void api.commit(held.param, pipeline?.uid).then(async () => setPending((await api.params()).pending))}>keep</button>
                         <button className="link" onClick={() => void api.revert(held.param, pipeline?.uid).then(async () => { setPending((await api.params()).pending); setRun(await api.run()); })}>undo now</button>
                       </div>

@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { FirmwareStore } from './firmware.js';
-import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_NAMES } from './protocol.js';
+import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from './protocol.js';
 import type { RolloutTarget } from './rollout.js';
 import type { EdgeRuntime } from './runtime.js';
 
@@ -126,6 +126,12 @@ export function startConsole(rt: EdgeRuntime): Server {
           const id = PARAM_NAMES.indexOf(body.param as (typeof PARAM_NAMES)[number]);
           if (id < 0 || typeof body.value !== 'number' || !Number.isInteger(body.value)) {
             return res.status(400).json({ error: `set needs param (one of ${PARAM_NAMES.join(', ')}) and an integer value` });
+          }
+          // The node refuses an out-of-range value in silence, so sending one
+          // looks like success and changes nothing. Say no here instead.
+          const limits = PARAM_LIMITS[body.param as (typeof PARAM_NAMES)[number]];
+          if (limits && (body.value < limits.lo || body.value > limits.hi)) {
+            return res.status(400).json({ error: `the node only accepts ${body.param} between ${limits.lo} and ${limits.hi}; it would ignore ${body.value}` });
           }
           await rt.ingest.sendCommand(uid, CMD_SET_PARAM, id, body.value);
           break;

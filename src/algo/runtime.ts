@@ -94,10 +94,19 @@ export class AlgoRuntime {
     this.pipelines.set(p.id, p);
   }
 
-  /** Resolved device parameters: what the node reports, with inspector edits on top. */
+  /**
+   * Resolved device parameters: what the node reports, then what has been
+   * asked of it and not yet confirmed, then inspector edits on top.
+   *
+   * The middle layer matters. A write is a datagram and the node only reports
+   * every 10 seconds, so for that window `live` still holds the old number.
+   * Without the overlay both the slider and the preview snapped back to it
+   * the moment the change was applied, which read as the change being lost.
+   */
   resolveDetector(uid: string, edits: Record<string, number>): { params: DetectorParams; wire: Record<string, number>; dirty: string[] } {
     const live = this.broker.deviceParams(uid);
-    const wire = { ...live, ...edits };
+    const asked = this.broker.requested(uid);
+    const wire = { ...live, ...asked, ...edits };
     const dirty = Object.keys(edits).filter((k) => live[k] !== undefined && live[k] !== edits[k]);
     return { params: { ...FALLBACK_DETECTOR, ...fromWireParams(wire) }, wire, dirty };
   }
