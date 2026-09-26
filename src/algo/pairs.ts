@@ -18,7 +18,7 @@
  * with the thermal frame nearest it in time, and only when that is close
  * enough that a walking person cannot have moved far between them.
  */
-import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FrameStore } from './frames.js';
 import type { DeviceDetection } from './types.js';
@@ -82,6 +82,25 @@ export class PairRecorder {
     this.cfg = { ...DEFAULT_PAIRS, ...cfg };
     mkdirSync(this.cfg.dir, { recursive: true });
     this.rescan();
+    // Collecting a training set takes days, and a deploy restarts the edge
+    // several times an afternoon. Asking for it once should mean it is still
+    // running tomorrow, so the answer is remembered rather than reset.
+    try {
+      const f = join(this.cfg.dir, 'recording.on');
+      if (existsSync(f)) this.recording = readFileSync(f, 'utf8').trim() === '1';
+    } catch {
+      /* not being able to read it is the same as off */
+    }
+  }
+
+  /** Turn recording on or off, and remember which across restarts. */
+  setRecording(on: boolean): void {
+    this.recording = on;
+    try {
+      writeFileSync(join(this.cfg.dir, 'recording.on'), on ? '1' : '0');
+    } catch {
+      /* it still applies to this process; it just will not survive a restart */
+    }
   }
 
   /** Count what is already on disk, so a restart does not lose the budget. */

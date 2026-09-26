@@ -448,7 +448,7 @@ export default function App() {
  * pairing that does not exist -- the paired ones are what the recorder
  * writes for training.
  */
-function LiveCamera({ uid, live }: { uid: string; live: boolean }) {
+function LiveCamera({ uid, live, mirror }: { uid: string; live: boolean; mirror: boolean }) {
   const [tick, setTick] = useState(0);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -461,12 +461,17 @@ function LiveCamera({ uid, live }: { uid: string; live: boolean }) {
     <figure>
       <img
         className="rgbview"
+        // Both cameras are on one bracket, so they face the room the same way:
+        // fitting one to the other over 309 frames gives a rotation and no
+        // reflection. Flip the photograph with the thermal, or the pair
+        // disagrees on screen.
+        style={mirror ? { transform: 'scaleX(-1)' } : undefined}
         src={`/api/nodes/${encodeURIComponent(uid)}/rgb.jpg?t=${tick}`}
         alt="the rig's camera"
         onError={() => setFailed(true)}
       />
       <figcaption>
-        rig camera · <span className="livenow">live now</span>
+        rig camera · <span className="livenow">live now</span>{mirror ? ' · mirrored to match the room' : ''}
         {live ? '' : ' (the thermal beside it is from the past)'}
       </figcaption>
     </figure>
@@ -597,7 +602,7 @@ function Viewer({ envelope, o, d, live }: {
       return f ? (
         <div className="views">
           <figure><GridView pixels={unpack(f.pixels)} mirror={mirror} /><figcaption>raw thermal{mirrorNote}</figcaption></figure>
-          {d.rgb === true && <LiveCamera uid={String(d.uid ?? '')} live={live} />}
+          {d.rgb === true && <LiveCamera uid={String(d.uid ?? '')} live={live} mirror={mirror} />}
           <div className="facts">
             <div><span>min</span><b>{f.min.toFixed(2)} °C</b></div>
             <div><span>max</span><b>{f.max.toFixed(2)} °C</b></div>
