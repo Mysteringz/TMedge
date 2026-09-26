@@ -300,6 +300,7 @@ export default function App() {
               ))}
             </div>
           ))}
+          <TrainingData />
           <p className="hint">
             Device stages run on the ESP32. Changing one sends it a signed command;
             it is put back automatically after {Math.round(revertMs / 60000)} minutes
@@ -422,6 +423,43 @@ export default function App() {
   );
 }
 
+/**
+ * Pair recording. Off unless someone asks: it writes pictures of a room to
+ * disk, which is a different thing from the occupancy numbers this system
+ * normally keeps.
+ */
+function TrainingData() {
+  const [s, setS] = useState<Awaited<ReturnType<typeof api.pairs>> | null>(null);
+  const refresh = useCallback(() => { void api.pairs().then(setS).catch(() => undefined); }, []);
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 10_000);
+    return () => clearInterval(t);
+  }, [refresh]);
+  if (!s) return null;
+  const mb = (s.bytes / 1048576).toFixed(0);
+  return (
+    <div className="lib-group training">
+      <div className="lib-title">Training data</div>
+      {s.rgbNodes.length === 0
+        ? <p className="hint">No node here has an RGB camera, so there is nothing to learn from.</p>
+        : (
+          <>
+            <div className="counts">
+              <div><span>pairs</span><b>{s.samples}</b></div>
+              <div><span>with people</span><b>{s.withPeople}</b></div>
+              <div><span>on disk</span><b>{mb} MB</b></div>
+            </div>
+            <button className={`btn ${s.recording ? 'on' : ''}`} onClick={() => void api.record(!s.recording).then(refresh)}>
+              {s.recording ? '● Recording' : 'Start recording'}
+            </button>
+            {s.lastSkipped && <p className="hint">last skip: {s.lastSkipped}</p>}
+          </>
+        )}
+    </div>
+  );
+}
+
 /** Pick the viewer from what the node produced. */
 function Output({ envelope }: { envelope: Envelope }) {
   const o = envelope.outputs;
@@ -501,6 +539,44 @@ function Viewer({ envelope, o, d }: { envelope: Envelope; o: Record<string, unkn
             <figcaption>grey = configured tables · green = proposed · orange dashed = rejected · dots = seat clusters</figcaption>
           </figure>
           <div className="grow"><Table rows={(stages?.candidates ?? []) as never[]} /></div>
+        </div>
+      );
+    }
+    case 'human_location_ml': {
+      const m = d.model as { trainedAt: number; samples: number; metrics: Record<string, number>; notes: string | null } | undefined;
+      if (d.untrained) {
+        return (
+          <div className="untrained">
+            <b>No model for this node yet.</b>
+            <p>
+              Turn on pair recording below, leave it running while the room is used, then train off the box:
+              <code>python3 tools/train_human_location.py data/algo/pairs --out data/algo/models</code>
+              and drop the result at <code>{String(d.expects)}</code>.
+            </p>
+            <p className="muted">{String(d.how)}</p>
+          </div>
+        );
+      }
+      return (
+        <div className="views">
+          <figure>
+            <Plane data={o.probabilities as never} blobs={(d.detections ?? []) as never[]}
+              observed={(d.observed ?? []) as never[]} labelled mirror={d.mirror === true} />
+            <figcaption>
+              person probability · solid = this model, dashed = the sensor's own detector
+              {d.mirror === true ? ' · mirrored to match the room' : ''}
+            </figcaption>
+          </figure>
+          <div className="grow">
+            <Table rows={(d.detections ?? []) as never[]} />
+            {m && (
+              <p className="muted" style={{ marginTop: 10 }}>
+                fitted {new Date(m.trainedAt).toLocaleString()} on {m.samples} pairs ·
+                held-out F1 {m.metrics?.f1} (precision {m.metrics?.precision}, recall {m.metrics?.recall}) ·
+                median error {m.metrics?.medianErrorPx} px{m.notes ? ` · ${m.notes}` : ''}
+              </p>
+            )}
+          </div>
         </div>
       );
     }

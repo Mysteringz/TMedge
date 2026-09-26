@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { DetectorHost } from '../src/algo/detector.js';
+import { FEATURES, featuresOf, locate, type LocatorModel } from '../src/algo/model.js';
 import { estimateDesks, DEFAULT_DESK } from '../src/algo/desk.js';
 import { FrameStore } from '../src/algo/frames.js';
 import { order, validate } from '../src/algo/graph.js';
@@ -205,4 +206,78 @@ test('nobody has vendored a second copy of the detector into this repo', () => {
   assert.ok(!/tm_detector/.test(here), 'TMedge must not contain its own tm_detector');
   assert.ok(existsSync(join(REPO, '..', 'TMsense', 'src', 'tm_detector.cpp')),
     'the debugger needs ../TMsense beside this checkout to build its preview');
+});
+
+test('the trainer and the edge compute the same features', (t) => {
+  // The weights are fitted in Python and applied in TypeScript. If the two
+  // ever compute a different thing from the same frame, a model would mean
+  // something else on the edge than it did in training and nothing would
+  // say so -- the same trap the wire format has three implementations of,
+  // and the same answer: check them against each other on real numbers.
+  const temps = new Float32Array(768);
+  let seed = 11;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648 - 0.5;
+  for (let y = 0; y < 24; y++) {
+    for (let x = 0; x < 32; x++) temps[y * 32 + x] = 22 + 0.05 * x + 0.3 * Math.sin(x * 0.7) * Math.cos(y * 0.5) + rnd() * 0.16;
+  }
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const i = (10 + dy) * 32 + (19 + dx);
+      temps[i] = (temps[i] ?? 0) + 7.5 * Math.exp(-(dx * dx + dy * dy) / 2);
+    }
+  }
+
+  let reference: number[][];
+  try {
+    const out = execFileSync('python3', [join(REPO, 'tools', 'train_human_location.py'), '--features'], {
+      input: JSON.stringify(Array.from(temps)), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    reference = JSON.parse(out) as number[][];
+  } catch (err) {
+    return t.skip(`the trainer could not run here (numpy/OpenCV?): ${(err as Error).message.slice(0, 80)}`);
+  }
+
+  const mine = featuresOf(temps);
+  assert.equal(reference.length, 768);
+  assert.equal(reference[0]?.length, FEATURES.length);
+  let worst = 0;
+  for (let i = 0; i < 768; i++) {
+    for (let j = 0; j < FEATURES.length; j++) {
+      worst = Math.max(worst, Math.abs((reference[i]?.[j] ?? 0) - (mine[i * FEATURES.length + j] ?? 0)));
+    }
+  }
+  assert.ok(worst < 1e-4, `features drift by ${worst}; the Python and TypeScript versions disagree`);
+});
+
+test('the locator finds the warm blob it was pointed at, and nothing in an empty room', () => {
+  // Weights by hand rather than trained: this is about the inference path --
+  // thresholding, grouping and the centroid -- not about the fit.
+  const model: LocatorModel = {
+    version: 1, uid: 'test', trainedAt: 0, samples: 0, positives: 0,
+    features: [...FEATURES],
+    // bias, above_median, local_max3, local_mean5, gradient, row, col
+    weights: [-6, 7, 2, 1, 0, 0, 0],
+    threshold: 0.6, minArea: 2,
+    metrics: { precision: 0, recall: 0, f1: 0, heldOut: 0, medianErrorPx: 0 },
+  };
+
+  const empty = new Float32Array(768).fill(22);
+  assert.equal(locate(model, empty).detections.length, 0, 'an empty room is empty');
+
+  const one = new Float32Array(768).fill(22);
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) one[(14 + dy) * 32 + (7 + dx)] = 30;
+  }
+  const found = locate(model, one).detections;
+  assert.equal(found.length, 1, 'one person, one detection');
+  assert.ok(Math.abs((found[0]?.x ?? 0) - 7) < 1.2 && Math.abs((found[0]?.y ?? 0) - 14) < 1.2,
+    `placed at ${found[0]?.x},${found[0]?.y} rather than 7,14`);
+  assert.ok((found[0]?.confidence ?? 0) > model.threshold);
+
+  // Two people far apart must not become one.
+  const two = new Float32Array(one);
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) two[(6 + dy) * 32 + (25 + dx)] = 30;
+  }
+  assert.equal(locate(model, two).detections.length, 2, 'two blobs, two people');
 });

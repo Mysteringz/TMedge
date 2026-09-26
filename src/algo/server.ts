@@ -19,6 +19,7 @@ import type { EdgeRuntime } from '../edge/runtime.js';
 import { encodeFrame } from './frames.js';
 import { validate } from './graph.js';
 import { defaultPipeline, NODE_SPECS, specOf } from './nodes.js';
+import { PairRecorder } from './pairs.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
@@ -39,6 +40,10 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
   const wsSecret = randomBytes(32);
   const dir = join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pipelines');
   mkdirSync(dir, { recursive: true });
+  // Training data for the ML locator. Off by default: it writes to disk and
+  // holds pictures of a room, so somebody has to ask for it.
+  const pairs = new PairRecorder({ dir: join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pairs') });
+  pairs.recording = process.env.ALGO_RECORD_PAIRS === '1';
 
   /**
    * Which sensor the debugger opens on. A node that is sending pictures beats
@@ -72,6 +77,14 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     algo.frames.addRaw(msg);
     scheduleRun('frame');
   });
+  // Every RGB frame is offered to the recorder, which keeps it only when a
+  // thermal frame of the same moment exists to pair it with.
+  rt.on('rgb', (uid, jpeg, at) => {
+    const node = rt.reg.nodes.get(uid);
+    if (!node) return;
+    pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
+  });
+
   rt.on('report', (uid, dets) => {
     // The report's own frame number, not the last RAW's: they are only the
     // same when a RAW happened to arrive for that frame, and the whole point
@@ -263,6 +276,26 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     } catch (err) {
       return res.status(409).json({ error: (err as Error).message });
     }
+  });
+
+  // --- training data ------------------------------------------------------
+
+  app.get('/api/pairs', (_req, res) => res.json({
+    ...pairs.stats(),
+    rgbNodes: [...rt.reg.nodes.values()].filter((n) => n.rgb).map((n) => n.uid),
+  }));
+
+  app.post('/api/pairs/record', mutating, (req, res) => {
+    const on = (req.body as { on?: boolean }).on === true;
+    const rgb = [...rt.reg.nodes.values()].filter((n) => n.rgb);
+    if (on && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
+    pairs.recording = on;
+    return res.json({ ok: true, ...pairs.stats() });
+  });
+
+  app.post('/api/pairs/prune', mutating, (_req, res) => {
+    const removed = pairs.prune();
+    res.json({ ok: true, removed, ...pairs.stats() });
   });
 
   app.get('/api/ws-token', (_req, res) => {

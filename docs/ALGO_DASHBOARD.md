@@ -98,6 +98,62 @@ like a detection bug from the outside, which is why it shows its work.
 It needs dwell to have accumulated: with `minDwellSeconds` at 120 a freshly
 started edge proposes nothing for the first few minutes.
 
+## Human Location ML
+
+An alternative to Human Location that places people from the thermal frame
+alone, using weights learned from the rig's own camera. Same `points` output,
+so it drops into the graph where the projection was — wire the thermal frame
+straight into it and it replaces the whole device-detection chain for
+comparison.
+
+The honest part is where the labels come from. The intern-desk rig carries a
+Raspberry Pi camera and the MLX90640 looking at the same scene, so the camera
+can say where a person really was and the thermal frame has to learn to. Three
+pieces:
+
+1. **The recorder** (`src/algo/pairs.ts`) keeps an RGB frame only with the
+   thermal frame nearest it in time, and only when that is within 400 ms — a
+   person walks 55 cm in that, about a seat's width. Every other second, so
+   1 Hz cameras cost half the disk. It keeps every frame where the sensor saw
+   somebody and one in six of the empty ones, since a detector trained only on
+   people learns to answer "person". Off unless switched on: it writes
+   pictures of a room to disk, which is not what this system normally keeps.
+2. **The trainer** (`tools/train_human_location.py`) runs off the box, where
+   numpy and OpenCV live. People are found by background subtraction against a
+   median of the scene — a fixed overhead camera makes that reliable, where a
+   pedestrian detector would struggle with the view from above. It then
+   **fits the RGB→thermal transform from the data**, using frames with exactly
+   one person and one clear hot blob, because nobody wrote down how the two
+   cameras are mounted and the thermal is mirrored besides. A poor fit stops
+   the run rather than training on scrambled labels.
+3. **Inference** (`src/algo/model.ts`) is a few dozen weights applied per
+   pixel: logistic regression over local thermal features, then threshold,
+   group and take the centroid. No runtime dependency, and small enough to
+   read. With a corpus from one room a larger model would mostly memorise the
+   room, and could not be argued with.
+
+The two implementations of the feature vector — numpy in the trainer,
+TypeScript on the edge — are compared against each other on a real frame by
+`npm test`, the same way the wire format is. That test found a genuine drift
+the first time it ran: numpy interpolates percentiles and averages the median
+for an even-length array, and the TypeScript was using nearest-rank, which
+scaled every feature slightly differently.
+
+Scores are computed on frames held out **by time**, not at random: frames a
+second apart are nearly the same picture, and a random split would let the
+model be graded on what it had already seen. The node shows precision, recall,
+F1 and median placement error from the model file.
+
+```sh
+# on the box, once the dashboard says it has enough pairs
+scp -r <box>:/var/lib/tmedge/algo/pairs ./pairs
+python3 tools/train_human_location.py ./pairs --out data/algo/models
+scp data/algo/models/*.json <box>:/var/lib/tmedge/algo/models/
+```
+
+The node re-reads the model every ten seconds, so dropping one in needs no
+restart. Until one exists it says so and explains how to make it.
+
 ## Layout
 
 ```
@@ -106,6 +162,9 @@ src/algo/frames.ts     the ring, and RAW/REPORT pairing by frame number
 src/algo/detector.ts   builds and drives the firmware's own detector
 src/algo/params.ts     writes, the 15-minute revert, the audit log
 src/algo/desk.ts       the desk estimator
+src/algo/pairs.ts      RGB/thermal pair recording, the ML training set
+src/algo/model.ts      the learned locator, inference only
+tools/train_human_location.py   fits it, off the box
 src/algo/nodes.ts      the node catalogue and the default graph
 src/algo/graph.ts      typed connections, cycles, execution order
 src/algo/runtime.ts    runs the graph over one frame

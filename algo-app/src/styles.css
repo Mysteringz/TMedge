@@ -103,3 +103,11 @@ button, input, select { font: inherit; color: inherit; }
 .react-flow__attribution { display: none; }
 .warn-box { color: var(--warn); border: 1px solid #4a3a22; background: #241e13; padding: 8px 10px;
   border-radius: 3px; margin-bottom: 12px; font-size: 12px; }
+.untrained { border: 1px dashed var(--line); padding: 14px 16px; border-radius: 3px; max-width: 760px; }
+.untrained p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.untrained code { display: block; background: #1f1f24; border: 1px solid var(--line); padding: 6px 8px;
+  margin: 6px 0; border-radius: 3px; font-size: 11px; color: var(--ink); }
+.training { border-top: 1px solid var(--line); padding-top: 10px; }
+.counts div { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); padding: 1px 0; }
+.counts b { color: var(--ink); }
+.training .btn { width: 100%; margin-top: 6px; }
