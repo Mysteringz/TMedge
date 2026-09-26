@@ -27,7 +27,9 @@ button, input, select { font: inherit; color: inherit; }
 .notice { background: #2a2118; border-bottom: 1px solid #4a3a22; color: var(--warn); padding: 7px 14px; cursor: pointer; }
 .notice .x { color: var(--muted); margin-left: 8px; font-size: 11px; }
 
-.body { display: grid; grid-template-columns: 190px 1fr 330px; flex: 1; min-height: 0; }
+/* Columns are set inline from the sizes the user dragged; the 6px tracks are
+   the dividers. */
+.body { display: grid; grid-template-columns: 190px 6px minmax(0, 1fr) 6px 330px; flex: 1; min-height: 0; }
 .library, .inspector { background: var(--panel); border-right: 1px solid var(--line); padding: 12px; overflow: auto; }
 .inspector { border-right: 0; border-left: 1px solid var(--line); }
 .library h3, .inspector h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; margin: 0 0 10px; color: var(--muted); }
@@ -76,7 +78,7 @@ button, input, select { font: inherit; color: inherit; }
 .help { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .danger { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 
-.output { border-top: 1px solid var(--line); background: var(--panel); height: 360px; display: flex; flex-direction: column; }
+.output { background: var(--panel); height: 480px; display: flex; flex-direction: column; min-height: 0; }
 .output-head { display: flex; gap: 12px; align-items: baseline; padding: 7px 14px; border-bottom: 1px solid var(--line); }
 .output-body { flex: 1; overflow: auto; padding: 12px 14px; }
 .muted { color: var(--muted); font-size: 11px; }
@@ -86,7 +88,12 @@ button, input, select { font: inherit; color: inherit; }
 .grow { flex: 1; min-width: 260px; }
 .facts div { display: flex; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding: 3px 0; }
 .facts span { color: var(--muted); }
+/* The three planes of a stage should sit on one row: at a fixed 512 px they
+   overflow a 1600 px window by a hair and wrap, which puts a scrollbar in
+   front of the picture the panel exists to show. Let them shrink to fit
+   instead; the aspect is held by the canvas's own dimensions. */
 .grid-canvas, .plan-canvas { image-rendering: pixelated; border: 1px solid var(--line); background: #0d0d10; display: block; }
+.grid-canvas { width: 512px; max-width: calc((100vw - 110px) / 3); height: auto; }
 .plan-canvas { image-rendering: auto; }
 .scale { font-size: 10px; color: var(--muted); margin-top: 3px; }
 .empty { color: var(--muted); font-style: italic; }
@@ -127,3 +134,18 @@ button, input, select { font: inherit; color: inherit; }
 .training .btn { width: 100%; margin-top: 6px; }
 .rgbview { display: block; width: 400px; max-width: 42vw; border: 1px solid var(--line); background: #0d0d10; }
 .livenow { color: #ff6b6b; }
+
+/* Dividers. Wide enough to grab, invisible until you go near one, and they
+   light up while dragging so it is obvious what is moving. */
+.divider { background: var(--line); position: relative; }
+.divider::after { content: ''; position: absolute; background: transparent; transition: background .12s; }
+.divider-x { cursor: col-resize; }
+.divider-x::after { inset: 0 -3px; }
+.divider-y { cursor: row-resize; height: 6px; }
+.divider-y::after { inset: -3px 0; }
+.divider:hover::after, .divider:focus-visible::after { background: var(--go); }
+.divider:focus-visible { outline: none; }
+body.resizing-x, body.resizing-x * { cursor: col-resize !important; user-select: none; }
+body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select: none; }
+/* A pane being dragged must not let the flow canvas swallow the pointer. */
+body.resizing-x .react-flow, body.resizing-y .react-flow { pointer-events: none; }
