@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider,
-  addEdge, useEdgesState, useNodesState,
+  addEdge, useEdgesState, useNodesState, useReactFlow,
   type Connection, type Edge, type Node, type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -87,6 +87,7 @@ export default function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const ws = useRef<WebSocket | null>(null);
+  const flow = useReactFlow();
 
   useEffect(() => {
     void (async () => {
@@ -142,22 +143,22 @@ export default function App() {
     return () => clearInterval(id);
   }, [pipeline, live, scrub]);
 
-  // Graph -> React Flow, refreshed whenever results or edits change.
+  // The shape of the graph, and only that. Rebuilding this on every frame --
+  // which is what depending on `run` did -- throws away React Flow's measured
+  // sizes once a second and re-mounts every node. A measurement that lands
+  // while the tab is hidden or the pane is mid-resize then leaves the nodes
+  // sized zero, and the canvas stays blank until a reload.
+  const shape = useMemo(() => (pipeline
+    ? pipeline.nodes.map((n) => `${n.id}:${n.type}:${n.position.x},${n.position.y}`).join('|')
+      + '#' + pipeline.edges.map((e) => e.id).join('|')
+    : ''), [pipeline]);
+
   useEffect(() => {
-    if (!pipeline) return;
-    const dirty = new Set(run?.dirty ?? []);
-    setNodes(pipeline.nodes.map((n) => {
+    if (!pipeline || specs.length === 0) return;
+    setNodes(pipeline.nodes.flatMap((n) => {
       const spec = specs.find((s) => s.type === n.type);
-      if (!spec) return null;
-      const isDirty = spec.params.some((p) =>
-        (p.binding.kind === 'device' && dirty.has(p.binding.param)) || edits[`${n.id}.${p.id}`] !== undefined);
-      return {
-        id: n.id,
-        type: 'stage',
-        position: n.position,
-        data: { spec, envelope: run?.envelopes.find((e) => e.nodeId === n.id), selected: n.id === selected, dirty: isDirty } satisfies FlowData,
-      } as Node;
-    }).filter((n): n is Node => n !== null));
+      return spec ? [{ id: n.id, type: 'stage', position: n.position, data: { spec } } as unknown as Node] : [];
+    }));
     setEdges(pipeline.edges.map((e) => {
       const spec = specs.find((s) => s.type === pipeline.nodes.find((n) => n.id === e.sourceNode)?.type);
       const type = spec?.outputs.find((o) => o.id === e.sourcePort)?.type ?? 'json';
@@ -165,10 +166,33 @@ export default function App() {
         id: e.id, source: e.sourceNode, target: e.targetNode,
         sourceHandle: e.sourcePort, targetHandle: e.targetPort,
         style: { stroke: PORT_COLOUR[type] ?? '#666', strokeWidth: 2 },
-        animated: live,
       } as Edge;
     }));
-  }, [pipeline, specs, run, selected, live, edits, setNodes, setEdges]);
+    // Switching sensor or resetting the graph can leave the camera looking at
+    // empty space; put it back on the nodes.
+    const t = setTimeout(() => { try { flow.fitView({ padding: 0.12, duration: 200 }); } catch { /* not mounted */ } }, 60);
+    return () => clearTimeout(t);
+    // `shape` is the identity of the graph; results are applied separately below.
+  }, [shape, specs, pipeline, flow, setNodes, setEdges]);
+
+  // Results, selection and edits change every second, so they only patch the
+  // data of nodes that already exist.
+  useEffect(() => {
+    const dirty = new Set(run?.dirty ?? []);
+    setNodes((cur) => cur.map((node) => {
+      const d = node.data as FlowData;
+      const spec = d.spec;
+      const envelope = run?.envelopes.find((e) => e.nodeId === node.id);
+      const isDirty = spec.params.some((p) =>
+        (p.binding.kind === 'device' && dirty.has(p.binding.param)) || edits[`${node.id}.${p.id}`] !== undefined);
+      if (d.envelope === envelope && d.selected === (node.id === selected) && d.dirty === isDirty) return node;
+      return { ...node, data: { spec, envelope, selected: node.id === selected, dirty: isDirty } satisfies FlowData };
+    }));
+  }, [run, selected, edits, setNodes]);
+
+  useEffect(() => {
+    setEdges((cur) => cur.map((e) => (e.animated === live ? e : { ...e, animated: live })));
+  }, [live, setEdges]);
 
   const push = useCallback(async (next: Pipeline) => {
     try {

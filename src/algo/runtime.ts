@@ -187,7 +187,12 @@ export class AlgoRuntime {
 
           case 'background_subtraction': {
             if (!preview) throw new Error(previewUnavailable ?? 'no preview');
-            const diffMax = Math.max(0.1, ...Array.from(preview.diff ?? []));
+            // Scale the difference plane against the threshold that actually
+            // matters, not against its own maximum: in an empty room the
+            // maximum *is* the sensor noise, and stretching 0.3 C of noise
+            // across the full colour ramp makes a quiet room look like static.
+            const observedMax = Math.max(0, ...Array.from(preview.diff ?? []));
+            const diffMax = Math.max(observedMax, params.min_contrast * 1.5);
             push(n.id, n.type, started, {
               background: plane(preview.background, pair.tMin, pair.step),
               diff: quantise(preview.diff, 0, diffMax),
@@ -204,7 +209,7 @@ export class AlgoRuntime {
               }),
             }, {
               'foreground px': countMask(preview.foreground),
-              'max difference C': round(diffMax),
+              'max difference C': round(observedMax),
               'background ready': preview.backgroundReady ? 'yes' : 'learning',
             }, pick(wire, ['min_contrast', 'noise_k', 'bg_tau', 'bg_frames']));
             break;
