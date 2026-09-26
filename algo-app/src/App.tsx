@@ -426,24 +426,108 @@ export default function App() {
           <b>{spec?.name ?? 'Output'}</b>
           <span className="muted">frame {run?.frameId ?? '—'} · {run ? new Date(run.timestamp).toLocaleTimeString() : ''}</span>
         </div>
-        <div className="output-body">{envelope ? <Output envelope={envelope} /> : <div className="empty">no result yet</div>}</div>
+        <div className="output-body">{envelope ? <Output envelope={envelope} live={live} /> : <div className="empty">no result yet</div>}</div>
       </section>
 
-      <footer className="timeline">
-        <span className="muted">{frames.length} frames held</span>
-        <input type="range" min={0} max={Math.max(0, frames.length - 1)}
-          value={Math.max(0, frames.findIndex((f) => f.frame === (scrub ?? run?.frameId)))}
-          onChange={(e) => {
-            const f = frames[Number(e.target.value)];
-            if (!f) return;
-            setLive(false);
-            showFrame(f.frame);
-          }} />
-        <span className="muted">
-          frame {scrub ?? run?.frameId ?? '—'}{scrub !== null && scrub !== run?.frameId ? ' …' : ''}
-        </span>
-      </footer>
+      <Timeline
+        frames={frames} live={live} at={scrub ?? run?.frameId}
+        onScrub={(frame) => { setLive(false); showFrame(frame); }}
+        onLive={() => { setScrub(null); setLive(true); void api.mode('live'); }}
+      />
     </div>
+  );
+}
+
+/**
+ * The rig's own camera, beside the thermal frame it was taken with.
+ *
+ * Only for a dual-cam node, and deliberately labelled live rather than
+ * pretending to be the frame you are scrubbed to: the edge keeps one RGB
+ * frame in memory, not a history, so when you go back in time the thermal
+ * is from then and this is from now. Saying so is better than implying a
+ * pairing that does not exist -- the paired ones are what the recorder
+ * writes for training.
+ */
+function LiveCamera({ uid, live }: { uid: string; live: boolean }) {
+  const [tick, setTick] = useState(0);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    // The rig pushes about twice a second; asking at 1 Hz is plenty.
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (failed) return null;
+  return (
+    <figure>
+      <img
+        className="rgbview"
+        src={`/api/nodes/${encodeURIComponent(uid)}/rgb.jpg?t=${tick}`}
+        alt="the rig's camera"
+        onError={() => setFailed(true)}
+      />
+      <figcaption>
+        rig camera · <span className="livenow">live now</span>
+        {live ? '' : ' (the thermal beside it is from the past)'}
+      </figcaption>
+    </figure>
+  );
+}
+
+/**
+ * The scrubber, in the shape people already know from a live stream: pinned
+ * to the right while it is live, and the moment you drag back it stops being
+ * live and tells you the time you are looking at rather than a frame number.
+ * A frame number is the right thing for the envelope and the wrong thing for
+ * a person deciding whether they are watching now or two minutes ago.
+ */
+function Timeline({ frames, live, at, onScrub, onLive }: {
+  frames: { frame: number; at: number; detections: number | null }[];
+  live: boolean;
+  at: number | undefined;
+  onScrub: (frame: number) => void;
+  onLive: () => void;
+}) {
+  // Re-render on a tick so "1 min ago" keeps up while nothing else changes.
+  const [, setNow] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setNow((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const last = frames.length - 1;
+  const index = live ? last : Math.max(0, frames.findIndex((f) => f.frame === at));
+  const selected = frames[index] ?? frames[last];
+  const newest = frames[last];
+  const behind = selected && newest ? Math.max(0, Math.round((newest.at - selected.at) / 1000)) : 0;
+  const span = frames.length > 1 && newest && frames[0]
+    ? Math.round((newest.at - frames[0].at) / 1000)
+    : 0;
+
+  return (
+    <footer className="timeline">
+      <span className="muted">{span >= 120 ? `${Math.round(span / 60)} min` : `${span} s`} of history</span>
+      <input
+        type="range" min={0} max={Math.max(0, last)} value={index}
+        disabled={frames.length === 0}
+        onChange={(e) => {
+          const i = Number(e.target.value);
+          // Dragged back to the newest frame: that is what going live means.
+          if (i >= last) { onLive(); return; }
+          const f = frames[i];
+          if (f) onScrub(f.frame);
+        }}
+      />
+      <button className={`livepill ${live ? 'on' : ''}`} onClick={onLive} title={live ? 'watching now' : 'back to now'}>
+        {live
+          ? <><span className="livedot" />LIVE</>
+          : (
+            <>
+              <span className="clock">{selected ? new Date(selected.at).toLocaleTimeString() : '—'}</span>
+              <span className="behind">{behind >= 60 ? `−${Math.round(behind / 60)} min` : `−${behind}s`}</span>
+            </>
+          )}
+      </button>
+    </footer>
   );
 }
 
@@ -485,7 +569,7 @@ function TrainingData() {
 }
 
 /** Pick the viewer from what the node produced. */
-function Output({ envelope }: { envelope: Envelope }) {
+function Output({ envelope, live }: { envelope: Envelope; live: boolean }) {
   const o = envelope.outputs;
   const d = envelope.debug;
   if (envelope.error) return <div className="error-box">{envelope.error}</div>;
@@ -493,12 +577,14 @@ function Output({ envelope }: { envelope: Envelope }) {
   return (
     <>
       {warning && <div className="warn-box">{warning}</div>}
-      <Viewer envelope={envelope} o={o} d={d} />
+      <Viewer envelope={envelope} o={o} d={d} live={live} />
     </>
   );
 }
 
-function Viewer({ envelope, o, d }: { envelope: Envelope; o: Record<string, unknown>; d: Record<string, unknown> }) {
+function Viewer({ envelope, o, d, live }: {
+  envelope: Envelope; o: Record<string, unknown>; d: Record<string, unknown>; live: boolean;
+}) {
   // This sensor is mounted left-right reversed, so the picture it sends is a
   // mirror of the room. Everything else on screen -- the floor plan, the
   // tables, the projected people -- is in room coordinates, so the thermal
@@ -511,6 +597,7 @@ function Viewer({ envelope, o, d }: { envelope: Envelope; o: Record<string, unkn
       return f ? (
         <div className="views">
           <figure><GridView pixels={unpack(f.pixels)} mirror={mirror} /><figcaption>raw thermal{mirrorNote}</figcaption></figure>
+          {d.rgb === true && <LiveCamera uid={String(d.uid ?? '')} live={live} />}
           <div className="facts">
             <div><span>min</span><b>{f.min.toFixed(2)} °C</b></div>
             <div><span>max</span><b>{f.max.toFixed(2)} °C</b></div>

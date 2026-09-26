@@ -128,6 +128,8 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
         const floor = rt.reg.floors.find((f) => f.id === n.floorId);
         return {
           uid: n.uid, label: n.label, floorId: n.floorId, simulated: n.simulated,
+          /** A dual-cam rig: there is a live picture to show beside the thermal. */
+          rgb: n.rgb,
           online: h?.online ?? false, rawEvery: h?.status?.params?.raw_every ?? null,
           frames: algo.frames.list(n.uid).length,
           /** A floor students can see: changing this node is visible to them. */
@@ -276,6 +278,22 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     } catch (err) {
       return res.status(409).json({ error: (err as Error).message });
     }
+  });
+
+  /**
+   * The rig's own camera, latest frame. Only for nodes flagged rgb in the
+   * registry, and only ever from memory -- the same picture the console
+   * shows, on the screen where it is useful: next to the thermal frame it
+   * was taken with.
+   */
+  app.get('/api/nodes/:uid/rgb.jpg', (req, res) => {
+    const uid = (req.params.uid ?? '').toLowerCase();
+    if (!rt.reg.nodes.get(uid)?.rgb) return res.status(404).end();
+    const f = rt.rgb.get(uid);
+    if (!f) return res.status(404).end();
+    return res.set({ 'content-type': 'image/jpeg', 'cache-control': 'no-store' })
+      .set('x-tm-rgb-at', String(f.at))
+      .send(f.jpeg);
   });
 
   // --- training data ------------------------------------------------------

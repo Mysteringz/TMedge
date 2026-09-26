@@ -170,6 +170,9 @@ export class AlgoRuntime {
               sensorOk: health?.status ? true : null,
               backgroundReady: health?.backgroundReady ?? null,
               label: node?.label ?? uid,
+              uid,
+              // A dual-cam rig has a camera worth showing beside this frame.
+              rgb: node?.rgb ?? false,
               // This sensor is mounted so its image is left-right reversed
               // against the room. The geometry already knows (pixelToFloor
               // negates x), but a picture shown as the sensor sends it is
