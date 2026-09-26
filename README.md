@@ -14,8 +14,8 @@ Two services from one codebase:
 
 | Service | Runs on | Port | Sees |
 |---|---|---|---|
-| `edge` | the NUC (this Mac for now), on the sensor network | UDP 5200 in, 8090 console | everything, including raw thermal frames |
-| `web` | anywhere: this Mac, the NUC, or EC2 | 8080 | seat states only |
+| `edge` | a host on the sensor network | UDP 5200 in, 8090 console | everything, including raw thermal frames |
+| `web` | a local or cloud host | 8080 | seat states only |
 
 **The privacy boundary is the edge.** Raw frames and detections stay on the
 edge and in its admin console. The only thing that leaves is the occupancy
@@ -24,6 +24,9 @@ pixels and no positions. So the web tier can move to the cloud without
 changing what the system knows about anyone.
 
 ## Run it
+
+Keep deployment credentials in the git-ignored `.env` file. Account details
+below are examples; use your own approved university account and password.
 
 ```bash
 npm ci
@@ -84,7 +87,7 @@ release delay.
   the edge and web tiers, with optional simulator and Cloudflare Tunnel
   profiles. See **[DOCKER.md](DOCKER.md)** for installation and how the image
   and stack work.
-- **EC2 (the live system, hkumyseat.com):** edge, web and simulator as
+- **EC2:** edge, web and simulator as
   systemd units on one box, published through a Cloudflare Tunnel. Runbook:
   **[deploy/aws-ec2.md](deploy/aws-ec2.md)**.
 - Sign-in is local accounts limited to university email domains, as a
