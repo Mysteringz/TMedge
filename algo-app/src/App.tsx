@@ -19,6 +19,7 @@ import {
   api, unpack,
   type Envelope, type NodeSpec, type PendingChange, type Pipeline, type RunResult, type SourceNode,
 } from './api.ts';
+import { Divider, usePaneSize } from './panes.tsx';
 import { GridView, Histogram, Json, Plane, PlanView, Table, type HeatJson } from './viewers.tsx';
 
 const PORT_COLOUR: Record<string, string> = {
@@ -68,6 +69,9 @@ function StageNode({ data, id }: NodeProps) {
 
 const nodeTypes = { stage: StageNode };
 
+/** The timeline below the output strip, which the drag has to account for. */
+const TIMELINE_H = 36;
+
 export default function App() {
   const [specs, setSpecs] = useState<NodeSpec[]>([]);
   const [revertMs, setRevertMs] = useState(15 * 60_000);
@@ -88,6 +92,13 @@ export default function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const ws = useRef<WebSocket | null>(null);
   const flow = useReactFlow();
+  // Panes people can size themselves. The output strip is tall by default
+  // because a 32x24 frame drawn at a readable size is about 400 px, and a
+  // viewer that clips the picture it exists to show is no viewer.
+  const lib = usePaneSize('lib', 190, { min: 150, max: 420 });
+  const insp = usePaneSize('insp', 330, { min: 260, max: 620 });
+  const out = usePaneSize('out', 480, { min: 140, max: 1200 });
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void (async () => {
@@ -311,7 +322,11 @@ export default function App() {
       {notice && <div className="notice" onClick={() => setNotice(null)}>{notice} <span className="x">dismiss</span></div>}
       {run?.previewUnavailable && <div className="notice">{run.previewUnavailable}</div>}
 
-      <div className="body">
+      <div
+        className="body"
+        ref={bodyRef}
+        style={{ gridTemplateColumns: `${lib.size}px 6px minmax(0, 1fr) 6px ${insp.size}px` }}
+      >
         <aside className="library">
           <h3>Stages</h3>
           {['device', 'edge', 'view'].map((domain) => (
@@ -332,6 +347,14 @@ export default function App() {
           </p>
         </aside>
 
+        <Divider
+          axis="x" label="Stage list width"
+          onDrag={(x) => lib.set(x - (bodyRef.current?.getBoundingClientRect().left ?? 0))}
+          onCommit={(x) => lib.commit(x - (bodyRef.current?.getBoundingClientRect().left ?? 0))}
+          onNudge={(d) => lib.commit(lib.size + d)}
+          onReset={lib.reset}
+        />
+
         <main className="canvas">
           <ReactFlow
             nodes={nodes} edges={edges} nodeTypes={nodeTypes}
@@ -347,6 +370,14 @@ export default function App() {
             <Controls showInteractive={false} />
           </ReactFlow>
         </main>
+
+        <Divider
+          axis="x" label="Inspector width"
+          onDrag={(x) => insp.set((bodyRef.current?.getBoundingClientRect().right ?? window.innerWidth) - x)}
+          onCommit={(x) => insp.commit((bodyRef.current?.getBoundingClientRect().right ?? window.innerWidth) - x)}
+          onNudge={(d) => insp.commit(insp.size - d)}
+          onReset={insp.reset}
+        />
 
         <aside className="inspector">
           {spec ? (
@@ -421,7 +452,15 @@ export default function App() {
         </aside>
       </div>
 
-      <section className="output">
+      <Divider
+        axis="y" label="Output height"
+        onDrag={(y) => out.set(window.innerHeight - y - TIMELINE_H)}
+        onCommit={(y) => out.commit(window.innerHeight - y - TIMELINE_H)}
+        onNudge={(d) => out.commit(out.size - d)}
+        onReset={out.reset}
+      />
+
+      <section className="output" style={{ height: out.size }}>
         <div className="output-head">
           <b>{spec?.name ?? 'Output'}</b>
           <span className="muted">frame {run?.frameId ?? '—'} · {run ? new Date(run.timestamp).toLocaleTimeString() : ''}</span>
