@@ -9,3 +9,7 @@ data/
 __pycache__/
 *.pyc
 public-algo/
+
+# macOS and editors leave "name 2.ext" copies behind; they compiled quietly
+# once, as a second copy of a file whose whole point is that there is one.
+* [0-9].*
