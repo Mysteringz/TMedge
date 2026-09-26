@@ -88,7 +88,16 @@ export function startConsole(rt: EdgeRuntime): Server {
   });
 
   app.use(express.json({ limit: '4kb' }));
-  app.use(express.static(join(ROOT, 'public-console'), { index: 'index.html' }));
+  // Never cached. Express would send max-age=0 with an ETag, which is correct
+  // and not enough: Cloudflare caches by file extension in front of this, so a
+  // .js file can be served from the edge long after a deploy -- the same trap
+  // that once left the student site on last week's stylesheet. There are a
+  // handful of admins on this page and revalidating costs nothing, so the
+  // whole class of "is this the new one?" simply goes away.
+  app.use(express.static(join(ROOT, 'public-console'), {
+    index: 'index.html',
+    setHeaders: (res) => res.set('Cache-Control', 'no-store'),
+  }));
 
   app.get('/api/layout', (_req, res) => res.json(rt.layout()));
   app.get('/api/state', (_req, res) => res.json(state(rt)));
