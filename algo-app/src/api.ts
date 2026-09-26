@@ -90,6 +90,12 @@ export const api = {
   resetBackground: (uid?: string) =>
     fetch('/api/node/reset-background', { method: 'POST', headers: write, body: JSON.stringify({ uid }) }).then(json),
   wsToken: () => fetch('/api/ws-token').then(json<{ token: string }>),
+  pairs: () => fetch('/api/pairs').then(json<{
+    samples: number; withPeople: number; bytes: number; oldest: number | null; newest: number | null;
+    recording: boolean; lastSkipped: string | null; rgbNodes: string[];
+  }>),
+  record: (on: boolean) => fetch('/api/pairs/record', { method: 'POST', headers: write, body: JSON.stringify({ on }) })
+    .then(json<{ ok: boolean; samples: number; recording: boolean }>),
 };
 
 /** base64 plane -> bytes, for the canvas viewers. */

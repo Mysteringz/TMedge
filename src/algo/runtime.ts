@@ -19,7 +19,11 @@ import type { EdgeRuntime } from '../edge/runtime.js';
 import { DetectorHost, fromWireParams, type DetectorParams, type FrameResult } from './detector.js';
 import { DEFAULT_DESK, estimateDesks, type DeskParams } from './desk.js';
 import { encodeFrame, FrameStore } from './frames.js';
+import { isModel, locate, type LocatorModel } from './model.js';
 import { upstreamOf } from './graph.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { specOf } from './nodes.js';
 import type { ParamBroker } from './params.js';
 import type { FramePair, NodeEnvelope, Pipeline } from './types.js';
@@ -44,6 +48,8 @@ export interface RunResult {
   /** Set when the firmware detector could not be run here. */
   previewUnavailable: string | null;
 }
+
+const MODEL_DIR = join(process.env.DATA_DIR || join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'data'), 'algo', 'models');
 
 export class AlgoRuntime {
   readonly frames = new FrameStore();
@@ -260,6 +266,42 @@ export class AlgoRuntime {
             break;
           }
 
+          case 'human_location_ml': {
+            const model = loadModel(uid);
+            if (!model) {
+              push(n.id, n.type, started, { points: [] }, {
+                untrained: true,
+                expects: join(MODEL_DIR, `${uid.replace(/:/g, '')}.json`),
+                how: 'record RGB/thermal pairs on a rig with a camera, then run tools/train_human_location.py and put the model here',
+              }, { trained: 'no' }, {});
+              break;
+            }
+            const threshold = n.params.threshold ?? model.threshold;
+            const minArea = n.params.minArea ?? model.minArea;
+            const { detections, probs } = locate({ ...model, threshold, minArea }, pair.temps);
+            const points = projected(detections.map((d) => ({ x: d.x, y: d.y, area: d.area, heat: 0 })));
+            // The device's own answer for the same frame is the only fair
+            // comparison available live, so it is shown beside this one.
+            const observed = pair.deviceDetections ?? [];
+            push(n.id, n.type, started, { points }, {
+              probabilities: quantise(probs, 0, 1),
+              detections,
+              observed,
+              model: {
+                trainedAt: model.trainedAt, samples: model.samples, positives: model.positives,
+                metrics: model.metrics, notes: model.notes ?? null,
+              },
+              mirror: node?.pose.mirror ?? false,
+            }, {
+              people: detections.length,
+              'device said': observed.length,
+              threshold,
+              'held-out F1': model.metrics.f1,
+              'median error px': model.metrics.medianErrorPx,
+            }, { threshold, minArea });
+            break;
+          }
+
           case 'heatmap': {
             const dwell = floor ? this.rt.dwell.get(floor.id) : undefined;
             const json = dwell?.toJSON() ?? null;
@@ -373,6 +415,27 @@ export class AlgoRuntime {
     for (const n of p.nodes) if (specOf(n.type)?.domain === 'device') Object.assign(edits, n.params);
     return this.resolveDetector(p.uid, edits).dirty;
   }
+}
+
+const modelCache = new Map<string, { at: number; model: LocatorModel | null }>();
+
+/** Re-read at most every 10 s, so dropping in a new model needs no restart. */
+function loadModel(uid: string): LocatorModel | null {
+  const key = uid.replace(/:/g, '');
+  const hit = modelCache.get(key);
+  if (hit && Date.now() - hit.at < 10_000) return hit.model;
+  const path = join(MODEL_DIR, `${key}.json`);
+  let model: LocatorModel | null = null;
+  try {
+    if (existsSync(path)) {
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      model = isModel(parsed) ? parsed : null;
+    }
+  } catch {
+    model = null;
+  }
+  modelCache.set(key, { at: Date.now(), model });
+  return model;
 }
 
 function pick(src: Record<string, number>, keys: string[]): Record<string, number> {

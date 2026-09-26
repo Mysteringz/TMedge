@@ -104,6 +104,25 @@ export const NODE_SPECS: NodeSpec[] = [
     params: [],
   },
   {
+    type: 'human_location_ml',
+    name: 'Human Location ML',
+    version: '0.1',
+    category: 'ml',
+    domain: 'edge',
+    summary: 'Places people from the thermal frame alone, using weights learned from the rig\u2019s RGB camera. Drops in where Human Location was.',
+    inputs: [{ id: 'frame', label: 'frame', type: 'thermal' }],
+    outputs: [{ id: 'points', label: 'people', type: 'points' }],
+    params: [
+      {
+        id: 'threshold', label: 'Probability threshold', min: 0.05, max: 0.95, step: 0.05, binding: local,
+        help: 'How sure the model has to be before a pixel counts as a person. Overrides what training chose.',
+      },
+      {
+        id: 'minArea', label: 'Min blob area', min: 1, max: 40, step: 1, unit: 'px', binding: local,
+      },
+    ],
+  },
+  {
     type: 'heatmap',
     name: 'Historical Heat Map',
     version: '1',
