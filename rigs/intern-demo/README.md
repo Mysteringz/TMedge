@@ -1,12 +1,11 @@
 # Intern desk verification rig
 
-A Raspberry Pi above an intern desk in the Innovation Wing, with a Pi Camera 3
-Wide and an ESP32 + MLX90640 thermal node on USB serial. The lab uses it to
-compare RGB against thermal. Here, it is shown as the console-only floor
+A Raspberry Pi verification rig with a Pi Camera 3 Wide and an ESP32 +
+MLX90640 thermal node on USB serial, used to compare RGB against thermal.
+Here, it is shown as the console-only floor
 **Intern Space Demo** (one desk, two chairs on one side).
 
-**The lab's own software is never modified.** That's `dualcam-recorder.service`,
-which runs `/home/ttl/crowdaware-dual-cam-test/python_parser/raw_dualcam_recorder.py`.
+**The lab's own software is never modified.** That's `dualcam-recorder.service`.
 It holds the camera and the serial port exclusively, so the demo stops it
 while running and restarts it afterwards. Everything of ours lives in
 `/opt/tm-demo` on the Pi and runs as a transient systemd unit.
@@ -40,17 +39,16 @@ the lab recorder is still enabled at boot.
 
 ## Network
 
-The dev Mac's NordVPN captures traffic headed into the tailnet. The edge
-therefore reaches the tailnet through a second, userspace-only Tailscale
-client (`tmedge-mac-userspace`, 100.84.194.47), which forwards the rig's UDP
-and TCP to localhost. So the rig appears at `127.0.0.1`, and the edge
-correctly refuses to send it commands. On the NUC, set `EDGE_HOST` in
-`/opt/tm-demo/bridge.env` to the NUC's tailnet address.
+If a host VPN captures tailnet traffic, a userspace Tailscale client can
+forward the rig's UDP and TCP to localhost. In that setup the rig appears at
+`127.0.0.1`, and the edge correctly refuses to send it commands. For a direct
+connection, set `EDGE_HOST` in `/opt/tm-demo/bridge.env` to your edge host's
+tailnet address. Keep actual hostnames, addresses and credentials in private
+deployment configuration.
 
 ## Layout
 
-The desk and its two chairs (`D1-A`, `D1-B`) were placed from a dwell map
-built by running the detector over 8,139 of the lab's archived thermal frames
-(7 weeks). Chair B is the seat used most. `D1` uses a 50 cm seat radius,
-because the bench next to the desk is within the site-wide 80 cm of chair B.
-The mounting height (280 cm) is an estimate, and so is chair A's position.
+The demo floor has one desk (`D1`) and two chairs (`D1-A`, `D1-B`). Calibrate
+chair positions and mounting height for your own rig. Use a per-table seat
+radius when the site-wide radius would include nearby seating. Keep recorded
+occupancy patterns and site measurements out of public documentation.
