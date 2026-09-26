@@ -122,10 +122,38 @@ pieces:
    numpy and OpenCV live. People are found by background subtraction against a
    median of the scene — a fixed overhead camera makes that reliable, where a
    pedestrian detector would struggle with the view from above. It then
-   **fits the RGB→thermal transform from the data**, using frames with exactly
-   one person and one clear hot blob, because nobody wrote down how the two
-   cameras are mounted and the thermal is mirrored besides. A poor fit stops
-   the run rather than training on scrambled labels.
+   **fits the RGB→thermal transform from the data**, because nobody wrote down
+   how the two cameras are mounted. A poor fit stops the run rather than
+   training on scrambled labels.
+
+   The obvious way to calibrate would be one person alone in the room. Real
+   rooms do not cooperate: over five hours of the intern desk there was never
+   a single frame with exactly one person in the camera *and* one warm blob in
+   the thermal — the median frame has four of each. So no correspondence is
+   assumed. Every (camera blob, thermal blob) pair inside a frame is a
+   candidate, most of them wrong; RANSAC samples two candidates from different
+   frames, fits a similarity transform, and counts how many other candidates
+   it explains, at most one per frame. The true geometry is the one thing
+   consistent across hundreds of frames, and wrong pairings agree with
+   nothing.
+
+### What the fit found
+
+On 324 pairs from the intern rig it converged on 309 frames at **1.36 thermal
+pixels RMS**: a scale of 0.037 (640 camera pixels onto 24 thermal), a rotation
+of **−28.5°**, and a **positive determinant — no reflection**.
+
+That last number settled an argument. The rig's pose says `mirror: true`, and
+it is right: projecting five hours of recorded detections onto the floor puts
+29% of them within 70 cm of the table it watches with the mirror applied
+against 17% without, and halves the median distance from its centre. So the
+*thermal is* mirrored with respect to the floor plan. But the camera sits on
+the same bracket, so it is mirrored in exactly the same way, and between the
+two images there is no flip at all — only that 28° rotation.
+
+Which means a view that mirrors the thermal to face the room and leaves the
+photograph alone will show the two disagreeing, and that is a display bug, not
+a calibration one. Both are mirrored together now, in the console and here.
 3. **Inference** (`src/algo/model.ts`) is a few dozen weights applied per
    pixel: logistic regression over local thermal features, then threshold,
    group and take the centroid. No runtime dependency, and small enough to
