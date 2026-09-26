@@ -314,6 +314,9 @@ function renderHealth(): void {
     <div><h3>Rejected packets by reason</h3><ul>${Object.entries(h.rejectReasons).map(([k, v]) => `<li>${esc(k)}: ${v}</li>`).join('') || '<li>none</li>'}</ul></div>
     <div><h3>Rejected sources</h3><ul>${h.unknownSources.map((s) => `<li>${esc(s.address)} ${esc(s.uid ?? '')} ×${s.count} — ${esc(s.reason)} (${fmtAge(s.lastSeen)})</li>`).join('') || '<li>none</li>'}</ul></div>
     <div><h3>Access gateways${h.gatewayPort ? ` (TCP ${h.gatewayPort})` : ' (disabled: no TMGW_TOKEN)'}</h3><ul>${h.gateways.map((g) => `<li><b>${esc(g.id)}</b> over ${g.transport === 'websocket' ? 'WebSocket' : 'TCP'} from ${esc(g.remote)} · up ${g.uplink} · down ${g.downlink} · rtt ${g.rttMs ?? '–'} ms · connected ${fmtAge(g.connectedAt)}${g.stats && typeof g.stats.nodes === 'number' ? ` · ${g.stats.nodes} local node(s)` : ''}</li>`).join('') || '<li>none connected</li>'}</ul></div>
+    <div><h3>Direct nodes${h.nodeListener ? ` (tmnode.v1, ${esc(h.nodeListener.host)}:${h.nodeListener.port})` : ' (disabled: no NODE_PORT)'}</h3><ul>${h.nodeListener
+      ? `<li>${h.nodeListener.sessions} session(s) · ${h.nodeListener.pending} handshaking · ${h.nodeListener.grants} download grant(s)</li>${Object.entries(h.nodeListener.rejects).map(([k, v]) => `<li>${esc(k)}: ${v}</li>`).join('')}`
+      : '<li>off</li>'}</ul></div>
     <div><h3>Ingest</h3><ul><li>UDP ${esc(String(h.udp.iface))}:${h.udp.port}</li><li>recording to ${esc(h.recorder.dir)}${h.recorder.rawEnabled ? ' (with raw)' : ''}</li><li>host ${esc(h.hostname)}, ${h.sysFreeMb}/${h.sysTotalMb} MB free</li></ul></div>`;
 }
 
@@ -330,7 +333,7 @@ function renderNodes(): void {
       <td>${n.sceneMin?.toFixed(1) ?? '–'}–${n.sceneMax?.toFixed(1) ?? '–'} °C</td>
       <td>${s ? `${s.rssi} dBm` : '–'}</td><td>${s ? `${(s.heap / 1024).toFixed(0)} kB` : '–'}</td>
       <td>${s?.fw ?? '–'}</td><td>${n.lastSeen === null ? '–' : n.signed ? 'signed' : '<b style="color:var(--bad)">UNSIGNED</b>'}</td>
-      <td>${n.address ?? '–'}</td><td>${fmtAge(n.lastSeen)}</td></tr>`;
+      <td title="${esc(n.address ?? '')}">${addressCell(n)}</td><td>${fmtAge(n.lastSeen)}</td></tr>`;
   }).join('');
   $('#nodes').innerHTML = `<thead><tr><th>Node</th><th>MAC</th><th>fps</th><th>loss</th><th>blobs</th><th>counting</th><th>background</th><th>scene</th><th>RSSI</th><th>heap</th><th>firmware</th><th>auth</th><th>address</th><th>last seen</th></tr></thead><tbody>${rows}</tbody>`;
   $('#nodes').querySelectorAll('tr[data-uid]').forEach((tr) => tr.addEventListener('click', () => select(tr.getAttribute('data-uid'))));
@@ -422,6 +425,27 @@ function drawBig(): void {
   $('#scale-hi').textContent = `${hi.toFixed(1)} °C`;
 }
 
+/** Short enough for the table: a direct node's address is a session, not a place. */
+function addressCell(n: NodeHealth): string {
+  if (n.transport === 'direct') return `wss · ${esc(n.direct?.sessionId?.slice(0, 6) ?? 'session')}`;
+  if (n.transport === null && n.address) return 'wss · closed';
+  return esc(n.address ?? '–');
+}
+
+/** How the node reaches the edge; for a direct node, its session in one line. */
+function uplink(n: NodeHealth): string {
+  const d = n.direct;
+  if (n.transport === 'gateway') return 'via access gateway';
+  if (n.transport === 'udp') return d ? `udp (earlier direct sessions: ${d.connects})` : 'udp';
+  if (!d) return n.transport === 'direct' ? 'direct' : '–';
+  const parts = [d.connected ? `direct session ${d.sessionId?.slice(0, 6) ?? ''} from ${d.source ?? '?'}, up ${fmtAge(d.connectedAt)}` : 'direct session closed'];
+  if (d.connected) parts.push(`report accepted ${fmtAge(d.lastReportAt)}`, `${d.acks} ACKs`, `${d.rejected} refused${d.lastRejection ? ` (last: ${d.lastRejection})` : ''}`);
+  if (d.previousKey) parts.push('on TM_KEY_PREVIOUS');
+  parts.push(`${d.connects} connect(s)`);
+  if (d.lastDisconnectAt) parts.push(`last disconnect ${fmtAge(d.lastDisconnectAt)}: ${d.lastDisconnectReason ?? '?'}`);
+  return parts.join(' · ');
+}
+
 function renderDetail(): void {
   const n = last?.nodes.find((x) => x.uid === selected);
   if (!n) return;
@@ -444,14 +468,18 @@ function renderDetail(): void {
     ['memory', s ? `heap ${(s.heap / 1024).toFixed(0)} kB (min ${(s.minHeap / 1024).toFixed(0)}) · stack free ${s.stackFree} B` : '–'],
     ['sensor', s ? `Vdd ${s.vdd.toFixed(2)} V · errors ${s.sensorErrors} · frames ${s.frames}` : '–'],
     ['last command applied', s ? (s.lastCmd ? new Date(s.lastCmd * 1000).toLocaleTimeString() : 'none') : '–'],
+    ['uplink', uplink(n)],
   ];
   $('#detail-kv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
   const controls = $('#controls');
   // Heard through a local proxy (the RGB rig via userspace Tailscale): there is
   // no route back, so offering commands would only produce errors.
-  const proxied = n.address !== null && /^(127\.|::1$|::ffff:127\.)/.test(n.address);
-  controls.hidden = !n.online || proxied;
-  $('#cmd-result').textContent = proxied ? 'Commands unavailable: this node is reached through a local proxy.' : $('#cmd-result').textContent;
+  const proxied = n.transport === 'udp' && n.address !== null && /^(127\.|::1$|::ffff:127\.)/.test(n.address);
+  // A direct node whose session has closed has no route until it reconnects.
+  const noRoute = n.address !== null && n.transport === null;
+  controls.hidden = !n.online || proxied || noRoute;
+  $('#cmd-result').textContent = proxied ? 'Commands unavailable: this node is reached through a local proxy.'
+    : noRoute ? 'Commands unavailable: the node\'s direct session has closed.' : $('#cmd-result').textContent;
   const params = $('#params');
   if (s && params.dataset.uid !== n.uid) {
     params.dataset.uid = n.uid;

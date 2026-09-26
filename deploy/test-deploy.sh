@@ -78,6 +78,7 @@ WEB_PORT=18080
 WEB_HOST=127.0.0.1
 CONSOLE_PORT=18090
 CONSOLE_HOST=127.0.0.1
+NODE_PORT=18211
 ALGO_PORT=18091
 ALGO_HOST=127.0.0.1
 UDP_PORT=15200
@@ -131,7 +132,9 @@ rel="$TM_BASE/tmedge-releases/$second"
 [ -z "$(find "$rel" -path "$rel/node_modules" -prune -o -perm -o+w ! -type l -print)" ] || fail "release code is writable by others"
 [ "$(stat -c %a "$TM_BASE/tmedge-shared/.env" 2>/dev/null || stat -f %Lp "$TM_BASE/tmedge-shared/.env")" = 600 ] || fail ".env is not 600"
 web_up || fail "site down after deploy"
-ok "all seven steps ran; live = $second; no .env uploaded; deps reused; site up"
+# .env sets NODE_PORT, so the direct node listener is part of "healthy".
+grep -q "healthy: .*nodes 200" "$T/deploy1.log" || fail "the direct node listener was not health-checked"
+ok "all seven steps ran; live = $second; no .env uploaded; deps reused; site and node listener up"
 
 echo "claim: a corrupted retained release cannot be activated"
 corrupt="29990101T000003Z-corrupt"

@@ -28,6 +28,11 @@ services:
     environment:
       WEB_PUSH_URLS: http://web:8080
       DATA_DIR: /data
+      # Direct TMsense nodes (tmnode.v1, docs/DIRECT_NODE_PROTOCOL.md): off
+      # unless NODE_PORT is set in .env. Inside the container it has to listen
+      # beyond loopback for the tunnel container to reach it; the published
+      # port below still binds to BIND_ADDR.
+      NODE_HOST: 0.0.0.0
     volumes:
       - ./config:/app/config:ro
       - edge-data:/data
@@ -35,6 +40,7 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:5200:5200/udp"   # TMnodes sending directly
       - "${BIND_ADDR:-127.0.0.1}:5210:5210"       # access gateways (TMWAccess), raw TCP or WebSocket
       - "${BIND_ADDR:-127.0.0.1}:8090:8090"       # debug console (admin)
+      - "${BIND_ADDR:-127.0.0.1}:5211:5211"       # direct TMsense nodes (with NODE_PORT=5211)
     # Nodes that talk to the edge directly (not through a gateway) are sent
     # commands at their source address; on Linux, uncomment host networking
     # so that address is the node's, not Docker's NAT. Gateways do not need it.

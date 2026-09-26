@@ -43,9 +43,11 @@ function harness(nodes: RolloutNode[]) {
   return { rollouts, sent, images, ready, report, advance, clock: () => clock };
 }
 
-const node = (uid: string, over: Partial<RolloutNode> = {}): RolloutNode => ({
-  uid, label: `Above ${uid}`, floorId: 'iw-maker-a', address: 'gw:esanhouse|192.168.0.9:5200', online: true, ...over,
-});
+const node = (uid: string, over: Partial<RolloutNode> = {}): RolloutNode => {
+  const n: RolloutNode = { uid, label: `Above ${uid}`, floorId: 'iw-maker-a', address: 'gw:esanhouse|192.168.0.9:5200', transport: 'gateway', online: true, ...over };
+  if (over.transport === undefined) n.transport = n.address === null ? null : n.address.startsWith('gw:') ? 'gateway' : 'udp';
+  return n;
+};
 
 test('the pilot goes alone: nothing else is touched until it confirms', () => {
   const h = harness([node('n1'), node('n2'), node('n3')]);
@@ -142,6 +144,33 @@ test('a node that talks to the edge directly fetches from the edge, not a gatewa
   h.rollouts.start('beef1234beef1234', { kind: 'all' }, 'tester');
   assert.equal(h.images.length, 0, 'no gateway is involved');
   assert.deepEqual(h.sent, [{ uid: 'direct', port: 8090 }], 'it is pointed at the edge console port');
+});
+
+test('a direct-to-cloud node is sent 443 and its /fw path: never a gateway push, never the console port', () => {
+  const h = harness([node('wss', { address: 'ws:wss:session', transport: 'direct' })]);
+  h.rollouts.start('beef1234beef1234', { kind: 'all' }, 'tester');
+  assert.equal(h.images.length, 0, 'no gateway is involved');
+  assert.deepEqual(h.sent, [{ uid: 'wss', port: 443 }]);
+  assert.equal(h.rollouts.current()?.nodes[0]?.gatewayId, null);
+});
+
+test('a direct node may download only while its own step is waiting for the image', () => {
+  const h = harness([node('wss', { address: 'ws:wss:s', transport: 'direct' }), node('other', { address: 'ws:other:s', transport: 'direct' })]);
+  h.rollouts.start('beef1234beef1234', { kind: 'all' }, 'tester');
+  assert.equal(h.rollouts.wantsDownload('wss', 'beef1234beef1234'), true);
+  assert.equal(h.rollouts.wantsDownload('wss', 'feedfeedfeedfeed'), false, 'another build');
+  assert.equal(h.rollouts.wantsDownload('other', 'beef1234beef1234'), false, 'still queued behind the pilot');
+  h.report('wss', 'downloading', 40);
+  assert.equal(h.rollouts.wantsDownload('wss', 'beef1234beef1234'), true);
+  h.report('wss', 'rebooting', 100);
+  assert.equal(h.rollouts.wantsDownload('wss', 'beef1234beef1234'), false, 'done downloading');
+  h.rollouts.cancel('tester');
+  assert.equal(h.rollouts.wantsDownload('other', 'beef1234beef1234'), false, 'cancelled');
+});
+
+test('a node whose direct session has closed is not a rollout target', () => {
+  const h = harness([node('gone', { address: 'ws:gone:s', transport: null })]);
+  assert.equal(h.rollouts.select({ kind: 'all' }).length, 0);
 });
 
 test('two rollouts cannot run at once', () => {
