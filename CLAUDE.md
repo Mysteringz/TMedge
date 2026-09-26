@@ -7,7 +7,9 @@ in `../TMsense` (the thermal node, formerly TMnode).
 
 ```
 src/edge/protocol.ts     wire format reader — mirrors TMsense/include/tm_protocol.h
-src/edge/ingest.ts       UDP, HMAC, replay by (boot, seq), per-node loss, commands
+src/edge/ingest.ts       every transport's packets: HMAC, replay by (boot, seq), routes, commands
+src/edge/nodelink.ts     direct TMsense nodes over WSS (tmnode.v1): auth, ACKs, freshness, OTA grants
+                         -- contract in docs/DIRECT_NODE_PROTOCOL.md, rollout in docs/DIRECT_NODE_RUNBOOK.md
 src/edge/registry.ts     site/nodes config + strict validation, coverage per table
 src/edge/occupancy.ts    projection -> authority per table -> seats -> smoothing
 src/edge/runtime.ts      wires ingest/occupancy/recorder/publisher; node & edge health
@@ -68,6 +70,12 @@ has hidden Linux failures before.
   every change is in `data/algo/audit.jsonl` with its old value.
 - **Config is strict.** Add validation for any new field.
 - **Wire format changes touch both repos** and `npm run crosscheck`.
+- **One path for every transport.** UDP, TMGW and direct WSS all go through
+  `Ingest.handle`; no transport skips the signature, replay rule or
+  occupancy. Only an accepted packet may set a node's route or earn an ACK,
+  and a direct node's closed session is "no route", never a UDP fallback.
+- **The node listener is not a web surface.** `/tmnode`, `/fw/<id>.bin` (grant
+  only) and `/healthz`; nothing a person could read. It binds to loopback.
 
 ## Conventions
 

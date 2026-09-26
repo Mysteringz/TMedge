@@ -99,11 +99,24 @@ except (OSError, ValueError, TypeError, AttributeError):
 PYTHON
 }
 
+# The direct node listener (tmnode.v1) runs inside the edge when .env sets
+# NODE_PORT. Only that one value is read from .env, and never printed. A
+# listener that is configured but not answering shuts every direct node out,
+# so it fails the release like any other dead service. "off" when not set.
+node_health() {
+  local envf="" f port
+  for f in "$SHARED/.env" "$BASE/tmedge/.env"; do [ -f "$f" ] && { envf="$f"; break; }; done
+  port="$( [ -n "$envf" ] && sed -n 's/^NODE_PORT=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$envf" | tail -1 || true)"
+  if [ -z "$port" ] || [ "$port" = 0 ]; then echo off; return; fi
+  http_status "http://127.0.0.1:$port/healthz"
+}
+
 # Healthy = every unit active and not restarted by systemd during SETTLE,
-# the student site's /healthz answers 200, and the console and the algo
-# debugger answer at all (401 is correct: they want the admin password).
+# the student site's /healthz answers 200, the console and the algo
+# debugger answer at all (401 is correct: they want the admin password), and
+# the direct node listener, if configured, answers its /healthz.
 healthy() {
-  local s before=() i=0 web console algo
+  local s before=() i=0 web console algo node
   for s in $SERVICES; do before+=("$(restarts_of "$s")"); done
   sleep "$SETTLE"
   for s in $SERVICES; do
@@ -119,13 +132,15 @@ healthy() {
       200|401) algo=ok ;;
       *) algo="$(http_status "$ALGO_HEALTH")" ;;
     esac
-    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ]; } && [ "$algo" = ok ] && snapshot_ready; then
-      say "healthy: web $web, console $console, algo $algo"
+    node="$(node_health)"
+    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ]; } && [ "$algo" = ok ] &&
+       { [ "$node" = off ] || [ "$node" = 200 ]; } && snapshot_ready; then
+      say "healthy: web $web, console $console, algo $algo, nodes $node"
       return 0
     fi
     sleep 2
   done
-  say "unhealthy: web ${web:-none}, console ${console:-none}, algo ${algo:-none}"
+  say "unhealthy: web ${web:-none}, console ${console:-none}, algo ${algo:-none}, nodes ${node:-none}"
   return 1
 }
 

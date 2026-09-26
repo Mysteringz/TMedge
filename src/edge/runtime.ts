@@ -11,6 +11,8 @@ import { DwellMap } from './dwell.js';
 import { GatewayServer } from './gwlink.js';
 import { HostMonitor } from './health.js';
 import { Ingest } from './ingest.js';
+import { NodeServer } from './nodelink.js';
+import { readFileSync } from 'node:fs';
 import { DEFAULT_OCCUPANCY, OccupancyEngine, type OccupancyOptions } from './occupancy.js';
 import { REPORT_BACKGROUND_READY, REPORT_GLOBAL_SHIFT, type Raw, type Report, type Status } from './protocol.js';
 import { Publisher } from './publisher.js';
@@ -45,6 +47,8 @@ export class EdgeRuntime extends EventEmitter {
   readonly host = new HostMonitor();
   readonly dwell = new Map<string, DwellMap>();
   readonly gateways: GatewayServer | null;
+  /** Nodes that reach this edge directly over WSS (NODE_PORT); null when off. */
+  readonly direct: NodeServer | null;
   private readonly info = new Map<string, NodeInfo>();
   private publishTimer: NodeJS.Timeout | null = null;
   private rolloutTimer: NodeJS.Timeout | null = null;
@@ -87,18 +91,43 @@ export class EdgeRuntime extends EventEmitter {
         return build && bytes ? { bytes, sha256: build.sha256, size: build.size, version: build.version } : null;
       },
       nodes: () => this.nodes().filter((n) => n.registered).map((n) => ({
-        uid: n.uid, label: n.label, floorId: n.floorId, address: n.address, online: n.online,
+        uid: n.uid, label: n.label, floorId: n.floorId, address: n.address, transport: n.transport, online: n.online,
       })),
       sendImageToGateway: (id, meta, bytes) => this.gateways?.sendImage(id, meta, bytes) ?? false,
       sendOta: (uid, image) => this.ingest.sendOta(uid, image),
+      onNodeDone: (uid) => this.direct?.revokeGrants(uid),
       directPort: cfg.consolePort,
       log: (m) => console.log(`[edge] ${m}`),
     });
+    this.direct = cfg.nodePort > 0
+      ? new NodeServer({
+        host: cfg.nodeHost,
+        port: cfg.nodePort,
+        limits: cfg.nodeLimits,
+        keys: cfg.keys,
+        isRegistered: (uid) => this.reg.nodes.has(uid),
+        ingest: (datagram, route) => this.ingest.handle(datagram, route),
+        dropRoute: (uid, sessionId) => void this.ingest.dropDirectRoute(uid, sessionId),
+        image: (buildId) => this.firmware.bytes(buildId),
+        otaApproved: (uid, buildId) => this.rollouts.wantsDownload(uid, buildId),
+        tls: cfg.nodeTls ? { cert: readFileSync(cfg.nodeTls.certPath), key: readFileSync(cfg.nodeTls.keyPath) } : undefined,
+        log: (m) => console.log(`[edge] ${m}`),
+      })
+      : null;
     this.ingest.on('report', (p, _a, at) => this.onReport(p, at));
     this.ingest.on('raw', (p, _a, at) => this.onRaw(p, at));
     this.ingest.on('status', (p, _a, at) => this.onStatus(p, at));
     this.ingest.on('ota', (p) => this.rollouts.onOtaStatus(p.uid, p));
     this.latest = this.engine.snapshot(Date.now());
+  }
+
+  /**
+   * Bind the direct node listener. Awaited by main: a listener that was
+   * configured and cannot bind must stop the service, not leave an edge that
+   * looks healthy while every direct node is shut out.
+   */
+  async startNodeListener(): Promise<number | null> {
+    return this.direct ? this.direct.listen() : null;
   }
 
   start(): void {
@@ -116,6 +145,7 @@ export class EdgeRuntime extends EventEmitter {
     if (this.rolloutTimer) clearInterval(this.rolloutTimer);
     await this.ingest.stop();
     await this.gateways?.close();
+    await this.direct?.close();
     await this.recorder.close();
   }
 
@@ -215,6 +245,8 @@ export class EdgeRuntime extends EventEmitter {
         pose: def?.pose ?? null,
         online: !!i?.lastReportAt && now - i.lastReportAt < 10_000,
         address: link?.address ?? null,
+        transport: link ? (link.route?.kind ?? null) : null,
+        direct: this.directInfo(uid),
         lastSeen: link?.lastSeen ?? null,
         firstSeen: link?.firstSeen ?? null,
         signed: link?.signed ?? false,
@@ -243,6 +275,27 @@ export class EdgeRuntime extends EventEmitter {
     });
   }
 
+  private directInfo(uid: string): NodeHealth['direct'] {
+    if (!this.direct) return null;
+    const { session: s, history: h } = this.direct.nodeInfo(uid);
+    if (!s && !h) return null;
+    return {
+      connected: !!s,
+      sessionId: s?.sessionId ?? null,
+      source: s?.source ?? null,
+      connectedAt: s?.connectedAt ?? null,
+      lastAcceptedAt: s?.lastAcceptedAt ?? null,
+      lastReportAt: s?.lastReportAt ?? null,
+      acks: s?.acks ?? 0,
+      rejected: s?.rejected ?? 0,
+      lastRejection: s?.lastRejection ?? null,
+      previousKey: (s?.keyIndex ?? 0) > 0,
+      connects: h?.connects ?? 0,
+      lastDisconnectAt: h?.lastDisconnectAt ?? null,
+      lastDisconnectReason: h?.lastDisconnectReason ?? null,
+    };
+  }
+
   health(now = Date.now()): EdgeHealth {
     const rates = this.ingest.rates();
     return {
@@ -258,6 +311,7 @@ export class EdgeRuntime extends EventEmitter {
       udp: { port: this.cfg.udpPort, iface: this.cfg.udpHost },
       gateways: this.gateways?.gateways() ?? [],
       gatewayPort: this.gateways ? this.cfg.gatewayPort : null,
+      nodeListener: this.direct ? { port: this.cfg.nodePort, host: this.cfg.nodeHost, ...this.direct.stats() } : null,
     };
   }
 

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # TMedge -- one image, three roles:
-#   edge  UDP 5200 (TMnodes), TCP 5210 (access gateways), 8090 (debug console)
+#   edge  UDP 5200 (TMnodes), TCP 5210 (access gateways), 5211 (direct nodes, if NODE_PORT=5211), 8090 (debug console)
 #   web   8080 (student site)
 #   sim   virtual TMnodes for testing (sends to the edge)
 #
@@ -50,7 +50,7 @@ COPY docker/entrypoint.sh /usr/local/bin/tmedge
 RUN chmod 755 /usr/local/bin/tmedge && mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
 USER node
-EXPOSE 5200/udp 5210 8080 8090
+EXPOSE 5200/udp 5210 5211 8080 8090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["tmedge", "health"]
 ENTRYPOINT ["tmedge"]
 CMD ["web"]
