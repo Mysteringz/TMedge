@@ -437,12 +437,18 @@ function Output({ envelope }: { envelope: Envelope }) {
 }
 
 function Viewer({ envelope, o, d }: { envelope: Envelope; o: Record<string, unknown>; d: Record<string, unknown> }) {
+  // This sensor is mounted left-right reversed, so the picture it sends is a
+  // mirror of the room. Everything else on screen -- the floor plan, the
+  // tables, the projected people -- is in room coordinates, so the thermal
+  // views are flipped to match and say so underneath.
+  const mirror = d.mirror === true;
+  const mirrorNote = mirror ? ' · mirrored to match the room' : '';
   switch (envelope.type) {
     case 'thermal_input': {
       const f = o.frame as { pixels: string; min: number; max: number; mean: number } | undefined;
       return f ? (
         <div className="views">
-          <figure><GridView pixels={unpack(f.pixels)} /><figcaption>raw thermal</figcaption></figure>
+          <figure><GridView pixels={unpack(f.pixels)} mirror={mirror} /><figcaption>raw thermal{mirrorNote}</figcaption></figure>
           <div className="facts">
             <div><span>min</span><b>{f.min.toFixed(2)} °C</b></div>
             <div><span>max</span><b>{f.max.toFixed(2)} °C</b></div>
@@ -454,9 +460,9 @@ function Viewer({ envelope, o, d }: { envelope: Envelope; o: Record<string, unkn
     case 'background_subtraction':
       return (
         <div className="views">
-          <figure><Plane data={o.background as never} colour="grey" /><figcaption>background model</figcaption></figure>
-          <figure><Plane data={o.diff as never} /><figcaption>difference</figcaption></figure>
-          <figure><Plane data={o.foreground as never} colour="mask" /><figcaption>foreground mask</figcaption></figure>
+          <figure><Plane data={o.background as never} colour="grey" mirror={mirror} /><figcaption>background model{mirrorNote}</figcaption></figure>
+          <figure><Plane data={o.diff as never} mirror={mirror} /><figcaption>difference{mirrorNote}</figcaption></figure>
+          <figure><Plane data={o.foreground as never} colour="mask" mirror={mirror} /><figcaption>foreground mask{mirrorNote}</figcaption></figure>
         </div>
       );
     case 'human_detection': {
@@ -464,8 +470,8 @@ function Viewer({ envelope, o, d }: { envelope: Envelope; o: Record<string, unkn
       return (
         <div className="views">
           <figure>
-            <Plane data={o.labels as never} colour="label" blobs={blobs} observed={(d.observed ?? []) as never[]} labelled />
-            <figcaption>blobs (solid) vs what the sensor reported (dashed)</figcaption>
+            <Plane data={o.labels as never} colour="label" blobs={blobs} observed={(d.observed ?? []) as never[]} labelled mirror={mirror} />
+            <figcaption>blobs (solid) vs what the sensor reported (dashed){mirrorNote}</figcaption>
           </figure>
           <div className="grow"><Table rows={blobs} /></div>
         </div>

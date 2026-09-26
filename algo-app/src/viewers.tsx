@@ -32,13 +32,15 @@ export interface Blob {
   contrast: number; peak: number; heat: number; confidence?: number;
 }
 
-export function GridView({ pixels, colour = 'heat', blobs, observed, scale = 16, labelled }: {
+export function GridView({ pixels, colour = 'heat', blobs, observed, scale = 16, labelled, mirror = false }: {
   pixels: Uint8Array | null;
   colour?: 'heat' | 'mask' | 'grey' | 'label';
   blobs?: Blob[];
   observed?: Blob[];
   scale?: number;
   labelled?: boolean;
+  /** The sensor is mounted left-right reversed; show the room, not the sensor. */
+  mirror?: boolean;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -47,6 +49,8 @@ export function GridView({ pixels, colour = 'heat', blobs, observed, scale = 16,
     const ctx = c.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, c.width, c.height);
+    ctx.save();
+    if (mirror) { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
     if (pixels) {
       const img = ctx.createImageData(W, H);
       for (let i = 0; i < W * H; i++) {
@@ -87,12 +91,18 @@ export function GridView({ pixels, colour = 'heat', blobs, observed, scale = 16,
       ctx.arc(b.x * scale, b.y * scale, 3, 0, Math.PI * 2);
       ctx.fill();
       if (labelled) {
+        // Text must not be mirrored with the picture it labels.
+        ctx.save();
+        if (mirror) { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
         ctx.fillStyle = '#e9e7e4';
         ctx.font = '11px ui-monospace, monospace';
-        ctx.fillText(`#${b.id}`, (b.x + r) * scale + 3, b.y * scale);
+        const lx = mirror ? c.width - (b.x + r) * scale - 22 : (b.x + r) * scale + 3;
+        ctx.fillText(`#${b.id}`, lx, b.y * scale);
+        ctx.restore();
       }
     }
-  }, [pixels, colour, blobs, observed, scale, labelled]);
+    ctx.restore();
+  }, [pixels, colour, blobs, observed, scale, labelled, mirror]);
   return <canvas ref={ref} width={W * scale} height={H * scale} className="grid-canvas" />;
 }
 
@@ -104,17 +114,18 @@ function hue(h: number): [number, number, number] {
   return [f(0), f(8), f(4)];
 }
 
-export function Plane({ data, colour, blobs, observed, labelled }: {
+export function Plane({ data, colour, blobs, observed, labelled, mirror }: {
   data: { pixels: string; min?: number; max?: number } | null;
   colour?: 'heat' | 'mask' | 'grey' | 'label';
   blobs?: Blob[];
   observed?: Blob[];
   labelled?: boolean;
+  mirror?: boolean;
 }) {
   if (!data) return <div className="empty">no data for this frame</div>;
   return (
     <div>
-      <GridView pixels={unpack(data.pixels)} colour={colour} blobs={blobs} observed={observed} labelled={labelled} />
+      <GridView pixels={unpack(data.pixels)} colour={colour} blobs={blobs} observed={observed} labelled={labelled} mirror={mirror} />
       {data.min !== undefined && data.max !== undefined && (
         <div className="scale">{data.min.toFixed(2)} → {data.max.toFixed(2)}</div>
       )}
