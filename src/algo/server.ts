@@ -43,7 +43,9 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
   // Training data for the ML locator. Off by default: it writes to disk and
   // holds pictures of a room, so somebody has to ask for it.
   const pairs = new PairRecorder({ dir: join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pairs') });
-  pairs.recording = process.env.ALGO_RECORD_PAIRS === '1';
+  // The env var forces it on; otherwise the recorder remembers what it was
+  // last told, so a deploy does not quietly stop a collection run.
+  if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setRecording(true);
 
   /**
    * Which sensor the debugger opens on. A node that is sending pictures beats
@@ -307,7 +309,7 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     const on = (req.body as { on?: boolean }).on === true;
     const rgb = [...rt.reg.nodes.values()].filter((n) => n.rgb);
     if (on && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
-    pairs.recording = on;
+    pairs.setRecording(on);
     return res.json({ ok: true, ...pairs.stats() });
   });
 

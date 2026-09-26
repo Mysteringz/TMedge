@@ -133,44 +133,96 @@ def rgb_people(samples: list[Sample], every: int = 1) -> dict[int, list[tuple[fl
     return found
 
 
-def fit_transform(samples, people) -> tuple[np.ndarray, float, int]:
-    """RGB pixels -> thermal pixels, from frames with exactly one of each.
+def thermal_blobs(temps: np.ndarray) -> list[tuple[float, float, float]]:
+    """Warm connected regions, as (x, y, area) in thermal pixels."""
+    hot = temps > (np.median(temps) + max(1.0, 0.6 * (temps.max() - np.median(temps))))
+    n, _lab, stats, cent = cv2.connectedComponentsWithStats(hot.astype(np.uint8), 8)
+    return [(float(cent[k][0]), float(cent[k][1]), float(stats[k, cv2.CC_STAT_AREA]))
+            for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= 2]
 
-    A similarity transform (scale, rotation, translation, and a flip if the
-    data asks for one) is all the geometry two rigidly mounted cameras
-    looking at a flat floor need. Fitted with RANSAC so a mislabelled frame
-    cannot drag it.
+
+def fit_transform(samples, people, rng_seed: int = 7) -> tuple[np.ndarray, float, int]:
+    """RGB pixels -> thermal pixels, fitted without knowing which blob is which.
+
+    The obvious way to calibrate two cameras is to put one person in the room
+    and watch where they are in each. Real rooms do not cooperate: over five
+    hours of the intern desk there was never a single frame with exactly one
+    person in the camera and one warm blob in the thermal -- the median frame
+    has four of each.
+
+    So no correspondence is assumed. Every (camera blob, thermal blob) pair
+    within a frame is a *candidate*, most of them wrong. A similarity
+    transform needs two pairs, so RANSAC samples two candidates from different
+    frames, fits, and counts how many other candidates that transform explains.
+    The true geometry is the one thing consistent across hundreds of frames;
+    wrong pairings agree with nothing and are outliers.
     """
-    src, dst = [], []
+    cands = []       # (rgb_x, rgb_y, th_x, th_y, frame_index)
     for i, s in enumerate(samples):
         ppl = people.get(i) or []
-        if len(ppl) != 1:
+        blobs = thermal_blobs(s.temps)
+        if not ppl or not blobs or len(ppl) > 6 or len(blobs) > 6:
             continue
-        # The warmest connected region of the thermal frame, if it is clear.
-        t = s.temps
-        hot = t > (np.median(t) + max(1.0, 0.6 * (t.max() - np.median(t))))
-        n, lab, stats, cent = cv2.connectedComponentsWithStats(hot.astype(np.uint8), 8)
-        blobs = [(stats[k, cv2.CC_STAT_AREA], cent[k]) for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= 2]
-        if len(blobs) != 1:
+        for (px, py, _pa) in ppl:
+            for (tx, ty, _ta) in blobs:
+                cands.append((px, py, tx, ty, i))
+    if len(cands) < 40:
+        sys.exit(f'only {len(cands)} camera/thermal candidates across {len(samples)} frames; '
+                 'record for longer with the room in use')
+
+    arr = np.array([[c[0], c[1], c[2], c[3]] for c in cands], dtype=np.float64)
+    frames = np.array([c[4] for c in cands])
+    src_all, dst_all = arr[:, :2], arr[:, 2:]
+    rng = np.random.default_rng(rng_seed)
+    best_inliers, best_M = None, None
+    TOL = 2.5                                   # thermal pixels
+
+    for _ in range(4000):
+        i, j = rng.integers(0, len(cands), 2)
+        if frames[i] == frames[j]:
+            continue                            # two points from one frame pin nothing down
+        src = np.array([src_all[i], src_all[j]], dtype=np.float32)
+        dst = np.array([dst_all[i], dst_all[j]], dtype=np.float32)
+        if np.linalg.norm(src[0] - src[1]) < 40 or np.linalg.norm(dst[0] - dst[1]) < 3:
+            continue                            # too close to define a scale
+        M = cv2.estimateAffinePartial2D(src, dst, method=cv2.LMEDS)[0]
+        if M is None:
             continue
-        src.append([ppl[0][0], ppl[0][1]])
-        dst.append([float(blobs[0][1][0]), float(blobs[0][1][1])])
-    if len(src) < 12:
-        sys.exit(f'only {len(src)} frames had exactly one person and one clear hot blob; '
-                 'walk the room alone for a few minutes with recording on, then train again')
-    M, inliers = cv2.estimateAffinePartial2D(
-        np.array(src, dtype=np.float32), np.array(np.array(dst), dtype=np.float32),
-        method=cv2.RANSAC, ransacReprojThreshold=2.5)
+        scale = float(np.hypot(M[0, 0], M[1, 0]))
+        if not (0.01 < scale < 0.2):            # 640 px of camera onto 32 px of thermal
+            continue
+        pred = (M @ np.hstack([src_all, np.ones((len(src_all), 1))]).T).T
+        err = np.linalg.norm(pred - dst_all, axis=1)
+        # One inlier per frame at most: a transform that explains four blobs in
+        # one frame and nothing anywhere else has explained nothing.
+        inl = err < TOL
+        by_frame = {}
+        for k in np.flatnonzero(inl):
+            f = frames[k]
+            if f not in by_frame or err[k] < err[by_frame[f]]:
+                by_frame[f] = k
+        keep = np.array(sorted(by_frame.values()), dtype=int)
+        if best_inliers is None or len(keep) > len(best_inliers):
+            best_inliers, best_M = keep, M
+
+    if best_inliers is None or len(best_inliers) < 20:
+        sys.exit(f'no transform explained the data (best {0 if best_inliers is None else len(best_inliers)} frames). '
+                 'The two cameras may not be rigidly mounted, or the room was too busy to tell blobs apart.')
+
+    M = cv2.estimateAffinePartial2D(
+        src_all[best_inliers].astype(np.float32), dst_all[best_inliers].astype(np.float32),
+        method=cv2.RANSAC, ransacReprojThreshold=TOL)[0]
     if M is None:
-        sys.exit('could not fit a transform between the two cameras')
-    used = int(inliers.sum()) if inliers is not None else 0
-    pred = (M @ np.hstack([np.array(src), np.ones((len(src), 1))]).T).T
-    err = np.linalg.norm(pred - np.array(dst), axis=1)
-    rms = float(np.sqrt((err[inliers.ravel() == 1] ** 2).mean())) if used else float('inf')
-    print(f'  RGB->thermal fitted on {used}/{len(src)} frames, RMS {rms:.2f} thermal px')
+        M = best_M
+    pred = (M @ np.hstack([src_all[best_inliers], np.ones((len(best_inliers), 1))]).T).T
+    rms = float(np.sqrt((np.linalg.norm(pred - dst_all[best_inliers], axis=1) ** 2).mean()))
+    frames_used = len(set(frames[best_inliers]))
+    mirrored = bool(np.linalg.det(M[:, :2]) < 0)
+    print(f'  RGB->thermal fitted on {frames_used} frames, RMS {rms:.2f} thermal px, '
+          f'{"mirrored" if mirrored else "not mirrored"}')
     if rms > 3.0:
         sys.exit(f'the two cameras do not line up ({rms:.1f} px): check the rig is rigid and retrain')
-    return M, rms, used
+    return M, rms, frames_used
 
 
 def features(temps: np.ndarray) -> np.ndarray:
