@@ -42,6 +42,8 @@ export interface PendingChange {
 }
 export interface SourceNode {
   uid: string; label: string; floorId: string; simulated: boolean;
+  /** A dual-cam rig: there is a live camera picture to show beside the thermal. */
+  rgb: boolean;
   online: boolean; rawEvery: number | null; frames: number; published: boolean;
 }
 
