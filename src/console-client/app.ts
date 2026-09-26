@@ -247,14 +247,30 @@ function renderDemo(): void {
   const d = dets.get(rig.uid)?.dets ?? [];
   $('#demo-blobs').textContent = String(d.length);
   if (raw) {
-    // Draw mirrored when the rig is mounted mirrored, so the two images line up.
-    const c = $<HTMLCanvasElement>('#demo-thermal');
-    const flipped = rig.pose.mirror
-      ? { ...raw, pixels: raw.pixels.map((_, i) => raw.pixels[Math.floor(i / 32) * 32 + (31 - (i % 32))] ?? 0) }
-      : raw;
-    const flippedDets = rig.pose.mirror ? d.map((x) => ({ ...x, x: 32 - x.x })) : d;
-    drawThermal(c, flipped, flippedDets, true);
+    const [frame, blobs] = asRoomSeen(raw, d);
+    drawThermal($<HTMLCanvasElement>('#demo-thermal'), frame, blobs, true);
   }
+}
+
+/**
+ * A mirrored sensor sends a mirrored picture. Every place that draws a
+ * thermal frame has to undo that, or it sits next to the rig's camera
+ * showing the room the wrong way round -- which is what the grid and the
+ * detail panel used to do, while the demo tab alone got it right.
+ */
+function isMirrored(uid: string): boolean {
+  return layout?.nodes.find((n) => n.uid === uid)?.pose.mirror ?? false;
+}
+
+function asRoomSeen(raw: RawFrameMessage, blobs: ConsoleDetection[] | null): [RawFrameMessage, ConsoleDetection[] | null] {
+  if (!isMirrored(raw.uid)) return [raw, blobs];
+  return [
+    { ...raw, pixels: raw.pixels.map((_, i) => raw.pixels[Math.floor(i / 32) * 32 + (31 - (i % 32))] ?? 0) },
+    // 31 - x, not 32 - x: columns are 0..31, so the mirror of column 0 is 31.
+    // The old demo-tab code was a pixel out, which at 32 px across a 110 deg
+    // view is 20-30 cm of floor -- enough to put a blob on the wrong seat.
+    blobs ? blobs.map((x) => ({ ...x, x: 31 - x.x })) : blobs,
+  ];
 }
 
 // --- panels -------------------------------------------------------------------------
@@ -337,7 +353,9 @@ function renderThumbs(): void {
     card.classList.toggle('sel', n.uid === selected);
     (card.querySelector('.name') as HTMLElement).textContent = n.label;
     const raw = raws.get(n.uid);
-    (card.querySelector('.info') as HTMLElement).textContent = raw ? `${n.lastPeople ?? 0} blob(s) · ${fmtAge(raw.receivedAt)}` : n.online ? 'no RAW (raw_every=0?)' : 'offline';
+    (card.querySelector('.info') as HTMLElement).textContent = raw
+      ? `${n.lastPeople ?? 0} blob(s) · ${fmtAge(raw.receivedAt)}${isMirrored(n.uid) ? ' · mirrored' : ''}`
+      : n.online ? 'no RAW (raw_every=0?)' : 'offline';
 
     // Verification rigs also get an RGB tile, right after their thermal one.
     // Only nodes flagged "rgb" in nodes.json ever have one.
@@ -370,7 +388,10 @@ function showRgb(uid: string, url: string): void {
 
 function drawThumb(raw: RawFrameMessage): void {
   const canvas = document.querySelector<HTMLCanvasElement>(`#thumbs [data-uid="${raw.uid}"] canvas`);
-  if (canvas) drawThermal(canvas, raw, dets.get(raw.uid)?.dets ?? null, false);
+  if (canvas) {
+    const [frame, blobs] = asRoomSeen(raw, dets.get(raw.uid)?.dets ?? null);
+    drawThermal(canvas, frame, blobs, false);
+  }
   if (raw.uid === selected) drawBig();
 }
 
@@ -379,7 +400,8 @@ function drawBig(): void {
   const raw = raws.get(selected);
   if (!raw) return;
   const overlay = ($<HTMLInputElement>('#t-overlay')).checked ? dets.get(selected)?.dets ?? [] : null;
-  const [lo, hi] = drawThermal($<HTMLCanvasElement>('#big'), raw, overlay, true);
+  const [frame, blobs] = asRoomSeen(raw, overlay);
+  const [lo, hi] = drawThermal($<HTMLCanvasElement>('#big'), frame, blobs, true);
   $('#scale-lo').textContent = `${lo.toFixed(1)} °C`;
   $('#scale-hi').textContent = `${hi.toFixed(1)} °C`;
 }
