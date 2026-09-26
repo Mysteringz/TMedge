@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -15,8 +15,8 @@ import { FEATURES, featuresOf, locate, type LocatorModel } from '../src/algo/mod
 import { estimateDesks, DEFAULT_DESK } from '../src/algo/desk.js';
 import { FrameStore } from '../src/algo/frames.js';
 import { order, validate } from '../src/algo/graph.js';
-import { defaultPipeline } from '../src/algo/nodes.js';
-import { ParamBroker } from '../src/algo/params.js';
+import { defaultPipeline, NODE_SPECS } from '../src/algo/nodes.js';
+import { DEVICE_PARAMS, ParamBroker } from '../src/algo/params.js';
 import type { FramePair } from '../src/algo/types.js';
 import type { EdgeRuntime } from '../src/edge/runtime.js';
 import type { ConsoleDetection, RawFrameMessage } from '../src/shared/types.js';
@@ -280,4 +280,83 @@ test('the locator finds the warm blob it was pointed at, and nothing in an empty
     for (let dx = -1; dx <= 1; dx++) two[(6 + dy) * 32 + (25 + dx)] = 30;
   }
   assert.equal(locate(model, two).detections.length, 2, 'two blobs, two people');
+});
+
+test('the dashboard never offers a value the node would refuse', () => {
+  // The node validates every parameter and silently keeps the old value when
+  // a command is out of range -- the refusal is a serial line nobody reads.
+  // A slider wider than the firmware therefore produced writes that looked
+  // applied and changed nothing, and the old value coming back read as the
+  // dashboard throwing the change away. So the two tables must agree, and
+  // the firmware's own source is the one that decides.
+  const specs = join(REPO, '..', 'TMsense', 'src', 'tm_settings.cpp');
+  if (!existsSync(specs)) return;   // TMsense is a sibling repo; CI has both
+
+  const body = /static const ParamSpec SPECS\[TM_PARAM_COUNT\] = \{([\s\S]*?)\n\};/
+    .exec(readFileSync(specs, 'utf8'))?.[1];
+  assert.ok(body, 'found the firmware parameter table');
+
+  const firmware = new Map<string, { lo: number; hi: number }>();
+  for (const m of body.matchAll(/\{"(\w+)",\s*([^,]+),\s*([^,]+),/g)) {
+    const n = (s: string) => (s.trim() === 'TM_GRID_SIZE' ? 768 : Number(s));
+    firmware.set(m[1] as string, { lo: n(m[2] as string), hi: n(m[3] as string) });
+  }
+  assert.equal(firmware.size, 10, 'parsed every firmware parameter');
+
+  for (const spec of NODE_SPECS) {
+    for (const p of spec.params) {
+      if (p.binding.kind !== 'device') continue;
+      const fw = firmware.get(p.binding.param);
+      assert.ok(fw, `${p.binding.param} exists in the firmware`);
+      assert.ok(p.min >= fw.lo, `${p.id}: the slider starts at ${p.min}, below the node's ${fw.lo}`);
+      assert.ok(p.max <= fw.hi, `${p.id}: the slider reaches ${p.max}, above the node's ${fw.hi}`);
+      // And the broker's copy, which is what actually refuses a bad write.
+      const broker = DEVICE_PARAMS[p.binding.param as keyof typeof DEVICE_PARAMS];
+      assert.deepEqual(broker, fw, `${p.binding.param}: params.ts drifted from the firmware`);
+    }
+  }
+});
+
+test('a device write holds the value it asked for until the node confirms it', async () => {
+  let deviceParams: Record<string, number> = { min_contrast: 60 };
+  let lastCmd = 0;
+  let seq = 100;
+  const rt = {
+    nodes: () => [{ uid: UID, status: { params: deviceParams, lastCmd } }],
+    engine: { options: () => ({}), setOptions: () => ({}) },
+    ingest: { sendCommand: async () => ++seq },
+  } as unknown as EdgeRuntime;
+  const broker = new ParamBroker(rt);
+
+  // A value the node's own table rules out is refused here rather than sent
+  // and quietly ignored -- that silence is the bug this guards.
+  await assert.rejects(
+    broker.apply({
+      uid: UID, nodeId: 'bg-1', param: 'refresh',
+      binding: { kind: 'device', param: 'refresh' }, value: 7, by: 'test',
+    }),
+    /only accepts refresh between 1 and 5/,
+  );
+
+  const change = await broker.apply({
+    uid: UID, nodeId: 'bg-1', param: 'min_contrast',
+    binding: { kind: 'device', param: 'min_contrast' }, value: 90, by: 'test',
+  });
+  assert.equal(change.cmdSeq, 101, 'we kept the sequence the node will echo');
+  assert.equal(change.confirmedAt, null, 'sent is not applied');
+
+  // The node has not reported yet: STATUS still says 60, but the dashboard
+  // must show the 90 that was asked for, or the change looks discarded.
+  assert.equal(broker.deviceParams(UID).min_contrast, 60, 'STATUS is still the old reading');
+  assert.equal(broker.requested(UID).min_contrast, 90, 'and the ask is what the UI reads');
+  const state = () => broker.changes().find((c) => c.param === 'min_contrast')?.confirmedAt !== null;
+  assert.equal(state(), false, 'not confirmed by merely having been sent');
+
+  // A report that predates our command proves nothing, even if the value matches.
+  deviceParams = { min_contrast: 90 };
+  assert.equal(state(), false, 'a stale STATUS is not a confirmation');
+
+  lastCmd = 101;
+  assert.equal(state(), true, 'the node echoed our command and the value');
+  assert.equal(broker.requested(UID).min_contrast, undefined, 'so STATUS can speak for itself again');
 });

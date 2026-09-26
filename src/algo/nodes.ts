@@ -27,7 +27,7 @@ export const NODE_SPECS: NodeSpec[] = [
     outputs: [{ id: 'frame', label: 'frame', type: 'thermal' }],
     params: [
       {
-        id: 'refresh', label: 'Sensor refresh', min: 1, max: 7, step: 1, binding: device('refresh'),
+        id: 'refresh', label: 'Sensor refresh', min: 1, max: 5, step: 1, binding: device('refresh'),
         help: 'MLX refresh code: 2 = 1 frame/s, 3 = 2/s, 4 = 4/s. Faster costs heat and Wi-Fi.',
       },
       {
@@ -56,7 +56,7 @@ export const NODE_SPECS: NodeSpec[] = [
         help: 'A pixel this far above its background is foreground. Wire units are centi-C.',
       },
       {
-        id: 'noise_k', label: 'Noise k', min: 5, max: 150, step: 1, scale: 0.1, binding: device('noise_k'),
+        id: 'noise_k', label: 'Noise k', min: 10, max: 150, step: 1, scale: 0.1, binding: device('noise_k'),
         help: 'Foreground also has to beat k times that pixel’s own noise. Wire units are tenths.',
       },
       {
@@ -64,7 +64,7 @@ export const NODE_SPECS: NodeSpec[] = [
         help: 'Time constant of the background average. Longer holds a still person better and adapts slower.',
       },
       {
-        id: 'bg_frames', label: 'Learn before detecting', min: 1, max: 200, step: 1, unit: 'frames',
+        id: 'bg_frames', label: 'Learn before detecting', min: 3, max: 200, step: 1, unit: 'frames',
         binding: device('bg_frames'),
       },
     ],
@@ -86,7 +86,7 @@ export const NODE_SPECS: NodeSpec[] = [
         binding: device('min_peak'),
       },
       {
-        id: 'split_sep', label: 'Peak separation', min: 5, max: 120, step: 1, unit: 'px', scale: 0.1,
+        id: 'split_sep', label: 'Peak separation', min: 5, max: 100, step: 1, unit: 'px', scale: 0.1,
         binding: device('split_sep'),
         help: 'Two heat peaks closer than this are one person. Wire units are tenths of a pixel.',
       },

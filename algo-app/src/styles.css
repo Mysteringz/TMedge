@@ -75,6 +75,10 @@ button, input, select { font: inherit; color: inherit; }
 .param-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .live { font-size: 11px; color: var(--muted); }
 .held { font-size: 11px; color: var(--warn); margin-top: 4px; }
+/* An unconfirmed write is not yet a fact, so it reads as an aside rather
+   than as the warning the revert countdown below it is. */
+.held-waiting { color: var(--muted); }
+.held-waiting strong { color: var(--warn); font-weight: 600; }
 .help { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .danger { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 
