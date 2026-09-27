@@ -158,6 +158,24 @@ export interface NodeHealth {
   pose: NodePose | null;
   online: boolean;
   address: string | null;
+  /** How downlinks reach it, from its last accepted packet; null = no route (a direct session that closed). */
+  transport: 'udp' | 'gateway' | 'direct' | null;
+  /** Its direct-to-cloud session, if it has used one since the edge started. Never carries tokens or proofs. */
+  direct: {
+    connected: boolean;
+    sessionId: string | null;
+    source: string | null;
+    connectedAt: number | null;
+    lastAcceptedAt: number | null;
+    lastReportAt: number | null;
+    acks: number;
+    rejected: number;
+    lastRejection: string | null;
+    previousKey: boolean;
+    connects: number;
+    lastDisconnectAt: number | null;
+    lastDisconnectReason: string | null;
+  } | null;
   lastSeen: number | null;
   firstSeen: number | null;
   signed: boolean;
@@ -219,6 +237,8 @@ export interface EdgeHealth {
   recorder: { dir: string; bytesToday: number; rawEnabled: boolean };
   gateways: { id: string; remote: string; transport: 'tcp' | 'websocket'; connectedAt: number; lastSeen: number; uplink: number; downlink: number; rttMs: number | null; stats: Record<string, unknown> | null }[];
   gatewayPort: number | null;
+  /** The direct node listener, when enabled. */
+  nodeListener: { port: number; host: string; sessions: number; pending: number; grants: number; rejects: Record<string, number> } | null;
   udp: { port: number; iface: string | null };
 }
 

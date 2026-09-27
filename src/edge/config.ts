@@ -25,7 +25,43 @@ export interface EdgeConfig {
   /** TCP port for access gateways (TMWAccess / TMLAccess); 0 disables. */
   gatewayPort: number;
   gatewayToken: Buffer | null;
+  /**
+   * Direct node listener (docs/DIRECT_NODE_PROTOCOL.md): TMsense nodes that
+   * reach this edge themselves over WSS, through the tunnel. Port 0 = off.
+   */
+  nodeHost: string;
+  nodePort: number;
+  nodeLimits: NodeListenerLimits;
+  /** Test only: serve the node listener over TLS itself (PEM paths). Production terminates TLS at Cloudflare. */
+  nodeTls: { certPath: string; keyPath: string } | null;
 }
+
+export interface NodeListenerLimits {
+  /** Authenticated sessions at once. */
+  maxSessions: number;
+  /** Unauthenticated handshakes at once, in total and from one source. */
+  maxPending: number;
+  maxPendingPerSource: number;
+  /** Upgrades one source may attempt per minute. */
+  upgradesPerMinute: number;
+  /** Per node: messages and bytes per second (token bucket, 2 s of burst). */
+  messagesPerSec: number;
+  bytesPerSec: number;
+  /** How long an OTA download grant stays usable. */
+  grantMs: number;
+}
+
+export const DEFAULT_NODE_LIMITS: NodeListenerLimits = {
+  maxSessions: 256,
+  maxPending: 64,
+  maxPendingPerSource: 8,
+  upgradesPerMinute: 60,
+  // A node at its fastest refresh (8 fps) with RAW every frame sends about
+  // 17 messages and 8 kB a second; these leave room for that and no more.
+  messagesPerSec: 40,
+  bytesPerSec: 32768,
+  grantMs: 600_000,
+};
 
 export class EnvError extends Error {}
 
@@ -60,6 +96,16 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     throw new EnvError('WEB_PUSH_TOKEN must be set (16+ chars) when WEB_PUSH_URLS is; the web tier rejects unauthenticated snapshots.');
   }
 
+  const nodePort = int(env, 'NODE_PORT', 0, 0, 65535);
+  if (nodePort > 0 && keys.length === 0) {
+    // ALLOW_UNSIGNED is a bench convenience for UDP; a node reaching the edge
+    // over the internet authenticates with the key or not at all.
+    throw new EnvError('NODE_PORT is set but TM_KEY is not: the direct node listener always requires a signing key.');
+  }
+  const certPath = env.NODE_TLS_CERT ?? '';
+  const keyPath = env.NODE_TLS_KEY ?? '';
+  if ((certPath === '') !== (keyPath === '')) throw new EnvError('NODE_TLS_CERT and NODE_TLS_KEY go together (test only)');
+
   return {
     edgeId: env.EDGE_ID || hostname(),
     keys,
@@ -85,5 +131,18 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
       if (t && t.length < 16) throw new EnvError('TMGW_TOKEN must be 16+ chars');
       return t ? Buffer.from(t, 'utf8') : null;
     })(),
+    // Loopback: in production cloudflared is the only thing that should reach it.
+    nodeHost: env.NODE_HOST || '127.0.0.1',
+    nodePort,
+    nodeLimits: {
+      maxSessions: int(env, 'NODE_MAX_SESSIONS', DEFAULT_NODE_LIMITS.maxSessions, 1, 5000),
+      maxPending: int(env, 'NODE_MAX_PENDING', DEFAULT_NODE_LIMITS.maxPending, 1, 5000),
+      maxPendingPerSource: int(env, 'NODE_MAX_PENDING_PER_SOURCE', DEFAULT_NODE_LIMITS.maxPendingPerSource, 1, 5000),
+      upgradesPerMinute: int(env, 'NODE_UPGRADES_PER_MIN', DEFAULT_NODE_LIMITS.upgradesPerMinute, 1, 100000),
+      messagesPerSec: int(env, 'NODE_MSGS_PER_SEC', DEFAULT_NODE_LIMITS.messagesPerSec, 1, 10000),
+      bytesPerSec: int(env, 'NODE_BYTES_PER_SEC', DEFAULT_NODE_LIMITS.bytesPerSec, 1024, 10_000_000),
+      grantMs: int(env, 'NODE_GRANT_MS', DEFAULT_NODE_LIMITS.grantMs, 10_000, 3_600_000),
+    },
+    nodeTls: certPath ? { certPath, keyPath } : null,
   };
 }

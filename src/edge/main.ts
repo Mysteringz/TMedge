@@ -30,6 +30,14 @@ function main(): void {
   setInterval(() => (rejectLogBudget = 20), 60_000).unref();
 
   rt.start();
+  rt.startNodeListener().then((port) => {
+    if (port !== null) console.log(`[edge] direct nodes: ${cfg.nodeTls ? 'wss' : 'ws'}://${cfg.nodeHost}:${port}/tmnode (tmnode.v1)`);
+  }, (err: unknown) => {
+    // Configured but unable to bind: stop, so systemd and the deploy health
+    // check see a failure instead of an edge that quietly shuts nodes out.
+    console.error(`[edge] direct node listener failed to start on ${cfg.nodeHost}:${cfg.nodePort}: ${(err as Error).message}`);
+    process.exit(1);
+  });
   const server = startConsole(rt);
   server.on('listening', () => {
     const a = server.address();
