@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { sendLatest } from '../shared/fanout.js';
 import { FirmwareStore } from './firmware.js';
 import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from './protocol.js';
 import type { RolloutTarget } from './rollout.js';
@@ -267,7 +268,8 @@ export function startConsole(rt: EdgeRuntime): Server {
 
   const broadcast = (msg: unknown, filter?: (ws: WebSocket) => boolean) => {
     const s = JSON.stringify(msg);
-    for (const ws of subs.keys()) if (ws.readyState === ws.OPEN && (!filter || filter(ws))) ws.send(s);
+    // A browser that is behind is skipped, not queued for (sendLatest).
+    for (const ws of subs.keys()) if (!filter || filter(ws)) sendLatest(ws, s);
   };
   rt.on('report', (uid, dets, at) => broadcast({ type: 'report', uid, at, dets }));
   rt.on('raw', (raw) => broadcast({ type: 'raw', ...raw }, (ws) => subs.get(ws)?.has(raw.uid) ?? false));
