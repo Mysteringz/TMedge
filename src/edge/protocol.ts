@@ -48,6 +48,30 @@ export const PARAM_NAMES = [
 ] as const;
 export type ParamName = (typeof PARAM_NAMES)[number];
 
+/**
+ * The range each parameter may take, mirroring `SPECS` in TMsense's
+ * `src/tm_settings.cpp`.
+ *
+ * Part of the firmware contract, and here for the same reason the names are:
+ * the node validates every command and silently keeps the old value when one
+ * is out of range -- the refusal is a line on a serial console nobody is
+ * watching. A write outside these looks like it worked and changes nothing,
+ * which is how a dialled-in value came back as if the dashboard had thrown it
+ * away. `algo.test.ts` checks these against the firmware's own table.
+ */
+export const PARAM_LIMITS: Record<ParamName, { lo: number; hi: number }> = {
+  min_contrast: { lo: 10, hi: 2000 },
+  min_peak: { lo: 10, hi: 3000 },
+  noise_k: { lo: 10, hi: 200 },
+  min_area: { lo: 1, hi: 200 },
+  max_area: { lo: 1, hi: 768 },
+  bg_tau: { lo: 5, hi: 20000 },
+  bg_frames: { lo: 3, hi: 600 },
+  raw_every: { lo: 0, hi: 3600 },
+  refresh: { lo: 1, hi: 5 },
+  split_sep: { lo: 5, hi: 100 },
+};
+
 export class ProtocolError extends Error {}
 
 export interface Header {

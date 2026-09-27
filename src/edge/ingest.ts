@@ -224,7 +224,13 @@ export class Ingest extends EventEmitter {
     };
   }
 
-  sendCommand(uid: string, opcode: number, arg0 = 0, value = 0): Promise<void> {
+  /**
+   * Send a signed command and resolve with the sequence number it carried.
+   * The caller needs that number to recognise the acknowledgement: a node
+   * echoes the last command it applied in its STATUS, and "sent" and
+   * "applied" are different claims.
+   */
+  sendCommand(uid: string, opcode: number, arg0 = 0, value = 0): Promise<number> {
     const link = this.links.get(uid);
     if (!link) return Promise.reject(new Error(`node ${uid} has not been heard from; no address to send to`));
     if (!this.opts.commandKey) return Promise.reject(new Error('no TM_KEY: commands cannot be signed'));
@@ -242,11 +248,11 @@ export class Ingest extends EventEmitter {
     const buf = buildCommand(uid, cmd, this.opts.commandKey);
     if (link.address.startsWith('gw:')) {
       return this.opts.routeViaGateway?.(link.address, buf)
-        ? Promise.resolve()
+        ? Promise.resolve(seq)
         : Promise.reject(new Error(`gateway for ${uid} is not connected`));
     }
     return new Promise((resolve, reject) =>
-      this.socket.send(buf, DOWNLINK_PORT, link.address, (err) => (err ? reject(err) : resolve())),
+      this.socket.send(buf, DOWNLINK_PORT, link.address, (err) => (err ? reject(err) : resolve(seq))),
     );
   }
 
