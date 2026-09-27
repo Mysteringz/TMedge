@@ -36,6 +36,7 @@ export interface NodeUpdate {
   label: string;
   floorId: string | null;
   gatewayId: string | null;
+  transport: 'udp' | 'gateway' | 'direct' | null;
   state: NodeUpdateState;
   percent: number;
   error?: string;
@@ -63,6 +64,12 @@ export interface RolloutNode {
   floorId: string | null;
   /** The address the edge has for it: "gw:<id>|ip:port" or a plain IP. */
   address: string | null;
+  /**
+   * How it is reached, from its last accepted packet. A direct node fetches
+   * over HTTPS from its own cloud host on 443: it never gets a gateway push
+   * or the console's port.
+   */
+  transport: 'udp' | 'gateway' | 'direct' | null;
   online: boolean;
 }
 
@@ -72,6 +79,8 @@ export interface RolloutDeps {
   nodes(): RolloutNode[];
   sendImageToGateway(gatewayId: string, meta: { id: string; size: number; sha256: string }, bytes: Buffer): boolean;
   sendOta(uid: string, image: { port: number; size: number; sha256: string; path: string }): Promise<void>;
+  /** A node's part in the rollout is over: revoke anything issued for it (download grants). */
+  onNodeDone?(uid: string): void;
   /** Port the edge itself serves images on, for a node that talks to it directly. */
   directPort: number;
   now?: () => number;
@@ -113,6 +122,19 @@ export class Rollouts {
   }
 
   current(): RolloutView | null { return this.active; }
+
+  /**
+   * Whether `uid` may fetch `buildId` right now: an active rollout of that
+   * build is waiting on this node's download. A direct node's HTTPS grant is
+   * checked against this on every request, so cancelling the rollout or the
+   * node finishing its step ends the grant too.
+   */
+  wantsDownload(uid: string, buildId: string): boolean {
+    const r = this.active;
+    if (!r || r.buildId !== buildId || r.stage === 'done' || r.stage === 'stopped') return false;
+    const n = r.nodes.find((x) => x.uid === uid);
+    return !!n && (n.state === 'sending' || n.state === 'downloading');
+  }
   history(): RolloutView[] { return [...this.past].reverse(); }
 
   /** Which nodes a target picks, in the order they would be updated. */
@@ -121,7 +143,8 @@ export class Rollouts {
     const pick = target.kind === 'node'
       ? all.filter((n) => n.uid === target.uid)
       : target.kind === 'floor' ? all.filter((n) => n.floorId === target.floorId) : all;
-    return pick.filter((n) => n.online && n.address !== null);
+    // A node whose direct session has closed has no route: it is not a target.
+    return pick.filter((n) => n.online && n.address !== null && n.transport !== null);
   }
 
   start(buildId: string, target: RolloutTarget, by: string): RolloutView {
@@ -150,7 +173,8 @@ export class Rollouts {
         uid: n.uid,
         label: n.label,
         floorId: n.floorId,
-        gatewayId: gatewayOf(n.address),
+        gatewayId: n.transport === 'gateway' ? gatewayOf(n.address) : null,
+        transport: n.transport,
         state: 'queued' as NodeUpdateState,
         percent: 0,
         startedAt: null,
@@ -284,6 +308,10 @@ export class Rollouts {
       this.set(node, 'failed', 'the image is gone from this edge');
       return;
     }
+    if (node.transport === 'direct') {
+      this.request(node, 443, image);
+      return;
+    }
     // A node behind a gateway downloads from that gateway, so the image has
     // to be there first. One push per gateway, however many nodes it serves.
     if (node.gatewayId) {
@@ -320,6 +348,7 @@ export class Rollouts {
   private set(node: NodeUpdate, state: NodeUpdateState, error?: string, percent?: number): void {
     node.state = state;
     node.updatedAt = this.now();
+    if (state !== 'sending' && state !== 'downloading') this.deps.onNodeDone?.(node.uid);
     if (percent !== undefined) node.percent = percent;
     if (error) node.error = error;
     if (state === 'confirmed') node.percent = 100;

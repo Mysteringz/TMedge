@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { directCrosscheck } from './crosscheck-direct.js';
 import { buildCommand, buildOta, CMD_SET_PARAM, parsePacket, REPORT_TRUNCATED, type OtaStatus, type Report, type Raw, type Status } from '../edge/protocol.js';
 
 const tmnode = resolve(process.env.TMSENSE_DIR ?? process.env.TMNODE_DIR ?? '../TMsense');
@@ -149,5 +150,8 @@ const parseOta = (buf: Buffer) => JSON.parse(execFileSync(bin, ['parse-ota', buf
   assert.equal(parseOta(buildOta('01:02:03:04:05:06', req, Buffer.from('wrong'))).result, -7);
   ok('firmware rejects a tampered image hash, an OTA for another node, and one with the wrong key');
 }
+
+// The direct-to-cloud transport: the firmware's session against this edge's listener.
+await directCrosscheck(tmnode, key, ok);
 
 console.log(`\ncrosscheck: ${checks} checks passed against ${tmnode}`);

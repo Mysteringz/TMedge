@@ -9,7 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { EdgeConfig } from '../src/edge/config.js';
+import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { startConsole } from '../src/edge/console.js';
 import { Ingest } from '../src/edge/ingest.js';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
@@ -27,6 +27,7 @@ function runtime() {
     sitePath: '', nodesPath: '', dataDir: mkdtempSync(join(tmpdir(), 'tmedge-')), recordRaw: false,
     consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', pushUrls: [], pushToken: '', publishMs: 1000,
     gatewayPort: 0, gatewayToken: null,
+    nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
   return new EdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
 }

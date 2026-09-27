@@ -49,6 +49,7 @@ docker compose ps                   # both should read "healthy" within ~20 s
 | `http://<BIND_ADDR>:8090` | Debug console (any user name, password `ADMIN_PASSWORD`) |
 | UDP `<BIND_ADDR>:5200` | TMnodes sending directly |
 | TCP `<BIND_ADDR>:5210` | TMWAccess gateways (raw TCP or WebSocket `/tmgw`) |
+| TCP `<BIND_ADDR>:5211` | Direct TMsense nodes, WebSocket `/tmnode` (only with `NODE_PORT=5211` in `.env`; see `docs/DIRECT_NODE_PROTOCOL.md`) |
 
 Add a student account (the site allows only university email domains):
 
@@ -65,8 +66,9 @@ docker compose --profile tunnel up -d   # Cloudflare Tunnel, public access with 
 
 For the tunnel, point the public hostnames in the Cloudflare dashboard at the
 compose service names: `http://web:8080` for the site, `http://edge:8090` for
-the console (put a Cloudflare Access policy in front of it), and
-`http://edge:5210` for gateways.
+the console (put a Cloudflare Access policy in front of it),
+`http://edge:5210` for gateways, and `http://edge:5211` for direct nodes (no
+Access login on that hostname: nodes authenticate to the edge themselves).
 
 ### 5. Other architectures and registries
 
