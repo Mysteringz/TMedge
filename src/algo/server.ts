@@ -23,6 +23,7 @@ import { PairRecorder } from './pairs.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
+import { sendLatest } from '../shared/fanout.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
@@ -352,7 +353,8 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
 
   const send = (msg: unknown) => {
     const s = JSON.stringify(msg);
-    for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(s);
+    // A browser that is behind is skipped, not queued for (sendLatest).
+    for (const ws of clients) sendLatest(ws, s);
   };
 
   // Live mode runs the graph as frames arrive; paused holds the frame the
