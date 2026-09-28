@@ -84,7 +84,8 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
   // thermal frame of the same moment exists to pair it with.
   rt.on('rgb', (uid, jpeg, at) => {
     const node = rt.reg.nodes.get(uid);
-    if (!node) return;
+    // No pose means no orientation to record the pair against.
+    if (!node?.pose) return;
     pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
   });
 

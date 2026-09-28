@@ -150,6 +150,17 @@ link_shared() {
   local dir="$1"
   ln -sfn "$SHARED/.env" "$dir/.env"
   if [ -d "$SHARED/data" ]; then rm -rf "$dir/data"; ln -sfn "$SHARED/data" "$dir/data"; fi
+  # nodes.json is the one config the edge writes to: approving a node that
+  # TMflash provisioned appends to it. A release's own copy would be replaced
+  # on the next deploy, taking every node admitted since with it, so the live
+  # file lives in $SHARED and NODES_CONFIG in .env points at it. It is copied
+  # rather than symlinked because a release's file manifest refuses symlinks,
+  # and rightly: its integrity check means nothing if an entry can point
+  # somewhere else. Seeded once from the release that first needs it.
+  if [ ! -f "$SHARED/nodes.json" ] && [ -f "$dir/config/nodes.json" ]; then
+    cp "$dir/config/nodes.json" "$SHARED/nodes.json"
+    say "seeded $SHARED/nodes.json from the release (set NODES_CONFIG=$SHARED/nodes.json in .env)"
+  fi
 }
 
 require_migrated() {
@@ -223,6 +234,11 @@ cmd_activate() {
   chown -h "$OWNER" "$dir/.env"
   chmod -R u=rwX,go=rX "$dir"
   chown "$ENV_OWNER" "$SHARED/.env" && chmod 600 "$SHARED/.env"
+  # The service appends admitted nodes here, so unlike the rest of config/
+  # it must be writable by the account the unit runs as.
+  if [ -f "$SHARED/nodes.json" ]; then
+    chown "$ENV_OWNER" "$SHARED/nodes.json" && chmod 644 "$SHARED/nodes.json"
+  fi
 
   say "switching $prev -> $id"
   point_live_at "$id"

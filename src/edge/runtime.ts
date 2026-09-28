@@ -194,7 +194,7 @@ export class EdgeRuntime extends EventEmitter {
     const dets = this.engine.ingest(p, at);
     this.recorder.report(p, at);
     const node = this.reg.nodes.get(p.uid);
-    const dwell = node ? this.dwell.get(node.floorId) : undefined;
+    const dwell = node?.floorId ? this.dwell.get(node.floorId) : undefined;
     if (dwell) {
       const dt = Math.max(0.2, Math.min(5, 1 / Math.max(this.ingest.frameRate(p.uid), 0.2)));
       for (const d of dets) if (d.counted) dwell.add(d.floorX, d.floorY, d.persons * dt, at);
@@ -326,8 +326,10 @@ export class EdgeRuntime extends EventEmitter {
       })),
       nodes: [...this.reg.nodes.values()].map((n) => ({
         uid: n.uid, label: n.label, floorId: n.floorId, pose: n.pose, owns: n.owns, simulated: n.simulated, rgb: n.rgb,
-        footprint: footprint(n.pose),
-        floorFootprint: footprint(n.pose, 0),
+        // An unplaced node has no pose, so it draws no footprint on any
+        // plan; the console lists it separately instead.
+        footprint: n.pose ? footprint(n.pose) : null,
+        floorFootprint: n.pose ? footprint(n.pose, 0) : null,
       })),
     };
   }

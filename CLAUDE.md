@@ -68,6 +68,16 @@ has hidden Linux failures before.
 - **A live parameter change is temporary.** The algo dashboard's writes revert
   after 15 minutes unless committed, flash writes are a separate act, and
   every change is in `data/algo/audit.jsonl` with its old value.
+- **A node is admitted by a person.** TMflash's token buys a *pending
+  request*; somebody with the console open approves it. What is admitted is
+  an identity: floor, pose and owns are null/empty, so a new node can connect
+  and stream but cannot move a number a student sees until it is placed.
+  `NodeDef.floorId` and `.pose` are nullable so the compiler finds every
+  place that would otherwise do geometry on a pose nobody measured.
+- **nodes.json is the one config the edge writes.** It lives in
+  `/opt/tmedge-shared` with `NODES_CONFIG` pointing at it, because a release's
+  own copy is replaced on the next deploy. The edge refuses to start if
+  `TMFLASH_TOKEN` is set and that file is unwritable or inside the release.
 - **Config is strict.** Add validation for any new field.
 - **Wire format changes touch both repos** and `npm run crosscheck`.
 - **One path for every transport.** UDP, TMGW and direct WSS all go through

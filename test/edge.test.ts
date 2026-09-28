@@ -11,6 +11,16 @@ import { parsePacket, REPORT_GLOBAL_SHIFT, type Report } from '../src/edge/proto
 import { buildRegistry, ConfigError } from '../src/edge/registry.js';
 import type { TableState } from '../src/shared/types.js';
 import { identity, KEY, makerspace, nodesJson, personAt, report, siteJson } from './fixtures.js';
+import type { Registry } from '../src/edge/registry.js';
+import type { NodePose } from '../src/shared/types.js';
+
+/** A fixture node's pose. These fixtures are all placed; fail loudly if one stops being. */
+function poseOf(reg: Registry, uid: string): NodePose {
+  const pose = reg.nodes.get(uid)?.pose;
+  if (!pose) throw new Error(`fixture node ${uid} has no pose`);
+  return pose;
+}
+
 
 const REAL = '30:ed:a0:cb:f5:f8';          // owns M3
 const M2_NODE = '02:00:00:00:00:02';
@@ -170,7 +180,7 @@ test('occupancy: a person seen by the owner AND a neighbour is counted once', ()
   const { reg, eng } = engine();
   const p = seat(reg, 'M3-L1');
   // M2's node sees M3-L1 too (the views overlap at 3.5 m).
-  assert.ok(floorToPixel(reg.nodes.get(M2_NODE)!.pose, p[0], p[1]));
+  assert.ok(floorToPixel(poseOf(reg, M2_NODE), p[0], p[1]));
   const t = run(eng, reg, 8, 0, [{ uid: REAL, people: [p] }, { uid: M2_NODE, people: [p] }]);
   const snap = eng.snapshot(t).floors[0]!;
   assert.equal(snap.tables.find((x) => x.id === 'M3')?.occupied, 1);
@@ -216,7 +226,7 @@ test('occupancy: a one-frame flicker does not take a seat; a brief absence does 
   const { reg, eng } = engine();
   const p = seat(reg, 'M3-L3');
   const id = identity(REAL);
-  const pose = reg.nodes.get(REAL)!.pose;
+  const pose = poseOf(reg, REAL);
   const feed = (f: number, present: boolean) => eng.ingest(parse(report(id, present ? [personAt(pose, ...p)] : [], f)), f * 1000);
   for (let f = 0; f < 10; f++) feed(f, f === 6);               // a single-frame blob
   assert.equal(table(eng, 'M3', 9000).occupied, 0);
@@ -233,9 +243,9 @@ test('occupancy: a table never reports more people than seats, but the zone coun
   const seats = reg.tables.get('M3')!.seats.map((s) => [s.x, s.y] as [number, number]);
   const seven: [number, number][] = [...seats, [seats[0]![0], seats[0]![1] - 55]];   // a 7th standing at the table's end
   // Every node reports everyone it can see, so M3's people are seen several times over.
-  const sources = [...reg.nodes.values()].map((n) => ({
+  const sources = [...reg.nodes.values()].filter((n) => n.pose !== null).map((n) => ({
     uid: n.uid,
-    people: seven.filter(([x, y]) => floorToPixel(n.pose, x, y) !== null),
+    people: seven.filter(([x, y]) => floorToPixel(poseOf(reg, n.uid), x, y) !== null),
   }));
   assert.ok(sources.filter((s) => s.people.length > 0).length >= 3, 'overlap: several nodes see M3');
   const t = run(eng, reg, 8, 0, sources);
@@ -249,7 +259,7 @@ test('occupancy: a table never reports more people than seats, but the zone coun
 
 test('occupancy: a blob with twice a typical person\'s heat takes two adjacent seats', () => {
   const { reg, eng } = engine();
-  const pose = reg.nodes.get(REAL)!.pose;
+  const pose = poseOf(reg, REAL);
   const id = identity(REAL);
   // Teach the node what one person looks like here.
   for (let f = 0; f < 40; f++) eng.ingest(parse(report(id, [personAt(pose, ...seat(reg, 'M3-R1'), 60)], f)), f * 1000);
@@ -263,7 +273,7 @@ test('occupancy: a blob with twice a typical person\'s heat takes two adjacent s
 
 test('occupancy: one person under the node is one person, even though they cover more pixels than people at the edge of view', () => {
   const { reg, eng } = engine();
-  const pose = reg.nodes.get(REAL)!.pose;
+  const pose = poseOf(reg, REAL);
   const id = identity(REAL);
   // Physically consistent heat: the same person covers fewer pixels where each
   // pixel sees more floor (off-axis on a 110 deg lens).
@@ -282,7 +292,7 @@ test('occupancy: one person under the node is one person, even though they cover
 
 test('occupancy: two people in back-to-back chairs of neighbouring tables (45 cm apart) are two people', () => {
   const { reg, eng } = engine();
-  const pose = reg.nodes.get(M2_NODE)!.pose;
+  const pose = poseOf(reg, M2_NODE);
   const id = identity(M2_NODE);
   const [x1, y1] = seat(reg, 'M1-R2');                          // M1's right side...
   const [x2, y2] = seat(reg, 'M2-L2');                          // ...backs onto M2's left side
