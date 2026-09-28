@@ -14,7 +14,10 @@ Restart=always
 RestartSec=3
 # Nothing it needs outside its own directory.
 ProtectSystem=strict
-ReadWritePaths=/opt/tmedge/data
+# data/ for recordings, and nodes.json because admitting a node provisioned
+# by TMflash writes it. Both are symlinks into /opt/tmedge-shared, so they
+# survive a release swap; ReadWritePaths needs the real path, not the link.
+ReadWritePaths=/opt/tmedge/data /opt/tmedge-shared/nodes.json
 NoNewPrivileges=true
 
 [Install]

@@ -118,5 +118,30 @@
       <div class="cols" id="edge-detail"></div>
     </section>
   </main>
+
+  <!-- A node TMflash has just flashed, asking to be let in. Modal because
+       it is a decision about trust, not a notification to scroll past. -->
+  <dialog id="join-dialog" class="join-dialog">
+    <form method="dialog">
+      <h2>A node is asking to join</h2>
+      <p class="muted small">
+        TMflash provisioned this node and it wants to be admitted. Allowing it
+        lets it authenticate and stream. It is placed nowhere and owns no
+        table, so it cannot change any occupancy number until you place it.
+      </p>
+      <dl class="join-facts">
+        <dt>UID</dt><dd id="join-uid"></dd>
+        <dt>Label</dt><dd id="join-label"></dd>
+        <dt>Firmware</dt><dd id="join-fw"></dd>
+        <dt>Asked from</dt><dd id="join-from"></dd>
+      </dl>
+      <p class="muted small" id="join-queue"></p>
+      <p class="join-error" id="join-error" hidden></p>
+      <menu class="join-actions">
+        <button value="deny" id="join-deny">Deny</button>
+        <button value="approve" id="join-approve" class="primary">Allow this node</button>
+      </menu>
+    </form>
+  </dialog>
 </body>
 </html>

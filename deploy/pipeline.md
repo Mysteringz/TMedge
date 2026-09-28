@@ -141,3 +141,32 @@ TMsense CI runs packet and detector host checks, compiles the secret-free
 runs typecheck, tests and build on Linux and macOS with Node 22. TMflash runs
 fake-serial-node tests and release builds on macOS. These pipelines do not
 flash devices or restart the site gateway automatically.
+
+## Turning on node provisioning (TMflash)
+
+TMflash can ask the edge to admit a node it has just flashed. The request is
+queued; somebody with the debug console open allows or denies it.
+
+Two settings, both in `/opt/tmedge-shared/.env`:
+
+```sh
+TMFLASH_TOKEN=<32+ random chars>          # what TMflash presents
+NODES_CONFIG=/opt/tmedge-shared/nodes.json
+```
+
+`NODES_CONFIG` is not optional once the token is set. Approving a node
+appends to that file, and a release's own `config/nodes.json` is replaced on
+the next deploy — every node admitted since would go with it. The edge
+refuses to start rather than let that happen silently, so a missing or
+unwritable path is a startup error, not a surprise next Thursday.
+
+`deploy.sh` seeds `/opt/tmedge-shared/nodes.json` from the release the first
+time it runs after this change. The file must be owned by the account the
+unit runs as (`remote.sh` does this); `tmedge-edge.service` lists it in
+`ReadWritePaths` because `ProtectSystem=strict` otherwise blocks the write at
+the kernel, whatever the file mode says.
+
+To generate a token: `openssl rand -base64 32`. It is a secret — it belongs
+in `.env` (mode 600) and in the flashing laptop's Keychain, never in a repo,
+a command line or a chat message. Revoke it by changing it and restarting;
+nothing else depends on it.

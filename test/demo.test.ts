@@ -18,6 +18,16 @@ import { floorToPixel, pixelToFloor } from '../src/shared/geometry.js';
 import { buildRegistry, ConfigError } from '../src/edge/registry.js';
 import { EdgeRuntime } from '../src/edge/runtime.js';
 import { identity, KEY, nodesJson, report, siteJson } from './fixtures.js';
+import type { Registry } from '../src/edge/registry.js';
+import type { NodePose } from '../src/shared/types.js';
+
+/** A fixture node's pose. These fixtures are all placed; fail loudly if one stops being. */
+function poseOf(reg: Registry, uid: string): NodePose {
+  const pose = reg.nodes.get(uid)?.pose;
+  if (!pose) throw new Error(`fixture node ${uid} has no pose`);
+  return pose;
+}
+
 
 const RIG = '2c:cf:67:0b:c0:94';
 
@@ -25,7 +35,7 @@ function runtime() {
   const cfg: EdgeConfig = {
     edgeId: 'test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1',
     sitePath: '', nodesPath: '', dataDir: mkdtempSync(join(tmpdir(), 'tmedge-')), recordRaw: false,
-    consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', pushUrls: [], pushToken: '', publishMs: 1000,
+    consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', flashToken: null, pushUrls: [], pushToken: '', publishMs: 1000,
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
@@ -97,7 +107,7 @@ test('demo: RGB frames need a valid signature, a fresh timestamp, and an RGB-ena
 test('demo: someone 75 cm from a seat of a compact desk does not take it (per-table seat radius)', () => {
   const reg = buildRegistry(siteJson(), nodesJson());
   const eng = new OccupancyEngine(reg, 'test');
-  const pose = reg.nodes.get(RIG)!.pose;
+  const pose = poseOf(reg, RIG);
   const id = identity(RIG);
   // Found on the rig: a person at the next piece of furniture landed 79 cm
   // from a desk seat -- inside the site-wide 80 cm -- and took it. Put someone
@@ -123,7 +133,7 @@ test('occupancy: one hunched person split into two blobs 46 cm apart takes one s
   // What the rig reported for one intern in a brown jacket: a small head blob
   // and a larger back blob, 46 cm apart -- here placed straddling the desk's
   // two seats, the way it put that one person in both of them.
-  const pose = reg.nodes.get(RIG)!.pose;
+  const pose = poseOf(reg, RIG);
   const a = reg.seatIndex.get('D1-A')!.seat;
   const b = reg.seatIndex.get('D1-B')!.seat;
   const len = Math.hypot(b.x - a.x, b.y - a.y);
@@ -143,7 +153,7 @@ test('occupancy: one hunched person split into two blobs 46 cm apart takes one s
 test('occupancy: a static warm object elsewhere in view does not make one seated person count as two', () => {
   const reg = buildRegistry(siteJson(), nodesJson());
   const eng = new OccupancyEngine(reg, 'test');
-  const pose = reg.nodes.get(RIG)!.pose;
+  const pose = poseOf(reg, RIG);
   const id = identity(RIG);
   const a = reg.seatIndex.get('D1-A')!.seat;
   const b = reg.seatIndex.get('D1-B')!.seat;

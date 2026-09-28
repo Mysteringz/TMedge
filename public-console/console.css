@@ -121,3 +121,31 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
 .fw-node .state { font-size: 11px; color: var(--muted) }
 .fw-node .state.bad { color: #ff6b5e }
 .fw-node .state.good { color: #49c17a }
+
+/* --- A node asking to join ------------------------------------------------
+   Modal on purpose: admitting a node changes which devices this edge will
+   talk to, so it is a decision to make rather than a toast to miss. */
+.join-dialog {
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 20px 22px; max-width: 460px; width: calc(100vw - 32px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
+}
+.join-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.join-dialog h2 { margin: 0 0 6px; font-size: 16px; }
+.join-dialog p { margin: 0 0 12px; }
+.join-facts {
+  display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px;
+  margin: 0 0 12px; padding: 10px 12px;
+  background: var(--panel-2); border-radius: 7px;
+}
+.join-facts dt { color: var(--muted); }
+.join-facts dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.join-error { color: var(--bad); margin: 0 0 10px; }
+.join-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 0; }
+.join-actions button {
+  font: inherit; padding: 7px 14px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); cursor: pointer;
+}
+.join-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.join-actions button:hover { filter: brightness(1.1); }

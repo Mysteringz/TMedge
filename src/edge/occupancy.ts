@@ -184,24 +184,33 @@ export class OccupancyEngine {
     // reports nothing useful: it must not be anyone's authority this frame.
     st.healthy = (report.flags & REPORT_BACKGROUND_READY) !== 0 && (report.flags & REPORT_GLOBAL_SHIFT) === 0;
 
-    if (!node) {
+    // Unknown, or known but not yet placed. Either way there is no pose to
+    // project through, so the frame is shown in the console and counts
+    // towards nothing -- the same treatment, because "I do not know where
+    // this is" is the same fact in both cases.
+    if (!node || node.pose === null || node.floorId === null) {
       st.lastDetections = report.detections.map((d) => ({
         ...d, floorX: Number.NaN, floorY: Number.NaN, tableId: null, counted: false, persons: 1,
       }));
       return st.lastDetections;
     }
 
-    const ref = this.refHeat(report.uid);
-    const normHeat = (d: { x: number; y: number; heat: number }) => (d.heat * pixelAreaCm2(node.pose, d.x, d.y)) / 10_000;
+    // Bound once: the guard above narrowed these, but that narrowing is lost
+    // inside the callbacks below.
+    const pose = node.pose;
+    const nodeFloorId = node.floorId;
 
-    const floor = this.reg.floors.find((f) => f.id === node.floorId);
+    const ref = this.refHeat(report.uid);
+    const normHeat = (d: { x: number; y: number; heat: number }) => (d.heat * pixelAreaCm2(pose, d.x, d.y)) / 10_000;
+
+    const floor = this.reg.floors.find((f) => f.id === nodeFloorId);
     const dets: ConsoleDetection[] = this.mergeClose(report.detections.map((d) => {
-      const [fx, fy] = pixelToFloor(node.pose, d.x, d.y);
+      const [fx, fy] = pixelToFloor(pose, d.x, d.y);
       return { ...d, floorX: fx, floorY: fy, norm: normHeat(d) };
     })).map(({ norm, ...d }) => {
       const ratio = ref ? norm / ref : 1;
       const persons = ratio < 1.6 ? 1 : ratio < 2.5 ? 2 : 3;
-      return { ...d, tableId: this.nearestTable(node.floorId, d.floorX, d.floorY), counted: false, persons, norm };
+      return { ...d, tableId: this.nearestTable(nodeFloorId, d.floorX, d.floorY), counted: false, persons, norm };
     }).map(({ norm, ...d }) => {
       // Learn "one person" only from blobs on a seat. Anything else -- a warm
       // chair, a laptop, a radiator -- sits in view every frame and would drag
@@ -242,7 +251,7 @@ export class OccupancyEngine {
         let n = 0;
         for (const d of dets) {
           if (d.tableId || !pointInPolygon([d.floorX, d.floorY], zone.polygon)) continue;
-          if (this.nearestHealthyViewer(node.floorId, d.floorX, d.floorY, at) !== report.uid) continue;
+          if (this.nearestHealthyViewer(nodeFloorId, d.floorX, d.floorY, at) !== report.uid) continue;
           d.counted = true;
           n += d.persons;
         }
@@ -380,7 +389,8 @@ export class OccupancyEngine {
     let best: NodeDef | null = null;
     let bestD = Infinity;
     for (const n of this.reg.nodes.values()) {
-      if (n.floorId !== floorId || !this.isHealthy(n.uid, now) || !floorToPixel(n.pose, x, y)) continue;
+      if (n.pose === null || n.floorId !== floorId) continue;
+      if (!this.isHealthy(n.uid, now) || !floorToPixel(n.pose, x, y)) continue;
       const d = Math.hypot(n.pose.x - x, n.pose.y - y);
       if (d < bestD) {
         bestD = d;
