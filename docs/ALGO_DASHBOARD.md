@@ -143,17 +143,12 @@ On 324 pairs from the intern rig it converged on 309 frames at **1.36 thermal
 pixels RMS**: a scale of 0.037 (640 camera pixels onto 24 thermal), a rotation
 of **−28.5°**, and a **positive determinant — no reflection**.
 
-That last number settled an argument. The rig's pose says `mirror: true`, and
-it is right: projecting five hours of recorded detections onto the floor puts
-29% of them within 70 cm of the table it watches with the mirror applied
-against 17% without, and halves the median distance from its centre. So the
-*thermal is* mirrored with respect to the floor plan. But the camera sits on
-the same bracket, so it is mirrored in exactly the same way, and between the
-two images there is no flip at all — only that 28° rotation.
-
-Which means a view that mirrors the thermal to face the room and leaves the
-photograph alone will show the two disagreeing, and that is a display bug, not
-a calibration one. Both are mirrored together now, in the console and here.
+The rig's pose says `mirror: true`, and projecting five hours of recorded
+detections onto the floor supports it: 29% land within 70 cm of the table with
+the mirror applied against 17% without, and the median distance from its centre
+is halved. That flag describes the thermal-to-floor projection. It is not also
+an RGB display setting: the Pi photograph is shown in its delivered
+orientation, while thermal views continue to apply the pose mirror.
 3. **Inference** (`src/algo/model.ts`) is a few dozen weights applied per
    pixel: logistic regression over local thermal features, then threshold,
    group and take the centroid. No runtime dependency, and small enough to
