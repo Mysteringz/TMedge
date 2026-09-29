@@ -387,22 +387,15 @@ function renderThumbs(): void {
 }
 
 /**
- * Show the latest RGB frame everywhere it appears: grid tile, detail panel,
- * demo tab -- mirrored when the rig is, for the same reason the thermal is.
- *
- * Both cameras sit on one bracket, so they are mirrored against the room
- * together. Measured, not assumed: fitting camera pixels to thermal pixels
- * over 309 recorded frames gives a transform with a positive determinant --
- * a rotation of about 28 degrees and no reflection. So flipping the thermal
- * to face the room and leaving the photograph alone is what made the two
- * disagree on screen.
+ * Show the latest RGB frame everywhere it appears: grid tile, detail panel
+ * and demo tab. Camera orientation is independent of the thermal pose; using
+ * the thermal mirror flag here reverses the Pi image for the operator.
  */
 function showRgb(uid: string, url: string): void {
-  const flip = isMirrored(uid) ? 'scaleX(-1)' : '';
   const set = (img: HTMLImageElement | null) => {
     if (!img) return;
     img.src = url;
-    img.style.transform = flip;
+    img.style.transform = 'none';
   };
   set(document.querySelector<HTMLImageElement>(`#thumbs [data-rgb-uid="${uid}"] img`));
   if (uid === selected) set($<HTMLImageElement>('#rgb-detail-img'));
