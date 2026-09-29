@@ -667,7 +667,7 @@ function Viewer({ envelope, o, d, live }: {
           <figure><Plane data={o.background as never} colour="grey" mirror={mirror} /><figcaption>background model{mirrorNote}</figcaption></figure>
           <figure><Plane data={o.diff as never} mirror={mirror} /><figcaption>difference{mirrorNote}</figcaption></figure>
           <figure><Plane data={o.foreground as never} colour="mask" mirror={mirror} /><figcaption>foreground mask{mirrorNote}</figcaption></figure>
-          {d.rgb === true && <LiveCamera uid={String(d.uid ?? '')} live={live} mirror={mirror} />}
+          {d.rgb === true && <LiveCamera uid={String(d.uid ?? '')} live={live} />}
         </div>
       );
     case 'human_detection': {
