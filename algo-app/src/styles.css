@@ -99,6 +99,8 @@ button, input, select { font: inherit; color: inherit; }
 .grid-canvas, .plan-canvas { image-rendering: pixelated; border: 1px solid var(--line); background: #0d0d10; display: block; }
 .grid-canvas { width: 512px; max-width: calc((100vw - 110px) / 3); height: auto; }
 .plan-canvas { image-rendering: auto; }
+/* With the camera beside them it is four pictures, not three: same rule. */
+.with-camera .grid-canvas, .with-camera .rgbview { max-width: calc((100vw - 128px) / 4); }
 .scale { font-size: 10px; color: var(--muted); margin-top: 3px; }
 .empty { color: var(--muted); font-style: italic; }
 .error-box { color: #ff9a9a; border: 1px solid #5a2a2a; background: #2a1818; padding: 10px; border-radius: 3px; }

@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { DetectorHost } from '../src/algo/detector.js';
+import { AlgoRuntime } from '../src/algo/runtime.js';
 import { FEATURES, featuresOf, locate, type LocatorModel } from '../src/algo/model.js';
 import { estimateDesks, DEFAULT_DESK } from '../src/algo/desk.js';
 import { FrameStore } from '../src/algo/frames.js';
@@ -117,6 +118,25 @@ test('the preview is the firmware detector, not a second implementation', async 
   // the whole dashboard exists for.
   const strict = await host.run(frames, { ...params, min_peak: 20 }, false);
   assert.equal(strict[strict.length - 1]?.detections.length, 0, 'raising min peak drops the blob');
+});
+
+test('a dual-cam node offers its camera beside the foreground mask, and a thermal-only node does not', async (t) => {
+  if (new DetectorHost().unavailable) return t.skip('no host detector here');
+  for (const rgb of [true, false]) {
+    // Only what run() reads: the node's flags, and no floor or health yet.
+    const rt = {
+      reg: { nodes: new Map([[UID, { uid: UID, rgb, floorId: null, pose: null }]]), floors: [] },
+      nodes: () => [],
+    } as unknown as EdgeRuntime;
+    const broker = { deviceParams: () => ({}), requested: () => ({}) } as unknown as ParamBroker;
+    const algo = new AlgoRuntime(rt, broker);
+    for (let i = 0; i < 25; i++) algo.frames.addRaw(raw(i, scene(i >= 22)));
+    const out = await algo.run(defaultPipeline(UID));
+    const bg = out.envelopes.find((e) => e.type === 'background_subtraction');
+    assert.ok(bg, 'the stage ran');
+    assert.equal(bg.debug.rgb, rgb, 'the viewer is told whether there is a camera');
+    assert.equal(bg.debug.uid, UID, 'and which node to ask for its picture');
+  }
 });
 
 test('a live parameter change can always be taken back', async () => {
