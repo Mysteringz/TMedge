@@ -17,9 +17,12 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { WebSocketServer, type WebSocket } from 'ws';
 import { sendLatest } from '../shared/fanout.js';
 import { FirmwareStore } from './firmware.js';
+import { FirmwareBuildJobs } from '../modules/firmware/application/firmware-build-jobs.js';
+import { createFirmwareRouter } from '../modules/firmware/routes/firmware-router.js';
+import { FirmwareStoreExecutor } from '../infrastructure/firmware-build/firmware-store-executor.js';
+import { RolloutImageUsageQuery } from '../infrastructure/firmware-build/rollout-image-usage-query.js';
 import { Provisioning } from './provisioning.js';
 import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from './protocol.js';
-import type { RolloutTarget } from './rollout.js';
 import type { EdgeRuntime } from './runtime.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -33,7 +36,7 @@ function safeEqual(a: string, b: string): boolean {
 /** How many nodes one console may watch raw frames from at once. */
 const MAX_SUBSCRIPTIONS = 64;
 
-export function startConsole(rt: EdgeRuntime): Server {
+export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: FirmwareBuildJobs } = {}): Server {
   const { adminPassword, consolePort, consoleHost } = rt.cfg;
   const provisioning = new Provisioning(rt.reg, {
     token: rt.cfg.flashToken,
@@ -227,76 +230,15 @@ export function startConsole(rt: EdgeRuntime): Server {
   });
 
   // A short-lived token for the WebSocket, which cannot carry basic auth reliably.
-  // --- firmware updates ----------------------------------------------------
-  // The console uploads a PlatformIO project file by file, builds it here,
-  // and rolls the image out. Raw bodies, one file per request: multipart
-  // would mean a parser dependency for no gain.
-
-  let building: { uploadId: string; startedAt: number; log: string[]; error?: string } | null = null;
-
-  app.get('/api/firmware', (_req, res) => res.json({
-    pio: FirmwareStore.findPio() !== null,
-    builds: rt.firmware.list(),
-    building: building ? { startedAt: building.startedAt, log: building.log.slice(-40), error: building.error } : null,
-    rollout: rt.rollouts.current(),
-    history: rt.rollouts.history(),
-    diskBytes: rt.firmware.diskBytes(),
+  const firmwareBuildJobs = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware));
+  app.use('/api', createFirmwareRouter({
+    firmware: rt.firmware,
+    buildJobs: firmwareBuildJobs,
+    rollouts: rt.rollouts,
+    imageInUse: new RolloutImageUsageQuery(rt.rollouts),
+    mutating,
+    pioInstalled: () => FirmwareStore.findPio() !== null,
   }));
-
-  app.post('/api/firmware/uploads', mutating, (_req, res) => {
-    rt.firmware.sweep();
-    res.json({ uploadId: rt.firmware.startUpload('console') });
-  });
-
-  app.post('/api/firmware/uploads/:id/files', mutating, express.raw({ type: '*/*', limit: '8mb' }), (req, res) => {
-    const path = typeof req.query.path === 'string' ? req.query.path : '';
-    try {
-      rt.firmware.addFile(req.params.id ?? '', path, Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
-      return res.json({ ok: true });
-    } catch (err) {
-      return res.status(400).json({ error: (err as Error).message });
-    }
-  });
-
-  app.post('/api/firmware/uploads/:id/build', mutating, (req, res) => {
-    // A build that failed is history, not a queue: starting another one is
-    // exactly what someone does next.
-    if (building && !building.error) return res.status(409).json({ error: 'a build is already running' });
-    const uploadId = req.params.id ?? '';
-    building = { uploadId, startedAt: Date.now(), log: [] };
-    // Compiling takes minutes; the console polls /api/firmware for progress.
-    void rt.firmware.build(uploadId, 'console')
-      .then(() => { building = null; })
-      .catch((err: unknown) => {
-        const log = (err as { log?: string[] }).log ?? [];
-        building = { uploadId, startedAt: building?.startedAt ?? Date.now(), log, error: (err as Error).message };
-        setTimeout(() => { if (building?.error) building = null; }, 5 * 60_000).unref();
-      });
-    return res.status(202).json({ ok: true });
-  });
-
-  app.delete('/api/firmware/:id', mutating, (req, res) => {
-    const current = rt.rollouts.current();
-    if (current && current.buildId === req.params.id && current.stage !== 'done' && current.stage !== 'stopped') {
-      return res.status(409).json({ error: 'that image is rolling out right now' });
-    }
-    return res.json({ ok: rt.firmware.remove(req.params.id ?? '') });
-  });
-
-  app.post('/api/firmware/rollout', mutating, (req, res) => {
-    const body = (req.body ?? {}) as { buildId?: string; target?: RolloutTarget };
-    if (!body.buildId || !body.target) return res.status(400).json({ error: 'buildId and target are required' });
-    try {
-      return res.json(rt.rollouts.start(body.buildId, body.target, 'console'));
-    } catch (err) {
-      return res.status(400).json({ error: (err as Error).message });
-    }
-  });
-
-  app.post('/api/firmware/rollout/cancel', mutating, (_req, res) => {
-    rt.rollouts.cancel('console');
-    res.json({ ok: true });
-  });
 
   app.get('/api/ws-token', (_req, res) => {
     const exp = Date.now() + 60_000;
@@ -304,6 +246,7 @@ export function startConsole(rt: EdgeRuntime): Server {
   });
 
   const server = createServer(app);
+  server.once('close', () => firmwareBuildJobs.dispose());
   const wss = new WebSocketServer({ noServer: true });
   const subs = new Map<WebSocket, Set<string>>();
 

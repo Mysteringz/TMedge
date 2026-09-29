@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, normalize, sep } from 'node:path';
+import type { FirmwareArtifactFiles } from '../modules/firmware/repositories/firmware-repository.js';
 
 export type BuildState = 'uploading' | 'building' | 'ready' | 'failed';
 
@@ -76,7 +77,7 @@ interface Upload {
   startedAt: number;
 }
 
-export class FirmwareStore {
+export class FirmwareStore implements FirmwareArtifactFiles {
   private readonly uploads = new Map<string, Upload>();
   private readonly builds = new Map<string, FirmwareBuild>();
   private readonly limits: FirmwareLimits;
@@ -189,7 +190,7 @@ export class FirmwareStore {
    * Compile an upload. Resolves when the image exists; rejects with the tail
    * of the build log, which is what a person needs to fix their code.
    */
-  async build(uploadId: string, by: string): Promise<FirmwareBuild> {
+  async build(uploadId: string, by: string, onLog?: (line: string) => void): Promise<FirmwareBuild> {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');
     const pio = this.opts.pio ?? FirmwareStore.findPio();
@@ -204,6 +205,7 @@ export class FirmwareStore {
     const keep = (line: string) => {
       log.push(line);
       if (log.length > 400) log.splice(0, log.length - 400);
+      onLog?.(line);
     };
     this.opts.log?.(`firmware: building upload ${uploadId} (${up.files} files) from ${root}`);
     const status = await this.run(pio, ['run', '-e', 'tmflash', '-d', root], keep);

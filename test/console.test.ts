@@ -15,6 +15,7 @@ import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { startConsole } from '../src/edge/console.js';
 import { buildRegistry } from '../src/edge/registry.js';
 import { EdgeRuntime } from '../src/edge/runtime.js';
+import { FirmwareBuildJobs } from '../src/modules/firmware/application/firmware-build-jobs.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
 
 function runtime() {
@@ -106,6 +107,65 @@ test('legacy firmware routes preserve auth, mutation guard, and polling shape', 
     assert.equal((await fetch(`${base}/api/nodes/30:ed:a0:cb:f5:f8/raw`, { headers: { authorization: auth } })).status, 404);
     assert.equal((await fetch(`${base}/api/firmware/uploads`, { method: 'POST', headers: { authorization: auth } })).status, 403);
     assert.equal((await fetch(`${base}/api/firmware/uploads`, { method: 'POST', headers: mutating })).status, 200);
+  } finally {
+    server.close();
+    await rt.stop();
+  }
+});
+
+test('firmware build failures retain the legacy polling error payload and allow a retry', async () => {
+  const rt = runtime();
+  let calls = 0;
+  const jobs = new FirmwareBuildJobs({
+      execute: async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error('build failed (pio exit 1)'), { log: ['compiler error'] });
+        return { artifact: { id: 'image-a', sha256: 'a'.repeat(64), size: 10, version: '1.0.0' }, stagedOutputId: 'image-a', log: [] };
+    },
+  });
+  const server = startConsole(rt, { firmwareBuildJobs: jobs });
+  await new Promise<void>((r) => server.listening ? r() : server.once('listening', () => r()));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const auth = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
+  const headers = { authorization: auth, 'x-tm-console': '1' };
+  try {
+    assert.equal((await fetch(`${base}/api/firmware/uploads/first/build`, { method: 'POST', headers })).status, 202);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const status = await (await fetch(`${base}/api/firmware`, { headers: { authorization: auth } })).json() as {
+      building: { startedAt: number; error?: string; log: string[] } | null;
+    };
+    assert.ok(status.building);
+    assert.equal(Number.isFinite(status.building.startedAt), true);
+    assert.equal(status.building.error, 'build failed (pio exit 1)');
+    assert.deepEqual(status.building.log, ['compiler error']);
+    assert.equal((await fetch(`${base}/api/firmware/uploads/retry/build`, { method: 'POST', headers })).status, 202);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal((await (await fetch(`${base}/api/firmware`, { headers: { authorization: auth } })).json() as { building: unknown }).building, null);
+  } finally {
+    server.close();
+    await rt.stop();
+  }
+});
+
+test('firmware HTTP build endpoint rejects a second active request with the legacy conflict response', async () => {
+  const rt = runtime();
+  const jobs = new FirmwareBuildJobs({
+    execute: async () => new Promise<{ artifact: { id: string; sha256: string; size: number; version: string }; stagedOutputId: string; log: string[] }>(() => {}),
+  });
+  const server = startConsole(rt, { firmwareBuildJobs: jobs });
+  await new Promise<void>((r) => server.listening ? r() : server.once('listening', () => r()));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const headers = {
+    authorization: `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`,
+    'x-tm-console': '1',
+  };
+  try {
+    const first = await fetch(`${base}/api/firmware/uploads/first/build`, { method: 'POST', headers });
+    assert.equal(first.status, 202);
+    assert.deepEqual(await first.json(), { ok: true });
+    const duplicate = await fetch(`${base}/api/firmware/uploads/second/build`, { method: 'POST', headers });
+    assert.equal(duplicate.status, 409);
+    assert.deepEqual(await duplicate.json(), { error: 'a build is already running' });
   } finally {
     server.close();
     await rt.stop();
