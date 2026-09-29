@@ -1,9 +1,35 @@
 /** TMedge entry point: `npm run edge`. */
+import { accessSync, constants, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { loadEdgeConfig, EnvError } from './config.js';
 import { startAlgo } from '../algo/server.js';
 import { startConsole } from './console.js';
 import { ConfigError, loadRegistry } from './registry.js';
 import { EdgeRuntime } from './runtime.js';
+
+/**
+ * Admitting a node appends to nodes.json, so provisioning is only honest if
+ * that file can actually be written -- and if it survives a deploy.
+ *
+ * Both failures are silent and expensive. An unwritable file means every
+ * approval throws at the moment someone is standing at a node waiting; a
+ * file inside the release directory means approvals work all week and
+ * vanish on the next deploy, taking the fleet's registrations with them.
+ * Refusing to start says so once, now, instead.
+ */
+function checkNodesWritable(nodesPath: string): void {
+  try {
+    accessSync(nodesPath, constants.W_OK);
+  } catch {
+    throw new EnvError(`TMFLASH_TOKEN is set but ${nodesPath} is not writable: approving a node would fail. Point NODES_CONFIG at a writable copy.`);
+  }
+  // A release tree is replaced wholesale on the next deploy. Anything under
+  // the live symlink's target is therefore temporary storage.
+  const real = realpathSync(nodesPath);
+  if (/[/\\]tmedge-releases[/\\]/.test(real) || real.startsWith(resolve(process.cwd()) + '/config/')) {
+    throw new EnvError(`TMFLASH_TOKEN is set but ${nodesPath} is inside the release (${real}); admitted nodes would be lost on the next deploy. Point NODES_CONFIG at /opt/tmedge-shared/nodes.json.`);
+  }
+}
 
 function main(): void {
   let cfg;
@@ -11,6 +37,7 @@ function main(): void {
   try {
     cfg = loadEdgeConfig();
     reg = loadRegistry(cfg.sitePath, cfg.nodesPath);
+    if (cfg.flashToken) checkNodesWritable(cfg.nodesPath);
   } catch (err) {
     if (err instanceof EnvError || err instanceof ConfigError) {
       console.error(`[edge] refusing to start: ${err.message}`);

@@ -61,8 +61,20 @@ export interface FloorDef {
 export interface NodeDef {
   uid: string;
   label: string;
-  floorId: string;
-  pose: NodePose;
+  /**
+   * Where the node is, or null when it has been admitted but not yet placed.
+   *
+   * A node provisioned by TMflash is a known, allowed identity long before
+   * anyone has been up a ladder with it: it may authenticate and stream, but
+   * nothing is known about what it is looking at. Both of these are null
+   * together and are typed nullable rather than filled with a sentinel, so
+   * the compiler names every place that would otherwise do geometry on a
+   * pose nobody has measured -- an unplaced node that quietly became a
+   * table's fallback would put a stranger's heat on someone's seat.
+   */
+  floorId: string | null;
+  pose: NodePose | null;
+  /** Always empty while unplaced: a node cannot own a table it cannot see. */
   owns: string[];
   simulated: boolean;
   /**
@@ -225,6 +237,35 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
     const uid = str(n, 'uid', w).toLowerCase();
     if (!UID_RE.test(uid)) throw new ConfigError(`${w}.uid: expected a MAC like 30:ed:a0:cb:f5:f8, got "${uid}"`);
     if (nodes.has(uid)) throw new ConfigError(`${w}: duplicate uid ${uid}`);
+    // Unplaced: admitted as an identity, not yet installed anywhere. Both
+    // halves must be absent together -- half a placement is a typo, and the
+    // whole point of this file being strict is that a typo cannot become a
+    // silently mis-sited node.
+    const unplaced = n.floor === undefined && n.pose === undefined;
+    if (!unplaced && (n.floor === undefined || n.pose === undefined)) {
+      throw new ConfigError(`${w}: give both "floor" and "pose", or neither (an unplaced node)`);
+    }
+    if (unplaced) {
+      if (Array.isArray(n.owns) && n.owns.length > 0) {
+        throw new ConfigError(`${w}.owns: an unplaced node cannot own tables; place it first`);
+      }
+      if (n.rgb === true) {
+        // Placing it later decides which floor it lands on, and RGB is only
+        // ever allowed on a console-visible one. Refuse now rather than
+        // discover it at placement time.
+        throw new ConfigError(`${w}.rgb: place the node before marking it RGB`);
+      }
+      nodes.set(uid, {
+        uid,
+        label: typeof n.label === 'string' && n.label ? n.label : uid,
+        floorId: null,
+        pose: null,
+        owns: [],
+        simulated: n.simulated === true,
+        rgb: false,
+      });
+      return;
+    }
     const floorId = str(n, 'floor', w);
     const floor = floors.find((f) => f.id === floorId);
     if (!floor) throw new ConfigError(`${w}.floor: no floor "${floorId}"`);
@@ -270,6 +311,10 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   // fallbacks, closest first, used only while the owner is down.
   for (const table of tables.values()) {
     const seeing = [...nodes.values()]
+      // An unplaced node has no pose, so it can see nothing and covers
+      // nothing. It must never become a fallback on the strength of a
+      // position nobody has measured.
+      .filter((n): n is NodeDef & { pose: NodePose } => n.pose !== null)
       .filter((n) => n.floorId === table.floorId)
       .filter((n) => table.seats.every((s) => seesWithMargin(n.pose, s.x, s.y)))
       .sort((a, b) => dist(a.pose, table) - dist(b.pose, table));

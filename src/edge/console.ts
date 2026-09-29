@@ -17,6 +17,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { WebSocketServer, type WebSocket } from 'ws';
 import { sendLatest } from '../shared/fanout.js';
 import { FirmwareStore } from './firmware.js';
+import { Provisioning } from './provisioning.js';
 import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from './protocol.js';
 import type { RolloutTarget } from './rollout.js';
 import type { EdgeRuntime } from './runtime.js';
@@ -34,6 +35,11 @@ const MAX_SUBSCRIPTIONS = 64;
 
 export function startConsole(rt: EdgeRuntime): Server {
   const { adminPassword, consolePort, consoleHost } = rt.cfg;
+  const provisioning = new Provisioning(rt.reg, {
+    token: rt.cfg.flashToken,
+    nodesPath: rt.cfg.nodesPath,
+    auditPath: join(rt.cfg.dataDir, 'provisioning.jsonl'),
+  });
   const wsSecret = randomBytes(32);
   const app = express();
   app.disable('x-powered-by');
@@ -79,6 +85,45 @@ export function startConsole(rt: EdgeRuntime): Server {
     return res.end(bytes);
   });
 
+  /**
+   * TMflash asking for a freshly flashed node to be let in. Before the admin
+   * check because the caller is a provisioning tool holding its own token,
+   * not a person with a console session -- and the token buys exactly one
+   * thing: a row in a list somebody still has to approve.
+   */
+  const bearer = (req: Request): string | null => {
+    const h = req.headers.authorization ?? '';
+    const [scheme, value] = h.split(' ');
+    return scheme === 'Bearer' && value ? value : null;
+  };
+  const provisionAuth = (req: Request, res: Response, next: NextFunction) => {
+    if (!provisioning.authorise(bearer(req))) {
+      // Identical for "provisioning is off" and "wrong token": which of the
+      // two it is is not an unauthenticated caller's business.
+      return res.status(401).json({ error: 'provisioning is not available with that token' });
+    }
+    return next();
+  };
+
+  app.post('/api/provision/request', express.json({ limit: '4kb' }), provisionAuth, (req, res) => {
+    try {
+      const out = provisioning.request((req.body ?? {}) as Record<string, unknown>, req.socket.remoteAddress ?? '?');
+      if (out.status === 'already-registered') return res.json({ status: 'registered', uid: out.uid });
+      // Put it on every open console at once: commissioning is someone
+      // standing at a node waiting, not a queue checked later.
+      broadcast({ type: 'join_request', request: out.request });
+      return res.status(202).json({ status: 'pending', id: out.request.id, uid: out.request.uid });
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  /** TMflash polls this while it waits for someone to click Allow. */
+  app.get('/api/provision/status/:uid', provisionAuth, (req, res) => {
+    const uid = (req.params.uid ?? '').toLowerCase();
+    return res.json({ uid, status: provisioning.statusOf(uid) });
+  });
+
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (!adminPassword) return next();
     const h = req.headers.authorization ?? '';
@@ -117,6 +162,34 @@ export function startConsole(rt: EdgeRuntime): Server {
     if (req.get('x-tm-console') !== '1') return res.status(403).json({ error: 'missing x-tm-console header' });
     return next();
   };
+
+  /**
+   * The console's half of provisioning: see what is waiting, and answer it.
+   * Behind the admin password and the custom header, like every other write
+   * here -- admitting a node is a change to which devices the edge trusts.
+   */
+  app.get('/api/provision/requests', (_req, res) => {
+    res.json({ enabled: provisioning.enabled, requests: provisioning.requests() });
+  });
+
+  app.post('/api/provision/requests/:id/:verdict', mutating, (req, res) => {
+    const { id = '', verdict = '' } = req.params;
+    if (verdict !== 'approve' && verdict !== 'deny') {
+      return res.status(400).json({ error: 'verdict must be approve or deny' });
+    }
+    try {
+      if (verdict === 'deny') {
+        const req_ = provisioning.deny(id, 'console');
+        broadcast({ type: 'join_resolved', id, uid: req_.uid, verdict });
+        return res.json({ ok: true, uid: req_.uid });
+      }
+      const node = provisioning.approve(id, 'console');
+      broadcast({ type: 'join_resolved', id, uid: node.uid, verdict });
+      return res.json({ ok: true, uid: node.uid, label: node.label, placed: false });
+    } catch (err) {
+      return res.status(409).json({ error: (err as Error).message });
+    }
+  });
 
   app.post('/api/nodes/:uid/command', mutating, async (req, res) => {
     const uid = req.params.uid ?? '';

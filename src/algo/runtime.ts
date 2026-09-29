@@ -164,7 +164,7 @@ export class AlgoRuntime {
     const projected = (dets: { x: number; y: number; area: number; heat: number }[]) =>
       dets.map((d, i) => {
         // Plan coordinates are [x, y] in centimetres, origin top-left.
-        const [fx, fy] = node ? pixelToFloor(node.pose, d.x, d.y) : [0, 0];
+        const [fx, fy] = node?.pose ? pixelToFloor(node.pose, d.x, d.y) : [0, 0];
         return { id: i + 1, px: d.x, py: d.y, x: fx, y: fy, area: d.area, heat: d.heat };
       });
 
@@ -187,7 +187,7 @@ export class AlgoRuntime {
               // negates x), but a picture shown as the sensor sends it is
               // mirrored against everything else on screen, so the viewers
               // flip it back and say so.
-              mirror: node?.pose.mirror ?? false,
+              mirror: node?.pose?.mirror ?? false,
             }, {
               resolution: '32 x 24',
               frame: pair.frame,
@@ -210,7 +210,7 @@ export class AlgoRuntime {
               diff: quantise(preview.diff, 0, diffMax),
               foreground: mask(preview.foreground),
             }, {
-              mirror: node?.pose.mirror ?? false,
+              mirror: node?.pose?.mirror ?? false,
               backgroundMean: round(preview.backgroundMean),
               globalShift: preview.globalShift,
               detectorMs,
@@ -242,7 +242,7 @@ export class AlgoRuntime {
               detections: blobs,
               labels: mask(preview.label, 255),
             }, {
-              mirror: node?.pose.mirror ?? false,
+              mirror: node?.pose?.mirror ?? false,
               observed,
               note: observed.length
                 ? 'observed = what the sensor decided for this frame; detections = this inspector’s parameters'
@@ -278,7 +278,7 @@ export class AlgoRuntime {
               tables: floor?.tables.map((t) => ({ id: t.id, ...t.rect })) ?? [],
             }, {
               people: points.length,
-              'mount height cm': node?.pose.heightCm ?? 0,
+              'mount height cm': node?.pose?.heightCm ?? 0,
             });
             break;
           }
@@ -308,7 +308,7 @@ export class AlgoRuntime {
                 trainedAt: model.trainedAt, samples: model.samples, positives: model.positives,
                 metrics: model.metrics, notes: model.notes ?? null,
               },
-              mirror: node?.pose.mirror ?? false,
+              mirror: node?.pose?.mirror ?? false,
             }, {
               people: detections.length,
               'device said': observed.length,

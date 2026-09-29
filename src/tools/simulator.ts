@@ -28,6 +28,10 @@ import { writeFileSync } from 'node:fs';
 import { floorToPixel, pixelAreaCm2 } from '../shared/geometry.js';
 import { buildOtaStatus, buildRaw, buildReport, buildStatus, PARAM_NAMES, REPORT_BACKGROUND_READY, STATUS_SENSOR_OK, STATUS_BACKGROUND_READY, STATUS_SIGNED, type Detection, type Identity } from '../edge/protocol.js';
 import { loadRegistry, type NodeDef, type Registry } from '../edge/registry.js';
+import type { NodePose } from '../shared/types.js';
+
+/** A node the simulator can act as: it has to be somewhere to see anything. */
+type PlacedNode = NodeDef & { pose: NodePose; floorId: string };
 
 interface Args {
   load: number;
@@ -157,7 +161,7 @@ class World {
 }
 
 /** Heat of one person as this node sees them: more pixels the closer they are. */
-function personHeat(node: NodeDef, x: number, y: number, px: [number, number]): { heat: number; area: number } {
+function personHeat(node: PlacedNode, x: number, y: number, px: [number, number]): { heat: number; area: number } {
   const pixelCm2 = pixelAreaCm2(node.pose, px[0], px[1]);
   const personCm2 = Math.PI * 26 * 26;                 // head and shoulders from above
   const pixels = personCm2 / pixelCm2;
@@ -165,7 +169,7 @@ function personHeat(node: NodeDef, x: number, y: number, px: [number, number]): 
   return { heat: 4.2 * pixels * 1.9, area: Math.max(1, Math.round(pixels * 1.9)) };
 }
 
-function observe(node: NodeDef, people: Person[], r: ReturnType<typeof rng>): Detection[] {
+function observe(node: PlacedNode, people: Person[], r: ReturnType<typeof rng>): Detection[] {
   const blobs: (Detection & { n: number })[] = [];
   for (const p of people) {
     const px = floorToPixel(node.pose, p.x, p.y);
@@ -217,7 +221,10 @@ async function main(): Promise<void> {
   const key = process.env.TM_KEY ? Buffer.from(process.env.TM_KEY) : null;
   if (!key) console.warn('[sim] TM_KEY not set: sending UNSIGNED packets (the edge rejects them unless ALLOW_UNSIGNED=1)');
   const reg = loadRegistry(process.env.SITE_CONFIG || 'config/site.json', process.env.NODES_CONFIG || 'config/nodes.json');
-  const nodes = [...reg.nodes.values()].filter((n) => n.simulated);
+  // A simulated node with no placement has nothing to look at, so there is
+  // nothing for it to pretend to see.
+  const nodes = [...reg.nodes.values()]
+    .filter((n): n is PlacedNode => n.simulated && n.pose !== null && n.floorId !== null);
   if (nodes.length === 0) throw new Error('no nodes with "simulated": true in nodes.json');
 
   const world = new World(reg, a);

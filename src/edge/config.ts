@@ -19,6 +19,12 @@ export interface EdgeConfig {
   /** The algo debugger, 0 to leave it off. Same password and bind rule as the console. */
   algoPort: number;
   adminPassword: string | null;
+  /**
+   * Secret TMflash presents to queue a node join request. Null disables
+   * provisioning outright -- an edge that is not being commissioned has no
+   * reason to accept these at all.
+   */
+  flashToken: string | null;
   pushUrls: string[];
   pushToken: string;
   publishMs: number;
@@ -83,6 +89,13 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
   const keys = [key, env.TM_KEY_PREVIOUS ?? ''].filter((k) => k.length > 0).map((k) => Buffer.from(k, 'utf8'));
 
   const adminPassword = env.ADMIN_PASSWORD ? env.ADMIN_PASSWORD : null;
+  const flashToken = env.TMFLASH_TOKEN ? env.TMFLASH_TOKEN : null;
+  // Short enough to brute-force is the same as absent, and this one decides
+  // whose requests reach an admin's screen.
+  if (flashToken !== null && flashToken.length < 24) throw new EnvError('TMFLASH_TOKEN must be 24+ chars');
+  if (flashToken !== null && adminPassword === null) {
+    throw new EnvError('TMFLASH_TOKEN needs ADMIN_PASSWORD: a join request is approved from the console, which must be protected.');
+  }
   const pushUrls = (env.WEB_PUSH_URLS ?? 'http://127.0.0.1:8080').split(',').map((s) => s.trim()).filter(Boolean);
   for (const u of pushUrls) {
     try {
@@ -122,6 +135,7 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     // can reach it, so it is then only reachable from this machine.
     consoleHost: env.CONSOLE_HOST || (adminPassword ? '0.0.0.0' : '127.0.0.1'),
     adminPassword,
+    flashToken,
     pushUrls,
     pushToken,
     publishMs: int(env, 'PUBLISH_MS', 2000, 200, 60000),

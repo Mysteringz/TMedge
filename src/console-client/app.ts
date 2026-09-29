@@ -19,7 +19,7 @@ interface Layout {
     id: string; visibility: 'public' | 'console'; name: string; building: string; width: number; height: number; outline: Point[];
     tables: { id: string; name: string; rect: { x: number; y: number; width: number; height: number }; seats: { id: string; x: number; y: number }[]; owner: string | null; coveredBy: string[] }[];
   }[];
-  nodes: { uid: string; label: string; floorId: string; pose: NodePose; owns: string[]; simulated: boolean; rgb: boolean; footprint: Point[] }[];
+  nodes: { uid: string; label: string; floorId: string | null; pose: NodePose | null; owns: string[]; simulated: boolean; rgb: boolean; footprint: Point[] | null }[];
 }
 
 interface Dwell { cellCm: number; cols: number; rows: number; max: number; cells: number[] }
@@ -177,12 +177,12 @@ function renderFusion(): void {
   const online = new Set(last.nodes.filter((n) => n.online).map((n) => n.uid));
   if (($<HTMLInputElement>('#t-footprints')).checked) {
     for (const n of layout.nodes) {
-      if (n.floorId !== floor.id) continue;
+      if (n.floorId !== floor.id || !n.footprint) continue;
       svgEl('polygon', { class: `fp${n.uid === selected ? ' sel' : ''}`, points: n.footprint.map((p) => p.join(',')).join(' ') }, svg);
     }
   } else if (selected) {
     const n = layout.nodes.find((x) => x.uid === selected);
-    if (n) svgEl('polygon', { class: 'fp sel', points: n.footprint.map((p) => p.join(',')).join(' ') }, svg);
+    if (n?.footprint) svgEl('polygon', { class: 'fp sel', points: n.footprint.map((p) => p.join(',')).join(' ') }, svg);
   }
 
   if (($<HTMLInputElement>('#t-dets')).checked) {
@@ -200,11 +200,13 @@ function renderFusion(): void {
   }
 
   for (const n of layout.nodes) {
-    if (n.floorId !== floor.id) continue;
-    const c = svgEl('rect', { class: `node${online.has(n.uid) ? '' : ' offline'}${n.uid === selected ? ' sel' : ''}`, x: n.pose.x - 11, y: n.pose.y - 11, width: 22, height: 22, rx: 4 }, svg);
+    // An unplaced node is on no floor and has no pose to draw at.
+    const pose = n.pose;
+    if (n.floorId !== floor.id || !pose) continue;
+    const c = svgEl('rect', { class: `node${online.has(n.uid) ? '' : ' offline'}${n.uid === selected ? ' sel' : ''}`, x: pose.x - 11, y: pose.y - 11, width: 22, height: 22, rx: 4 }, svg);
     c.style.cursor = 'pointer';
     c.addEventListener('click', () => select(n.uid));
-    svgEl('title', {}, c).textContent = `${n.label} (${n.uid}) h=${n.pose.heightCm} cm`;
+    svgEl('title', {}, c).textContent = `${n.label} (${n.uid}) h=${pose.heightCm} cm`;
   }
 }
 
@@ -235,12 +237,15 @@ function renderTabs(active: string): void {
 function renderDemo(): void {
   if (!layout) return;
   const floorId = floorTab ?? layout.floors[0]?.id;
-  const rig = layout.nodes.find((n) => n.floorId === floorId && n.rgb);
+  // An RGB rig is always placed (registry refuses rgb on an unplaced node),
+  // but the type does not know that, so say so once here.
+  const rig = layout.nodes.find((n) => n.floorId === floorId && n.rgb && n.pose !== null);
+  const rigPose = rig?.pose;
   const box = $('#demo');
   box.hidden = !rig;
-  if (!rig) return;
+  if (!rig || !rigPose) return;
   $('#demo-title').textContent = rig.label;
-  $('#demo-sub').textContent = `${rig.uid} · h=${rig.pose.heightCm} cm${rig.pose.mirror ? ' · mirrored' : ''}`;
+  $('#demo-sub').textContent = `${rig.uid} · h=${rigPose.heightCm} cm${rigPose.mirror ? ' · mirrored' : ''}`;
   const f = rgbFrames.get(rig.uid);
   $('#demo-rgb-age').textContent = f ? `· ${fmtAge(f.at)}` : '· waiting for the rig';
   const raw = raws.get(rig.uid);
@@ -259,7 +264,7 @@ function renderDemo(): void {
  * detail panel used to do, while the demo tab alone got it right.
  */
 function isMirrored(uid: string): boolean {
-  return layout?.nodes.find((n) => n.uid === uid)?.pose.mirror ?? false;
+  return layout?.nodes.find((n) => n.uid === uid)?.pose?.mirror ?? false;
 }
 
 function asRoomSeen(raw: RawFrameMessage, blobs: ConsoleDetection[] | null): [RawFrameMessage, ConsoleDetection[] | null] {
@@ -483,6 +488,91 @@ function renderDetail(): void {
   }
 }
 
+
+/* --- Nodes asking to join ------------------------------------------------
+ *
+ * TMflash flashes a node and asks for it to be admitted; the answer is a
+ * person's, here. Requests queue rather than replace each other, because
+ * commissioning a batch means several arrive while the first is still open
+ * and none of them should be lost behind another.
+ */
+interface JoinRequest {
+  id: string; uid: string; label: string;
+  firmware: string | null; from: string; at: number; expiresAt: number;
+}
+
+const joinQueue: JoinRequest[] = [];
+let joinShowing: JoinRequest | null = null;
+
+function queueJoin(req: JoinRequest): void {
+  if (joinQueue.some((r) => r.id === req.id) || joinShowing?.id === req.id) return;
+  joinQueue.push(req);
+  showNextJoin();
+}
+
+function dropJoin(id: string): void {
+  const i = joinQueue.findIndex((r) => r.id === id);
+  if (i >= 0) joinQueue.splice(i, 1);
+  // Someone at another console answered the one on screen; close it rather
+  // than let this admin approve something that no longer exists.
+  if (joinShowing?.id === id) {
+    joinShowing = null;
+    ($('#join-dialog') as HTMLDialogElement).close();
+    showNextJoin();
+  }
+}
+
+function showNextJoin(): void {
+  const dlg = $('#join-dialog') as HTMLDialogElement;
+  if (joinShowing || dlg.open) return;
+  const req = joinQueue.shift();
+  if (!req) return;
+  joinShowing = req;
+  $('#join-uid').textContent = req.uid;
+  $('#join-label').textContent = req.label;
+  $('#join-fw').textContent = req.firmware ?? 'not reported';
+  $('#join-from').textContent = req.from;
+  $('#join-queue').textContent = joinQueue.length ? `${joinQueue.length} more waiting` : '';
+  const err = $('#join-error');
+  err.hidden = true;
+  err.textContent = '';
+  dlg.showModal();
+}
+
+async function answerJoin(verdict: 'approve' | 'deny'): Promise<void> {
+  const req = joinShowing;
+  if (!req) return;
+  const res = await fetch(`/api/provision/requests/${encodeURIComponent(req.id)}/${verdict}`, {
+    method: 'POST', headers: { 'x-tm-console': '1' },
+  });
+  if (!res.ok) {
+    const j = (await res.json().catch(() => ({}))) as { error?: string };
+    const err = $('#join-error');
+    err.textContent = j.error ?? `failed (HTTP ${res.status})`;
+    err.hidden = false;
+    // Leave it open: the admin has not had an answer, so they should not be
+    // shown the next request as if this one were dealt with.
+    ($('#join-dialog') as HTMLDialogElement).showModal();
+    return;
+  }
+  joinShowing = null;
+  showNextJoin();
+}
+
+function initJoin(): void {
+  const dlg = $('#join-dialog') as HTMLDialogElement;
+  $('#join-approve').addEventListener('click', () => void answerJoin('approve'));
+  $('#join-deny').addEventListener('click', () => void answerJoin('deny'));
+  // Esc closes the dialog without answering; the request stays pending and
+  // comes back on the next reload, which is the safe way round.
+  dlg.addEventListener('close', () => {
+    if (joinShowing) {
+      joinQueue.unshift(joinShowing);
+      joinShowing = null;
+    }
+  });
+}
+
 async function command(body: { op: string; param?: string | undefined; value?: number }): Promise<void> {
   if (!selected) return;
   const res = await fetch(`/api/nodes/${selected}/command`, {
@@ -540,6 +630,10 @@ async function connect(): Promise<void> {
         renderThumbs();
         renderDetail();
         renderFusion();
+      } else if (msg.type === 'join_request') {
+        queueJoin((msg as unknown as { request: JoinRequest }).request);
+      } else if (msg.type === 'join_resolved') {
+        dropJoin((msg as unknown as { id: string }).id);
       } else if (msg.type === 'report') {
         const m = msg as unknown as { uid: string; at: number; dets: ConsoleDetection[] };
         dets.set(m.uid, { at: Date.now(), dets: m.dets });
@@ -574,6 +668,15 @@ async function connect(): Promise<void> {
 async function start(): Promise<void> {
   layout = (await (await fetch('/api/layout')).json()) as Layout;
   initFirmware();
+  initJoin();
+  // Requests that arrived while nobody had the console open are still
+  // waiting; a live WS event is not the only way one gets answered.
+  try {
+    const j = (await (await fetch('/api/provision/requests')).json()) as { requests: JoinRequest[] };
+    for (const r of j.requests) queueJoin(r);
+  } catch {
+    /* provisioning is optional; the rest of the console works without it */
+  }
   for (const id of ['#t-footprints', '#t-dwell', '#t-dets']) $(id).addEventListener('change', renderFusion);
   $('#t-overlay').addEventListener('change', drawBig);
   document.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach((r) => r.addEventListener('change', () => {
