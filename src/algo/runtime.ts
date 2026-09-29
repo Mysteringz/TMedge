@@ -211,6 +211,10 @@ export class AlgoRuntime {
               foreground: mask(preview.foreground),
             }, {
               mirror: node?.pose?.mirror ?? false,
+              // The foreground mask is easiest to judge against the room it
+              // claims to have found people in.
+              uid,
+              rgb: node?.rgb ?? false,
               backgroundMean: round(preview.backgroundMean),
               globalShift: preview.globalShift,
               detectorMs,
