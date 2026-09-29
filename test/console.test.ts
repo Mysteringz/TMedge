@@ -87,3 +87,27 @@ test('a console is never sent frames from a node it did not ask for', async () =
     await rt.stop();
   }
 });
+
+test('legacy firmware routes preserve auth, mutation guard, and polling shape', async () => {
+  const rt = runtime();
+  const server = startConsole(rt);
+  await new Promise<void>((r) => server.listening ? r() : server.once('listening', () => r()));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const auth = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
+  const mutating = { authorization: auth, 'x-tm-console': '1' };
+  try {
+    assert.equal((await fetch(`${base}/api/firmware`)).status, 401, 'firmware status remains admin-only');
+    const firmware = await fetch(`${base}/api/firmware`, { headers: { authorization: auth } });
+    assert.equal(firmware.status, 200);
+    const firmwareBody = await firmware.json() as { builds: unknown[]; building: unknown; rollout: unknown; history: unknown[] };
+    assert.ok(Array.isArray(firmwareBody.builds));
+    assert.equal(firmwareBody.building, null);
+    assert.ok(Array.isArray(firmwareBody.history));
+    assert.equal((await fetch(`${base}/api/nodes/30:ed:a0:cb:f5:f8/raw`, { headers: { authorization: auth } })).status, 404);
+    assert.equal((await fetch(`${base}/api/firmware/uploads`, { method: 'POST', headers: { authorization: auth } })).status, 403);
+    assert.equal((await fetch(`${base}/api/firmware/uploads`, { method: 'POST', headers: mutating })).status, 200);
+  } finally {
+    server.close();
+    await rt.stop();
+  }
+});
