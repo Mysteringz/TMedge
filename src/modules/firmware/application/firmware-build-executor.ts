@@ -16,4 +16,5 @@ export interface FirmwareBuildResult {
 /** Adapter contract for bounded build progress and a validated image result. */
 export interface FirmwareBuildExecutor {
   execute(request: FirmwareBuildRequest, reportProgress: (line: string) => void): Promise<FirmwareBuildResult>;
+  dispose?(): Promise<void>;
 }

@@ -65,10 +65,14 @@ rollback, follow [pipeline.md](pipeline.md).
   follows the tunnel by itself; only the fallback names a machine.
 - **The Innovation Wing Pi**: `/opt/tm-demo/bridge.env` sends UDP to
   `100.79.19.4:5200` over Tailscale.
-- **Firmware builds**: `PIO_PATH=/opt/platformio/penv/bin/pio`. The first
-  build of a project downloads ~1 GB of toolchain into
-  `/var/lib/tmedge/platformio`; the 2 GB swap is there so that compile is
-  not killed on a 913 MB box.
+- **Firmware builds**: run in a separate Docker worker service, addressed by
+  `FIRMWARE_BUILD_WORKER_URL=http://127.0.0.1:8123/build`. This current host
+  runs the edge under systemd and does not currently provision that worker or
+  Docker Engine. Enablement requires an explicit worker install and a resource
+  rehearsal: the documented instance has 913 MB RAM plus 2 GB swap, while the
+  default worker limit is 768 MB RAM plus swap. Do not enable builds on this
+  host until the combined edge/worker memory and temporary disk use are
+  measured; increasing instance capacity may be required.
 
 ## Moving the machine, and the two things that are not files
 

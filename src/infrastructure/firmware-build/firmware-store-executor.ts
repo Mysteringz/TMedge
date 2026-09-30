@@ -1,18 +1,34 @@
-import type { FirmwareStore } from '../../edge/firmware.js';
+import { FirmwareError, type FirmwareStore } from '../../edge/firmware.js';
 import type { FirmwareBuildExecutor, FirmwareBuildResult, FirmwareBuildRequest } from '../../modules/firmware/application/firmware-build-executor.js';
-import type { Actor } from '../../modules/shared/application/contracts.js';
+import type { FirmwareBuildWorker } from './firmware-build-worker-client.js';
+import { FirmwareBuildWorkerClient } from './firmware-build-worker-client.js';
 
-/** Adapts the current file-backed build executor to the application contract. */
+/** Executes uploads in the isolated worker, then promotes verified output locally. */
 export class FirmwareStoreExecutor implements FirmwareBuildExecutor {
-  constructor(private readonly store: FirmwareStore) {}
+  private readonly worker: FirmwareBuildWorker;
 
-  /** Runs the current file-backed PlatformIO executor for one accepted job. */
+  constructor(private readonly store: FirmwareStore, worker?: FirmwareBuildWorker) {
+    this.worker = worker ?? new FirmwareBuildWorkerClient();
+  }
+
   async execute(request: FirmwareBuildRequest, reportProgress: (line: string) => void): Promise<FirmwareBuildResult> {
-    const built = await this.store.build(request.uploadId, request.actor.id, reportProgress);
+    const workspace = this.store.buildWorkspace(request.uploadId);
+    const result = await this.worker.build(workspace, reportProgress);
+    if (result.exitCode !== 0) throw withLog(new FirmwareError(`build failed (pio exit ${result.exitCode})`), result.log);
+    if (!result.artifact) throw withLog(new FirmwareError('the build worker returned no firmware image'), result.log);
+    const built = this.store.completeBuild(request.uploadId, request.actor.id, result.log, result.artifact);
     return {
       artifact: { id: built.id, sha256: built.sha256, size: built.size, version: built.version },
       stagedOutputId: built.id,
       log: built.log,
     };
   }
+
+  async dispose(): Promise<void> {
+    await this.worker.dispose();
+  }
+}
+
+function withLog(error: Error, log: string[]): Error & { log: string[] } {
+  return Object.assign(error, { log });
 }

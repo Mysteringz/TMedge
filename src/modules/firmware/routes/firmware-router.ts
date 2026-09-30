@@ -10,7 +10,7 @@ export interface FirmwareRouterDependencies {
   rollouts: RolloutService;
   imageInUse: ImageInUseQuery;
   mutating: RequestHandler;
-  pioInstalled(): boolean;
+  buildWorkerConfigured(): boolean;
 }
 
 /** Creates the legacy firmware HTTP routes with injected application dependencies. */
@@ -28,7 +28,7 @@ export function createFirmwareRouter(dependencies: FirmwareRouterDependencies): 
 
 function getFirmwareStatus(dependencies: FirmwareRouterDependencies): RequestHandler {
   return (_req, res) => res.json({
-    pio: dependencies.pioInstalled(),
+    pio: dependencies.buildWorkerConfigured(),
     builds: dependencies.firmware.list(),
     building: dependencies.buildJobs.status(),
     rollout: dependencies.rollouts.current(),

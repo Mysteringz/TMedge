@@ -42,8 +42,9 @@ export class FirmwareBuildJobs {
   }
 
   /** Releases timers when the owning console server closes. */
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.clearExpiry();
+    await this.executor.dispose?.();
   }
 
   private async execute(request: FirmwareBuildRequest): Promise<void> {

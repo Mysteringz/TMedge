@@ -28,6 +28,7 @@ import { ExecuteNodeCommand } from '../modules/nodes/application/execute-node-co
 import { ResetNodeCursor } from '../modules/nodes/application/reset-node-cursor.js';
 import { createNodeRouter } from '../modules/nodes/routes/node-router.js';
 import { ConsoleWebSocketAdapter } from '../modules/console-live/console-websocket-adapter.js';
+import { FirmwareBuildWorkerClient } from '../infrastructure/firmware-build/firmware-build-worker-client.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -141,18 +142,19 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
   }));
 
   // A short-lived token for the WebSocket, which cannot carry basic auth reliably.
-  const firmwareBuildJobs = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware));
+  const firmwareBuildWorker = new FirmwareBuildWorkerClient();
+  const firmwareBuildJobs = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware, firmwareBuildWorker));
   app.use('/api', createFirmwareRouter({
     firmware: rt.firmware,
     buildJobs: firmwareBuildJobs,
     rollouts: rt.rollouts,
     imageInUse: new RolloutImageUsageQuery(rt.rollouts),
     mutating,
-    pioInstalled: () => FirmwareStore.findPio() !== null,
+    buildWorkerConfigured: () => firmwareBuildWorker.configured,
   }));
 
   const server = createServer(app);
-  server.once('close', () => firmwareBuildJobs.dispose());
+  server.once('close', () => { void firmwareBuildJobs.dispose(); });
   const live = new ConsoleWebSocketAdapter(server, rt, () => state(rt));
   live.start();
   server.once('close', () => { void live.close(); });

@@ -10,10 +10,9 @@
  * Builds are kept on disk so a rollout survives a restart of the edge, and
  * the old image stays available to roll back to.
  */
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, normalize, sep } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import type { FirmwareArtifactFiles } from '../modules/firmware/repositories/firmware-repository.js';
 
 export type BuildState = 'uploading' | 'building' | 'ready' | 'failed';
@@ -40,14 +39,14 @@ export interface FirmwareLimits {
   maxFiles: number;
   maxFileBytes: number;
   maxTotalBytes: number;
-  buildTimeoutMs: number;
+  maxArtifactBytes: number;
 }
 
 const DEFAULTS: FirmwareLimits = {
   maxFiles: 800,
   maxFileBytes: 8 * 1024 * 1024,
   maxTotalBytes: 64 * 1024 * 1024,
-  buildTimeoutMs: 20 * 60_000,
+  maxArtifactBytes: 8 * 1024 * 1024,
 };
 
 export class FirmwareError extends Error {}
@@ -85,24 +84,13 @@ export class FirmwareStore implements FirmwareArtifactFiles {
 
   constructor(
     private readonly dir: string,
-    private readonly opts: { pio?: string; limits?: Partial<FirmwareLimits>; now?: () => number; log?: (m: string) => void } = {},
+    private readonly opts: { limits?: Partial<FirmwareLimits>; now?: () => number; log?: (m: string) => void } = {},
   ) {
     this.limits = { ...DEFAULTS, ...opts.limits };
     this.now = opts.now ?? Date.now;
     mkdirSync(join(this.dir, 'builds'), { recursive: true });
     mkdirSync(join(this.dir, 'uploads'), { recursive: true });
     this.loadBuilds();
-  }
-
-  /** PlatformIO, wherever it was installed. */
-  static findPio(): string | null {
-    const candidates = [
-      process.env.PIO_PATH,
-      join(process.env.PLATFORMIO_CORE_DIR ?? join(process.env.HOME ?? '/root', '.platformio'), 'penv/bin/pio'),
-      '/usr/local/bin/pio',
-      '/usr/bin/pio',
-    ].filter((p): p is string => Boolean(p));
-    return candidates.find((p) => existsSync(p)) ?? null;
   }
 
   private loadBuilds(): void {
@@ -177,7 +165,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
 
   private versionOf(root: string): string {
     try {
-      const header = readFileSync(join(root, 'include', 'tm_config.h'), 'utf8');
+      const header = readFileInside(root, join(root, 'include', 'tm_config.h')).toString('utf8');
       return /#define\s+TM_FW_VERSION\s+"([^"]+)"/.exec(header)?.[1] ?? 'unknown';
     } catch {
       return 'unknown';
@@ -186,37 +174,28 @@ export class FirmwareStore implements FirmwareArtifactFiles {
 
   // --- build ----------------------------------------------------------------
 
-  /**
-   * Compile an upload. Resolves when the image exists; rejects with the tail
-   * of the build log, which is what a person needs to fix their code.
-   */
-  async build(uploadId: string, by: string, onLog?: (line: string) => void): Promise<FirmwareBuild> {
+  /** Returns a validated project directory for the isolated build service. */
+  buildWorkspace(uploadId: string): string {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');
-    const pio = this.opts.pio ?? FirmwareStore.findPio();
-    if (!pio) throw new FirmwareError('PlatformIO is not installed on this edge: firmware cannot be built here');
-    const root = this.projectRoot(up.dir);
-    const ini = readFileSync(join(root, 'platformio.ini'), 'utf8');
+    const uploadRoot = realpathSync(up.dir);
+    const root = realpathSync(this.projectRoot(up.dir));
+    if (!isInside(uploadRoot, root)) throw new FirmwareError('the project root escaped its upload directory');
+    const ini = readFileInside(root, join(root, 'platformio.ini')).toString('utf8');
     if (!ini.includes('[env:tmflash]')) {
       throw new FirmwareError('the project has no [env:tmflash] environment (the release build with no baked-in secrets)');
     }
+    return root;
+  }
 
-    const log: string[] = [];
-    const keep = (line: string) => {
-      log.push(line);
-      if (log.length > 400) log.splice(0, log.length - 400);
-      onLog?.(line);
-    };
-    this.opts.log?.(`firmware: building upload ${uploadId} (${up.files} files) from ${root}`);
-    const status = await this.run(pio, ['run', '-e', 'tmflash', '-d', root], keep);
-    if (status !== 0) {
-      const err = new FirmwareError(`build failed (pio exit ${status})`);
-      (err as FirmwareError & { log?: string[] }).log = log;
-      throw err;
+  /** Validates and promotes the worker's staged firmware image. */
+  completeBuild(uploadId: string, by: string, log: readonly string[], bytes: Buffer): FirmwareBuild {
+    const up = this.uploads.get(uploadId);
+    if (!up) throw new FirmwareError('no such upload');
+    const root = this.buildWorkspace(uploadId);
+    if (bytes.length === 0 || bytes.length > this.limits.maxArtifactBytes) {
+      throw new FirmwareError(`the build output size must be between 1 and ${this.limits.maxArtifactBytes} bytes`);
     }
-    const binPath = join(root, '.pio', 'build', 'tmflash', 'firmware.bin');
-    if (!existsSync(binPath)) throw new FirmwareError('the build produced no firmware.bin');
-    const bytes = readFileSync(binPath);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const id = sha256.slice(0, 16);
 
@@ -260,34 +239,6 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     }
   }
 
-  private run(exe: string, args: string[], onLine: (line: string) => void): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(exe, args, {
-        env: { ...process.env, PLATFORMIO_NO_ANSI: 'true', NO_COLOR: '1', PYTHONUNBUFFERED: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const timer = setTimeout(() => child.kill('SIGKILL'), this.limits.buildTimeoutMs);
-      let buffered = '';
-      const feed = (chunk: Buffer) => {
-        buffered += chunk.toString('utf8');
-        const lines = buffered.split(/\r?\n/);
-        buffered = lines.pop() ?? '';
-        for (const l of lines) if (l.trim()) onLine(l);
-      };
-      child.stdout.on('data', feed);
-      child.stderr.on('data', feed);
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        reject(new FirmwareError(`cannot run ${exe}: ${err.message}`));
-      });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        if (buffered.trim()) onLine(buffered);
-        resolve(code ?? -1);
-      });
-    });
-  }
-
   /** Total bytes of stored images, for the console's housekeeping line. */
   diskBytes(): number {
     let total = 0;
@@ -310,3 +261,15 @@ export class FirmwareStore implements FirmwareArtifactFiles {
 }
 
 export const pathSeparator = sep;
+
+function isInside(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
+function readFileInside(root: string, file: string): Buffer {
+  const realRoot = realpathSync(root);
+  const realFile = realpathSync(file);
+  if (!isInside(realRoot, realFile)) throw new FirmwareError('a project file escaped its workspace');
+  return readFileSync(realFile);
+}

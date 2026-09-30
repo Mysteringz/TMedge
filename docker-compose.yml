@@ -28,6 +28,7 @@ services:
     environment:
       WEB_PUSH_URLS: http://web:8080
       DATA_DIR: /data
+      FIRMWARE_BUILD_WORKER_URL: http://firmware-worker:8123/build
       # Direct TMsense nodes (tmnode.v1, docs/DIRECT_NODE_PROTOCOL.md): off
       # unless NODE_PORT is set in .env. Inside the container it has to listen
       # beyond loopback for the tunnel container to reach it; the published
@@ -41,6 +42,12 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:5210:5210"       # access gateways (TMWAccess), raw TCP or WebSocket
       - "${BIND_ADDR:-127.0.0.1}:8090:8090"       # debug console (admin)
       - "${BIND_ADDR:-127.0.0.1}:5211:5211"       # direct TMsense nodes (with NODE_PORT=5211)
+    depends_on:
+      firmware-worker:
+        condition: service_healthy
+    networks:
+      - default
+      - firmware-build
     # Nodes that talk to the edge directly (not through a gateway) are sent
     # commands at their source address; on Linux, uncomment host networking
     # so that address is the node's, not Docker's NAT. Gateways do not need it.
@@ -58,6 +65,39 @@ services:
       - web-data:/data
     ports:
       - "${BIND_ADDR:-127.0.0.1}:8080:8080"       # student site
+
+  firmware-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.firmware-worker
+    image: tmedge-platformio-worker:6.1.19
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: ${FIRMWARE_WORKER_PIDS:-128}
+    cpus: ${FIRMWARE_WORKER_CPUS:-1.0}
+    mem_limit: ${FIRMWARE_WORKER_MEMORY:-768m}
+    memswap_limit: ${FIRMWARE_WORKER_MEMORY_SWAP:-1536m}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=2g,mode=1777
+      - /workspace:rw,nosuid,nodev,size=2g,mode=1777
+    environment:
+      PORT: 8123
+      BUILD_TIMEOUT_SECONDS: ${FIRMWARE_WORKER_TIMEOUT_SECONDS:-1200}
+    expose:
+      - "8123"
+    ports:
+      - "127.0.0.1:8123:8123"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8123/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    networks:
+      - firmware-build
 
   sim:
     <<: *tmedge
@@ -82,3 +122,6 @@ services:
 volumes:
   edge-data:
   web-data:
+
+networks:
+  firmware-build:

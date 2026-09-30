@@ -152,9 +152,13 @@ what the edge signed is thrown away before it can boot. A freshly flashed
 image is on probation for three minutes — if it cannot join Wi-Fi, read its
 sensor and get a packet accepted, the node puts the old image back and reboots.
 
-Requirements: PlatformIO on the edge (`PIO_PATH` in `.env` if it is not in the
-usual place), and TMWAccess 1.1+ at each site. A node that talks to the edge
-directly downloads from the edge's own console port instead.
+Builds run in a separate PlatformIO worker container with CPU, memory, process,
+filesystem, and time limits. In Docker Compose it starts with the edge. For a
+native `npm run edge`, set `FIRMWARE_BUILD_WORKER_URL` to a separately running
+worker service. The worker gets only the uploaded source tree; it receives no
+edge secrets or data volumes. TMWAccess 1.1+ is still required at each site. A
+node that talks to the edge directly downloads from the edge's own console
+port instead.
 
 ## Tests
 

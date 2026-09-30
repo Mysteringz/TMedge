@@ -188,25 +188,25 @@ test('uploaded paths that climb out of the project are refused', () => {
   assert.throws(() => safeRelativePath('TMsense/.pio/build/firmware.bin'), FirmwareError, 'build output is not source');
 });
 
-test('a project without the secret-free release environment is refused', async () => {
+test('a project without the secret-free release environment is refused before worker dispatch', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
-  const store = new FirmwareStore(dir, { pio: '/bin/false' });
+  const store = new FirmwareStore(dir);
   const up = store.startUpload('tester');
   store.addFile(up, 'TMsense/platformio.ini', Buffer.from('[env:heltec]\nboard = heltec_wifi_lora_32_V3\n'));
-  await assert.rejects(store.build(up, 'tester'), /\[env:tmflash\]/);
+  assert.throws(() => store.buildWorkspace(up), /\[env:tmflash\]/);
 });
 
-test('a build with no platformio.ini at all is refused', async () => {
+test('a build with no platformio.ini at all is refused before worker dispatch', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
-  const store = new FirmwareStore(dir, { pio: '/bin/false' });
+  const store = new FirmwareStore(dir);
   const up = store.startUpload('tester');
   store.addFile(up, 'notes.md', Buffer.from('# not a project'));
-  await assert.rejects(store.build(up, 'tester'), /no platformio\.ini/);
+  assert.throws(() => store.buildWorkspace(up), /no platformio\.ini/);
 });
 
 test('builds survive a restart of the edge, and a missing image is not offered', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
-  const first = new FirmwareStore(dir, { pio: '/bin/false' });
+  const first = new FirmwareStore(dir);
   const id = 'c0ffee00c0ffee00';
   const buildDir = join(dir, 'builds', id);
   mkdirSync(buildDir, { recursive: true });
@@ -216,7 +216,7 @@ test('builds survive a restart of the edge, and a missing image is not offered',
     uploadedBy: 'tester', uploadedAt: 1, builtAt: 2, files: 3, sourceBytes: 4, log: [],
   }));
   void first;
-  const reopened = new FirmwareStore(dir, { pio: '/bin/false' });
+  const reopened = new FirmwareStore(dir);
   assert.equal(reopened.get(id)?.version, 'tmsense-1.2');
   assert.equal(reopened.bytes(id)?.length, 16);
   assert.equal(reopened.get('deadbeefdeadbeef'), null);
