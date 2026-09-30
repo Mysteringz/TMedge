@@ -103,6 +103,18 @@ def repair(t):
     t[0, :8] = t[1, :8]
     return t
 
+# The rig's frames arrive with the image wrapped sideways: the sensor's
+# rightmost 6 columns come first on each row (found in testing: a 6-column
+# strip at one edge that continues the far edge). Rotating each row puts them
+# back, and everything
+# downstream -- detector, REPORT, RAW -- then sees one continuous picture.
+# (The algo dashboard shows this rig mirrored, so there the strip appeared on
+# the right and moves to the left.)
+COL_WRAP = 6
+
+def unwrap(t):
+    return np.roll(t, -COL_WRAP, axis=1)
+
 stats = {'frames': 0, 'fps': 0.0, 'serial_err': 0, 'rgb_sent': 0, 'rgb_err': 0, 'last_frame': 0.0}
 
 # Empty-room background (relative to the scene median), built offline from the
@@ -122,11 +134,13 @@ def maybe_seed(t):
     if len(seed_frames) < 5:
         return
     now = np.median(np.stack(seed_frames), axis=0)
-    empty = np.load(EMPTY_BG).astype(np.float32)
+    # The empty-room maps were built from the lab's archive, which has the
+    # same wrap, so they need the same rotation to line up with the frame.
+    empty = unwrap(np.load(EMPTY_BG)).astype(np.float32)
     d = now - empty
     level = float(np.median(d[d <= np.percentile(d, 60)]))   # match on the cooler 60%: people only ever add heat
     bg = np.ascontiguousarray(empty + level, dtype=np.float32)
-    sig = np.ascontiguousarray(np.load(EMPTY_SIGMA), dtype=np.float32)
+    sig = np.ascontiguousarray(unwrap(np.load(EMPTY_SIGMA)), dtype=np.float32)
     lib.tmd_seed(bg.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), sig.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     seed_frames.append(None)   # done
     log(f'background seeded from the empty-room map (level {level:+.2f} C)')
@@ -143,7 +157,8 @@ def thermal_loop():
                 if data is None:
                     continue
                 t = (10.0 + np.frombuffer(data[:768], dtype=np.uint8).astype(np.float32) / 255.0 * 25.0).reshape(24, 32)
-                t = np.ascontiguousarray(repair(t), dtype=np.float32)
+                # Repair first: the corrupt pixels are the first bytes as received.
+                t = np.ascontiguousarray(unwrap(repair(t)), dtype=np.float32)
                 maybe_seed(t)
                 n = lib.tmd_step(t.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), out, 24, ctypes.byref(flags), ctypes.byref(bg_mean))
                 now = time.monotonic()
