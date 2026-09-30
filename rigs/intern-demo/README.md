@@ -14,9 +14,22 @@ while running and restarts it afterwards. Everything of ours lives in
 
 `bridge.py` reads the ESP32's original v1 serial frames. These are 8-bit,
 mapped from 10 to 35 °C, and the first row has a few corrupt pixels, which the
-bridge repairs. It runs TMnode's detector (`libtmdetector.so`, built from
-`TMsense/src/tm_detector.cpp` unchanged) and sends signed protocol-v1
-REPORT/RAW/STATUS packets to the edge, so the rig behaves like any other node.
+bridge repairs; each row also arrives rotated by 6 columns, which it undoes.
+It sends every frame to the edge as a signed protocol-v1 RAW packet carrying
+the sensor's bytes as they are (tMin 10.00 °C, step 0.0980 °C), plus a
+detection-free REPORT per frame as a heartbeat and a STATUS every 10 s.
+
+People are found **on the edge**, not on the Pi: the rig is `"detector":
+"edge"` in `nodes.json`, and the edge subtracts a background that only learns
+heat present most of the day (see `docs/EDGE_DETECTION.md`). The on-board
+detector forgot people who sat still for an hour or two. It can still be run
+for comparison with `DETECT_ON_BOARD=1` in `bridge.env` (uses
+`libtmdetector.so`, built from `TMsense/src/tm_detector.cpp` unchanged), but
+the edge ignores its detections while the node is `"detector": "edge"`.
+
+Order matters when switching: set `"detector": "edge"` on the edge first,
+then deploy this bridge. The other way round, the desk reads unknown (never
+empty) until the edge is switched.
 It also pushes a signed 640×480 JPEG about twice a second to the console's
 `/api/demo/rgb/<uid>`.
 
