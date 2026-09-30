@@ -67,6 +67,10 @@ export class AlgoRuntime {
 
   constructor(private readonly rt: EdgeRuntime, private readonly broker: ParamBroker) {}
 
+  dispose(): Promise<void> {
+    return this.detector.dispose();
+  }
+
   private async detect(uid: string, frame: number, params: DetectorParams): Promise<FrameResult | null> {
     const key = `${uid}:${frame}:${JSON.stringify(params)}`;
     const cached = this.runCache.get(key);

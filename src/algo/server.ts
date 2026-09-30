@@ -1,39 +1,23 @@
-/**
- * The algo debugger's API: `algo.hkumyseat.com`.
- *
- * Separate port and separate app from the student web tier on purpose. This
- * one serves thermal imagery and writes parameters into live sensors, so it
- * belongs with the console on the edge, behind the same admin password and
- * the same Cloudflare Access in front of it -- never on the tier students can
- * reach.
- */
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+/** The edge hosted debugger composition root. */
+import { timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { WebSocketServer, type WebSocket } from 'ws';
-import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
-import { encodeFrame } from './frames.js';
-import { validate } from './graph.js';
-import { defaultPipeline, NODE_SPECS, specOf } from './nodes.js';
+import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
+import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
+import { AlgoWebSocketAdapter } from './websocket-adapter.js';
+import { createAlgoRouter } from './routes.js';
+import { defaultPipeline } from './nodes.js';
 import { PairRecorder } from './pairs.js';
-import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
+import { ParamBroker } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
-import { sendLatest } from '../shared/fanout.js';
-import type { ConsoleDetection, RawFrameMessage } from '../shared/types.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
-
-function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
-}
 
 export interface AlgoServerHandle {
   server: Server;
@@ -46,418 +30,189 @@ export interface AlgoServerOptions {
   dataDir?: string;
 }
 
+/** Composes debugger adapters and routes without changing graph or detector behavior. */
 export function startAlgo(rt: EdgeRuntime, port: number, host: string, options: AlgoServerOptions = {}): AlgoServerHandle {
-  const broker = new ParamBroker(rt);
+  const dataDir = options.dataDir ?? process.env.DATA_DIR ?? join(ROOT, 'data');
+  const pipelineDir = join(dataDir, 'algo', 'pipelines');
+  mkdirSync(pipelineDir, { recursive: true });
+  const pipelines = new JsonPipelineRepository(pipelineDir);
+  const broker = new ParamBroker(rt, new JsonParameterAuditSink(join(dataDir, 'algo', 'audit.jsonl')));
   broker.start();
   const algo = new AlgoRuntime(rt, broker);
-  const wsSecret = randomBytes(32);
-  const dataDir = options.dataDir ?? process.env.DATA_DIR ?? join(ROOT, 'data');
-  const dir = join(dataDir, 'algo', 'pipelines');
-  mkdirSync(dir, { recursive: true });
-  // Training data for the ML locator. Off by default: it writes to disk and
-  // holds pictures of a room, so somebody has to ask for it.
-  const pairs = new PairRecorder({ dir: join(dataDir, 'algo', 'pairs') });
-  // The env var forces it on; otherwise the recorder remembers what it was
-  // last told, so a deploy does not quietly stop a collection run.
-  if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setRecording(true);
-
-  /**
-   * Which sensor the debugger opens on. A node that is sending pictures beats
-   * one that is merely real: opening on an unpowered bench node shows an empty
-   * screen and looks like the tool is broken.
-   */
-  const pickUid = (): string => {
-    const all = [...rt.reg.nodes.values()];
-    const health = rt.nodes();
-    const online = (uid: string) => health.find((h) => h.uid === uid)?.online ?? false;
-    const withFrames = all.find((n) => algo.frames.list(n.uid).length > 0);
-    return (withFrames ?? all.find((n) => !n.simulated && online(n.uid)) ?? all.find((n) => online(n.uid)) ?? all[0])?.uid ?? '';
-  };
-  let pipeline: Pipeline = loadPipeline(dir, 'default') ?? defaultPipeline(pickUid());
+  const pairs = createPairRecorder(dataDir);
+  let pipeline = pipelines.load('default') ?? defaultPipeline(selectInitialUid(rt, algo));
+  let live = true;
+  let heldFrame: number | undefined;
   let disposed = false;
-  // Nothing has been heard from anyone at start-up, so revisit the choice once
-  // frames have had a moment to arrive.
-  let initialUidTimer: NodeJS.Timeout | null = setTimeout(() => {
-    initialUidTimer = null;
-    if (disposed) return;
-    if (algo.frames.list(pipeline.uid).length === 0) {
-      const better = pickUid();
-      if (better && better !== pipeline.uid) {
-        pipeline = { ...pipeline, uid: better, updatedAt: Date.now() };
-        algo.setPipeline(pipeline);
-      }
-    }
-  }, 15_000);
-  initialUidTimer.unref();
+  const app = createExpressApp(rt);
+  const server = createServer(app);
+  const sockets = new AlgoWebSocketAdapter(server, () => ({ type: 'pipeline_state', pipeline, live }));
+  sockets.start();
   algo.setPipeline(pipeline);
-
-  // Frames arrive whether or not anyone is looking; the ring is what makes
-  // stepping backwards possible at all.
-  const onRaw = (msg: RawFrameMessage): void => {
-    algo.frames.addRaw(msg);
+  const onRaw = (message: import('../shared/types.js').RawFrameMessage): void => {
+    algo.frames.addRaw(message);
     scheduleRun('frame');
   };
-  // Every RGB frame is offered to the recorder, which keeps it only when a
-  // thermal frame of the same moment exists to pair it with.
-  const onRgb = (uid: string, jpeg: Buffer, at: number): void => {
-    const node = rt.reg.nodes.get(uid);
-    // No pose means no orientation to record the pair against.
-    if (!node?.pose) return;
-    pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
-  };
-
-  const onReport = (uid: string, dets: ConsoleDetection[]): void => {
-    // The report's own frame number, not the last RAW's: they are only the
-    // same when a RAW happened to arrive for that frame, and the whole point
-    // of the pairing is to know when it did.
+  const onRgb = (uid: string, jpeg: Buffer, at: number): void => recordRgb(pairs, rt, algo, uid, jpeg, at);
+  const onReport = (uid: string, detections: import('../shared/types.js').ConsoleDetection[]): void => {
     const report = rt.lastReport(uid);
-    if (report) algo.frames.addReport(uid, report.frame, dets, report.flags);
+    if (report) algo.frames.addReport(uid, report.frame, detections, report.flags);
   };
   rt.on('raw', onRaw);
   rt.on('rgb', onRgb);
   rt.on('report', onReport);
-
-  const app = express();
-  app.disable('x-powered-by');
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'Cache-Control': 'no-store' });
-    const pass = rt.cfg.adminPassword;
-    if (!pass) return next();
-    const h = req.headers.authorization ?? '';
-    const [scheme, b64] = h.split(' ');
-    const given = scheme === 'Basic' && b64 ? Buffer.from(b64, 'base64').toString().split(':').slice(1).join(':') : '';
-    if (given && safeEqual(given, pass)) return next();
-    return res.set('WWW-Authenticate', 'Basic realm="TMedge algo"').status(401).send('authentication required');
-  });
-  app.use(express.json({ limit: '256kb' }));
-
-  /** Writes need a header a cross-site form cannot send. */
-  const mutating = (req: Request, res: Response, next: NextFunction) => {
-    if (req.get('x-tm-algo') !== '1') return res.status(403).json({ error: 'missing x-tm-algo header' });
-    return next();
-  };
-
-  app.get('/api/catalogue', (_req, res) => res.json({
-    nodes: NODE_SPECS,
-    edgeParams: EDGE_PARAMS,
-    revertMs: REVERT_MS,
-    preview: { available: algo.detector.unavailable === null, reason: algo.detector.unavailable },
-  }));
-
-  app.get('/api/sources', (_req, res) => {
-    const health = rt.nodes();
-    res.json({
-      nodes: [...rt.reg.nodes.values()].map((n) => {
-        const h = health.find((x) => x.uid === n.uid);
-        const floor = rt.reg.floors.find((f) => f.id === n.floorId);
-        return {
-          uid: n.uid, label: n.label, floorId: n.floorId, simulated: n.simulated,
-          /** A dual-cam rig: there is a live picture to show beside the thermal. */
-          rgb: n.rgb,
-          online: h?.online ?? false, rawEvery: h?.status?.params?.raw_every ?? null,
-          frames: algo.frames.list(n.uid).length,
-          /** A floor students can see: changing this node is visible to them. */
-          published: floor ? floor.visibility === 'public' : false,
-        };
-      }),
-    });
-  });
-
-  app.get('/api/pipeline', (_req, res) => res.json({
-    pipeline,
-    problems: validate(pipeline),
-    dirty: algo.dirtyFor(pipeline),
-    saved: readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, '')),
-  }));
-
-  app.put('/api/pipeline', mutating, (req, res) => {
-    const next = req.body as Pipeline;
-    if (!next || next.version !== 1 || !Array.isArray(next.nodes)) {
-      return res.status(400).json({ error: 'not a pipeline' });
-    }
-    const problems = validate(next);
-    if (problems.length > 0) return res.status(400).json({ error: problems[0]?.message, problems });
-    pipeline = { ...next, updatedAt: Date.now() };
-    algo.setPipeline(pipeline);
-    scheduleRun('pipeline');
-    return res.json({ ok: true, pipeline });
-  });
-
-  app.post('/api/pipeline/save', mutating, (req, res) => {
-    const name = String((req.body as { name?: string }).name ?? '').replace(/[^a-z0-9-_]/gi, '');
-    if (!name) return res.status(400).json({ error: 'a name of letters, digits, - and _ please' });
-    writeFileSync(join(dir, `${name}.json`), JSON.stringify({ ...pipeline, id: name }, null, 2));
-    return res.json({ ok: true, name });
-  });
-
-  app.post('/api/pipeline/load', mutating, (req, res) => {
-    const name = String((req.body as { name?: string }).name ?? '').replace(/[^a-z0-9-_]/gi, '');
-    const loaded = name === 'default' && !existsSync(join(dir, 'default.json'))
-      ? defaultPipeline(pipeline.uid)
-      : loadPipeline(dir, name);
-    if (!loaded) return res.status(404).json({ error: `no saved pipeline called ${name}` });
-    pipeline = loaded;
-    algo.setPipeline(pipeline);
-    scheduleRun('pipeline');
-    return res.json({ ok: true, pipeline });
-  });
-
-  app.post('/api/pipeline/reset', mutating, (_req, res) => {
-    pipeline = defaultPipeline(pipeline.uid);
-    algo.setPipeline(pipeline);
-    scheduleRun('pipeline');
-    res.json({ ok: true, pipeline });
-  });
-
-  app.get('/api/frames', (req, res) => {
-    const uid = String(req.query.uid ?? pipeline.uid);
-    res.json({ uid, frames: algo.frames.timeline(uid) });
-  });
-
-  app.get('/api/frame/:frame', (req, res) => {
-    const uid = String(req.query.uid ?? pipeline.uid);
-    const pair = algo.frames.get(uid, Number(req.params.frame));
-    if (!pair) return res.status(404).json({ error: 'that frame is no longer in the ring' });
-    return res.json({ ...encodeFrame(pair), observed: pair.deviceDetections });
-  });
-
-  app.post('/api/run', async (req, res) => {
-    const body = (req.body ?? {}) as { frame?: number; only?: string };
-    try {
-      const result = await algo.run(pipeline, { frame: body.frame, only: body.only });
-      return res.json(result);
-    } catch (err) {
-      return res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // --- the part that reaches outside this process -------------------------
-
-  app.get('/api/params', (_req, res) => res.json({
-    device: broker.deviceParams(pipeline.uid),
-    edge: broker.edgeParams(),
-    pending: broker.changes(),
-    audit: broker.recent(50),
-  }));
-
-  app.post('/api/params/apply', mutating, async (req, res) => {
-    const body = (req.body ?? {}) as { nodeId?: string; param?: string; value?: number; uid?: string };
-    const n = pipeline.nodes.find((x) => x.id === body.nodeId);
-    const spec = n ? specOf(n.type) : undefined;
-    const ps = spec?.params.find((x) => x.id === body.param);
-    if (!n || !spec || !ps) return res.status(400).json({ error: 'no such node parameter' });
-    if (typeof body.value !== 'number' || !Number.isFinite(body.value)) {
-      return res.status(400).json({ error: 'value must be a number' });
-    }
-    if (body.value < ps.min || body.value > ps.max) {
-      return res.status(400).json({ error: `${ps.label} must be between ${ps.min} and ${ps.max}` });
-    }
-    if (ps.binding.kind === 'local') {
-      // A debugger-only knob: keep it on the graph, touch nothing outside.
-      n.params[ps.id] = body.value;
-      scheduleRun('params');
-      return res.json({ ok: true, local: true });
-    }
-    try {
-      const change = await broker.apply({
-        uid: body.uid ?? pipeline.uid, nodeId: n.id, param: ps.id,
-        binding: ps.binding, value: body.value, by: 'algo-dashboard',
-      });
-      delete n.params[ps.id];   // it is the live value now, not an edit
-      scheduleRun('params');
-      return res.json({ ok: true, change });
-    } catch (err) {
-      return res.status(409).json({ error: (err as Error).message });
-    }
-  });
-
-  app.post('/api/params/commit', mutating, (req, res) => {
-    const { param, uid } = (req.body ?? {}) as { param?: string; uid?: string };
-    const ok = broker.commit(uid ?? pipeline.uid, String(param), 'algo-dashboard');
-    res.json({ ok });
-  });
-
-  app.post('/api/params/revert', mutating, async (req, res) => {
-    const { param, uid } = (req.body ?? {}) as { param?: string; uid?: string };
-    const ok = await broker.revert(uid ?? pipeline.uid, String(param), 'algo-dashboard');
-    scheduleRun('params');
-    res.json({ ok });
-  });
-
-  app.post('/api/params/persist', mutating, async (req, res) => {
-    const uid = String((req.body as { uid?: string }).uid ?? pipeline.uid);
-    try {
-      await broker.persist(uid, 'algo-dashboard');
-      return res.json({ ok: true });
-    } catch (err) {
-      return res.status(409).json({ error: (err as Error).message });
-    }
-  });
-
-  app.post('/api/node/reset-background', mutating, async (req, res) => {
-    const uid = String((req.body as { uid?: string }).uid ?? pipeline.uid);
-    try {
-      await rt.ingest.sendCommand(uid, CMD_RESET_BACKGROUND);
-      return res.json({ ok: true });
-    } catch (err) {
-      return res.status(409).json({ error: (err as Error).message });
-    }
-  });
-
-  /**
-   * The rig's own camera, latest frame. Only for nodes flagged rgb in the
-   * registry, and only ever from memory -- the same picture the console
-   * shows, on the screen where it is useful: next to the thermal frame it
-   * was taken with.
-   */
-  app.get('/api/nodes/:uid/rgb.jpg', (req, res) => {
-    const uid = (req.params.uid ?? '').toLowerCase();
-    if (!rt.reg.nodes.get(uid)?.rgb) return res.status(404).end();
-    const f = rt.rgb.get(uid);
-    if (!f) return res.status(404).end();
-    return res.set({ 'content-type': 'image/jpeg', 'cache-control': 'no-store' })
-      .set('x-tm-rgb-at', String(f.at))
-      .send(f.jpeg);
-  });
-
-  // --- training data ------------------------------------------------------
-
-  app.get('/api/pairs', (_req, res) => res.json({
-    ...pairs.stats(),
-    rgbNodes: [...rt.reg.nodes.values()].filter((n) => n.rgb).map((n) => n.uid),
-  }));
-
-  app.post('/api/pairs/record', mutating, (req, res) => {
-    const on = (req.body as { on?: boolean }).on === true;
-    const rgb = [...rt.reg.nodes.values()].filter((n) => n.rgb);
-    if (on && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
-    pairs.setRecording(on);
-    return res.json({ ok: true, ...pairs.stats() });
-  });
-
-  app.post('/api/pairs/prune', mutating, (_req, res) => {
-    const removed = pairs.prune();
-    res.json({ ok: true, removed, ...pairs.stats() });
-  });
-
-  app.get('/api/ws-token', (_req, res) => {
-    const exp = Date.now() + 60_000;
-    res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(String(exp)).digest('hex')}` });
-  });
-
-  app.use(express.static(PUBLIC, { index: 'index.html', setHeaders: (r) => r.set('Cache-Control', 'no-store') }));
-  app.get('*', (_req, res) => {
-    if (!existsSync(join(PUBLIC, 'index.html'))) return res.status(503).send('the algo dashboard is not built (npm run build)');
-    return res.sendFile(join(PUBLIC, 'index.html'));
-  });
-
-  const server = createServer(app);
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
-  const clients = new Set<WebSocket>();
-
-  const onUpgrade = (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): void => {
-    const url = new URL(req.url ?? '/', 'http://x');
-    const [exp, mac] = (url.searchParams.get('token') ?? '').split('.');
-    const ok = url.pathname === '/ws' && exp && mac && Number(exp) > Date.now() &&
-      safeEqual(mac, createHmac('sha256', wsSecret).update(exp).digest('hex'));
-    if (!ok) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      clients.add(ws);
-      ws.on('close', () => clients.delete(ws));
-      ws.send(JSON.stringify({ type: 'pipeline_state', pipeline, live }));
-    });
-  };
-  server.on('upgrade', onUpgrade);
-
-  const send = (msg: unknown) => {
-    if (disposed) return;
-    const s = JSON.stringify(msg);
-    // A browser that is behind is skipped, not queued for (sendLatest).
-    for (const ws of clients) sendLatest(ws, s);
-  };
-
-  // Live mode runs the graph as frames arrive; paused holds the frame the
-  // operator is looking at. Runs are coalesced because a detector replay over
-  // the ring costs more than a frame interval.
-  let live = true;
-  let queued: string | null = null;
+  const initialUidTimer = scheduleInitialPipelineSelection(() => pipeline, (next) => setPipeline(next), rt, algo);
+  let runTimer: NodeJS.Timeout | null = null;
+  const send = (message: unknown) => sockets.broadcast(message);
   let drainPromise: Promise<void> | null = null;
-  let heldFrame: number | undefined;
-
-  function scheduleRun(reason: string): void {
+  let queuedReason: string | null = null;
+  const scheduleRun = (reason: string): void => {
     if (disposed || (!live && reason === 'frame')) return;
-    queued = reason;
+    queuedReason = reason;
     if (drainPromise) return;
-    drainPromise = drain();
-    void drainPromise.finally(() => {
-      drainPromise = null;
-      if (queued !== null && !disposed) scheduleRun(queued);
-    });
-  }
-
-  async function drain(): Promise<void> {
-    while (queued !== null && !disposed) {
-      queued = null;
-      try {
-        const result = await algo.run(pipeline, { frame: live ? undefined : heldFrame });
-        send({ type: 'frame', ...result, dirty: algo.dirtyFor(pipeline), pending: broker.changes() });
-      } catch (error) {
-        send({ type: 'node_error', error: (error as Error).message });
-      }
-    }
-  }
-
-  app.post('/api/mode', mutating, (req, res) => {
-    const body = (req.body ?? {}) as { mode?: string; frame?: number };
-    if (body.mode === 'live') { live = true; heldFrame = undefined; }
-    else if (body.mode === 'pause') { live = false; heldFrame = body.frame ?? algo.frames.latest(pipeline.uid)?.frame; }
-    else if (body.mode === 'step') { live = false; heldFrame = body.frame ?? heldFrame; }
-    else return res.status(400).json({ error: 'mode must be live, pause or step' });
-    scheduleRun('mode');
-    return res.json({ ok: true, live, frame: heldFrame });
-  });
-
-  let pipelineTimer: NodeJS.Timeout | null = setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000);
-  pipelineTimer.unref();
+    drainPromise = drainRuns(algo, () => pipeline, () => live, () => heldFrame, broker, send, () => queuedReason, (value) => { queuedReason = value; }, () => !disposed)
+      .finally(() => {
+        drainPromise = null;
+        if (queuedReason !== null && !disposed) scheduleRun(queuedReason);
+      });
+  };
+  const mutating = createMutationGuard();
+  app.use(createAlgoRouter({
+    runtime: rt, algo, broker, pairs, pipelines, mutating,
+    getPipeline: () => pipeline,
+    setPipeline: (next) => setPipeline(next),
+    isLive: () => live,
+    heldFrame: () => heldFrame,
+    setMode: (mode, frame) => {
+      if (mode === 'live') { live = true; heldFrame = undefined; }
+      else if (mode === 'pause') { live = false; heldFrame = frame ?? algo.frames.latest(pipeline.uid)?.frame; }
+      else { live = false; heldFrame = frame ?? heldFrame; }
+    },
+    scheduleRun,
+    issueWebSocketToken: () => sockets.issueToken(),
+  }));
+  app.use(express.static(PUBLIC, { index: 'index.html', setHeaders: (res) => res.set('Cache-Control', 'no-store') }));
+  app.get('*', (_req, res) => sendDashboard(res));
   let disposePromise: Promise<void> | null = null;
   const dispose = (): Promise<void> => {
     if (disposePromise) return disposePromise;
     disposed = true;
-    if (initialUidTimer) clearTimeout(initialUidTimer);
-    if (pipelineTimer) clearInterval(pipelineTimer);
-    initialUidTimer = null;
-    pipelineTimer = null;
+    clearTimeout(initialUidTimer);
+    if (runTimer) clearInterval(runTimer);
+    runTimer = null;
     broker.stop();
     rt.off('raw', onRaw);
     rt.off('rgb', onRgb);
     rt.off('report', onReport);
-    server.off('upgrade', onUpgrade);
-    for (const client of clients) {
-      client.close(1001, 'debugger stopping');
-      client.terminate();
-    }
-    clients.clear();
-    disposePromise = (async () => {
-      await drainPromise;
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
-    })();
+    const activeRun = drainPromise;
+    const socketClose = sockets.close();
+    disposePromise = Promise.all([activeRun, socketClose, algo.dispose()]).then(() => undefined);
     return disposePromise;
   };
   server.once('close', () => { void dispose(); });
+  runTimer = setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000);
+  runTimer.unref();
   if (options.listen !== false) server.listen(port, host);
   return { server, algo, dispose };
+
+  function setPipeline(next: Pipeline): void {
+    pipeline = next;
+    algo.setPipeline(next);
+  }
 }
 
-function loadPipeline(dir: string, name: string): Pipeline | null {
-  const path = join(dir, `${name}.json`);
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as Pipeline;
-  } catch {
-    return null;
+function createPairRecorder(dataDir: string): PairRecorder {
+  const recorder = new PairRecorder({ dir: join(dataDir, 'algo', 'pairs') });
+  if (process.env.ALGO_RECORD_PAIRS === '1') recorder.setRecording(true);
+  return recorder;
+}
+
+function selectInitialUid(runtime: EdgeRuntime, algo: AlgoRuntime): string {
+  const all = [...runtime.reg.nodes.values()];
+  const online = new Set(runtime.nodes().filter((node) => node.online).map((node) => node.uid));
+  const withFrames = all.find((node) => algo.frames.list(node.uid).length > 0);
+  return (withFrames ?? all.find((node) => !node.simulated && online.has(node.uid)) ?? all.find((node) => online.has(node.uid)) ?? all[0])?.uid ?? '';
+}
+
+function scheduleInitialPipelineSelection(
+  getPipeline: () => Pipeline,
+  setPipeline: (pipeline: Pipeline) => void,
+  runtime: EdgeRuntime,
+  algo: AlgoRuntime,
+): NodeJS.Timeout {
+  const timer = setTimeout(() => {
+    if (algo.frames.list(getPipeline().uid).length > 0) return;
+    const better = selectInitialUid(runtime, algo);
+    if (better && better !== getPipeline().uid) setPipeline({ ...getPipeline(), uid: better, updatedAt: Date.now() });
+  }, 15_000);
+  timer.unref();
+  return timer;
+}
+
+function recordRgb(pairs: PairRecorder, runtime: EdgeRuntime, algo: AlgoRuntime, uid: string, jpeg: Buffer, at: number): void {
+  const node = runtime.reg.nodes.get(uid);
+  if (node?.pose) pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
+}
+
+function createExpressApp(runtime: EdgeRuntime): express.Express {
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(createSecurityMiddleware(runtime));
+  app.use(express.json({ limit: '256kb' }));
+  return app;
+}
+
+function createSecurityMiddleware(runtime: EdgeRuntime): express.RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'Cache-Control': 'no-store' });
+    const password = runtime.cfg.adminPassword;
+    if (!password) return next();
+    const [scheme, encoded] = (req.headers.authorization ?? '').split(' ');
+    const provided = scheme === 'Basic' && encoded ? Buffer.from(encoded, 'base64').toString().split(':').slice(1).join(':') : '';
+    if (provided && safeEqual(provided, password)) return next();
+    return res.set('WWW-Authenticate', 'Basic realm="TMedge algo"').status(401).send('authentication required');
+  };
+}
+
+function createMutationGuard(): express.RequestHandler {
+  return (req, res, next) => {
+    if (req.get('x-tm-algo') !== '1') return res.status(403).json({ error: 'missing x-tm-algo header' });
+    return next();
+  };
+}
+
+async function drainRuns(
+  algo: AlgoRuntime,
+  getPipeline: () => Pipeline,
+  isLive: () => boolean,
+  getHeldFrame: () => number | undefined,
+  broker: ParamBroker,
+  send: (message: unknown) => void,
+  getQueued: () => string | null,
+  setQueued: (reason: string | null) => void,
+  canRun: () => boolean,
+): Promise<void> {
+  while (getQueued() !== null && canRun()) {
+    setQueued(null);
+    try {
+      const result = await algo.run(getPipeline(), { frame: isLive() ? undefined : getHeldFrame() });
+      send({ type: 'frame', ...result, dirty: algo.dirtyFor(getPipeline()), pending: broker.changes() });
+    } catch (error) {
+      send({ type: 'node_error', error: (error as Error).message });
+    }
   }
+}
+
+function sendDashboard(res: Response): void {
+  if (!existsSync(join(PUBLIC, 'index.html'))) {
+    res.status(503).send('the algo dashboard is not built (npm run build)');
+    return;
+  }
+  res.sendFile(join(PUBLIC, 'index.html'));
+}
+
+function safeEqual(actual: string, expected: string): boolean {
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
