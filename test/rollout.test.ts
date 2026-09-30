@@ -4,7 +4,8 @@
  * these are the rules that keep a bad build from costing a floor.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -207,17 +208,21 @@ test('a build with no platformio.ini at all is refused before worker dispatch', 
 test('builds survive a restart of the edge, and a missing image is not offered', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
   const first = new FirmwareStore(dir);
-  const id = 'c0ffee00c0ffee00';
+  const bytes = Buffer.alloc(16, 3);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const id = sha256.slice(0, 16);
   const buildDir = join(dir, 'builds', id);
   mkdirSync(buildDir, { recursive: true });
-  writeFileSync(join(buildDir, 'firmware.bin'), Buffer.alloc(16, 3));
+  writeFileSync(join(buildDir, 'firmware.bin'), bytes);
   writeFileSync(join(buildDir, 'build.json'), JSON.stringify({
-    id, sha256: 'c0ffee00'.repeat(8), size: 16, version: 'tmsense-1.2', state: 'ready',
+    id, sha256, size: bytes.length, version: 'tmsense-1.2', state: 'ready',
     uploadedBy: 'tester', uploadedAt: 1, builtAt: 2, files: 3, sourceBytes: 4, log: [],
   }));
   void first;
   const reopened = new FirmwareStore(dir);
   assert.equal(reopened.get(id)?.version, 'tmsense-1.2');
   assert.equal(reopened.bytes(id)?.length, 16);
+  assert.equal(existsSync(join(dir, 'artifacts', `${id}.bin`)), true);
+  assert.equal(existsSync(join(dir, 'builds', id)), false);
   assert.equal(reopened.get('deadbeefdeadbeef'), null);
 });

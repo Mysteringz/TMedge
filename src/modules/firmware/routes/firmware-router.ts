@@ -17,6 +17,7 @@ export interface FirmwareRouterDependencies {
 export function createFirmwareRouter(dependencies: FirmwareRouterDependencies): Router {
   const router = Router();
   router.get('/firmware', getFirmwareStatus(dependencies));
+  router.post('/firmware/cleanup', dependencies.mutating, cleanupFirmware(dependencies));
   router.post('/firmware/uploads', dependencies.mutating, startFirmwareUpload(dependencies));
   router.post('/firmware/uploads/:id/files', dependencies.mutating, express.raw({ type: '*/*', limit: '8mb' }), addFirmwareFile(dependencies));
   router.post('/firmware/uploads/:id/build', dependencies.mutating, startFirmwareBuild(dependencies));
@@ -34,13 +35,18 @@ function getFirmwareStatus(dependencies: FirmwareRouterDependencies): RequestHan
     rollout: dependencies.rollouts.current(),
     history: dependencies.rollouts.history(),
     diskBytes: dependencies.firmware.diskBytes(),
+    retention: dependencies.firmware.retentionReport(),
   });
+}
+
+function cleanupFirmware(dependencies: FirmwareRouterDependencies): RequestHandler {
+  return (_req, res) => res.json({ ok: true, retention: dependencies.firmware.cleanup(dependencies.imageInUse) });
 }
 
 function startFirmwareUpload(dependencies: FirmwareRouterDependencies): RequestHandler {
   return (_req, res) => {
-    dependencies.firmware.sweep();
-    return res.json({ uploadId: dependencies.firmware.startUpload('console') });
+    const retention = dependencies.firmware.cleanup(dependencies.imageInUse);
+    return res.json({ uploadId: dependencies.firmware.startUpload('console'), retention });
   };
 }
 
@@ -67,7 +73,7 @@ function deleteFirmwareImage(dependencies: FirmwareRouterDependencies): RequestH
   return (req, res) => {
     const id = req.params.id ?? '';
     if (dependencies.imageInUse.isImageInUse(id)) return res.status(409).json({ error: 'that image is rolling out right now' });
-    return res.json({ ok: dependencies.firmware.remove(id) });
+    return res.json({ ok: dependencies.firmware.remove(id, dependencies.imageInUse) });
   };
 }
 

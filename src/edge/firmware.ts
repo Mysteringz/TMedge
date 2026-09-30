@@ -11,9 +11,14 @@
  * the old image stays available to roll back to.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
-import type { FirmwareArtifactFiles } from '../modules/firmware/repositories/firmware-repository.js';
+import type {
+  FirmwareArtifactContentStorage, FirmwareArtifactFiles, FirmwareCleanupReport, ImageInUseQuery,
+} from '../modules/firmware/repositories/firmware-repository.js';
+import { FirmwareArtifactContentStore } from './firmware-artifact-content-store.js';
+import { FirmwareBuildMetadataStore, type FirmwareBuildMetadataStorage } from './firmware-build-metadata-store.js';
+import { cleanupFirmwareData, emptyFirmwareCleanupReport } from './firmware-retention-cleanup.js';
 
 export type BuildState = 'uploading' | 'building' | 'ready' | 'failed';
 
@@ -74,6 +79,7 @@ interface Upload {
   files: number;
   bytes: number;
   startedAt: number;
+  lastActivityAt: number;
 }
 
 export class FirmwareStore implements FirmwareArtifactFiles {
@@ -81,29 +87,29 @@ export class FirmwareStore implements FirmwareArtifactFiles {
   private readonly builds = new Map<string, FirmwareBuild>();
   private readonly limits: FirmwareLimits;
   private readonly now: () => number;
+  private readonly artifactContent: FirmwareArtifactContentStorage;
+  private readonly metadata: FirmwareBuildMetadataStorage;
+  private lastCleanup: FirmwareCleanupReport = emptyFirmwareCleanupReport();
 
   constructor(
     private readonly dir: string,
-    private readonly opts: { limits?: Partial<FirmwareLimits>; now?: () => number; log?: (m: string) => void } = {},
+    private readonly opts: {
+      limits?: Partial<FirmwareLimits>; now?: () => number; log?: (m: string) => void;
+      artifactContent?: FirmwareArtifactContentStorage;
+      metadata?: FirmwareBuildMetadataStorage;
+    } = {},
   ) {
     this.limits = { ...DEFAULTS, ...opts.limits };
     this.now = opts.now ?? Date.now;
     mkdirSync(join(this.dir, 'builds'), { recursive: true });
     mkdirSync(join(this.dir, 'uploads'), { recursive: true });
+    this.artifactContent = opts.artifactContent ?? new FirmwareArtifactContentStore(join(this.dir, 'artifacts'));
+    this.metadata = opts.metadata ?? new FirmwareBuildMetadataStore(join(this.dir, 'builds'), this.artifactContent);
     this.loadBuilds();
   }
 
   private loadBuilds(): void {
-    for (const id of readdirSync(join(this.dir, 'builds'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
-      try {
-        const meta = JSON.parse(readFileSync(join(this.dir, 'builds', id, 'build.json'), 'utf8')) as FirmwareBuild;
-        // A build that was still running when the edge stopped is not a build.
-        if (meta.state === 'building' || meta.state === 'uploading') meta.state = 'failed';
-        this.builds.set(meta.id, meta);
-      } catch {
-        /* a half-written build directory is ignored */
-      }
-    }
+    for (const build of this.metadata.load()) this.builds.set(build.id, build);
   }
 
   list(): FirmwareBuild[] {
@@ -118,11 +124,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
   bytes(id: string): Buffer | null {
     const b = this.builds.get(id);
     if (!b || b.state !== 'ready') return null;
-    try {
-      return readFileSync(join(this.dir, 'builds', id, 'firmware.bin'));
-    } catch {
-      return null;
-    }
+    return this.artifactContent.read(id, b.sha256, b.size);
   }
 
   // --- upload ---------------------------------------------------------------
@@ -131,7 +133,8 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     const id = `up-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const dir = join(this.dir, 'uploads', id);
     mkdirSync(dir, { recursive: true });
-    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: this.now() });
+    const now = this.now();
+    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: now, lastActivityAt: now });
     return id;
   }
 
@@ -147,6 +150,8 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     writeFileSync(full, bytes);
     up.files += 1;
     up.bytes += bytes.length;
+    up.lastActivityAt = this.now();
+    utimesSync(up.dir, new Date(up.lastActivityAt), new Date(up.lastActivityAt));
   }
 
   /**
@@ -199,9 +204,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const id = sha256.slice(0, 16);
 
-    const dest = join(this.dir, 'builds', id);
-    mkdirSync(dest, { recursive: true });
-    writeFileSync(join(dest, 'firmware.bin'), bytes);
+    this.artifactContent.promote(id, sha256, bytes);
     const build: FirmwareBuild = {
       id,
       sha256,
@@ -215,7 +218,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
       sourceBytes: up.bytes,
       log: log.slice(-60),
     };
-    writeFileSync(join(dest, 'build.json'), JSON.stringify(build, null, 2));
+    this.metadata.save(build);
     this.builds.set(id, build);
     // The sources have done their job; the image and its log are what matter.
     rmSync(up.dir, { recursive: true, force: true });
@@ -232,30 +235,35 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     this.uploads.delete(uploadId);
   }
 
-  /** Uploads left behind by an abandoned browser tab. */
-  sweep(olderThanMs = 3600_000): void {
-    for (const up of this.uploads.values()) {
-      if (this.now() - up.startedAt > olderThanMs) this.discard(up.id);
-    }
+  /** Cleans aged source/output leftovers without deleting images used by a rollout. */
+  cleanup(imageInUse: ImageInUseQuery, olderThanMs = 3600_000): FirmwareCleanupReport {
+    this.lastCleanup = cleanupFirmwareData({
+      directory: this.dir, artifacts: this.artifactContent, builds: this.builds, uploads: this.uploads,
+      imageInUse, now: this.now(), retentionMs: olderThanMs,
+    });
+    return this.retentionReport();
+  }
+
+  /** Returns the latest cleanup outcome for the admin status view. */
+  retentionReport(): FirmwareCleanupReport {
+    return { ...this.lastCleanup };
   }
 
   /** Total bytes of stored images, for the console's housekeeping line. */
   diskBytes(): number {
     let total = 0;
-    for (const id of this.builds.keys()) {
-      try {
-        total += statSync(join(this.dir, 'builds', id, 'firmware.bin')).size;
-      } catch {
-        /* gone */
-      }
-    }
+    for (const artifact of this.artifactContent.list()) total += artifact.size;
     return total;
   }
 
   /** Forget a build and delete its image. */
-  remove(id: string): boolean {
-    if (!this.builds.delete(id)) return false;
-    rmSync(join(this.dir, 'builds', id), { recursive: true, force: true });
+  remove(id: string, imageInUse: ImageInUseQuery): boolean {
+    if (imageInUse.isImageInUse(id)) return false;
+    const build = this.builds.get(id);
+    if (!build) return false;
+    this.artifactContent.remove(id);
+    this.metadata.remove(id);
+    this.builds.delete(id);
     return true;
   }
 }

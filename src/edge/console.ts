@@ -145,11 +145,13 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
   // A short-lived token for the WebSocket, which cannot carry basic auth reliably.
   const firmwareBuildWorker = new FirmwareBuildWorkerClient();
   const firmwareBuildJobs = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware, firmwareBuildWorker));
+  const imageInUse = new RolloutImageUsageQuery(rt.rollouts);
+  rt.firmware.cleanup(imageInUse);
   app.use('/api', createFirmwareRouter({
     firmware: rt.firmware,
     buildJobs: firmwareBuildJobs,
     rollouts: rt.rollouts,
-    imageInUse: new RolloutImageUsageQuery(rt.rollouts),
+    imageInUse,
     mutating,
     buildWorkerConfigured: () => firmwareBuildWorker.configured,
   }));

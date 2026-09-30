@@ -10,12 +10,32 @@ export interface FirmwareArtifact {
 export interface FirmwareArtifactFiles {
   startUpload(actor: string): string;
   addFile(uploadId: string, path: string, bytes: Buffer): void;
-  sweep(olderThanMs?: number): void;
+  cleanup(imageInUse: ImageInUseQuery, olderThanMs?: number): FirmwareCleanupReport;
+  retentionReport(): FirmwareCleanupReport;
   bytes(id: string): Buffer | null;
-  remove(id: string): boolean;
+  remove(id: string, imageInUse: ImageInUseQuery): boolean;
   diskBytes(): number;
   list(): FirmwareArtifact[];
   get(id: string): FirmwareArtifact | null;
+}
+
+export interface FirmwareCleanupReport {
+  at: number;
+  retentionMs: number;
+  abandonedSourcesRemoved: number;
+  failedOutputsRemoved: number;
+  bytesRemoved: number;
+  inUseArtifactsPreserved: number;
+}
+
+/** Content-addressed image bytes, stored independently from build metadata. */
+export interface FirmwareArtifactContentStorage {
+  promote(id: string, sha256: string, bytes: Buffer): void;
+  read(id: string, sha256: string, size: number): Buffer | null;
+  remove(id: string): boolean;
+  list(): Array<{ id: string; modifiedAt: number; size: number }>;
+  listStaging(): Array<{ name: string; id: string; modifiedAt: number; size: number }>;
+  removeStaging(name: string): boolean;
 }
 
 /** Async durable metadata boundary, separate from local image byte reads. */

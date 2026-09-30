@@ -117,13 +117,21 @@ test('legacy firmware routes preserve auth, mutation guard, and polling shape', 
     assert.equal((await fetch(`${base}/api/firmware`)).status, 401, 'firmware status remains admin-only');
     const firmware = await fetch(`${base}/api/firmware`, { headers: { authorization: auth } });
     assert.equal(firmware.status, 200);
-    const firmwareBody = await firmware.json() as { builds: unknown[]; building: unknown; rollout: unknown; history: unknown[] };
+    const firmwareBody = await firmware.json() as {
+      builds: unknown[]; building: unknown; rollout: unknown; history: unknown[];
+      retention: { at: number; abandonedSourcesRemoved: number };
+    };
     assert.ok(Array.isArray(firmwareBody.builds));
     assert.equal(firmwareBody.building, null);
     assert.ok(Array.isArray(firmwareBody.history));
+    assert.ok(firmwareBody.retention.at > 0);
     assert.equal((await fetch(`${base}/api/nodes/30:ed:a0:cb:f5:f8/raw`, { headers: { authorization: auth } })).status, 404);
     assert.equal((await fetch(`${base}/api/firmware/uploads`, { method: 'POST', headers: { authorization: auth } })).status, 403);
     assert.equal((await fetch(`${base}/api/firmware/uploads`, { method: 'POST', headers: mutating })).status, 200);
+    assert.equal((await fetch(`${base}/api/firmware/cleanup`, { method: 'POST', headers: { authorization: auth } })).status, 403);
+    const cleanup = await fetch(`${base}/api/firmware/cleanup`, { method: 'POST', headers: mutating });
+    assert.equal(cleanup.status, 200);
+    assert.equal((await cleanup.json() as { ok: boolean }).ok, true);
   } finally {
     server.close();
     await rt.stop();
