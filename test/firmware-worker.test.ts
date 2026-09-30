@@ -120,13 +120,13 @@ test('adversarial PlatformIO pre-script cannot see host secrets or write outside
     'try:',
     '    Path("/opt/tmedge-worker-escape").write_text("escaped")',
     '    raise RuntimeError("worker root filesystem was writable")',
-    'except PermissionError:',
+    'except OSError:',
     '    print("ISOLATION_PROBE_OK")',
   ].join('\n'));
   const client = new FirmwareBuildWorkerClient({ url: workerUrl, timeoutMs: 120_000 });
   try {
     const result = await client.build(root, () => {});
-    assert.ok(result.log.some((line) => line.includes('ISOLATION_PROBE_OK')));
+    assert.ok(result.log.some((line) => line.includes('ISOLATION_PROBE_OK')), result.log.join('\n'));
     assert.equal(result.exitCode, 1, 'the probe project has no tmflash hardware image output');
   } finally {
     await client.dispose();

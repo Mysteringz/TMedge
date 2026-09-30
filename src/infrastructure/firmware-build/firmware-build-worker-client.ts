@@ -51,7 +51,6 @@ export class FirmwareBuildWorkerClient implements FirmwareBuildWorker {
       maxTotalBytes: this.options.maxTotalBytes ?? 64 * 1024 * 1024,
     });
     if (this.disposed) throw new Error('firmware build worker client is closed');
-    if (this.disposed) throw new Error('firmware build worker client is closed');
     return this.postArchive(archive.stream, archive.contentLength, reportProgress);
   }
 
