@@ -13,10 +13,8 @@
  * hash to what the edge signed is thrown away by the node.
  */
 
-export type RolloutTarget =
-  | { kind: 'node'; uid: string }
-  | { kind: 'floor'; floorId: string }
-  | { kind: 'all' };
+import type { RolloutTarget } from '../modules/rollouts/domain/rollout-target.js';
+export type { RolloutTarget } from '../modules/rollouts/domain/rollout-target.js';
 
 export type NodeUpdateState =
   | 'queued'

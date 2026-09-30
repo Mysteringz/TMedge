@@ -1,12 +1,13 @@
 import express, { Router, type RequestHandler } from 'express';
-import type { FirmwareBuildJobs } from '../application/firmware-build-jobs.js';
+import type { FirmwareBuildJobService } from '../application/firmware-build-job-service.js';
+import { StartFirmwareRollout } from '../application/start-firmware-rollout.js';
 import type { FirmwareArtifactFiles, ImageInUseQuery } from '../repositories/firmware-repository.js';
-import type { RolloutTarget, Rollouts } from '../../../edge/rollout.js';
+import type { RolloutService } from '../../rollouts/application/rollout-service.js';
 
 export interface FirmwareRouterDependencies {
   firmware: FirmwareArtifactFiles;
-  buildJobs: FirmwareBuildJobs;
-  rollouts: Rollouts;
+  buildJobs: FirmwareBuildJobService;
+  rollouts: RolloutService;
   imageInUse: ImageInUseQuery;
   mutating: RequestHandler;
   pioInstalled(): boolean;
@@ -71,11 +72,10 @@ function deleteFirmwareImage(dependencies: FirmwareRouterDependencies): RequestH
 }
 
 function startFirmwareRollout(dependencies: FirmwareRouterDependencies): RequestHandler {
+  const useCase = new StartFirmwareRollout(dependencies.rollouts);
   return (req, res) => {
-    const body = (req.body ?? {}) as { buildId?: string; target?: RolloutTarget };
-    if (!body.buildId || !body.target) return res.status(400).json({ error: 'buildId and target are required' });
     try {
-      return res.json(dependencies.rollouts.start(body.buildId, body.target, 'console'));
+      return res.json(useCase.execute(req.body, 'console'));
     } catch (error: unknown) {
       return res.status(400).json({ error: errorMessage(error) });
     }

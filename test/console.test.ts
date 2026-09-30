@@ -143,6 +143,27 @@ test('node command routes keep mutation guards, validation errors, and cursor re
   }
 });
 
+test('firmware rollout rejects malformed targets with a bounded legacy error', async () => {
+  const rt = runtime();
+  const server = startConsole(rt);
+  await new Promise<void>((resolve) => server.listening ? resolve() : server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const headers = {
+    authorization: `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`,
+    'x-tm-console': '1', 'content-type': 'application/json',
+  };
+  try {
+    const response = await fetch(`${base}/api/firmware/rollout`, {
+      method: 'POST', headers, body: JSON.stringify({ buildId: 'build-a', target: { kind: 'node' } }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'target must be all, node with uid, or floor with floorId' });
+  } finally {
+    server.close();
+    await rt.stop();
+  }
+});
+
 test('firmware build failures retain the legacy polling error payload and allow a retry', async () => {
   const rt = runtime();
   let calls = 0;
