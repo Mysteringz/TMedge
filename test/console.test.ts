@@ -113,6 +113,36 @@ test('legacy firmware routes preserve auth, mutation guard, and polling shape', 
   }
 });
 
+test('node command routes keep mutation guards, validation errors, and cursor response shape', async () => {
+  const rt = runtime();
+  const server = startConsole(rt);
+  await new Promise<void>((resolve) => server.listening ? resolve() : server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const authorization = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
+  try {
+    const blocked = await fetch(`${base}/api/nodes/node-a/command`, {
+      method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify({ op: 'reboot' }),
+    });
+    assert.equal(blocked.status, 403);
+
+    const invalid = await fetch(`${base}/api/nodes/node-a/command`, {
+      method: 'POST', headers: { authorization, 'x-tm-console': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ op: 'unknown' }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(await invalid.json(), { error: 'op must be set | reset-bg | identify | save | reboot' });
+
+    const reset = await fetch(`${base}/api/nodes/node-a/reset-cursor`, {
+      method: 'POST', headers: { authorization, 'x-tm-console': '1' },
+    });
+    assert.deepEqual(await reset.json(), { reset: false });
+    assert.equal((await fetch(`${base}/api/nodes/node-a/rgb.jpg`, { headers: { authorization } })).status, 404);
+  } finally {
+    server.close();
+    await rt.stop();
+  }
+});
+
 test('firmware build failures retain the legacy polling error payload and allow a retry', async () => {
   const rt = runtime();
   let calls = 0;

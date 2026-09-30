@@ -25,8 +25,10 @@ import { Provisioning } from './provisioning.js';
 import { FileProvisioningService } from '../infrastructure/provisioning/file-provisioning-service.js';
 import { createProvisioningAdminRouter, createProvisioningToolRouter } from '../modules/provisioning/routes/provisioning-routers.js';
 import { applicationErrorHandler } from '../infrastructure/http/errors.js';
-import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from './protocol.js';
 import type { EdgeRuntime } from './runtime.js';
+import { ExecuteNodeCommand } from '../modules/nodes/application/execute-node-command.js';
+import { ResetNodeCursor } from '../modules/nodes/application/reset-node-cursor.js';
+import { createNodeRouter } from '../modules/nodes/routes/node-router.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -121,62 +123,27 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
 
   app.get('/api/layout', (_req, res) => res.json(rt.layout()));
   app.get('/api/state', (_req, res) => res.json(state(rt)));
-  app.get('/api/nodes/:uid/rgb.jpg', (req, res) => {
-    const f = rt.rgb.get((req.params.uid ?? '').toLowerCase());
-    if (!f) return res.status(404).end();
-    return res.set({ 'content-type': 'image/jpeg', 'cache-control': 'no-store' }).send(f.jpeg);
-  });
-  app.get('/api/nodes/:uid/raw', (req, res) => {
-    const raw = rt.lastRaw(req.params.uid ?? '');
-    if (!raw) return res.status(404).json({ error: 'no raw frame from this node yet (is raw_every 0?)' });
-    return res.json(raw);
-  });
-
   const mutating = (req: Request, res: Response, next: NextFunction) => {
     if (req.get('x-tm-console') !== '1') return res.status(403).json({ error: 'missing x-tm-console header' });
     return next();
   };
+
+  app.use('/api/nodes', createNodeRouter({
+    reads: {
+      rgb: (uid) => rt.rgb.get(uid) ?? null,
+      raw: (uid) => rt.lastRaw(uid),
+    },
+    executeCommand: new ExecuteNodeCommand(({ uid, opcode, argument, value }) =>
+      rt.ingest.sendCommand(uid, opcode, argument, value).then(() => undefined)),
+    resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursor(uid)),
+    mutating,
+  }));
 
   app.use('/api/provision', createProvisioningAdminRouter({
     service: provisioningService,
     mutating,
     broadcast: (message) => broadcastProvisioning(message),
   }));
-
-  app.post('/api/nodes/:uid/command', mutating, async (req, res) => {
-    const uid = req.params.uid ?? '';
-    const body = (req.body ?? {}) as { op?: string; param?: string; value?: number };
-    try {
-      switch (body.op) {
-        case 'set': {
-          const id = PARAM_NAMES.indexOf(body.param as (typeof PARAM_NAMES)[number]);
-          if (id < 0 || typeof body.value !== 'number' || !Number.isInteger(body.value)) {
-            return res.status(400).json({ error: `set needs param (one of ${PARAM_NAMES.join(', ')}) and an integer value` });
-          }
-          // The node refuses an out-of-range value in silence, so sending one
-          // looks like success and changes nothing. Say no here instead.
-          const limits = PARAM_LIMITS[body.param as (typeof PARAM_NAMES)[number]];
-          if (limits && (body.value < limits.lo || body.value > limits.hi)) {
-            return res.status(400).json({ error: `the node only accepts ${body.param} between ${limits.lo} and ${limits.hi}; it would ignore ${body.value}` });
-          }
-          await rt.ingest.sendCommand(uid, CMD_SET_PARAM, id, body.value);
-          break;
-        }
-        case 'reset-bg': await rt.ingest.sendCommand(uid, CMD_RESET_BACKGROUND); break;
-        case 'identify': await rt.ingest.sendCommand(uid, CMD_IDENTIFY, 0, typeof body.value === 'number' ? body.value : 10); break;
-        case 'save': await rt.ingest.sendCommand(uid, CMD_SAVE_PARAMS); break;
-        case 'reboot': await rt.ingest.sendCommand(uid, CMD_REBOOT); break;
-        default: return res.status(400).json({ error: 'op must be set | reset-bg | identify | save | reboot' });
-      }
-      return res.json({ sent: true, note: 'applied when the node acknowledges in its next STATUS (last_cmd)' });
-    } catch (err) {
-      return res.status(409).json({ error: (err as Error).message });
-    }
-  });
-
-  app.post('/api/nodes/:uid/reset-cursor', mutating, (req, res) => {
-    res.json({ reset: rt.ingest.resetCursor(req.params.uid ?? '') });
-  });
 
   // A short-lived token for the WebSocket, which cannot carry basic auth reliably.
   const firmwareBuildJobs = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware));
