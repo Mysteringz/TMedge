@@ -169,6 +169,8 @@ export class NodeServer {
   private readonly handshakeMs: number;
   private readonly heartbeatMs: number;
   private readonly deadMs: number;
+  private started = false;
+  private closePromise: Promise<void> | null = null;
 
   constructor(private readonly opts: NodeServerOptions) {
     this.now = opts.now ?? Date.now;
@@ -195,6 +197,7 @@ export class NodeServer {
       const fail = (err: Error) => reject(err);
       this.server.once('error', fail);
       this.server.listen(this.opts.port, this.opts.host, () => {
+        this.started = true;
         this.server.off('error', fail);
         this.heartbeat = setInterval(() => this.beat(), this.heartbeatMs);
         this.heartbeat.unref();
@@ -205,11 +208,17 @@ export class NodeServer {
   }
 
   async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     if (this.heartbeat) clearInterval(this.heartbeat);
-    for (const s of [...this.pending, ...this.authed]) s.ws.close(CLOSE.shutdown, 'edge shutting down');
-    this.wss.close();
-    this.server.closeAllConnections?.();
-    await new Promise<void>((resolve) => this.server.close(() => resolve()));
+    this.closePromise = new Promise<void>((resolve) => {
+      if (!this.started) return resolve();
+      for (const session of [...this.pending, ...this.authed]) session.ws.close(CLOSE.shutdown, 'edge shutting down');
+      this.wss.close(() => {
+        this.server.closeAllConnections?.();
+        this.server.close(() => resolve());
+      });
+    });
+    await this.closePromise;
   }
 
   sessions(): DirectNodeInfo[] {

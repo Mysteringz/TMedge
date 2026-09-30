@@ -16,7 +16,7 @@ import { OccupancyEngine } from '../src/edge/occupancy.js';
 import { parsePacket, type Report } from '../src/edge/protocol.js';
 import { floorToPixel, pixelToFloor } from '../src/shared/geometry.js';
 import { buildRegistry, ConfigError } from '../src/edge/registry.js';
-import { EdgeRuntime } from '../src/edge/runtime.js';
+import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { identity, KEY, nodesJson, report, siteJson } from './fixtures.js';
 import type { Registry } from '../src/edge/registry.js';
 import type { NodePose } from '../src/shared/types.js';
@@ -39,7 +39,7 @@ function runtime() {
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
-  return new EdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
+  return createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
 }
 
 test('demo: a console-only floor is never in what the web tier receives', () => {

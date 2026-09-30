@@ -31,6 +31,7 @@ import { ConsoleWebSocketAdapter } from '../modules/console-live/console-websock
 import { FirmwareBuildWorkerClient } from '../infrastructure/firmware-build/firmware-build-worker-client.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const consoleCleanups = new WeakMap<Server, () => Promise<void>>();
 
 function safeEqual(a: string, b: string): boolean {
   const x = Buffer.from(a);
@@ -38,7 +39,7 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: FirmwareBuildJobs } = {}): Server {
+export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: FirmwareBuildJobs; listen?: boolean } = {}): Server {
   const { adminPassword, consolePort, consoleHost } = rt.cfg;
   const provisioning = new Provisioning(rt.reg, {
     token: rt.cfg.flashToken,
@@ -154,16 +155,26 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
   }));
 
   const server = createServer(app);
-  server.once('close', () => { void firmwareBuildJobs.dispose(); });
   const live = new ConsoleWebSocketAdapter(server, rt, () => state(rt));
   live.start();
-  server.once('close', () => { void live.close(); });
+  let cleanup: Promise<void> | null = null;
+  const dispose = () => {
+    cleanup ??= Promise.all([firmwareBuildJobs.dispose(), live.close()]).then(() => undefined);
+    return cleanup;
+  };
+  consoleCleanups.set(server, dispose);
+  server.once('close', () => { void dispose(); });
   broadcastProvisioning = (message) => live.broadcast(message);
   app.get('/api/ws-token', (_req, res) => res.json({ token: live.issueToken() }));
   app.use(applicationErrorHandler);
 
-  server.listen(consolePort, consoleHost);
+  if (options.listen !== false) server.listen(consolePort, consoleHost);
   return server;
+}
+
+/** Awaits console-owned WebSocket and firmware worker cleanup. */
+export function stopConsole(server: Server): Promise<void> {
+  return consoleCleanups.get(server)?.() ?? Promise.resolve();
 }
 
 function state(rt: EdgeRuntime) {

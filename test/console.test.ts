@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { startConsole } from '../src/edge/console.js';
 import { buildRegistry } from '../src/edge/registry.js';
-import { EdgeRuntime } from '../src/edge/runtime.js';
+import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { FirmwareBuildJobs } from '../src/modules/firmware/application/firmware-build-jobs.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
 
@@ -26,7 +26,7 @@ function runtime() {
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
-  return new EdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
+  return createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
 }
 
 const frame = (uid: string) => ({ uid, frame: 1, tMin: 20, step: 0.05, pixels: Array(768).fill(120), receivedAt: Date.now() });

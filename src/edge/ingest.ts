@@ -128,6 +128,9 @@ export class Ingest extends EventEmitter {
   private bytesInWindow: { t: number; n: number }[] = [];
   private rejectTimes: number[] = [];
   private lastCommandSeq = 0;
+  private bound = false;
+  private closed = false;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(private readonly opts: IngestOptions) {
     super();
@@ -136,17 +139,47 @@ export class Ingest extends EventEmitter {
     this.socket.on('message', (msg, rinfo) => this.handle(msg, rinfo.address));
     this.socket.on('error', (err) => this.emit('error', err));
     this.socket.on('listening', () => {
+      this.bound = true;
       const a = this.socket.address();
       this.emit('listening', { address: a.address, port: a.port });
     });
   }
 
-  start(): void {
-    this.socket.bind(this.opts.port, this.opts.host);
+  start(): Promise<void> {
+    if (this.closed) return Promise.reject(new Error('ingest listener is closed'));
+    if (this.bound) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const onListening = () => {
+        this.off('error', onError);
+        resolve();
+      };
+      const onError = (error: Error) => {
+        this.off('listening', onListening);
+        reject(error);
+      };
+      this.once('listening', onListening);
+      this.once('error', onError);
+      try {
+        this.socket.bind(this.opts.port, this.opts.host);
+      } catch (error) {
+        this.off('listening', onListening);
+        this.off('error', onError);
+        reject(error);
+      }
+    });
   }
 
-  async stop(): Promise<void> {
-    await new Promise<void>((resolve) => this.socket.close(() => resolve()));
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.closed = true;
+    this.stopPromise = new Promise<void>((resolve) => {
+      try {
+        this.socket.close(() => resolve());
+      } catch {
+        resolve();
+      }
+    });
+    return this.stopPromise;
   }
 
   /**

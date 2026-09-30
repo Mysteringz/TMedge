@@ -24,6 +24,7 @@ import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
 import { sendLatest } from '../shared/fanout.js';
+import type { ConsoleDetection, RawFrameMessage } from '../shared/types.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
@@ -34,16 +35,28 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server: Server; algo: AlgoRuntime } {
+export interface AlgoServerHandle {
+  server: Server;
+  algo: AlgoRuntime;
+  dispose(): Promise<void>;
+}
+
+export interface AlgoServerOptions {
+  listen?: boolean;
+  dataDir?: string;
+}
+
+export function startAlgo(rt: EdgeRuntime, port: number, host: string, options: AlgoServerOptions = {}): AlgoServerHandle {
   const broker = new ParamBroker(rt);
   broker.start();
   const algo = new AlgoRuntime(rt, broker);
   const wsSecret = randomBytes(32);
-  const dir = join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pipelines');
+  const dataDir = options.dataDir ?? process.env.DATA_DIR ?? join(ROOT, 'data');
+  const dir = join(dataDir, 'algo', 'pipelines');
   mkdirSync(dir, { recursive: true });
   // Training data for the ML locator. Off by default: it writes to disk and
   // holds pictures of a room, so somebody has to ask for it.
-  const pairs = new PairRecorder({ dir: join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pairs') });
+  const pairs = new PairRecorder({ dir: join(dataDir, 'algo', 'pairs') });
   // The env var forces it on; otherwise the recorder remembers what it was
   // last told, so a deploy does not quietly stop a collection run.
   if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setRecording(true);
@@ -61,9 +74,12 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     return (withFrames ?? all.find((n) => !n.simulated && online(n.uid)) ?? all.find((n) => online(n.uid)) ?? all[0])?.uid ?? '';
   };
   let pipeline: Pipeline = loadPipeline(dir, 'default') ?? defaultPipeline(pickUid());
+  let disposed = false;
   // Nothing has been heard from anyone at start-up, so revisit the choice once
   // frames have had a moment to arrive.
-  setTimeout(() => {
+  let initialUidTimer: NodeJS.Timeout | null = setTimeout(() => {
+    initialUidTimer = null;
+    if (disposed) return;
     if (algo.frames.list(pipeline.uid).length === 0) {
       const better = pickUid();
       if (better && better !== pipeline.uid) {
@@ -71,31 +87,35 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
         algo.setPipeline(pipeline);
       }
     }
-  }, 15_000).unref();
+  }, 15_000);
+  initialUidTimer.unref();
   algo.setPipeline(pipeline);
 
   // Frames arrive whether or not anyone is looking; the ring is what makes
   // stepping backwards possible at all.
-  rt.on('raw', (msg) => {
+  const onRaw = (msg: RawFrameMessage): void => {
     algo.frames.addRaw(msg);
     scheduleRun('frame');
-  });
+  };
   // Every RGB frame is offered to the recorder, which keeps it only when a
   // thermal frame of the same moment exists to pair it with.
-  rt.on('rgb', (uid, jpeg, at) => {
+  const onRgb = (uid: string, jpeg: Buffer, at: number): void => {
     const node = rt.reg.nodes.get(uid);
     // No pose means no orientation to record the pair against.
     if (!node?.pose) return;
     pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
-  });
+  };
 
-  rt.on('report', (uid, dets) => {
+  const onReport = (uid: string, dets: ConsoleDetection[]): void => {
     // The report's own frame number, not the last RAW's: they are only the
     // same when a RAW happened to arrive for that frame, and the whole point
     // of the pairing is to know when it did.
     const report = rt.lastReport(uid);
     if (report) algo.frames.addReport(uid, report.frame, dets, report.flags);
-  });
+  };
+  rt.on('raw', onRaw);
+  rt.on('rgb', onRgb);
+  rt.on('report', onReport);
 
   const app = express();
   app.disable('x-powered-by');
@@ -335,7 +355,7 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
   const clients = new Set<WebSocket>();
 
-  server.on('upgrade', (req: IncomingMessage, socket, head) => {
+  const onUpgrade = (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): void => {
     const url = new URL(req.url ?? '/', 'http://x');
     const [exp, mac] = (url.searchParams.get('token') ?? '').split('.');
     const ok = url.pathname === '/ws' && exp && mac && Number(exp) > Date.now() &&
@@ -350,9 +370,11 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
       ws.on('close', () => clients.delete(ws));
       ws.send(JSON.stringify({ type: 'pipeline_state', pipeline, live }));
     });
-  });
+  };
+  server.on('upgrade', onUpgrade);
 
   const send = (msg: unknown) => {
+    if (disposed) return;
     const s = JSON.stringify(msg);
     // A browser that is behind is skipped, not queued for (sendLatest).
     for (const ws of clients) sendLatest(ws, s);
@@ -362,28 +384,30 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
   // operator is looking at. Runs are coalesced because a detector replay over
   // the ring costs more than a frame interval.
   let live = true;
-  let running = false;
   let queued: string | null = null;
+  let drainPromise: Promise<void> | null = null;
   let heldFrame: number | undefined;
 
   function scheduleRun(reason: string): void {
-    if (!live && reason === 'frame') return;
+    if (disposed || (!live && reason === 'frame')) return;
     queued = reason;
-    void drain();
+    if (drainPromise) return;
+    drainPromise = drain();
+    void drainPromise.finally(() => {
+      drainPromise = null;
+      if (queued !== null && !disposed) scheduleRun(queued);
+    });
   }
 
   async function drain(): Promise<void> {
-    if (running || queued === null) return;
-    running = true;
-    queued = null;
-    try {
-      const result = await algo.run(pipeline, { frame: live ? undefined : heldFrame });
-      send({ type: 'frame', ...result, dirty: algo.dirtyFor(pipeline), pending: broker.changes() });
-    } catch (err) {
-      send({ type: 'node_error', error: (err as Error).message });
-    } finally {
-      running = false;
-      if (queued !== null) void drain();
+    while (queued !== null && !disposed) {
+      queued = null;
+      try {
+        const result = await algo.run(pipeline, { frame: live ? undefined : heldFrame });
+        send({ type: 'frame', ...result, dirty: algo.dirtyFor(pipeline), pending: broker.changes() });
+      } catch (error) {
+        send({ type: 'node_error', error: (error as Error).message });
+      }
     }
   }
 
@@ -397,10 +421,35 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     return res.json({ ok: true, live, frame: heldFrame });
   });
 
-  setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000).unref();
-
-  server.listen(port, host);
-  return { server, algo };
+  let pipelineTimer: NodeJS.Timeout | null = setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000);
+  pipelineTimer.unref();
+  let disposePromise: Promise<void> | null = null;
+  const dispose = (): Promise<void> => {
+    if (disposePromise) return disposePromise;
+    disposed = true;
+    if (initialUidTimer) clearTimeout(initialUidTimer);
+    if (pipelineTimer) clearInterval(pipelineTimer);
+    initialUidTimer = null;
+    pipelineTimer = null;
+    broker.stop();
+    rt.off('raw', onRaw);
+    rt.off('rgb', onRgb);
+    rt.off('report', onReport);
+    server.off('upgrade', onUpgrade);
+    for (const client of clients) {
+      client.close(1001, 'debugger stopping');
+      client.terminate();
+    }
+    clients.clear();
+    disposePromise = (async () => {
+      await drainPromise;
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    })();
+    return disposePromise;
+  };
+  server.once('close', () => { void dispose(); });
+  if (options.listen !== false) server.listen(port, host);
+  return { server, algo, dispose };
 }
 
 function loadPipeline(dir: string, name: string): Pipeline | null {
