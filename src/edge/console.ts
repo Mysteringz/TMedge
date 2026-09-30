@@ -9,13 +9,11 @@
  * form cannot send -- basic-auth credentials are attached by the browser
  * automatically, so without it any page the admin visits could reboot nodes.
  */
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createServer, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { WebSocketServer, type WebSocket } from 'ws';
-import { sendLatest } from '../shared/fanout.js';
 import { FirmwareStore } from './firmware.js';
 import { FirmwareBuildJobs } from '../modules/firmware/application/firmware-build-jobs.js';
 import { createFirmwareRouter } from '../modules/firmware/routes/firmware-router.js';
@@ -29,6 +27,7 @@ import type { EdgeRuntime } from './runtime.js';
 import { ExecuteNodeCommand } from '../modules/nodes/application/execute-node-command.js';
 import { ResetNodeCursor } from '../modules/nodes/application/reset-node-cursor.js';
 import { createNodeRouter } from '../modules/nodes/routes/node-router.js';
+import { ConsoleWebSocketAdapter } from '../modules/console-live/console-websocket-adapter.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -37,9 +36,6 @@ function safeEqual(a: string, b: string): boolean {
   const y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 }
-
-/** How many nodes one console may watch raw frames from at once. */
-const MAX_SUBSCRIPTIONS = 64;
 
 export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: FirmwareBuildJobs } = {}): Server {
   const { adminPassword, consolePort, consoleHost } = rt.cfg;
@@ -50,7 +46,6 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
   });
   const provisioningService = new FileProvisioningService(provisioning);
   let broadcastProvisioning = (_message: unknown): void => {};
-  const wsSecret = randomBytes(32);
   const app = express();
   app.disable('x-powered-by');
 
@@ -156,59 +151,14 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
     pioInstalled: () => FirmwareStore.findPio() !== null,
   }));
 
-  app.get('/api/ws-token', (_req, res) => {
-    const exp = Date.now() + 60_000;
-    res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(String(exp)).digest('hex')}` });
-  });
-  app.use(applicationErrorHandler);
-
   const server = createServer(app);
   server.once('close', () => firmwareBuildJobs.dispose());
-  const wss = new WebSocketServer({ noServer: true });
-  const subs = new Map<WebSocket, Set<string>>();
-
-  server.on('upgrade', (req: IncomingMessage, socket, head) => {
-    const url = new URL(req.url ?? '/', 'http://x');
-    const [exp, mac] = (url.searchParams.get('token') ?? '').split('.');
-    const ok = url.pathname === '/ws' && exp && mac && Number(exp) > Date.now() &&
-      safeEqual(mac, createHmac('sha256', wsSecret).update(exp).digest('hex'));
-    if (!ok) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      subs.set(ws, new Set());
-      ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(String(data)) as { type?: string; uids?: unknown };
-          if (msg.type === 'subscribe' && Array.isArray(msg.uids)) {
-            // The cap is there so one console cannot ask the edge to fan out
-            // every node's raw frames forever; it has to be above the number
-            // of nodes a site actually has, or the console quietly stops
-            // showing the ones past the limit. 21 nodes (two sites' worth of
-            // simulation plus the real ones) already passed the old 16.
-            subs.set(ws, new Set(msg.uids.filter((u): u is string => typeof u === 'string').slice(0, MAX_SUBSCRIPTIONS)));
-          }
-        } catch {
-          /* ignore malformed client messages */
-        }
-      });
-      ws.on('close', () => subs.delete(ws));
-      ws.send(JSON.stringify({ type: 'state', ...state(rt) }));
-    });
-  });
-
-  const broadcast = (msg: unknown, filter?: (ws: WebSocket) => boolean) => {
-    const s = JSON.stringify(msg);
-    // A browser that is behind is skipped, not queued for (sendLatest).
-    for (const ws of subs.keys()) if (!filter || filter(ws)) sendLatest(ws, s);
-  };
-  broadcastProvisioning = (message) => broadcast(message);
-  rt.on('report', (uid, dets, at) => broadcast({ type: 'report', uid, at, dets }));
-  rt.on('raw', (raw) => broadcast({ type: 'raw', ...raw }, (ws) => subs.get(ws)?.has(raw.uid) ?? false));
-  rt.on('rgb', (uid, jpeg, at) => broadcast({ type: 'rgb', uid, at, jpeg: jpeg.toString('base64') }, (ws) => subs.get(ws)?.has(uid) ?? false));
-  setInterval(() => broadcast({ type: 'state', ...state(rt) }), 1000).unref();
+  const live = new ConsoleWebSocketAdapter(server, rt, () => state(rt));
+  live.start();
+  server.once('close', () => { void live.close(); });
+  broadcastProvisioning = (message) => live.broadcast(message);
+  app.get('/api/ws-token', (_req, res) => res.json({ token: live.issueToken() }));
+  app.use(applicationErrorHandler);
 
   server.listen(consolePort, consoleHost);
   return server;

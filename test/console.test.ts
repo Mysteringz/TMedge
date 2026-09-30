@@ -89,6 +89,23 @@ test('a console is never sent frames from a node it did not ask for', async () =
   }
 });
 
+test('console WebSocket lifecycle removes runtime listeners on repeated server close', async () => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const rt = runtime();
+    const server = startConsole(rt);
+    await new Promise<void>((resolve) => server.listening ? resolve() : server.once('listening', resolve));
+    assert.equal(rt.listenerCount('report'), 1);
+    assert.equal(rt.listenerCount('raw'), 1);
+    assert.equal(rt.listenerCount('rgb'), 1);
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(rt.listenerCount('report'), 0);
+    assert.equal(rt.listenerCount('raw'), 0);
+    assert.equal(rt.listenerCount('rgb'), 0);
+    await rt.stop();
+  }
+});
+
 test('legacy firmware routes preserve auth, mutation guard, and polling shape', async () => {
   const rt = runtime();
   const server = startConsole(rt);
