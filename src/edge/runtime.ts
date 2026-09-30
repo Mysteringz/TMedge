@@ -307,7 +307,12 @@ export class EdgeRuntime extends EventEmitter {
       rejectReasons: Object.fromEntries(this.ingest.rejectReasons),
       unknownSources: [...this.ingest.rejectedSources.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 20),
       publish: this.publisher.status,
-      recorder: { dir: this.recorder.dir, bytesToday: this.recorder.bytesToday(), rawEnabled: this.recorder.rawEnabled },
+      recorder: {
+        dir: this.recorder.dir,
+        bytesToday: this.recorder.bytesToday(),
+        rawEnabled: this.recorder.rawEnabled,
+        health: this.recorder.health(),
+      },
       udp: { port: this.cfg.udpPort, iface: this.cfg.udpHost },
       gateways: this.gateways?.gateways() ?? [],
       gatewayPort: this.gateways ? this.cfg.gatewayPort : null,

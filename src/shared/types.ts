@@ -234,12 +234,31 @@ export interface EdgeHealth {
   rejectReasons: Record<string, number>;
   unknownSources: { address: string; uid: string | null; count: number; lastSeen: number; reason: string }[];
   publish: { target: string; ok: boolean; lastOkAt: number | null; lastError: string | null }[];
-  recorder: { dir: string; bytesToday: number; rawEnabled: boolean };
+  recorder: {
+    dir: string;
+    bytesToday: number;
+    rawEnabled: boolean;
+    health: {
+      detections: RecordingStreamHealth;
+      occupancy: RecordingStreamHealth;
+      raw: RecordingStreamHealth | null;
+    };
+  };
   gateways: { id: string; remote: string; transport: 'tcp' | 'websocket'; connectedAt: number; lastSeen: number; uplink: number; downlink: number; rttMs: number | null; stats: Record<string, unknown> | null }[];
   gatewayPort: number | null;
   /** The direct node listener, when enabled. */
   nodeListener: { port: number; host: string; sessions: number; pending: number; grants: number; rejects: Record<string, number> } | null;
   udp: { port: number; iface: string | null };
+}
+
+export interface RecordingStreamHealth {
+  queuedBytes: number;
+  queueLimitBytes: number;
+  droppedRecords: number;
+  writeErrors: number;
+  lastSuccessfulWriteAt: number | null;
+  healthy: boolean;
+  lastError: string | null;
 }
 
 export interface RawFrameMessage {
