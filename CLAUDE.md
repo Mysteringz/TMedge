@@ -12,6 +12,8 @@ src/edge/nodelink.ts     direct TMsense nodes over WSS (tmnode.v1): auth, ACKs, 
                          -- contract in docs/DIRECT_NODE_PROTOCOL.md, rollout in docs/DIRECT_NODE_RUNBOOK.md
 src/edge/registry.ts     site/nodes config + strict validation, coverage per table
 src/edge/occupancy.ts    projection -> authority per table -> seats -> smoothing
+src/edge/staticbg.ts     day-long background: heat present ~80% of 24 h is room, the rest may be people
+src/edge/edgedetect.ts   detection on RAW frames for nodes with "detector": "edge" (docs/EDGE_DETECTION.md)
 src/edge/runtime.ts      wires ingest/occupancy/recorder/publisher; node & edge health
 src/edge/console.ts      admin console HTTP/WS (raw frames live here only)
 src/edge/recorder.ts     daily JSONL logs = Phase 3 calibration data
@@ -64,7 +66,14 @@ has hidden Linux failures before.
 - **The debugger never re-implements the detector.** Its preview runs
   `../TMsense/src/tm_detector.cpp` compiled for the host. A copy of that file
   in this repo is a test failure, because a debugger that drifts from the
-  firmware lies about the thing it is debugging.
+  firmware lies about the thing it is debugging. `edgedetect.ts` is not such
+  a copy: it is the edge's own detector for `"detector": "edge"` nodes, with
+  a different background by design, and the debugger labels it as such.
+- **A still person is not background.** An edge-detected node's background
+  only learns heat present in ~80% of the last 24 h. Never shorten that
+  window or raise the quantile to "adapt faster": that is exactly how a
+  student sitting for two hours faded out of the count. Until the model has
+  an hour of history the node reports not-ready, so its tables are unknown.
 - **A live parameter change is temporary.** The algo dashboard's writes revert
   after 15 minutes unless committed, flash writes are a separate act, and
   every change is in `data/algo/audit.jsonl` with its old value.

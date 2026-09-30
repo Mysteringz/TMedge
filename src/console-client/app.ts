@@ -325,6 +325,18 @@ function renderHealth(): void {
     <div><h3>Ingest</h3><ul><li>UDP ${esc(String(h.udp.iface))}:${h.udp.port}</li><li>recording to ${esc(h.recorder.dir)}${h.recorder.rawEnabled ? ' (with raw)' : ''}</li><li>host ${esc(h.hostname)}, ${h.sysFreeMb}/${h.sysTotalMb} MB free</li></ul></div>`;
 }
 
+/**
+ * An edge-detected node's background is the day-long model, which takes an
+ * hour to trust and a day to fill: say which, and how far along it is, so
+ * "learning" for an hour after a deploy does not read as a broken node.
+ */
+function backgroundCell(n: NodeHealth): string {
+  const state = n.backgroundReady ? (n.globalShift ? 'shift' : 'ready') : 'learning';
+  const bg = n.edgeBackground;
+  if (n.detector !== 'edge') return state;
+  return `edge · ${state}${bg ? ` · ${bg.hours} h of ${bg.windowHours}` : ''}`;
+}
+
 function renderNodes(): void {
   if (!last) return;
   const rows = last.nodes.map((n) => {
@@ -334,7 +346,7 @@ function renderNodes(): void {
       <td><span class="dotc ${n.online ? 'on' : ''}"></span>${esc(n.label)}</td>
       <td>${n.uid}</td><td>${n.fps.toFixed(2)}</td><td>${(n.lossRate * 100).toFixed(1)}%</td>
       <td>${n.lastPeople ?? '–'}</td><td>${auth || '–'}</td>
-      <td>${n.backgroundReady ? (n.globalShift ? 'shift' : 'ready') : 'learning'}</td>
+      <td>${backgroundCell(n)}</td>
       <td>${n.sceneMin?.toFixed(1) ?? '–'}–${n.sceneMax?.toFixed(1) ?? '–'} °C</td>
       <td>${s ? `${s.rssi} dBm` : '–'}</td><td>${s ? `${(s.heap / 1024).toFixed(0)} kB` : '–'}</td>
       <td>${s?.fw ?? '–'}</td><td>${n.lastSeen === null ? '–' : n.signed ? 'signed' : '<b style="color:var(--bad)">UNSIGNED</b>'}</td>

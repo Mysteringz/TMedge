@@ -157,6 +157,7 @@ export class Provisioning {
       owns: [],
       simulated: false,
       rgb: false,
+      detector: 'node',
     };
 
     // File first. If it cannot be written the node is not admitted at all,

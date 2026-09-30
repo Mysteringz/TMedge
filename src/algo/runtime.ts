@@ -220,7 +220,12 @@ export class AlgoRuntime {
               detectorMs,
               // Early frames in the ring have no background yet, so every
               // stage downstream reads zero. Say so, or it looks broken.
-              ...(preview.backgroundReady ? {} : {
+              ...(node?.detector === 'edge' ? {
+                // This preview is the firmware's short-memory background. The
+                // node is counted by the edge's day-long one instead, so a
+                // still person fading out here no longer costs a seat.
+                warning: 'this node is counted by the edge (detector "edge"), against a background learned over 24 h; this panel previews the on-board detector for comparison only',
+              } : preview.backgroundReady ? {} : {
                 warning: `the background model needs ${params.bg_frames} frames and this one is ${this.frames.historyTo(uid, pair.frame).length} into the ring — nothing can be detected yet`,
               }),
             }, {
@@ -249,7 +254,9 @@ export class AlgoRuntime {
               mirror: node?.pose?.mirror ?? false,
               observed,
               note: observed.length
-                ? 'observed = what the sensor decided for this frame; detections = this inspector’s parameters'
+                ? node?.detector === 'edge'
+                  ? 'observed = what the edge decided for this frame (24 h background); detections = the on-board detector with this inspector’s parameters'
+                  : 'observed = what the sensor decided for this frame; detections = this inspector’s parameters'
                 : 'no REPORT paired with this frame yet',
               agrees: observed.length === blobs.length,
               // A simulated node does not derive its REPORT from its own

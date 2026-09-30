@@ -173,7 +173,8 @@
       "owns": [
         "D1"
       ],
-      "rgb": true
+      "rgb": true,
+      "detector": "edge"
     },
     {
       "uid": "02:00:00:00:01:01",
