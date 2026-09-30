@@ -5,9 +5,9 @@
  * Uses the same allowed domains as the web tier (ALLOWED_EMAIL_DOMAINS).
  */
 import { join } from 'node:path';
-import { UserStore } from '../web/auth.js';
+import { JsonStudentAccountRepository } from '../infrastructure/web/json-student-account-repository.js';
 
-const store = new UserStore(
+const store = new JsonStudentAccountRepository(
   process.env.USERS_FILE || join(process.env.DATA_DIR || 'data', 'users.json'),
   (process.env.ALLOWED_EMAIL_DOMAINS ?? 'hku.hk,connect.hku.hk').split(',').map((d) => d.trim()).filter(Boolean),
 );

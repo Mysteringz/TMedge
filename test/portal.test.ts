@@ -172,7 +172,8 @@ test('the bare domain is a gateway, and every screen behind it needs a session',
       assert.equal(out.headers.get('location'), to, `${from} still works`);
     }
   } finally {
-    await new Promise<void>((r) => web.server.close(() => r()));
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
   }
 });
 
@@ -203,7 +204,8 @@ test('sign-in answers the app in JSON, and will not forward you off-site', async
       assert.deepEqual(await out.json(), { redirect: '/dashboard/' }, `${next} is not somewhere we send people`);
     }
   } finally {
-    await new Promise<void>((r) => web.server.close(() => r()));
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
   }
 });
 

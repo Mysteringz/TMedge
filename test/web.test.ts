@@ -26,7 +26,14 @@ async function start() {
   });
   await new Promise<void>((r) => web.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
-  return { ...web, base, close: () => new Promise<void>((r) => web.server.close(() => r())) };
+  return {
+    ...web,
+    base,
+    close: async () => {
+      await web.dispose();
+      await new Promise<void>((resolve) => web.server.close(() => resolve()));
+    },
+  };
 }
 
 /** What an edge publishes: public floors only (see EdgeRuntime.publicSnapshot). */
@@ -201,6 +208,7 @@ test('web behind Cloudflare Tunnel: the session cookie is Secure over https, and
     const onLan = await signupVia({}, 'q@connect.hku.hk');
     assert.doesNotMatch(onLan.headers.get('set-cookie') ?? '', /;\s*Secure/i, 'plain http on the LAN still works');
   } finally {
-    await new Promise<void>((r) => web.server.close(() => r()));
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
   }
 });
