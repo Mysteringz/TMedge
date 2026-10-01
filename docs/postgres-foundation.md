@@ -33,7 +33,14 @@ PGHOST=127.0.0.1 PGPORT=55432 PGDATABASE=tmedge_test \
   npm run db:migrate
 ```
 
-Stop the database while keeping its data with `docker compose -f docker-compose.postgres-test.yml down`. To delete this disposable database and its data, use `docker compose -f docker-compose.postgres-test.yml down -v`.
+Pause the database while keeping the same container and data ready to restart:
+
+```sh
+docker compose -f docker-compose.postgres-test.yml stop
+docker compose -f docker-compose.postgres-test.yml start
+```
+
+`docker compose down` removes the container. To remove the disposable database and its data as well, use `docker compose -f docker-compose.postgres-test.yml down -v`.
 
 To run the PostgreSQL integration tests against it:
 
