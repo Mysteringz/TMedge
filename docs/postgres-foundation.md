@@ -6,16 +6,45 @@ This foundation adds a PostgreSQL driver and explicit TypeORM migration entry po
 
 The test database is separate from the production `docker-compose.yml` stack and binds to loopback on port 55432. Its default passwords are disposable local test values only.
 
+### Start and connect with pgAdmin
+
+Each developer runs a separate copy on their own machine; this setup is not a shared database for remote teammates. Install and open Docker Desktop, then run these commands from the TMedge repository root:
+
 ```sh
 docker compose -f docker-compose.postgres-test.yml up -d --wait
+docker compose -f docker-compose.postgres-test.yml ps
+```
+
+In pgAdmin, register a server (for example, **TMedge Local Test DB**) and enter:
+
+| Field | Value |
+| --- | --- |
+| Host name/address | `127.0.0.1` |
+| Port | `55432` |
+| Maintenance database | `tmedge_test` |
+| Username | `tmedge_runtime` |
+| Password | `local-test-runtime-only` |
+
+Use the runtime account to browse and run queries. It can use tables but cannot create or alter schema objects. The database has no application tables until a migration creates them. To apply a reviewed migration, use the migration role from a terminal:
+
+```sh
+PGHOST=127.0.0.1 PGPORT=55432 PGDATABASE=tmedge_test \
+  PG_MIGRATION_USER=tmedge_migrator PG_MIGRATION_PASSWORD=local-test-migrator-only \
+  npm run db:migrate
+```
+
+Stop the database while keeping its data with `docker compose -f docker-compose.postgres-test.yml down`. To delete this disposable database and its data, use `docker compose -f docker-compose.postgres-test.yml down -v`.
+
+To run the PostgreSQL integration tests against it:
+
+```sh
 PGHOST=127.0.0.1 PGPORT=55432 PGDATABASE=tmedge_test \
   PG_MIGRATION_USER=tmedge_migrator PG_MIGRATION_PASSWORD=local-test-migrator-only \
   PG_RUNTIME_USER=tmedge_runtime PG_RUNTIME_PASSWORD=local-test-runtime-only \
   PG_INTEGRATION_TEST=1 npm test
-docker compose -f docker-compose.postgres-test.yml down -v
 ```
 
-The `down -v` command removes only this disposable test database volume. CI uses its own ephemeral PostgreSQL service and provisions the same two roles before running the existing Node test runner.
+CI uses its own ephemeral PostgreSQL service and provisions the same two roles before running the existing Node test runner.
 
 ## Credentials and migration control
 
