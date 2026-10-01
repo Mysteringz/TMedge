@@ -1,0 +1,20 @@
+# Disposable local integration database. It is deliberately separate from the
+# production compose stack and binds only to loopback.
+services:
+  postgres-test:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: tmedge_test
+      POSTGRES_USER: tmedge_admin
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD:-local-test-admin-only}
+      PG_MIGRATION_PASSWORD: ${PG_MIGRATION_PASSWORD:-local-test-migrator-only}
+      PG_RUNTIME_PASSWORD: ${PG_RUNTIME_PASSWORD:-local-test-runtime-only}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - ./docker/postgres-test/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tmedge_admin -d tmedge_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

@@ -29,6 +29,28 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: tmedge_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-admin-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tmedge_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGDATABASE: tmedge_test
+      PG_MIGRATION_USER: tmedge_migrator
+      PG_MIGRATION_PASSWORD: ci-migration-test-only
+      PG_RUNTIME_USER: tmedge_runtime
+      PG_RUNTIME_PASSWORD: ci-runtime-test-only
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -83,12 +105,21 @@ jobs:
           npm --prefix algo-app ci --no-audit --no-fund
           npm --prefix ../TMWAccess ci --no-audit --no-fund
 
+      - name: Configure isolated PostgreSQL test roles
+        env:
+          PGPASSWORD: ci-admin-test-only
+        run: |
+          psql --host 127.0.0.1 --username postgres --dbname tmedge_test \
+            --set ON_ERROR_STOP=1 --file TMedge/docker/postgres-test/init/001-roles.sql
+
       - name: Typecheck
         working-directory: TMedge
         run: npm run typecheck
 
       - name: Test
         working-directory: TMedge
+        env:
+          PG_INTEGRATION_TEST: '1'
         run: npm test
 
       # Compiles the firmware's own packet code (g++ + OpenSSL, both on the
