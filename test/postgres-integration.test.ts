@@ -23,6 +23,8 @@ import type { FirmwareBuildJobRecord } from '../src/modules/firmware/repositorie
 import { PostgresRolloutRepository } from '../src/infrastructure/postgres/rollout-repository.js';
 import type { RolloutRecord } from '../src/modules/rollouts/repositories/rollout-repository.js';
 import { PostgresCommandOutcomeRepository } from '../src/infrastructure/postgres/command-outcome-repository.js';
+import { PostgresOccupancyHistoryRepository } from '../src/infrastructure/postgres/occupancy-history-repository.js';
+import type { OccupancyHistoryRecord } from '../src/modules/occupancy-history/repositories/occupancy-history-repository.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -31,6 +33,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790985600000-CreateFirmwareBuildPersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791072000000-CreateFirmwareRolloutPersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791158400000-CreateCommandOutcomePersistence.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791244800000-CreateOccupancyHistory.js'),
 ];
 
 async function approveTransaction(
@@ -71,12 +74,13 @@ test('registration schema and provisioning repository enforce persistence invari
   let buildArtifactIds: string[] = [];
   let rolloutIds: string[] = [];
   let commandIds: string[] = [];
+  let historyEdgeIds: string[] = [];
 
   try {
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 5, 'foundation, registration, build, rollout, and command migrations all run');
+    assert.equal(appliedMigrations, 6, 'foundation, registration, build, rollout, command, and occupancy migrations all run');
     assert.equal(
       (await migrator.query("SELECT to_regclass('public.tmedge_foundation_probe') AS table_name"))[0].table_name,
       'tmedge_foundation_probe',
@@ -513,12 +517,58 @@ test('registration schema and provisioning repository enforce persistence invari
     await runtime.query('DELETE FROM public.command_outcomes WHERE command_id = ANY($1::text[])', [commandIds]);
     commandIds = [];
 
+    const historyRepository = new PostgresOccupancyHistoryRepository(runtime);
+    const historyEdgeId = 'edge-task-history-test';
+    historyEdgeIds = [historyEdgeId];
+    const historyRows: OccupancyHistoryRecord[] = [
+      { edgeId: historyEdgeId, floorId: 'floor-a', tableId: 'T1', minuteAt: 1_800_000_000_000,
+        sampledAt: 1_800_000_000_001, capacity: 4, occupied: 2, free: 2, coverage: 'ok' },
+      { edgeId: historyEdgeId, floorId: 'floor-a', tableId: 'T2', minuteAt: 1_800_000_000_000,
+        sampledAt: 1_800_000_000_001, capacity: 2, occupied: null, free: null, coverage: 'unknown' },
+    ];
+    await historyRepository.writeBatch(historyRows);
+    await historyRepository.writeBatch([
+      { ...historyRows[0]!, sampledAt: 1_800_000_010_000, occupied: 3, free: 1 }, historyRows[1]!,
+    ]);
+    const historyResult = await runtime.query(
+      'SELECT table_id, sampled_at, occupied, free, coverage FROM public.occupancy_history WHERE edge_id = $1 ORDER BY table_id',
+      [historyEdgeId],
+    );
+    assert.equal(historyResult.length, 2, 'same-minute retries upsert one row per table');
+    assert.deepEqual(historyResult[0], {
+      table_id: 'T1', sampled_at: new Date(1_800_000_010_000), occupied: 3, free: 1, coverage: 'ok',
+    });
+    await historyRepository.writeBatch([
+      { ...historyRows[0]!, sampledAt: 1_800_000_002_000, occupied: 1, free: 3 },
+    ]);
+    const newestHistoryResult = await runtime.query(
+      'SELECT sampled_at, occupied FROM public.occupancy_history WHERE edge_id = $1 AND table_id = $2',
+      [historyEdgeId, 'T1'],
+    );
+    assert.deepEqual(newestHistoryResult[0], { sampled_at: new Date(1_800_000_010_000), occupied: 3 },
+      'late retry cannot replace a newer minute sample');
+    assert.equal(historyResult[1]?.coverage, 'unknown');
+    assert.equal(historyResult[1]?.occupied, null);
+    assert.equal(historyResult[1]?.free, null);
+    const nextMinuteInvalid = { ...historyRows[0]!, minuteAt: 1_800_000_060_000, sampledAt: 1_800_000_060_001, occupied: 4, free: 0 };
+    await assert.rejects(historyRepository.writeBatch([
+      { ...nextMinuteInvalid, edgeId: 'edge-rollback-probe', tableId: 'T3' },
+      { ...nextMinuteInvalid, edgeId: 'edge-rollback-probe', tableId: 'T4', coverage: 'unknown' },
+    ]), /check constraint/i);
+    assert.equal((await runtime.query('SELECT count(*)::int AS count FROM public.occupancy_history WHERE edge_id = $1', ['edge-rollback-probe']))[0].count, 0,
+      'failed history batch is atomic');
+    await runtime.query('DELETE FROM public.occupancy_history WHERE edge_id = ANY($1::text[])', [historyEdgeIds]);
+    historyEdgeIds = [];
+
     assert.deepEqual(await postgresAvailability(runtime), { available: true });
     await assert.rejects(
       runtime.query('CREATE TABLE public.tmedge_runtime_must_not_ddl (id integer)'),
       /permission denied/i,
     );
 
+    await migrator.undoLastMigration({ transaction: 'all' });
+    appliedMigrations -= 1;
+    assert.equal((await migrator.query("SELECT to_regclass('public.occupancy_history') AS table_name"))[0].table_name, null);
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
     assert.equal((await migrator.query("SELECT to_regclass('public.command_outcomes') AS table_name"))[0].table_name, null);
@@ -538,6 +588,9 @@ test('registration schema and provisioning repository enforce persistence invari
     await closePostgres(runtime);
     assert.equal(runtime.isInitialized, false, 'shutdown can be repeated safely');
   } finally {
+    if (runtime.isInitialized && historyEdgeIds.length > 0) {
+      await runtime.query('DELETE FROM public.occupancy_history WHERE edge_id = ANY($1::text[])', [historyEdgeIds]).catch(() => undefined);
+    }
     if (runtime.isInitialized && commandIds.length > 0) {
       await runtime.query('DELETE FROM public.command_outcomes WHERE command_id = ANY($1::text[])', [commandIds]).catch(() => undefined);
     }
