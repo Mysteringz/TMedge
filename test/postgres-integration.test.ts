@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { loadPostgresConfig } from '../src/infrastructure/postgres/config.js';
 import { closePostgres, createPostgresDataSource, openPostgres, postgresAvailability } from '../src/infrastructure/postgres/data-source.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   NodeRegistration,
   ProvisioningRepository,
@@ -15,11 +15,17 @@ import { PostgresProvisioningRepository } from '../src/infrastructure/postgres/p
 import { PostgresRegistryRepository } from '../src/infrastructure/postgres/registry-repository.js';
 import { RegistrationImportExport } from '../src/modules/registration/application/registration-import-export.js';
 import { nodesJson, siteJson } from './fixtures.js';
+import {
+  PostgresFirmwareArtifactRepository,
+  PostgresFirmwareBuildJobRepository,
+} from '../src/infrastructure/postgres/firmware-build-repositories.js';
+import type { FirmwareBuildJobRecord } from '../src/modules/firmware/repositories/firmware-build-job-repository.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
   join(testDirectory, 'postgres-foundation-probe-migration.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790812800000-CreateRegistrationProvisioningAuditSchema.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1790985600000-CreateFirmwareBuildPersistence.js'),
 ];
 
 async function approveTransaction(
@@ -56,12 +62,14 @@ test('registration schema and provisioning repository enforce persistence invari
   const runtime = await openPostgres(config.runtime);
   let appliedMigrations = 0;
   let importedRegistryUids: string[] = [];
+  let buildJobIds: string[] = [];
+  let buildArtifactIds: string[] = [];
 
   try {
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 2, 'foundation and registration migrations both run');
+    assert.equal(appliedMigrations, 3, 'foundation, registration, and build migrations all run');
     assert.equal(
       (await migrator.query("SELECT to_regclass('public.tmedge_foundation_probe') AS table_name"))[0].table_name,
       'tmedge_foundation_probe',
@@ -334,12 +342,87 @@ test('registration schema and provisioning repository enforce persistence invari
     assert.equal('pose' in unplaced, false);
     assert.equal((await importExport.loadRegistry(siteJson())).nodes.size, importedRegistryUids.length);
 
+    const artifactRepository = new PostgresFirmwareArtifactRepository(runtime);
+    const jobRepository = new PostgresFirmwareBuildJobRepository(runtime);
+    const imageBytes = Buffer.alloc(512, 7);
+    const hash = createHash('sha256').update(imageBytes).digest('hex');
+    const artifact = { id: hash.slice(0, 16), sha256: hash, size: imageBytes.length, version: 'test-fw-1' };
+    await artifactRepository.save(artifact);
+    await artifactRepository.save(artifact);
+    assert.deepEqual(await artifactRepository.get(artifact.id), artifact);
+    await assert.rejects(artifactRepository.save({ ...artifact, version: 'mutated' }), /metadata conflict/);
+    const unverifiedJobRepository = new PostgresFirmwareBuildJobRepository(runtime);
+    const interruptedJob: FirmwareBuildJobRecord = {
+      id: randomUUID(), uploadId: 'upload-interrupted', actor: { id: 'tester', kind: 'console' },
+      lifecycle: 'running', startedAt: 1_800_000_000_000, finishedAt: null, artifact: null,
+      log: Array.from({ length: 450 }, (_, index) => `log-${index}`), error: null,
+    };
+    const successfulJob: FirmwareBuildJobRecord = {
+      id: randomUUID(), uploadId: 'upload-success', actor: { id: 'tester', kind: 'console' },
+      lifecycle: 'succeeded', startedAt: 1_800_000_000_001, finishedAt: 1_800_000_000_100,
+      artifact, log: ['compile complete'], error: null,
+    };
+    const acceptedJob: FirmwareBuildJobRecord = {
+      id: randomUUID(), uploadId: 'upload-accepted', actor: { id: 'tester', kind: 'console' },
+      lifecycle: 'accepted', startedAt: 1_800_000_000_002, finishedAt: null, artifact: null, log: [], error: null,
+    };
+    buildJobIds = [interruptedJob.id, successfulJob.id, acceptedJob.id];
+    buildArtifactIds = [artifact.id];
+    await jobRepository.create(interruptedJob);
+    await jobRepository.create(acceptedJob);
+    await assert.rejects(unverifiedJobRepository.create(successfulJob), /artifact content verifier/);
+    const missingBytesRepository = new PostgresFirmwareBuildJobRepository(runtime, { read: () => null });
+    await assert.rejects(missingBytesRepository.create(successfulJob), /artifact bytes are missing/);
+    const wrongBytesRepository = new PostgresFirmwareBuildJobRepository(runtime, {
+      read: () => Buffer.alloc(512, 8),
+    });
+    await assert.rejects(wrongBytesRepository.create(successfulJob), /fail SHA-256 verification/);
+    const wrongLengthRepository = new PostgresFirmwareBuildJobRepository(runtime, { read: () => imageBytes });
+    await assert.rejects(wrongLengthRepository.create({
+      ...successfulJob, artifact: { ...artifact, size: artifact.size - 1 },
+    }), /fail SHA-256 verification/);
+    assert.equal(await jobRepository.get(successfulJob.id), null, 'invalid artifact bytes cannot create a succeeded job');
+    const verifiedJobRepository = new PostgresFirmwareBuildJobRepository(runtime, {
+      read: (id, sha256, size) => id === artifact.id && sha256 === artifact.sha256 && size === artifact.size ? imageBytes : null,
+    });
+    await assert.rejects(verifiedJobRepository.create({
+      ...successfulJob, artifact: { ...artifact, version: 'uncommitted-metadata' },
+    }), /committed firmware artifact metadata is missing or mismatched/);
+    assert.equal(await jobRepository.get(successfulJob.id), null, 'mismatched metadata cannot create a succeeded job');
+    await verifiedJobRepository.create(successfulJob);
+    assert.equal((await jobRepository.get(interruptedJob.id))?.log.length, 400, 'persisted build logs are bounded');
+    assert.equal((await jobRepository.get(interruptedJob.id))?.lifecycle, 'running', 'running state was committed before restart recovery');
+    assert.deepEqual((await runtime.query('SELECT lifecycle FROM public.firmware_build_jobs WHERE id = $1', [interruptedJob.id]))[0],
+      { lifecycle: 'running' }, 'database stores the state that restart reconciliation must find');
+    await jobRepository.save({ ...interruptedJob, log: Array.from({ length: 40 }, () => 'x'.repeat(4096)) });
+    const boundedJob = await jobRepository.get(interruptedJob.id);
+    assert.ok(boundedJob);
+    assert.ok(Buffer.byteLength(JSON.stringify(boundedJob.log)) <= 128 * 1024, 'persisted log payload has a byte cap');
+    assert.deepEqual(await artifactRepository.list(), [artifact]);
+    const interrupted = await jobRepository.markActiveInterrupted(1_800_000_000_200);
+    assert.equal(interrupted.length, 2);
+    const interruptedById = new Map(interrupted.map((job) => [job.id, job]));
+    assert.equal(interruptedById.get(interruptedJob.id)?.lifecycle, 'interrupted');
+    assert.equal(interruptedById.get(acceptedJob.id)?.lifecycle, 'interrupted');
+    assert.equal(interruptedById.get(interruptedJob.id)?.finishedAt, 1_800_000_000_200);
+    assert.match(interruptedById.get(interruptedJob.id)?.error ?? '', /process restart/);
+    assert.deepEqual(await jobRepository.markActiveInterrupted(1_800_000_000_300), [], 'recovery is idempotent and never replays an active job');
+    assert.equal((await jobRepository.get(successfulJob.id))?.artifact?.sha256, hash);
+    await assert.rejects(artifactRepository.delete(artifact.id), /foreign key/i, 'job history keeps referenced artifact metadata');
+    await runtime.query('DELETE FROM public.firmware_build_jobs WHERE id = ANY($1::text[])', [buildJobIds]);
+    await artifactRepository.delete(artifact.id);
+    buildJobIds = [];
+    buildArtifactIds = [];
+
     assert.deepEqual(await postgresAvailability(runtime), { available: true });
     await assert.rejects(
       runtime.query('CREATE TABLE public.tmedge_runtime_must_not_ddl (id integer)'),
       /permission denied/i,
     );
 
+    await migrator.undoLastMigration({ transaction: 'all' });
+    appliedMigrations -= 1;
+    assert.equal((await migrator.query("SELECT to_regclass('public.firmware_artifacts') AS table_name"))[0].table_name, null);
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
     assert.equal((await migrator.query("SELECT to_regclass('public.registered_nodes') AS table_name"))[0].table_name, null);
@@ -350,6 +433,12 @@ test('registration schema and provisioning repository enforce persistence invari
     await closePostgres(runtime);
     assert.equal(runtime.isInitialized, false, 'shutdown can be repeated safely');
   } finally {
+    if (runtime.isInitialized && buildJobIds.length > 0) {
+      await runtime.query('DELETE FROM public.firmware_build_jobs WHERE id = ANY($1::text[])', [buildJobIds]).catch(() => undefined);
+    }
+    if (runtime.isInitialized && buildArtifactIds.length > 0) {
+      await runtime.query('DELETE FROM public.firmware_artifacts WHERE id = ANY($1::text[])', [buildArtifactIds]).catch(() => undefined);
+    }
     if (runtime.isInitialized && importedRegistryUids.length > 0) {
       await runtime.query('DELETE FROM public.node_table_owners WHERE uid = ANY($1::text[])', [importedRegistryUids]).catch(() => undefined);
       await runtime.query('DELETE FROM public.node_placements WHERE uid = ANY($1::text[])', [importedRegistryUids]).catch(() => undefined);
