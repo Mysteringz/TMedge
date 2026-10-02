@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { RegistrationImportExport } from '../src/modules/registration/application/registration-import-export.js';
 import type { RegistryNodeRecord, RegistryRepository } from '../src/modules/registration/repositories/registry-repository.js';
+import { buildRegistry, type Registry } from '../src/edge/registry.js';
 import { nodesJson, siteJson } from './fixtures.js';
 
 class MemoryRegistryRepository implements RegistryRepository {
@@ -73,7 +74,7 @@ test('validated import is insert-only and export/load preserve placement and nul
   assert.equal(reloaded.nodes.get('aa:00:00:00:00:01')?.floorId, json.nodes[0]!.floor);
   assert.equal(reloaded.nodes.get('aa:00:00:00:00:02')?.floorId, null);
   assert.equal(reloaded.nodes.get('aa:00:00:00:00:02')?.pose, null);
-  assert.deepEqual([...reloaded.tables.keys()], [...(await service.loadRegistry(siteJson())).tables.keys()]);
+  assert.deepEqual(registrySummary(reloaded), registrySummary(buildRegistry(siteJson(), json)));
 });
 
 test('registry validator reports invalid coverage and rejects the import', async () => {
@@ -101,3 +102,15 @@ test('repeat import reports changed existing data as a conflict and preserves th
   assert.equal(repository.nodes.get('aa:00:00:00:00:11')?.label, 'Above M1 (sim)');
   assert.equal(repository.writes, 1);
 });
+
+function registrySummary(registry: Registry): unknown {
+  return {
+    site: registry.site,
+    floors: registry.floors,
+    nodes: [...registry.nodes.values()].sort((a, b) => a.uid.localeCompare(b.uid)),
+    tables: [...registry.tables.keys()].sort(),
+    seatIndex: [...registry.seatIndex.entries()]
+      .map(([id, value]) => ({ id, seat: value.seat, tableId: value.table.id }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  };
+}
