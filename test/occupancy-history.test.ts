@@ -20,6 +20,12 @@ function snapshot(at: number, occupied = 2): OccupancySnapshot {
   };
 }
 
+function singleTableSnapshot(at: number, occupied: number): OccupancySnapshot {
+  const value = snapshot(at, occupied);
+  value.floors[0]!.tables = value.floors[0]!.tables.slice(0, 1);
+  return value;
+}
+
 class BlockingRepository implements OccupancyHistoryRepository {
   batches: OccupancyHistoryRecord[][] = [];
   private readonly gate: Promise<void>;
@@ -40,12 +46,30 @@ test('enqueue does not wait for database I/O and queue size stays bounded', asyn
   const sink = new BoundedOccupancyHistorySink(repository, { maxPendingRows: 2, batchSize: 2 });
   assert.equal(sink.enqueue(snapshot(1_800_000_000_001)), true);
   assert.equal(repository.batches.length, 1, 'the async write started without awaiting it');
-  assert.equal(sink.enqueue(snapshot(1_800_000_060_001, 1)), false, 'old rows are dropped at capacity to retain the latest minute');
-  assert.deepEqual(sink.stats(), { queuedRows: 2, droppedRows: 2, failedBatches: 0, lastError: null });
+  assert.equal(sink.enqueue(snapshot(1_800_000_060_001, 1)), true, 'the bounded pending queue accepts the next minute during an in-flight batch');
+  assert.deepEqual(sink.stats(), { queuedRows: 2, droppedRows: 0, failedBatches: 0, lastError: null },
+    'a successful in-flight write is not reported as dropped');
   repository.release();
   await sink.flush();
   assert.equal(sink.stats().queuedRows, 0);
   assert.deepEqual(repository.batches[1]?.map((row) => row.minuteAt), [1_800_000_060_000, 1_800_000_060_000]);
+  await sink.dispose();
+});
+
+test('coalesced values count against capacity while an older version is in flight', async () => {
+  const repository = new BlockingRepository();
+  const sink = new BoundedOccupancyHistorySink(repository, { maxPendingRows: 1, batchSize: 1 });
+  sink.enqueue(singleTableSnapshot(1_800_000_000_001, 2));
+  sink.enqueue(singleTableSnapshot(1_800_000_010_001, 3));
+  assert.equal(sink.stats().queuedRows, 1, 'the newer value waits separately from the write already in flight');
+  assert.equal(sink.enqueue(singleTableSnapshot(1_800_000_060_001, 1)), false);
+  assert.equal(sink.stats().queuedRows, 1, 'queue depth never exceeds its configured waiting-row cap');
+  assert.equal(sink.stats().droppedRows, 1, 'only the coalesced waiting value was dropped');
+  repository.release();
+  await sink.flush();
+  assert.deepEqual(repository.batches.flat().map((row) => row.minuteAt), [
+    1_800_000_000_000, 1_800_000_060_000,
+  ]);
   await sink.dispose();
 });
 
@@ -82,5 +106,29 @@ test('failed batches retry a bounded number of times and expose dropped rows', a
   await sink.flush();
   assert.equal(attempts, 2);
   assert.deepEqual(sink.stats(), { queuedRows: 0, droppedRows: 2, failedBatches: 2, lastError: 'database unavailable' });
+  await sink.dispose();
+});
+
+test('coalescing during a failed write cannot reset the retry limit', async () => {
+  let attempts = 0;
+  const rejectAttempts: Array<() => void> = [];
+  const repository: OccupancyHistoryRepository = {
+    writeBatch() {
+      attempts += 1;
+      return new Promise<void>((_resolve, reject) => rejectAttempts.push(() => reject(new Error('database unavailable'))));
+    },
+  };
+  const sink = new BoundedOccupancyHistorySink(repository, { maxAttempts: 2, retryDelayMs: 10_000 });
+  sink.enqueue(snapshot(1_800_000_000_001));
+  for (let occupied = 1; occupied <= 5; occupied += 1) sink.enqueue(snapshot(1_800_000_010_000 + occupied, occupied));
+  rejectAttempts.shift()?.();
+  await sink.flush();
+  const secondAttempt = sink.flush();
+  assert.equal(attempts, 2);
+  rejectAttempts.shift()?.();
+  await secondAttempt;
+  assert.equal(attempts, 2);
+  assert.equal(sink.stats().queuedRows, 0, 'the row is dropped after the configured number of failed writes');
+  assert.equal(sink.stats().droppedRows, 2);
   await sink.dispose();
 });

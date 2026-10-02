@@ -29,6 +29,7 @@ interface PendingEntry { record: OccupancyHistoryRecord; attempts: number }
  */
 export class BoundedOccupancyHistorySink {
   private readonly pending = new Map<string, PendingEntry>();
+  private readonly inFlightEntries = new Set<PendingEntry>();
   private readonly maxPendingRows: number;
   private readonly batchSize: number;
   private readonly maxAttempts: number;
@@ -59,14 +60,17 @@ export class BoundedOccupancyHistorySink {
         capacity: table.capacity, occupied: table.occupied, free: table.free, coverage: table.status,
       };
       const key = recordKey(record);
-      if (this.pending.has(key)) {
-        this.pending.set(key, { record, attempts: 0 });
+      const existing = this.pending.get(key);
+      if (existing) {
+        this.pending.set(key, { record, attempts: existing.attempts });
       } else {
-        if (this.pending.size >= this.maxPendingRows) {
-          const oldest = this.pending.keys().next().value as string | undefined;
-          if (oldest !== undefined) this.pending.delete(oldest);
-          this.droppedRows += 1;
-          accepted = false;
+        if (this.queuedRows() >= this.maxPendingRows) {
+          const oldest = [...this.pending.entries()].find(([, entry]) => !this.inFlightEntries.has(entry))?.[0];
+          if (oldest !== undefined) {
+            this.pending.delete(oldest);
+            this.droppedRows += 1;
+            accepted = false;
+          }
         }
         this.pending.set(key, { record, attempts: 0 });
       }
@@ -84,7 +88,7 @@ export class BoundedOccupancyHistorySink {
   }
 
   stats(): OccupancyHistorySinkStats {
-    return { queuedRows: this.pending.size, droppedRows: this.droppedRows, failedBatches: this.failedBatches, lastError: this.lastError };
+    return { queuedRows: this.queuedRows(), droppedRows: this.droppedRows, failedBatches: this.failedBatches, lastError: this.lastError };
   }
 
   async dispose(): Promise<void> {
@@ -97,13 +101,18 @@ export class BoundedOccupancyHistorySink {
 
   private async drain(): Promise<void> {
     while (!this.disposed && this.pending.size > 0) {
-      const entries = [...this.pending.entries()].slice(0, this.batchSize);
+      const entries = [...this.pending.entries()].filter(([, entry]) => !this.inFlightEntries.has(entry)).slice(0, this.batchSize);
+      if (entries.length === 0) return;
       const [keys, values] = [entries.map(([key]) => key), entries.map(([, value]) => value)] as const;
+      for (const [, entry] of entries) this.inFlightEntries.add(entry);
       try {
         await this.repository.writeBatch(values.map((entry) => entry.record));
         for (let index = 0; index < keys.length; index += 1) {
           const key = keys[index]!;
-          if (this.pending.get(key) === values[index]) this.pending.delete(key);
+          this.inFlightEntries.delete(values[index]!);
+          const current = this.pending.get(key);
+          if (current === values[index]) this.pending.delete(key);
+          else if (current) current.attempts = 0;
         }
         this.lastError = null;
       } catch (error) {
@@ -111,8 +120,9 @@ export class BoundedOccupancyHistorySink {
         this.lastError = error instanceof Error ? error.message : String(error);
         for (let index = 0; index < keys.length; index += 1) {
           const key = keys[index]!;
+          this.inFlightEntries.delete(values[index]!);
           const current = this.pending.get(key);
-          if (!current || current !== values[index]) continue;
+          if (!current) continue;
           current.attempts += 1;
           if (current.attempts >= this.maxAttempts) {
             this.pending.delete(key);
@@ -137,6 +147,10 @@ export class BoundedOccupancyHistorySink {
   private clearRetryTimer(): void {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+  }
+
+  private queuedRows(): number {
+    return [...this.pending.values()].filter((entry) => !this.inFlightEntries.has(entry)).length;
   }
 }
 
