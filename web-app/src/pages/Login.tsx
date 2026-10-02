@@ -3,8 +3,9 @@
  * over fetch and honours ?next=, so a student sent here from a page they
  * asked for lands back on it rather than the dashboard.
  */
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { Turnstile, turnstileOn, type TurnstileHandle } from '../Turnstile.tsx';
 
 /** Only a path on this site: never an absolute URL someone put in a link. */
 export function safeNext(raw: string | null): string {
@@ -15,6 +16,8 @@ export function safeNext(raw: string | null): string {
 export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [human, setHuman] = useState<string | null>(null);
+  const check = useRef<TurnstileHandle>(null);
   const next = safeNext(new URLSearchParams(location.search).get('next'));
 
   useEffect(() => {
@@ -30,16 +33,18 @@ export default function Login() {
       const res = await fetch('/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: form.get('email'), password: form.get('password'), next }),
+        body: JSON.stringify({ email: form.get('email'), password: form.get('password'), next, 'cf-turnstile-response': human }),
       });
       const body = (await res.json()) as { redirect?: string; error?: string };
       if (!res.ok) {
         setError(body.error ?? 'That UID and PIN do not match.');
+        check.current?.reset();   // the token was spent on this attempt
         return;
       }
       location.href = safeNext(body.redirect ?? next);
     } catch {
       setError('Could not reach the server. Try again.');
+      check.current?.reset();
     } finally {
       setBusy(false);
     }
@@ -87,7 +92,8 @@ export default function Login() {
               <input className="input" id="pin" name="password" type="password" placeholder="••••••••" autoComplete="current-password" required />
             </div>
           </div>
-          <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+          <Turnstile ref={check} action="login" onToken={setHuman} />
+          <button className="btn btn-primary" type="submit" disabled={busy || (turnstileOn && !human)}>{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>
         <div className="auth-links">
           <Link to={`/signup/?next=${encodeURIComponent(next)}`}>Create an account</Link>

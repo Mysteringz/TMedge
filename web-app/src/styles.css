@@ -311,3 +311,6 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
   .space .count { flex-direction: row; align-items: baseline; gap: 10px; text-align: left }
   .zoom { display: none }   /* pinch does this better on a touch screen */
 }
+
+/* Turnstile's iframe sizes itself; this only gives it room under the fields. */
+.turnstile { margin-top: 20px; min-height: 65px }

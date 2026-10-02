@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { searchSeats } from '../shared/seats.js';
-import { AuthError, parseCookies, RateLimiter, Sessions, UserStore } from './auth.js';
+import { AuthError, parseCookies, RateLimiter, Sessions, turnstileCheck, UserStore, type HumanCheck } from './auth.js';
 import { isSnapshot, SnapshotStore } from './store.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -42,6 +42,12 @@ export interface WebConfig {
    */
   trustProxy: boolean | string;
   staleMs: number;
+  /**
+   * Cloudflare Turnstile on sign-in and sign-up, or absent for none (the LAN,
+   * tests). The site key is public and goes to the browser; the secret only
+   * ever goes to siteverify. `check` replaces the call to Cloudflare in tests.
+   */
+  turnstile?: { siteKey: string; secretKey: string; hostnames: string[]; check?: HumanCheck } | null;
 }
 
 export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
@@ -60,7 +66,27 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
     cookieSecure: env.COOKIE_SECURE === '1',
     trustProxy: !env.TRUST_PROXY || env.TRUST_PROXY === '0' ? false : env.TRUST_PROXY === '1' ? true : env.TRUST_PROXY,
     staleMs: Number(env.STALE_MS || 30_000),
+    turnstile: loadTurnstile(env),
   };
+}
+
+/**
+ * Both keys or neither. One without the other is a half-made setup: a site key
+ * alone would draw a widget nobody checks, and a secret alone would refuse
+ * every student because the page has no widget to solve.
+ */
+function loadTurnstile(env: NodeJS.ProcessEnv): WebConfig['turnstile'] {
+  const siteKey = env.TURNSTILE_SITE_KEY?.trim() ?? '';
+  const secretKey = env.TURNSTILE_SECRET_KEY?.trim() ?? '';
+  if (!siteKey && !secretKey) return null;
+  if (!siteKey || !secretKey) throw new Error('set TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY together, or neither');
+  // The site key lands in an HTML attribute; keep it to what Cloudflare issues.
+  if (!/^[\w-]{8,100}$/.test(siteKey)) throw new Error('TURNSTILE_SITE_KEY does not look like a Turnstile site key');
+  // The pages a token may have been solved on. Without it every token would
+  // fail siteverify's hostname check, i.e. nobody could sign in: refuse now.
+  const hostnames = (env.TURNSTILE_HOSTNAMES ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (hostnames.length === 0) throw new Error('TURNSTILE_HOSTNAMES must list the site\'s hostnames, e.g. hkumyseat.com');
+  return { siteKey, secretKey, hostnames };
 }
 
 /**
@@ -115,7 +141,16 @@ export function createWebApp(cfg: WebConfig) {
   const loginLimiter = new RateLimiter(10, 5 * 60_000);
   const version = assetVersion();
   // One shell for every screen; the React app decides which one to draw.
-  const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8').replaceAll('{{v}}', version);
+  const turnstile = cfg.turnstile ?? null;
+  const isHuman = turnstile ? turnstile.check ?? turnstileCheck(turnstile.secretKey, turnstile.hostnames) : null;
+  // The shell tells the app whether to draw the widget: an empty key means off.
+  const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8')
+    .replaceAll('{{v}}', version)
+    .replaceAll('{{turnstile}}', turnstile?.siteKey ?? '');
+  // Turnstile is a script plus an iframe from Cloudflare. Allow exactly that
+  // origin, and only when it is switched on.
+  const cf = turnstile ? ' https://challenges.cloudflare.com' : '';
+  const csp = `default-src 'self'; script-src 'self'${cf}; frame-src${cf || " 'none'"}; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`;
 
   const app = express();
   app.disable('x-powered-by');
@@ -126,7 +161,7 @@ export function createWebApp(cfg: WebConfig) {
 
   app.use((_req, res, next) => {
     res.set({
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      'Content-Security-Policy': csp,
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'same-origin',
     });
@@ -158,6 +193,17 @@ export function createWebApp(cfg: WebConfig) {
     if (origin && new URL(origin).host !== req.get('host')) return res.status(403).json({ error: 'cross-origin post refused' });
     return next();
   };
+  /**
+   * Turnstile, after the limiter: the limiter costs nothing, so a flood is
+   * turned away before it makes us call Cloudflare once per request. The
+   * action ties the token to the form it was solved on.
+   */
+  const human = async (req: Request, action: string): Promise<boolean> => {
+    if (!isHuman) return true;
+    const token = (req.body as Record<string, unknown>)['cf-turnstile-response'];
+    return typeof token === 'string' && isHuman(token, action, req.ip);
+  };
+  const notHuman = { error: 'Please complete the verification and try again.' };
 
   app.get('/healthz', (_req, res) => res.json({ ok: true, edges: store.edges() }));
 
@@ -188,6 +234,7 @@ export function createWebApp(cfg: WebConfig) {
     const { email: raw = '', password = '', next } = req.body as Record<string, string>;
     const email = asEmail(raw, cfg.allowedDomains);
     if (!loginLimiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
+    if (!(await human(req, 'login'))) return res.status(403).json(notHuman);
     const user = await users.verify(email, password);
     if (!user) return res.status(401).json({ error: 'That UID and PIN do not match.' });
     setSession(req, res, user.email);
@@ -199,6 +246,7 @@ export function createWebApp(cfg: WebConfig) {
     const { email: raw = '', name = '', password = '', next } = req.body as Record<string, string>;
     const email = asEmail(raw, cfg.allowedDomains);
     if (!loginLimiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
+    if (!(await human(req, 'signup'))) return res.status(403).json(notHuman);
     try {
       const user = await users.create(email, name, password);
       setSession(req, res, user.email);
@@ -327,6 +375,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   }
   const { server, users } = createWebApp(cfg);
   server.listen(cfg.port, cfg.host, () => {
-    console.log(`[web] http://${cfg.host}:${cfg.port}  users=${users.size}  sign-up ${cfg.signupOpen ? `open to ${cfg.allowedDomains.join(', ')}` : 'closed'}`);
+    console.log(`[web] http://${cfg.host}:${cfg.port}  users=${users.size}  sign-up ${cfg.signupOpen ? `open to ${cfg.allowedDomains.join(', ')}` : 'closed'}  turnstile ${cfg.turnstile ? 'on' : 'off'}`);
   });
 }

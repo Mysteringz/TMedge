@@ -3,13 +3,16 @@
  * card on a plain field rather than the photographic split -- so nobody has
  * to read the heading to know the site changed screens.
  */
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { Turnstile, turnstileOn, type TurnstileHandle } from '../Turnstile.tsx';
 import { safeNext } from './Login.tsx';
 
 export default function Signup() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [human, setHuman] = useState<string | null>(null);
+  const check = useRef<TurnstileHandle>(null);
   const next = safeNext(new URLSearchParams(location.search).get('next'));
 
   useEffect(() => {
@@ -31,16 +34,19 @@ export default function Signup() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           email: form.get('email'), name: form.get('name'), password: form.get('password'), next,
+          'cf-turnstile-response': human,
         }),
       });
       const body = (await res.json()) as { redirect?: string; error?: string };
       if (!res.ok) {
         setError(body.error ?? 'That account could not be created.');
+        check.current?.reset();   // the token was spent on this attempt
         return;
       }
       location.href = safeNext(body.redirect ?? next);
     } catch {
       setError('Could not reach the server. Try again.');
+      check.current?.reset();
     } finally {
       setBusy(false);
     }
@@ -81,7 +87,8 @@ export default function Signup() {
               </div>
             </div>
           </div>
-          <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create account'}</button>
+          <Turnstile ref={check} action="signup" onToken={setHuman} />
+          <button className="btn btn-primary" type="submit" disabled={busy || (turnstileOn && !human)}>{busy ? 'Creating…' : 'Create account'}</button>
         </form>
         <hr className="hr" />
         <div className="signup-foot">
