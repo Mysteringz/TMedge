@@ -22,6 +22,7 @@ import {
 import type { FirmwareBuildJobRecord } from '../src/modules/firmware/repositories/firmware-build-job-repository.js';
 import { PostgresRolloutRepository } from '../src/infrastructure/postgres/rollout-repository.js';
 import type { RolloutRecord } from '../src/modules/rollouts/repositories/rollout-repository.js';
+import { PostgresCommandOutcomeRepository } from '../src/infrastructure/postgres/command-outcome-repository.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -29,6 +30,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790812800000-CreateRegistrationProvisioningAuditSchema.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790985600000-CreateFirmwareBuildPersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791072000000-CreateFirmwareRolloutPersistence.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791158400000-CreateCommandOutcomePersistence.js'),
 ];
 
 async function approveTransaction(
@@ -68,12 +70,13 @@ test('registration schema and provisioning repository enforce persistence invari
   let buildJobIds: string[] = [];
   let buildArtifactIds: string[] = [];
   let rolloutIds: string[] = [];
+  let commandIds: string[] = [];
 
   try {
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 4, 'foundation, registration, build, and rollout migrations all run');
+    assert.equal(appliedMigrations, 5, 'foundation, registration, build, rollout, and command migrations all run');
     assert.equal(
       (await migrator.query("SELECT to_regclass('public.tmedge_foundation_probe') AS table_name"))[0].table_name,
       'tmedge_foundation_probe',
@@ -469,12 +472,56 @@ test('registration schema and provisioning repository enforce persistence invari
     await runtime.query('DELETE FROM public.firmware_rollouts WHERE id = ANY($1::text[])', [rolloutIds]);
     rolloutIds = [];
 
+    const commandRepository = new PostgresCommandOutcomeRepository(runtime);
+    const commandId = randomUUID();
+    const ambiguousCommandId = randomUUID();
+    const failedCommandId = randomUUID();
+    commandIds = [commandId, ambiguousCommandId, failedCommandId];
+    const intent = {
+      id: commandId, nodeId: '30:ed:a0:cb:f5:f8', command: 'reboot',
+      actor: { id: 'operator', kind: 'console' as const }, outcome: 'requested' as const, at: 1_800_000_000_500,
+    };
+    await commandRepository.record(intent);
+    let dispatched = false;
+    await (async () => {
+      assert.deepEqual((await runtime.query(
+        'SELECT outcome, actor_id, actor_kind FROM public.command_outcomes WHERE command_id = $1', [commandId],
+      ))[0], { outcome: 'requested', actor_id: 'operator', actor_kind: 'console' },
+      'intent and actor are durable before dispatch is attempted');
+      dispatched = true;
+    })();
+    assert.equal(dispatched, true);
+    await commandRepository.record({ ...intent, outcome: 'sent', at: intent.at + 1 });
+    await commandRepository.record({ ...intent, outcome: 'acknowledged', at: intent.at + 2 });
+    await commandRepository.record({ ...intent, outcome: 'sent', at: intent.at + 1 });
+    assert.deepEqual(await runtime.query(
+      'SELECT outcome FROM public.command_outcomes WHERE command_id = $1 ORDER BY id', [commandId],
+    ), [{ outcome: 'requested' }, { outcome: 'sent' }, { outcome: 'acknowledged' }]);
+    await assert.rejects(commandRepository.record({ ...intent, outcome: 'sent', at: intent.at + 10 }), /Conflicting command outcome/);
+    assert.equal((await runtime.query('SELECT count(*)::int AS count FROM public.command_outcomes WHERE command_id = $1', [commandId]))[0].count, 3);
+    const ambiguous = { ...intent, id: ambiguousCommandId, command: 'set-param:occupancy-threshold' };
+    await commandRepository.record(ambiguous);
+    await commandRepository.record({ ...ambiguous, outcome: 'sent', at: intent.at + 1 });
+    await commandRepository.record({ ...ambiguous, outcome: 'timed-out', at: intent.at + 5 });
+    await commandRepository.record({ ...ambiguous, outcome: 'uncertain', at: intent.at + 6 });
+    assert.deepEqual(await runtime.query(
+      'SELECT outcome FROM public.command_outcomes WHERE command_id = $1 ORDER BY id', [ambiguousCommandId],
+    ), [{ outcome: 'requested' }, { outcome: 'sent' }, { outcome: 'timed-out' }, { outcome: 'uncertain' }]);
+    await assert.rejects(commandRepository.record({ ...intent, id: failedCommandId, command: '   ' }), /check constraint/i);
+    assert.equal((await runtime.query('SELECT count(*)::int AS count FROM public.command_outcomes WHERE command_id = $1', [failedCommandId]))[0].count, 0,
+      'failed intent persistence leaves no partial command row to dispatch');
+    await runtime.query('DELETE FROM public.command_outcomes WHERE command_id = ANY($1::text[])', [commandIds]);
+    commandIds = [];
+
     assert.deepEqual(await postgresAvailability(runtime), { available: true });
     await assert.rejects(
       runtime.query('CREATE TABLE public.tmedge_runtime_must_not_ddl (id integer)'),
       /permission denied/i,
     );
 
+    await migrator.undoLastMigration({ transaction: 'all' });
+    appliedMigrations -= 1;
+    assert.equal((await migrator.query("SELECT to_regclass('public.command_outcomes') AS table_name"))[0].table_name, null);
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
     assert.equal((await migrator.query("SELECT to_regclass('public.firmware_rollouts') AS table_name"))[0].table_name, null);
@@ -491,6 +538,9 @@ test('registration schema and provisioning repository enforce persistence invari
     await closePostgres(runtime);
     assert.equal(runtime.isInitialized, false, 'shutdown can be repeated safely');
   } finally {
+    if (runtime.isInitialized && commandIds.length > 0) {
+      await runtime.query('DELETE FROM public.command_outcomes WHERE command_id = ANY($1::text[])', [commandIds]).catch(() => undefined);
+    }
     if (runtime.isInitialized && rolloutIds.length > 0) {
       await runtime.query('DELETE FROM public.firmware_rollouts WHERE id = ANY($1::text[])', [rolloutIds]).catch(() => undefined);
     }
