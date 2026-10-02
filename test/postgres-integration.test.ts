@@ -12,6 +12,9 @@ import type {
   ProvisioningTransaction,
 } from '../src/modules/provisioning/repositories/provisioning-repository.js';
 import { PostgresProvisioningRepository } from '../src/infrastructure/postgres/provisioning-repository.js';
+import { PostgresRegistryRepository } from '../src/infrastructure/postgres/registry-repository.js';
+import { RegistrationImportExport } from '../src/modules/registration/application/registration-import-export.js';
+import { nodesJson, siteJson } from './fixtures.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -52,6 +55,7 @@ test('registration schema and provisioning repository enforce persistence invari
   const migrator = createPostgresDataSource(config.migrator, migrations);
   const runtime = await openPostgres(config.runtime);
   let appliedMigrations = 0;
+  let importedRegistryUids: string[] = [];
 
   try {
     await migrator.initialize();
@@ -303,6 +307,33 @@ test('registration schema and provisioning repository enforce persistence invari
       await runtime.query('DELETE FROM registered_nodes WHERE uid = ANY($1::text[])', [nodeUids]);
     }
 
+    const registryRepository = new PostgresRegistryRepository(runtime);
+    const importExport = new RegistrationImportExport(registryRepository);
+    const registrationFile = nodesJson();
+    importedRegistryUids = registrationFile.nodes.map((node, index) => {
+      const uid = `aa:bb:cc:dd:ee:${(index + 1).toString(16).padStart(2, '0')}`;
+      node.uid = uid;
+      return uid;
+    });
+    registrationFile.nodes.push({ uid: 'aa:bb:cc:dd:ee:fe', label: 'Unplaced integration identity', owns: [] });
+    importedRegistryUids.push('aa:bb:cc:dd:ee:fe');
+    const preview = await importExport.import(siteJson(), registrationFile, { dryRun: true });
+    assert.equal(preview.valid, true);
+    assert.equal(preview.insertable, importedRegistryUids.length);
+    assert.deepEqual(await registryRepository.listNodes(), []);
+    const importResult = await importExport.import(siteJson(), registrationFile);
+    assert.equal(importResult.inserted, importedRegistryUids.length);
+    const rerun = await importExport.import(siteJson(), registrationFile);
+    assert.equal(rerun.inserted, 0);
+    assert.equal(rerun.unchanged, importedRegistryUids.length);
+    const exported = await importExport.export(siteJson());
+    assert.equal(exported.nodes.length, importedRegistryUids.length);
+    const unplaced = exported.nodes.find((node) => node.uid === 'aa:bb:cc:dd:ee:fe');
+    assert.ok(unplaced);
+    assert.equal('floor' in unplaced, false);
+    assert.equal('pose' in unplaced, false);
+    assert.equal((await importExport.loadRegistry(siteJson())).nodes.size, importedRegistryUids.length);
+
     assert.deepEqual(await postgresAvailability(runtime), { available: true });
     await assert.rejects(
       runtime.query('CREATE TABLE public.tmedge_runtime_must_not_ddl (id integer)'),
@@ -319,6 +350,11 @@ test('registration schema and provisioning repository enforce persistence invari
     await closePostgres(runtime);
     assert.equal(runtime.isInitialized, false, 'shutdown can be repeated safely');
   } finally {
+    if (runtime.isInitialized && importedRegistryUids.length > 0) {
+      await runtime.query('DELETE FROM public.node_table_owners WHERE uid = ANY($1::text[])', [importedRegistryUids]).catch(() => undefined);
+      await runtime.query('DELETE FROM public.node_placements WHERE uid = ANY($1::text[])', [importedRegistryUids]).catch(() => undefined);
+      await runtime.query('DELETE FROM public.registered_nodes WHERE uid = ANY($1::text[])', [importedRegistryUids]).catch(() => undefined);
+    }
     await closePostgres(runtime);
     while (appliedMigrations > 0 && migrator.isInitialized) {
       await migrator.undoLastMigration({ transaction: 'all' }).catch(() => undefined);
