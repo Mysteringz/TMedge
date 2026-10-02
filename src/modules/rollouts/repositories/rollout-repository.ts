@@ -17,6 +17,8 @@ export interface RolloutNodeRecord {
   error?: string;
   startedAt: number | null;
   updatedAt: number;
+  /** True when a process restart interrupted this node's in-flight step. */
+  outcomeUncertain?: boolean;
 }
 
 export interface RolloutRecord {
@@ -28,6 +30,8 @@ export interface RolloutRecord {
   startedAt: number;
   finishedAt: number | null;
   stage: RolloutStage;
+  /** Kept separate from `stopped` so existing stage consumers remain compatible. */
+  recoveryState?: 'interrupted';
   note: string;
   nodes: RolloutNodeRecord[];
 }
@@ -37,4 +41,6 @@ export interface RolloutRepository {
   current(): Promise<RolloutRecord | null>;
   history(): Promise<RolloutRecord[]>;
   saveSnapshot(current: RolloutRecord | null, history: readonly RolloutRecord[]): Promise<void>;
+  /** Stops an active rollout during startup; this only records uncertainty and never dispatches. */
+  interruptActive(at: number): Promise<RolloutRecord | null>;
 }

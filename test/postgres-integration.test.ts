@@ -20,12 +20,15 @@ import {
   PostgresFirmwareBuildJobRepository,
 } from '../src/infrastructure/postgres/firmware-build-repositories.js';
 import type { FirmwareBuildJobRecord } from '../src/modules/firmware/repositories/firmware-build-job-repository.js';
+import { PostgresRolloutRepository } from '../src/infrastructure/postgres/rollout-repository.js';
+import type { RolloutRecord } from '../src/modules/rollouts/repositories/rollout-repository.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
   join(testDirectory, 'postgres-foundation-probe-migration.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790812800000-CreateRegistrationProvisioningAuditSchema.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790985600000-CreateFirmwareBuildPersistence.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791072000000-CreateFirmwareRolloutPersistence.js'),
 ];
 
 async function approveTransaction(
@@ -64,12 +67,13 @@ test('registration schema and provisioning repository enforce persistence invari
   let importedRegistryUids: string[] = [];
   let buildJobIds: string[] = [];
   let buildArtifactIds: string[] = [];
+  let rolloutIds: string[] = [];
 
   try {
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 3, 'foundation, registration, and build migrations all run');
+    assert.equal(appliedMigrations, 4, 'foundation, registration, build, and rollout migrations all run');
     assert.equal(
       (await migrator.query("SELECT to_regclass('public.tmedge_foundation_probe') AS table_name"))[0].table_name,
       'tmedge_foundation_probe',
@@ -414,12 +418,66 @@ test('registration schema and provisioning repository enforce persistence invari
     buildJobIds = [];
     buildArtifactIds = [];
 
+    const rolloutRepository = new PostgresRolloutRepository(runtime);
+    const rollout: RolloutRecord = {
+      id: randomUUID(), buildId: artifact.id, version: artifact.version,
+      target: { kind: 'all' }, startedBy: 'operator', startedAt: 1_800_000_000_300,
+      finishedAt: null, stage: 'pilot', note: 'Pilot first', nodes: [
+        { uid: '30:ed:a0:cc:dd:01', label: 'Pilot', floorId: 'iw-maker-a', gatewayId: null,
+          transport: 'direct', state: 'sending', percent: 55, startedAt: 1_800_000_000_310, updatedAt: 1_800_000_000_320 },
+        { uid: '30:ed:a0:cc:dd:02', label: 'Queued node', floorId: 'iw-maker-a', gatewayId: null,
+          transport: 'udp', state: 'queued', percent: 0, startedAt: null, updatedAt: 1_800_000_000_320 },
+      ],
+    };
+    rolloutIds = [rollout.id];
+    await rolloutRepository.saveSnapshot(rollout, []);
+    assert.deepEqual(await rolloutRepository.current(), rollout);
+    const badSnapshot: RolloutRecord = {
+      ...rollout, id: randomUUID(), stage: 'done', finishedAt: rollout.startedAt + 1,
+      nodes: [{ ...rollout.nodes[0]!, percent: 101 }],
+    };
+    const uncommittedUpdate = { ...rollout, note: 'must roll back' };
+    await assert.rejects(rolloutRepository.saveSnapshot(uncommittedUpdate, [uncommittedUpdate, badSnapshot]), /check constraint/i);
+    assert.equal((await rolloutRepository.current())?.note, rollout.note, 'failed snapshot rolls back every record in the transaction');
+    const updatedRollout: RolloutRecord = {
+      ...rollout, stage: 'rest', note: 'Pilot confirmed; batch in progress',
+      nodes: [
+        { ...rollout.nodes[0]!, state: 'confirmed', percent: 100 },
+        { ...rollout.nodes[1]!, state: 'sending', percent: 20 },
+      ],
+    };
+    await rolloutRepository.saveSnapshot(updatedRollout, []);
+    assert.deepEqual(await rolloutRepository.current(), updatedRollout, 'per-node state and pilot-first stage survive reads');
+    const interruptedRollout = await rolloutRepository.interruptActive(1_800_000_000_400);
+    assert.equal(interruptedRollout?.stage, 'stopped');
+    assert.equal(interruptedRollout?.recoveryState, 'interrupted');
+    assert.equal(interruptedRollout?.finishedAt, 1_800_000_000_400);
+    assert.equal(interruptedRollout?.nodes[0]?.state, 'confirmed');
+    assert.equal(interruptedRollout?.nodes[1]?.outcomeUncertain, true);
+    assert.match(interruptedRollout?.nodes[1]?.error ?? '', /uncertain after restart/);
+    assert.deepEqual(await runtime.query(
+      'SELECT state, outcome_uncertain FROM public.firmware_rollout_node_events WHERE rollout_id = $1 AND uid = $2 ORDER BY id',
+      [rollout.id, '30:ed:a0:cc:dd:02'],
+    ), [
+      { state: 'queued', outcome_uncertain: false },
+      { state: 'sending', outcome_uncertain: false },
+      { state: 'sending', outcome_uncertain: true },
+    ], 'per-node state transitions and restart uncertainty remain in append-only history');
+    assert.equal(await rolloutRepository.current(), null, 'interrupted rollout is not resumed as active');
+    assert.deepEqual(await rolloutRepository.history(), [interruptedRollout]);
+    assert.equal(await rolloutRepository.interruptActive(1_800_000_000_500), null, 'restart recovery does not dispatch or re-interrupt history');
+    await runtime.query('DELETE FROM public.firmware_rollouts WHERE id = ANY($1::text[])', [rolloutIds]);
+    rolloutIds = [];
+
     assert.deepEqual(await postgresAvailability(runtime), { available: true });
     await assert.rejects(
       runtime.query('CREATE TABLE public.tmedge_runtime_must_not_ddl (id integer)'),
       /permission denied/i,
     );
 
+    await migrator.undoLastMigration({ transaction: 'all' });
+    appliedMigrations -= 1;
+    assert.equal((await migrator.query("SELECT to_regclass('public.firmware_rollouts') AS table_name"))[0].table_name, null);
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
     assert.equal((await migrator.query("SELECT to_regclass('public.firmware_artifacts') AS table_name"))[0].table_name, null);
@@ -433,6 +491,9 @@ test('registration schema and provisioning repository enforce persistence invari
     await closePostgres(runtime);
     assert.equal(runtime.isInitialized, false, 'shutdown can be repeated safely');
   } finally {
+    if (runtime.isInitialized && rolloutIds.length > 0) {
+      await runtime.query('DELETE FROM public.firmware_rollouts WHERE id = ANY($1::text[])', [rolloutIds]).catch(() => undefined);
+    }
     if (runtime.isInitialized && buildJobIds.length > 0) {
       await runtime.query('DELETE FROM public.firmware_build_jobs WHERE id = ANY($1::text[])', [buildJobIds]).catch(() => undefined);
     }
