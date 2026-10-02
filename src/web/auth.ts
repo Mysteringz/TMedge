@@ -175,29 +175,49 @@ export function parseCookies(header: string | undefined): Record<string, string>
  */
 export type HumanCheck = (token: string, action: string, ip: string | undefined) => Promise<boolean>;
 
-export function turnstileCheck(secret: string, hostnames: string[], fetchImpl: typeof fetch = fetch): HumanCheck {
+/**
+ * Every refusal says why, in the server log. A student only sees "complete
+ * the verification", which is right for a bot and useless for an operator:
+ * the first production refusals came from TURNSTILE_HOSTNAMES naming the
+ * wrong host, and nothing anywhere said so. The token itself is never logged.
+ */
+export function turnstileCheck(
+  secret: string, hostnames: string[], fetchImpl: typeof fetch = fetch,
+  log: (msg: string) => void = (msg) => console.warn(`[web] turnstile refused: ${msg}`),
+): HumanCheck {
   const allowed = new Set(hostnames);
+  const refuse = (action: string, why: string) => {
+    log(`${action}: ${why}`);
+    return false;
+  };
   return async (token, action, ip) => {
     // Cloudflare's own limit; anything longer is not a token.
-    if (!token || token.length > 2048 || allowed.size === 0) return false;
+    if (!token || token.length > 2048) return refuse(action, 'no token, or not a token');
+    if (allowed.size === 0) return refuse(action, 'TURNSTILE_HOSTNAMES is empty');
     const form = new URLSearchParams({ secret, response: token });
     if (ip) form.set('remoteip', ip);
     try {
       const res = await fetchImpl('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
         method: 'POST', body: form, signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) return false;
+      if (!res.ok) return refuse(action, `siteverify answered HTTP ${res.status}`);
       const out = (await res.json()) as {
-        success?: unknown; action?: unknown; hostname?: unknown; metadata?: { result_with_testing_key?: unknown };
+        success?: unknown; action?: unknown; hostname?: unknown; 'error-codes'?: unknown;
+        metadata?: { result_with_testing_key?: unknown };
       };
-      if (out.success !== true) return false;
+      // Cloudflare's codes (invalid-input-secret, timeout-or-duplicate, ...) name the cause.
+      if (out.success !== true) return refuse(action, `siteverify said no (${JSON.stringify(out['error-codes'] ?? [])})`);
       // Cloudflare's published test keys (for running this locally) echo no
       // action and the hostname "example.com"; only a dummy secret produces
       // this flag, so it never relaxes production.
       if (out.metadata?.result_with_testing_key === true) return true;
-      return out.action === action && typeof out.hostname === 'string' && allowed.has(out.hostname);
-    } catch {
-      return false;
+      if (out.action !== action) return refuse(action, `token was solved for action ${JSON.stringify(out.action)}`);
+      if (typeof out.hostname !== 'string' || !allowed.has(out.hostname)) {
+        return refuse(action, `token was solved on ${JSON.stringify(out.hostname)}, TURNSTILE_HOSTNAMES allows ${[...allowed].join(', ')}`);
+      }
+      return true;
+    } catch (err) {
+      return refuse(action, `siteverify unreachable (${(err as Error).message})`);
     }
   };
 }
