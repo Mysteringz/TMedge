@@ -24,6 +24,14 @@ export interface NodeRegistration {
 
 /** The records changed together when a provisioning decision is committed. */
 export interface ProvisioningTransaction {
+  /** Lock the request row until this transaction finishes. */
+  findRequestForUpdate(requestId: string): Promise<ProvisioningRequestRecord | null>;
+  /** Serialize new requests so the global pending limit is preserved across processes. */
+  lockPendingQueue(): Promise<void>;
+  countPendingRequests(): Promise<number>;
+  findExpiredPendingRequestsForUpdate(at: number): Promise<ProvisioningRequestRecord[]>;
+  findPendingRequestByNodeUid(uid: string): Promise<ProvisioningRequestRecord | null>;
+  findNode(uid: string): Promise<NodeRegistration | null>;
   saveRequest(request: ProvisioningRequestRecord): Promise<void>;
   registerNode(node: NodeRegistration): Promise<void>;
   appendAudit(event: { actor: Actor; action: string; subjectId: string; at: number }): Promise<void>;
@@ -33,10 +41,11 @@ export type ProvisioningResolution =
   | { status: 'pending' | 'denied' | 'expired'; request: ProvisioningRequestRecord }
   | { status: 'approved'; request: ProvisioningRequestRecord; node: NodeRegistration };
 
-/** Repository owns each transaction and reconciles uncertain commits by stable request/node IDs. */
+/** Repository owns transactions and exposes stable-identity reconciliation for uncertain commits. */
 export interface ProvisioningRepository {
   findRequest(requestId: string): Promise<ProvisioningRequestRecord | null>;
   findRequestByNodeUid(uid: string): Promise<ProvisioningRequestRecord | null>;
+  listPendingRequests(): Promise<ProvisioningRequestRecord[]>;
   findNode(uid: string): Promise<NodeRegistration | null>;
   reconcile(requestId: string, uid: string): Promise<ProvisioningResolution | null>;
   transaction<T>(work: (transaction: ProvisioningTransaction) => Promise<T>): Promise<T>;

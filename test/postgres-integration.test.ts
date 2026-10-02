@@ -4,6 +4,14 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { loadPostgresConfig } from '../src/infrastructure/postgres/config.js';
 import { closePostgres, createPostgresDataSource, openPostgres, postgresAvailability } from '../src/infrastructure/postgres/data-source.js';
+import { randomUUID } from 'node:crypto';
+import type {
+  NodeRegistration,
+  ProvisioningRepository,
+  ProvisioningRequestRecord,
+  ProvisioningTransaction,
+} from '../src/modules/provisioning/repositories/provisioning-repository.js';
+import { PostgresProvisioningRepository } from '../src/infrastructure/postgres/provisioning-repository.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -11,7 +19,33 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790812800000-CreateRegistrationProvisioningAuditSchema.js'),
 ];
 
-test('registration, provisioning, and audit migrations enforce persistence invariants', {
+async function approveTransaction(
+  transaction: ProvisioningTransaction,
+  requestId: string,
+  actorId: string,
+): Promise<NodeRegistration> {
+  const request = await transaction.findRequestForUpdate(requestId);
+  assert.ok(request);
+  if (request.status === 'approved' && request.registeredUid === request.uid) {
+    const existing = await transaction.findNode(request.uid);
+    assert.ok(existing);
+    return existing;
+  }
+  assert.equal(request.status, 'pending');
+  const node: NodeRegistration = { uid: request.uid, label: request.label, floorId: null, pose: null, owns: [] };
+  const now = 1_800_000_000_000;
+  await transaction.registerNode(node);
+  await transaction.saveRequest({
+    ...request, status: 'approved', resolvedAt: now,
+    resolvedBy: { id: actorId, kind: 'console' }, registeredUid: request.uid,
+  });
+  await transaction.appendAudit({
+    actor: { id: actorId, kind: 'console' }, action: 'request.approved', subjectId: request.id, at: now,
+  });
+  return node;
+}
+
+test('registration schema and provisioning repository enforce persistence invariants', {
   skip: process.env.PG_INTEGRATION_TEST !== '1',
 }, async () => {
   const config = loadPostgresConfig();
@@ -143,6 +177,130 @@ test('registration, provisioning, and audit migrations enforce persistence invar
       throw error;
     } finally {
       await runner.release();
+    }
+
+    const repository = new PostgresProvisioningRepository(runtime);
+    const requestIds: string[] = [];
+    const nodeUids = ['30:ed:a0:cc:dd:01', '30:ed:a0:cc:dd:02', '30:ed:a0:cc:dd:03', '30:ed:a0:cc:dd:04'];
+    const makePending = async (uid: string, label: string, expiresAt = 1_900_000_000_000): Promise<ProvisioningRequestRecord> => {
+      const request: ProvisioningRequestRecord = {
+        id: randomUUID(), uid, label, firmware: null, requestedBy: 'integration-client',
+        requestedAt: 1_800_000_000_000, expiresAt, status: 'pending',
+        resolvedAt: null, resolvedBy: null, registeredUid: null,
+      };
+      requestIds.push(request.id);
+      await repository.transaction(async (transaction) => {
+        await transaction.lockPendingQueue();
+        assert.equal(await transaction.findPendingRequestByNodeUid(uid), null);
+        assert.equal(await transaction.countPendingRequests(), 0);
+        await transaction.saveRequest(request);
+        await transaction.appendAudit({
+          actor: { id: 'integration-client', kind: 'system' },
+          action: 'request.submitted', subjectId: request.id, at: request.requestedAt,
+        });
+      });
+      return request;
+    };
+    const approve = (requestId: string, actorId: string) =>
+      repository.transaction((transaction) => approveTransaction(transaction, requestId, actorId));
+
+    try {
+      const concurrent = await makePending(nodeUids[0]!, 'Concurrent approval');
+      assert.equal((await repository.findRequest(concurrent.id))?.uid, concurrent.uid);
+      assert.equal((await repository.findRequestByNodeUid(concurrent.uid))?.id, concurrent.id);
+      assert.ok((await repository.listPendingRequests()).some((request) => request.id === concurrent.id));
+      const [approvalA, approvalB] = await Promise.all([
+        approve(concurrent.id, 'operator-one'), approve(concurrent.id, 'operator-two'),
+      ]);
+      assert.deepEqual(approvalA, approvalB);
+      assert.deepEqual(await repository.findNode(concurrent.uid), approvalA);
+      assert.equal((await repository.reconcile(concurrent.id, concurrent.uid))?.status, 'approved');
+      assert.equal((await runtime.query(
+        "SELECT count(*)::int AS count FROM provisioning_audit_events WHERE subject_id = $1 AND action = 'request.approved'",
+        [concurrent.id],
+      ))[0].count, 1, 'concurrent approvals serialize and append one audit event');
+      assert.equal((await runtime.query('SELECT count(*)::int AS count FROM registered_nodes WHERE uid = $1', [concurrent.uid]))[0].count, 1);
+
+      const uncertain = await makePending(nodeUids[1]!, 'Uncertain commit');
+      let loseAcknowledgment = true;
+      const uncertainRepository = new Proxy(repository, {
+        get(target, property, receiver) {
+          if (property === 'transaction') {
+            return async (work: (transaction: ProvisioningTransaction) => Promise<unknown>) => {
+              const committed = await target.transaction(work);
+              if (loseAcknowledgment) {
+                loseAcknowledgment = false;
+                throw new Error('simulated lost commit acknowledgment');
+              }
+              return committed;
+            };
+          }
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }) as ProvisioningRepository;
+      await assert.rejects(uncertainRepository.transaction((transaction) => approveTransaction(transaction, uncertain.id, 'operator-one')),
+        /simulated lost commit acknowledgment/);
+      const reconciled = await repository.reconcile(uncertain.id, uncertain.uid);
+      assert.equal(reconciled?.status, 'approved');
+      assert.equal((await runtime.query(
+        "SELECT count(*)::int AS count FROM provisioning_audit_events WHERE subject_id = $1 AND action = 'request.approved'",
+        [uncertain.id],
+      ))[0].count, 1, 'reconciliation identifies the committed outcome without replaying the event');
+
+      const expiring = await makePending(nodeUids[2]!, 'Expired request', 1_800_000_000_001);
+      await repository.transaction(async (transaction) => {
+        const expiredRequests = await transaction.findExpiredPendingRequestsForUpdate(expiring.expiresAt);
+        assert.deepEqual(expiredRequests.map((request) => request.id), [expiring.id],
+          'the expiry selector returns only requests past their deadline');
+        const request = expiredRequests[0];
+        assert.ok(request);
+        const expired = {
+          ...request, status: 'expired' as const, resolvedAt: expiring.expiresAt,
+          resolvedBy: { id: 'provisioning-expiry', kind: 'system' as const },
+        };
+        await transaction.saveRequest(expired);
+        await transaction.appendAudit({
+          actor: expired.resolvedBy, action: 'request.expired', subjectId: request.id, at: expired.resolvedAt,
+        });
+      });
+      assert.equal((await repository.reconcile(expiring.id, expiring.uid))?.status, 'expired');
+      assert.equal((await runtime.query(
+        "SELECT count(*)::int AS count FROM provisioning_audit_events WHERE subject_id = $1 AND action = 'request.expired'",
+        [expiring.id],
+      ))[0].count, 1, 'expired request resolution has one audit event');
+
+      const rollback = await makePending(nodeUids[3]!, 'Rollback request');
+      await assert.rejects(repository.transaction(async (transaction) => {
+        const request = await transaction.findRequestForUpdate(rollback.id);
+        assert.ok(request);
+        await transaction.registerNode({ uid: request.uid, label: request.label, floorId: null, pose: null, owns: [] });
+        await transaction.saveRequest({
+          ...request, status: 'approved', resolvedAt: 1_800_000_000_000,
+          resolvedBy: { id: 'operator-one', kind: 'console' }, registeredUid: request.uid,
+        });
+        await transaction.appendAudit({
+          actor: { id: 'operator-one', kind: 'console' }, action: '', subjectId: request.id, at: 1_800_000_000_000,
+        });
+      }), (error: { driverError?: { code?: string } }) => error.driverError?.code === '23514');
+      assert.equal((await repository.findRequest(rollback.id))?.status, 'pending');
+      assert.equal(await repository.findNode(rollback.uid), null);
+      assert.equal((await runtime.query(
+        "SELECT count(*)::int AS count FROM provisioning_audit_events WHERE subject_id = $1 AND action = 'request.approved'",
+        [rollback.id],
+      ))[0].count, 0, 'audit failure rolled back both decision and registration');
+      await approve(rollback.id, 'operator-one');
+      assert.equal((await repository.findRequest(rollback.id))?.status, 'approved', 'rolled-back decision can be retried');
+      assert.equal((await runtime.query('SELECT count(*)::int AS count FROM registered_nodes WHERE uid = $1', [rollback.uid]))[0].count, 1,
+        'retry creates exactly one registered identity');
+      assert.equal((await runtime.query(
+        "SELECT count(*)::int AS count FROM provisioning_audit_events WHERE subject_id = $1 AND action = 'request.approved'",
+        [rollback.id],
+      ))[0].count, 1, 'retry creates exactly one approval audit event');
+    } finally {
+      await runtime.query('DELETE FROM provisioning_audit_events WHERE subject_id = ANY($1::text[])', [requestIds]);
+      await runtime.query('DELETE FROM provisioning_requests WHERE id = ANY($1::uuid[])', [requestIds]);
+      await runtime.query('DELETE FROM registered_nodes WHERE uid = ANY($1::text[])', [nodeUids]);
     }
 
     assert.deepEqual(await postgresAvailability(runtime), { available: true });
