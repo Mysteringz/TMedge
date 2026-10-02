@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
-import { Sessions } from '../src/web/auth.js';
-import { createWebApp } from '../src/web/main.js';
+import { Sessions, turnstileCheck } from '../src/web/auth.js';
+import { createWebApp, loadWebConfig } from '../src/web/main.js';
 import { SnapshotStore } from '../src/web/store.js';
 import { findGroup, searchSeats } from '../src/shared/seats.js';
 import type { OccupancySnapshot, TableState } from '../src/shared/types.js';
@@ -203,4 +203,95 @@ test('web behind Cloudflare Tunnel: the session cookie is Secure over https, and
   } finally {
     await new Promise<void>((r) => web.server.close(() => r()));
   }
+});
+
+test('with Turnstile on, sign-in and sign-up need a token Cloudflare accepted for that form', async () => {
+  const seen: { token: string; action: string }[] = [];
+  const web = createWebApp({
+    port: 0, host: '127.0.0.1', pushToken: TOKEN, sessionSecret: Buffer.from('s'.repeat(40)),
+    usersPath: join(mkdtempSync(join(tmpdir(), 'tmweb-')), 'users.json'),
+    allowedDomains: ['connect.hku.hk'], signupOpen: true, cookieSecure: false, trustProxy: false, staleMs: 30_000,
+    turnstile: {
+      siteKey: '0x4AAAAAAA-test-site', secretKey: 'secret-never-sent-to-browser', hostnames: ['hkumyseat.com'],
+      // Stands in for siteverify: a token is good only for the form it was solved on.
+      check: async (token, action) => { seen.push({ token, action }); return token === `ok-${action}`; },
+    },
+  });
+  await new Promise<void>((r) => web.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  const post = (path: string, body: Record<string, string>) => fetch(`${base}${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const account = { email: 'u3587219', name: 'T', password: 'a-long-enough-pin' };
+  try {
+    // The browser gets the public key and a CSP that lets Cloudflare's widget load -- never the secret.
+    const page = await fetch(`${base}/login/`);
+    const html = await page.text();
+    assert.match(html, /<meta name="turnstile" content="0x4AAAAAAA-test-site">/);
+    assert.ok(!html.includes('secret-never-sent-to-browser'));
+    assert.match(page.headers.get('content-security-policy') ?? '', /script-src 'self' https:\/\/challenges\.cloudflare\.com/);
+
+    assert.equal((await post('/signup', account)).status, 403, 'no token, no account');
+    assert.equal((await post('/signup', { ...account, 'cf-turnstile-response': 'ok-login' })).status, 403, 'a sign-in token does not open sign-up');
+    assert.equal(web.users.size, 0);
+    assert.equal((await post('/signup', { ...account, 'cf-turnstile-response': 'ok-signup' })).status, 200);
+
+    assert.equal((await post('/login', { email: account.email, password: account.password })).status, 403);
+    assert.equal((await post('/login', { email: account.email, password: account.password, 'cf-turnstile-response': 'forged' })).status, 403);
+    const ok = await post('/login', { email: account.email, password: account.password, 'cf-turnstile-response': 'ok-login' });
+    assert.equal(ok.status, 200);
+    assert.ok(ok.headers.get('set-cookie')?.startsWith('tm_session='));
+
+    // The limiter still runs first: a flood past it never costs a call to Cloudflare.
+    const before = seen.length;
+    let limited = 0;
+    for (let i = 0; i < 12; i++) if ((await post('/login', { email: account.email, password: 'x', 'cf-turnstile-response': 'ok-login' })).status === 429) limited++;
+    assert.ok(limited > 0);
+    assert.equal(seen.length - before, 12 - limited, 'refused-by-limiter requests are not verified');
+  } finally {
+    await new Promise<void>((r) => web.server.close(() => r()));
+  }
+});
+
+test('with Turnstile off, the shell carries no key and nothing may be framed in', async () => {
+  const w = await start();
+  try {
+    const page = await fetch(`${w.base}/login/`);
+    assert.match(await page.text(), /<meta name="turnstile" content="">/);
+    const csp = page.headers.get('content-security-policy') ?? '';
+    assert.ok(!csp.includes('cloudflare'));
+    assert.match(csp, /frame-src 'none'/);
+  } finally {
+    await w.close();
+  }
+});
+
+test('Turnstile config is both keys or neither', () => {
+  const base = { WEB_PUSH_TOKEN: TOKEN, SESSION_SECRET: 's'.repeat(40) };
+  assert.equal(loadWebConfig(base).turnstile, null);
+  assert.throws(() => loadWebConfig({ ...base, TURNSTILE_SITE_KEY: '0x4AAAAAAAtest' }), /together/);
+  assert.throws(() => loadWebConfig({ ...base, TURNSTILE_SECRET_KEY: 'x' }), /together/);
+  const keys = { TURNSTILE_SITE_KEY: '0x4AAAAAAAtest', TURNSTILE_SECRET_KEY: 'x' };
+  assert.throws(() => loadWebConfig({ ...base, ...keys, TURNSTILE_SITE_KEY: '"><script>', TURNSTILE_HOSTNAMES: 'hkumyseat.com' }), /site key/);
+  assert.throws(() => loadWebConfig({ ...base, ...keys }), /TURNSTILE_HOSTNAMES/, 'no hostnames would refuse every student');
+  const on = loadWebConfig({ ...base, ...keys, TURNSTILE_HOSTNAMES: 'hkumyseat.com, WWW.hkumyseat.com' }).turnstile;
+  assert.equal(on?.siteKey, '0x4AAAAAAAtest');
+  assert.deepEqual(on?.hostnames, ['hkumyseat.com', 'www.hkumyseat.com']);
+});
+
+test('turnstileCheck: only success for the same action on our own hostname passes, and an outage fails closed', async () => {
+  const reply = (body: unknown, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+  const check = (body: unknown, status = 200) => turnstileCheck('k', ['hkumyseat.com'], reply(body, status));
+  const good = { success: true, action: 'login', hostname: 'hkumyseat.com' };
+  assert.equal(await check(good)('t', 'login', '1.2.3.4'), true);
+  assert.equal(await check({ ...good, action: 'signup' })('t', 'login', undefined), false, 'solved on another form');
+  assert.equal(await check({ ...good, hostname: 'evil.example' })('t', 'login', undefined), false, 'our public site key embedded elsewhere');
+  assert.equal(await check({ ...good, success: false })('t', 'login', undefined), false);
+  assert.equal(await check({}, 500)('t', 'login', undefined), false);
+  assert.equal(await check({ success: true, hostname: 'example.com', metadata: { result_with_testing_key: true } })('t', 'login', undefined), true, "Cloudflare's dummy keys work locally");
+  assert.equal(await check({ success: true, hostname: 'hkumyseat.com' })('t', 'login', undefined), false, 'a real reply with no action does not');
+  assert.equal(await turnstileCheck('k', [], reply(good))('t', 'login', undefined), false, 'no allowlist, no pass');
+  const down = (async () => { throw new Error('unreachable'); }) as unknown as typeof fetch;
+  assert.equal(await turnstileCheck('k', ['hkumyseat.com'], down)('t', 'login', undefined), false);
+  assert.equal(await check(good)('', 'login', undefined), false);
 });

@@ -161,3 +161,43 @@ export function parseCookies(header: string | undefined): Record<string, string>
   }
   return out;
 }
+
+/**
+ * Asks Cloudflare whether a Turnstile token came from a person. Returns true
+ * only for a token that siteverify accepts *for this form on this site*: a
+ * token solved on the sign-up page is not reusable for a sign-in, one solved
+ * on another hostname is refused (the site key is public, so anyone can embed
+ * it), and a token is single-use, so a replay fails on Cloudflare's side.
+ *
+ * Fails closed. The site is served through a Cloudflare Tunnel, so when
+ * siteverify is unreachable students cannot reach us anyway; an attacker who
+ * can make the check time out must not get a free pass for it.
+ */
+export type HumanCheck = (token: string, action: string, ip: string | undefined) => Promise<boolean>;
+
+export function turnstileCheck(secret: string, hostnames: string[], fetchImpl: typeof fetch = fetch): HumanCheck {
+  const allowed = new Set(hostnames);
+  return async (token, action, ip) => {
+    // Cloudflare's own limit; anything longer is not a token.
+    if (!token || token.length > 2048 || allowed.size === 0) return false;
+    const form = new URLSearchParams({ secret, response: token });
+    if (ip) form.set('remoteip', ip);
+    try {
+      const res = await fetchImpl('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+        method: 'POST', body: form, signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return false;
+      const out = (await res.json()) as {
+        success?: unknown; action?: unknown; hostname?: unknown; metadata?: { result_with_testing_key?: unknown };
+      };
+      if (out.success !== true) return false;
+      // Cloudflare's published test keys (for running this locally) echo no
+      // action and the hostname "example.com"; only a dummy secret produces
+      // this flag, so it never relaxes production.
+      if (out.metadata?.result_with_testing_key === true) return true;
+      return out.action === action && typeof out.hostname === 'string' && allowed.has(out.hostname);
+    } catch {
+      return false;
+    }
+  };
+}
