@@ -13,12 +13,22 @@ ARTIFACT_DIR="${ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/tmedge-db-rehearsal.X
 DUMP="$ARTIFACT_DIR/source.dump"
 LOG="$ARTIFACT_DIR/rehearsal.log"
 RESTORE_CREATED=0
+PREVIOUS_RELEASE_DIR=""
+PREVIOUS_RELEASE_PID=""
+PREVIOUS_RELEASE_REVISION="${PREVIOUS_DB_AWARE_REVISION:-32d64b0}"
 
 mkdir -p "$ARTIFACT_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
   local exit_code=$?
+  if [[ -n "$PREVIOUS_RELEASE_PID" ]]; then
+    kill -TERM "$PREVIOUS_RELEASE_PID" 2>/dev/null || true
+    wait "$PREVIOUS_RELEASE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$PREVIOUS_RELEASE_DIR" ]]; then
+    rm -rf "$PREVIOUS_RELEASE_DIR"
+  fi
   if [[ -n "$CONTAINER" ]]; then
     docker exec "$CONTAINER" psql -U tmedge_admin -d tmedge_test -v ON_ERROR_STOP=1 -c \
       "DELETE FROM public.occupancy_history WHERE edge_id IN ('release-${RUN_ID}', 'load-${RUN_ID}');
@@ -104,6 +114,70 @@ test "$(docker exec "$CONTAINER" psql -U tmedge_admin -d tmedge_test -At -v ON_E
   "SELECT count(*) FROM public.registered_nodes WHERE uid = '${RECONCILED_UID}'")" = 1
 export NODES_EXPORT_PATH="$ARTIFACT_DIR/registrations.json"
 (cd "$ROOT" && npm run db:registry:export)
+
+echo "Testing prior DB-aware application revision $PREVIOUS_RELEASE_REVISION against the expanded schema."
+git -C "$ROOT" cat-file -e "${PREVIOUS_RELEASE_REVISION}^{commit}"
+PREVIOUS_RELEASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tmedge-prior-db-release.XXXXXX")"
+git -C "$ROOT" archive "$PREVIOUS_RELEASE_REVISION" | tar -x -C "$PREVIOUS_RELEASE_DIR"
+ln -s "$ROOT/node_modules" "$PREVIOUS_RELEASE_DIR/node_modules"
+cat > "$PREVIOUS_RELEASE_DIR/tsconfig.release.json" <<'JSON'
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/shared", "src/edge", "src/algo", "src/web", "src/tools", "src/modules", "src/infrastructure"]
+}
+JSON
+(cd "$PREVIOUS_RELEASE_DIR" && ./node_modules/.bin/tsc -p tsconfig.release.json)
+rollback_state() {
+  docker exec "$CONTAINER" psql -U tmedge_admin -d tmedge_test -At -v ON_ERROR_STOP=1 -c \
+    "SELECT 'registrations=' || count(*) FROM public.registered_nodes WHERE uid IN ('${NODE_UID}', '${RECONCILED_UID}');
+     SELECT 'jobs=' || count(*) FROM public.firmware_build_jobs WHERE id = 'job-${RUN_ID}';
+     SELECT 'audit=' || count(*) FROM public.provisioning_audit_events WHERE subject_id = 'release-${RUN_ID}';
+     SELECT 'history=' || count(*) FROM public.occupancy_history WHERE edge_id = 'release-${RUN_ID}';
+     SELECT 'history-load=' || count(*) FROM public.occupancy_history WHERE edge_id = 'load-${RUN_ID}';
+     SELECT 'rollouts=' || count(*) FROM public.firmware_rollouts WHERE id = 'roll-${RUN_ID}';
+     SELECT 'commands=' || count(*) FROM public.command_outcomes WHERE command_id = 'release-${RUN_ID}';"
+}
+rollback_state > "$ARTIFACT_DIR/pre-rollback-counts.txt"
+read -r ROLLBACK_CONSOLE_PORT ROLLBACK_UDP_PORT < <(python3 - <<'PY'
+import socket
+sockets = []
+try:
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        sock = socket.socket(socket.AF_INET, kind)
+        sock.bind(('127.0.0.1', 0))
+        sockets.append(sock)
+    print(sockets[0].getsockname()[1], sockets[1].getsockname()[1])
+finally:
+    for sock in sockets:
+        sock.close()
+PY
+)
+ROLLBACK_LOG="$ARTIFACT_DIR/previous-release.log"
+env PERSISTENCE_MODE=postgres SITE_CONFIG="$ROOT/config/site.json" NODES_CONFIG="$ROOT/config/nodes.json" \
+  UDP_HOST=127.0.0.1 UDP_PORT="$ROLLBACK_UDP_PORT" CONSOLE_HOST=127.0.0.1 CONSOLE_PORT="$ROLLBACK_CONSOLE_PORT" \
+  ALGO_PORT=0 GATEWAY_PORT=0 NODE_PORT=0 WEB_PUSH_URLS= PUBLISH_MS=60000 ALLOW_UNSIGNED=1 \
+  EDGE_ID="rollback-${RUN_ID}" DATA_DIR="$ARTIFACT_DIR/previous-release-data" \
+  node "$PREVIOUS_RELEASE_DIR/dist/src/edge/main.js" > "$ROLLBACK_LOG" 2>&1 &
+PREVIOUS_RELEASE_PID=$!
+rollback_ready=0
+for _ in $(seq 1 30); do
+  if curl --fail --silent "http://127.0.0.1:${ROLLBACK_CONSOLE_PORT}/api/layout" > "$ARTIFACT_DIR/previous-release-layout.json" \
+    && grep -q "$RECONCILED_UID" "$ARTIFACT_DIR/previous-release-layout.json"; then
+    rollback_ready=1
+    break
+  fi
+  if ! kill -0 "$PREVIOUS_RELEASE_PID" 2>/dev/null; then break; fi
+  sleep 0.5
+done
+cat "$ROLLBACK_LOG"
+test "$rollback_ready" = 1
+kill -TERM "$PREVIOUS_RELEASE_PID"
+wait "$PREVIOUS_RELEASE_PID" || true
+PREVIOUS_RELEASE_PID=""
+rollback_state > "$ARTIFACT_DIR/post-rollback-counts.txt"
+diff -u "$ARTIFACT_DIR/pre-rollback-counts.txt" "$ARTIFACT_DIR/post-rollback-counts.txt"
+printf 'previous_revision=%s\nexpanded_schema_startup=PASS\nregistry_read=PASS\ncommitted_rows_preserved=PASS\n' \
+  "$(git -C "$ROOT" rev-parse --short "$PREVIOUS_RELEASE_REVISION")" | tee "$ARTIFACT_DIR/rollback-compatibility.txt"
 
 echo 'Taking a custom-format backup from the disposable source database.'
 echo 'Generating 10,000 synthetic minute-history rows to sample local DB write and storage pressure.'

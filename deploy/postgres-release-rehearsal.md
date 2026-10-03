@@ -31,6 +31,26 @@ the reviewed export, and verifies the acknowledged node is present before
 backup. This exercises reconciliation mechanics with synthetic local data; it
 does not execute a prior release binary or prove compatibility of one.
 
+Before backup, the script also builds and starts the prior DB-aware application
+revision from commit `32d64b0` (override with
+`PREVIOUS_DB_AWARE_REVISION`). It runs only against the expanded disposable
+schema and loopback ports. The rehearsal checks that `/api/layout` reads the
+post-export registration and compares the seeded registration, job, audit,
+history, rollout and command row counts before and after the old process runs.
+This validates rollback to the committed Task 4.5 source revision; it is not a
+signed or previously deployed production binary. The source export, process
+log, layout response and before/after row counts are retained with the run
+artifacts.
+
+## Operational references
+
+- [TypeORM migrations](https://typeorm.io/docs/migrations/why/) and [migration setup](https://typeorm.io/docs/migrations/setup/)
+- [PostgreSQL backup and restore](https://www.postgresql.org/docs/current/backup.html) and [`pg_dump`](https://www.postgresql.org/docs/17/app-pgdump.html)
+- [Docker container resource constraints](https://docs.docker.com/engine/containers/resource_constraints/) and [container security](https://docs.docker.com/engine/security/)
+
+The Context7 MCP server was unavailable for this rehearsal; these direct vendor
+references support the migration, backup, and worker-isolation notes above.
+
 To retain evidence at a chosen location:
 
 ```sh
@@ -66,13 +86,14 @@ migrator credentials, `synchronize` and automatic migrations remain disabled.
    migration. Never reverse a migration that can delete committed operational
    data as an application rollback action.
 
-The current branch has no committed PostgreSQL-compatible release before the
-uncommitted Task 4.5 cutover wiring. The rehearsal verifies that the expanded
-schema and committed data survive a separate restore and that the earlier
-registration repository contract reads the restored registry. It does not
-claim to have executed a prior PostgreSQL-aware application binary. Before a
-real cutover, land and identify a DB-compatible rollback release and run that
-binary against the expanded schema.
+Commit `32d64b0` is the prior DB-aware Task 4.5 application source checkpoint.
+The rehearsal builds that exact commit and starts it against the expanded
+schema; it reads the reconciled registration and leaves the seeded durable row
+counts unchanged. This validates code rollback to that committed source
+revision. It is not a signed or previously deployed production binary. Before
+a real cutover, identify the exact DB-compatible release artifact intended for
+rollback and rehearse that artifact against the expanded schema. A JSON-only
+release still cannot resume authority after cutover.
 
 ## Capacity and isolation notes
 
