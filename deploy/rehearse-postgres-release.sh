@@ -6,6 +6,7 @@ COMPOSE="$ROOT/docker-compose.postgres-test.yml"
 RUN_ID="$(date -u +%Y%m%d%H%M%S)_$$"
 UID_TAIL="$(printf '%06x' "$(( $(date +%s) ^ $$ ))")"
 NODE_UID="02:00:00:${UID_TAIL:0:2}:${UID_TAIL:2:2}:${UID_TAIL:4:2}"
+RECONCILED_UID="03:00:00:${UID_TAIL:0:2}:${UID_TAIL:2:2}:${UID_TAIL:4:2}"
 RESTORE_DB="release_restore_${RUN_ID}"
 CONTAINER="$(docker compose -f "$COMPOSE" ps -q postgres-test)"
 ARTIFACT_DIR="${ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/tmedge-db-rehearsal.XXXXXX")}"
@@ -27,7 +28,7 @@ cleanup() {
        DELETE FROM public.firmware_rollouts WHERE id = 'roll-${RUN_ID}';
        DELETE FROM public.firmware_build_jobs WHERE id = 'job-${RUN_ID}';
        DELETE FROM public.provisioning_audit_events WHERE subject_id = 'release-${RUN_ID}';
-       DELETE FROM public.registered_nodes WHERE uid = '${NODE_UID}';" || true
+       DELETE FROM public.registered_nodes WHERE uid IN ('${NODE_UID}', '${RECONCILED_UID}');" || true
     if [[ "$RESTORE_CREATED" == 1 ]]; then
       docker exec "$CONTAINER" dropdb -U tmedge_admin --if-exists "$RESTORE_DB" || true
     fi
@@ -77,6 +78,33 @@ echo 'Exporting the PostgreSQL registry and running a non-mutating import previe
 (cd "$ROOT" && npm run db:registry:export)
 (cd "$ROOT" && npm run db:registry:import -- "$NODES_EXPORT_PATH")
 
+echo 'Simulating a registration acknowledged by the file-backed release after its recovery export.'
+cp "$NODES_EXPORT_PATH" "$ARTIFACT_DIR/pre-cutover-registrations.json"
+python3 - "$NODES_EXPORT_PATH" "$RECONCILED_UID" <<'PY'
+import json, sys
+path, uid = sys.argv[1:]
+with open(path, encoding='utf-8') as source:
+    registry = json.load(source)
+registry['nodes'].append({
+    'uid': uid, 'label': 'acknowledged-after-export', 'owns': [], 'simulated': False, 'rgb': False,
+})
+with open(path, 'w', encoding='utf-8') as output:
+    json.dump(registry, output, indent=2)
+    output.write('\n')
+PY
+PREVIEW="$ARTIFACT_DIR/reconciliation-preview.json"
+(cd "$ROOT" && npm run db:registry:import -- "$NODES_EXPORT_PATH") | tee "$PREVIEW"
+grep -q '"insertable": 1' "$PREVIEW"
+test "$(docker exec "$CONTAINER" psql -U tmedge_admin -d tmedge_test -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM public.registered_nodes WHERE uid = '${RECONCILED_UID}'")" = 0
+echo 'Applying the reviewed recovery export to reconcile that acknowledged write, then exporting the reconciled DB state.'
+(cd "$ROOT" && npm run db:registry:import -- "$NODES_EXPORT_PATH" --apply) | tee "$ARTIFACT_DIR/reconciliation-apply.json"
+grep -q '"inserted": 1' "$ARTIFACT_DIR/reconciliation-apply.json"
+test "$(docker exec "$CONTAINER" psql -U tmedge_admin -d tmedge_test -At -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*) FROM public.registered_nodes WHERE uid = '${RECONCILED_UID}'")" = 1
+export NODES_EXPORT_PATH="$ARTIFACT_DIR/registrations.json"
+(cd "$ROOT" && npm run db:registry:export)
+
 echo 'Taking a custom-format backup from the disposable source database.'
 echo 'Generating 10,000 synthetic minute-history rows to sample local DB write and storage pressure.'
 LOAD_SQL="WITH bucket AS (SELECT date_trunc('minute', now()) AS minute_at)
@@ -106,7 +134,7 @@ export PGDATABASE=tmedge_test
 
 counts() {
   docker exec "$CONTAINER" psql -U tmedge_admin -d "$1" -At -v ON_ERROR_STOP=1 -c \
-    "SELECT 'registrations=' || count(*) FROM public.registered_nodes WHERE uid = '${NODE_UID}';
+    "SELECT 'registrations=' || count(*) FROM public.registered_nodes WHERE uid IN ('${NODE_UID}', '${RECONCILED_UID}');
      SELECT 'jobs=' || count(*) FROM public.firmware_build_jobs WHERE id = 'job-${RUN_ID}';
      SELECT 'audit=' || count(*) FROM public.provisioning_audit_events WHERE subject_id = 'release-${RUN_ID}';
      SELECT 'history=' || count(*) FROM public.occupancy_history WHERE edge_id = 'release-${RUN_ID}';

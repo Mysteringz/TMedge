@@ -24,6 +24,13 @@ the application repository, and runs a second non-mutating import preview.
 It also inserts 10,000 synthetic minute-history rows and writes a 10,000-line
 synthetic recording sample for local resource/storage observations.
 
+The script also simulates a file-backed release acknowledging a registration
+after its recovery export: it appends that synthetic node to a copy of the
+export, proves dry-run reports one insert without changing PostgreSQL, applies
+the reviewed export, and verifies the acknowledged node is present before
+backup. This exercises reconciliation mechanics with synthetic local data; it
+does not execute a prior release binary or prove compatibility of one.
+
 To retain evidence at a chosen location:
 
 ```sh
