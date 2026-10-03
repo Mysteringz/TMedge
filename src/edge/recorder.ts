@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import type { OccupancySnapshot } from '../shared/types.js';
 import type { RecorderHealth, RecordingHealthProvider, RecordingStreamHealth } from '../modules/recordings/repositories/recording-lifecycle.js';
+import { operationalLog } from '../shared/logging/operational-logger.js';
 import type { Raw, Report } from './protocol.js';
 
 export const DEFAULT_RECORDING_QUEUE_BYTES = 1_048_576;
@@ -155,6 +156,7 @@ export class DailyLog {
     this.processing = false;
     this.writeErrors += 1;
     this.lastError = error.message;
+    operationalLog('recording.write_failed', { component: 'recorder', outcome: 'failed', count: 1 });
     this.droppedRecords += this.queue.length;
     this.queue.length = 0;
     this.queuedBytes = 0;

@@ -31,6 +31,7 @@ import { ResetNodeCursor } from '../modules/nodes/application/reset-node-cursor.
 import { createNodeRouter } from '../modules/nodes/routes/node-router.js';
 import { ConsoleWebSocketAdapter } from '../modules/console-live/console-websocket-adapter.js';
 import { FirmwareBuildWorkerClient } from '../infrastructure/firmware-build/firmware-build-worker-client.js';
+import { asyncHandler } from '../infrastructure/http/errors.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const consoleCleanups = new WeakMap<Server, () => Promise<void>>();
@@ -124,6 +125,34 @@ export function startConsole(rt: EdgeRuntime, options: {
   }));
 
   app.get('/api/layout', (_req, res) => res.json(rt.layout()));
+  app.get('/healthz', (_req, res) => res.status(200).json({ live: true }));
+  app.get('/readyz', asyncHandler(async (_req, res) => {
+    const persistenceAvailable = rt.persistenceAvailable ? await rt.persistenceAvailable().catch(() => false) : null;
+    const buildStatus = firmwareBuildJobs.operationalStatus
+      ? await firmwareBuildJobs.operationalStatus().catch(() => ({ unavailable: true }))
+      : null;
+    return res.status(200).json({
+      live: true,
+      ready: rt.isStarted,
+      components: {
+        ingestion: { ready: rt.isStarted, packetsPerSec: rt.ingest.rates().packetsPerSec },
+        snapshotPublishing: {
+          targets: rt.publisher.status,
+          lastSnapshotAt: rt.latest.generatedAt,
+          ageMs: Math.max(0, Date.now() - rt.latest.generatedAt),
+          freshness: Date.now() - rt.latest.generatedAt <= 2 * rt.cfg.publishMs ? 'current' : 'stale',
+        },
+        persistence: {
+          mode: rt.cfg.persistenceMode,
+          available: persistenceAvailable,
+          adminWritesAvailable: persistenceAvailable === false ? false : true,
+        },
+        recording: rt.recorder.health(),
+        occupancyHistory: rt.occupancyHistory?.stats() ?? null,
+        firmwareBuilds: buildStatus,
+      },
+    });
+  }));
   app.get('/api/state', (_req, res) => res.json(state(rt)));
   const mutating = (req: Request, res: Response, next: NextFunction) => {
     if (req.get('x-tm-console') !== '1') return res.status(403).json({ error: 'missing x-tm-console header' });

@@ -18,7 +18,7 @@ import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { FirmwareBuildJobs } from '../src/modules/firmware/application/firmware-build-jobs.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
 
-function runtime() {
+function runtime(persistenceAvailable?: () => Promise<boolean>) {
   const cfg: EdgeConfig = {
     edgeId: 'test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1',
     sitePath: '', nodesPath: '', persistenceMode: 'file', postgres: null,
@@ -27,7 +27,7 @@ function runtime() {
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
-  return createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
+  return createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()), undefined, { persistenceAvailable });
 }
 
 const frame = (uid: string) => ({ uid, frame: 1, tMin: 20, step: 0.05, pixels: Array(768).fill(120), receivedAt: Date.now() });
@@ -70,6 +70,34 @@ test('a console sees raw frames from every node it asks for, well past a site fu
   }
 });
 
+test('readiness keeps ingestion ready while PostgreSQL admin writes degrade and recover', async () => {
+  let databaseUp = true;
+  const rt = runtime(async () => databaseUp);
+  rt.start();
+  const server = startConsole(rt);
+  await new Promise<void>((resolve) => server.listening ? resolve() : server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const authorization = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
+  try {
+    databaseUp = false;
+    const outage = await (await fetch(`${base}/readyz`, { headers: { authorization } })).json() as {
+      ready: boolean; components: { ingestion: { ready: boolean }; persistence: { available: boolean; adminWritesAvailable: boolean } };
+    };
+    assert.equal(outage.ready, true);
+    assert.equal(outage.components.ingestion.ready, true);
+    assert.equal(outage.components.persistence.available, false);
+    assert.equal(outage.components.persistence.adminWritesAvailable, false);
+    databaseUp = true;
+    const recovered = await (await fetch(`${base}/readyz`, { headers: { authorization } })).json() as {
+      components: { persistence: { available: boolean; adminWritesAvailable: boolean } };
+    };
+    assert.deepEqual(recovered.components.persistence, { mode: 'file', available: true, adminWritesAvailable: true });
+  } finally {
+    server.close();
+    await rt.stop();
+  }
+});
+
 test('a console is never sent frames from a node it did not ask for', async () => {
   const rt = runtime();
   const server = startConsole(rt);
@@ -103,6 +131,28 @@ test('console WebSocket lifecycle removes runtime listeners on repeated server c
     assert.equal(rt.listenerCount('report'), 0);
     assert.equal(rt.listenerCount('raw'), 0);
     assert.equal(rt.listenerCount('rgb'), 0);
+    await rt.stop();
+  }
+});
+
+test('liveness and readiness probes are additive and report persistence separately', async () => {
+  const rt = runtime();
+  const server = startConsole(rt);
+  await new Promise<void>((resolve) => server.listening ? resolve() : server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const authorization = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
+  try {
+    const live = await fetch(`${base}/healthz`, { headers: { authorization } });
+    assert.equal(live.status, 200);
+    assert.deepEqual(await live.json(), { live: true });
+    const ready = await fetch(`${base}/readyz`, { headers: { authorization } });
+    assert.equal(ready.status, 200);
+    const body = await ready.json() as { live: boolean; ready: boolean; components: { persistence: { available: boolean | null; adminWritesAvailable: boolean } } };
+    assert.equal(body.live, true);
+    assert.equal(body.ready, false, 'listeners have not started in this isolated console test');
+    assert.deepEqual(body.components.persistence, { mode: 'file', available: null, adminWritesAvailable: true });
+  } finally {
+    server.close();
     await rt.stop();
   }
 });
