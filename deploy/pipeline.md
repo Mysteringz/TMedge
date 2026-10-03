@@ -154,11 +154,21 @@ TMFLASH_TOKEN=<32+ random chars>          # what TMflash presents
 NODES_CONFIG=/opt/tmedge-shared/nodes.json
 ```
 
-`NODES_CONFIG` is not optional once the token is set. Approving a node
-appends to that file, and a release's own `config/nodes.json` is replaced on
-the next deploy — every node admitted since would go with it. The edge
-refuses to start rather than let that happen silently, so a missing or
-unwritable path is a startup error, not a surprise next Thursday.
+In legacy file mode (`PERSISTENCE_MODE=file`, the default), `NODES_CONFIG` is
+required once the token is set. Approving a node appends to that file, and a
+release's own `config/nodes.json` is replaced on the next deploy — every node
+admitted since would go with it. The edge refuses to start rather than let that
+happen silently, so a missing or unwritable path is a startup error, not a
+surprise next Thursday.
+
+After a separately rehearsed JSON import and explicit database cutover, set
+`PERSISTENCE_MODE=postgres` and provide `PGHOST`, `PGPORT`, `PGDATABASE`,
+`PG_RUNTIME_USER`, and `PG_RUNTIME_PASSWORD` in the protected environment file.
+The runtime account uses the runtime role; schema migrations use the separate
+`PG_MIGRATION_USER` and `PG_MIGRATION_PASSWORD` credentials through the
+migration command. In PostgreSQL mode startup requires a successful validated
+registry load and never reads or writes `NODES_CONFIG`. Do not switch this
+setting until import validation, backup, restore, and rollback rehearsals pass.
 
 `deploy.sh` seeds `/opt/tmedge-shared/nodes.json` from the release the first
 time it runs after this change. The file must be owned by the account the

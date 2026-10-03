@@ -47,7 +47,7 @@ test('enqueue does not wait for database I/O and queue size stays bounded', asyn
   assert.equal(sink.enqueue(snapshot(1_800_000_000_001)), true);
   assert.equal(repository.batches.length, 1, 'the async write started without awaiting it');
   assert.equal(sink.enqueue(snapshot(1_800_000_060_001, 1)), true, 'the bounded pending queue accepts the next minute during an in-flight batch');
-  assert.deepEqual(sink.stats(), { queuedRows: 2, droppedRows: 0, failedBatches: 0, lastError: null },
+  assert.deepEqual(sink.stats(), { queuedRows: 2, droppedRows: 0, failedBatches: 0, lastError: null, lastSuccessfulWriteAt: null },
     'a successful in-flight write is not reported as dropped');
   repository.release();
   await sink.flush();
@@ -105,7 +105,7 @@ test('failed batches retry a bounded number of times and expose dropped rows', a
   assert.equal(sink.stats().queuedRows, 2);
   await sink.flush();
   assert.equal(attempts, 2);
-  assert.deepEqual(sink.stats(), { queuedRows: 0, droppedRows: 2, failedBatches: 2, lastError: 'database unavailable' });
+  assert.deepEqual(sink.stats(), { queuedRows: 0, droppedRows: 2, failedBatches: 2, lastError: 'database unavailable', lastSuccessfulWriteAt: null });
   await sink.dispose();
 });
 

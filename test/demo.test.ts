@@ -34,7 +34,8 @@ const RIG = '2c:cf:67:0b:c0:94';
 function runtime() {
   const cfg: EdgeConfig = {
     edgeId: 'test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1',
-    sitePath: '', nodesPath: '', dataDir: mkdtempSync(join(tmpdir(), 'tmedge-')), recordRaw: false,
+    sitePath: '', nodesPath: '', persistenceMode: 'file', postgres: null,
+    dataDir: mkdtempSync(join(tmpdir(), 'tmedge-')), recordRaw: false,
     consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', flashToken: null, pushUrls: [], pushToken: '', publishMs: 1000,
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
