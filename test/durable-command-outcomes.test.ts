@@ -32,3 +32,13 @@ test('command persistence outage prevents transport dispatch', async () => {
   assert.equal(dispatched, false);
   await service.dispose();
 });
+
+test('shutdown stays bounded when the database cannot mark pending commands uncertain', async () => {
+  const repository: CommandOutcomeRepository = {
+    record: async () => {},
+    markInFlightUncertain: async () => { throw new Error('database offline'); },
+  };
+  const service = new DurableCommandOutcomes(repository, async () => 7);
+  await service.send({ uid: '00:01:02:03:04:05', opcode: 1, argument: 0, value: 0 }, { id: 'console', kind: 'console' });
+  await assert.doesNotReject(service.dispose());
+});

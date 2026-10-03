@@ -131,7 +131,11 @@ export class DurableRolloutService implements RolloutService {
   }
 
   private viewSnapshot(): { current: RolloutView | null; history: RolloutView[] } {
-    return { current: this.state.current(), history: this.state.history().slice().reverse() };
+    const current = this.state.current();
+    return {
+      current: current ? cloneView(current) : null,
+      history: this.state.history().map(cloneView).reverse(),
+    };
   }
 
   private restore(snapshot: { current: RolloutView | null; history: RolloutView[] }): void {
@@ -141,6 +145,14 @@ export class DurableRolloutService implements RolloutService {
   private requireInitialized(): void {
     if (!this.initialized) throw new ApplicationError('unavailable', 'rollout recovery has not completed');
   }
+}
+
+function cloneView(view: RolloutView): RolloutView {
+  return {
+    ...view,
+    target: { ...view.target },
+    nodes: view.nodes.map((node) => ({ ...node })),
+  };
 }
 
 function toRecord(view: RolloutView): RolloutRecord {

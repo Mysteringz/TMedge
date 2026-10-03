@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { createServer as createHttpServer, type ServerResponse } from 'node:http';
+import { createServer, type AddressInfo } from 'node:net';
 import dgram from 'node:dgram';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -31,6 +32,8 @@ import type { RolloutRecord } from '../src/modules/rollouts/repositories/rollout
 import { PostgresCommandOutcomeRepository } from '../src/infrastructure/postgres/command-outcome-repository.js';
 import { PostgresOccupancyHistoryRepository } from '../src/infrastructure/postgres/occupancy-history-repository.js';
 import type { OccupancyHistoryRecord } from '../src/modules/occupancy-history/repositories/occupancy-history-repository.js';
+import { createEdgeApplication } from '../src/edge/composition-root.js';
+import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -363,6 +366,7 @@ test('registration schema and provisioning repository enforce persistence invari
       await migrator.query('DELETE FROM registered_nodes WHERE uid = $1', [provisionedUid]);
     }
 
+    await exerciseDurableEdgeLifecycle(config.runtime, runtime);
     await exercisePostgresEdgeCutover(config.runtime, runtime, migrator);
 
     const registrationFile = nodesJson();
@@ -653,6 +657,241 @@ test('registration schema and provisioning repository enforce persistence invari
     await closePostgres(migrator);
   }
 });
+
+async function exerciseDurableEdgeLifecycle(
+  pg: ReturnType<typeof loadPostgresConfig>['runtime'],
+  database: import('typeorm').DataSource,
+): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), 'tmedge-durable-lifecycle-'));
+  const composeArgs = ['compose', '-f', 'docker-compose.postgres-test.yml'];
+  const projectRoot = dirname(dirname(testDirectory));
+  const runCompose = (...args: string[]) => execFileSync('docker', [...composeArgs, ...args], {
+    cwd: projectRoot, stdio: 'pipe', encoding: 'utf8',
+  });
+  const uid = randomMac();
+  const uploadIds: string[] = [];
+  const rolloutIds: string[] = [];
+  const artifactIds: string[] = [];
+  const previousWorkerUrl = process.env.FIRMWARE_BUILD_WORKER_URL;
+  let app: ReturnType<typeof createEdgeApplication> | null = null;
+  let restartedApp: ReturnType<typeof createEdgeApplication> | null = null;
+  let databaseStopped = false;
+  let workerRequestCount = 0;
+  let holdNextBuild = false;
+  let heldResponse: ServerResponse | null = null;
+  let notifyHeldBuild: (() => void) | null = null;
+  let heldBuildStarted = new Promise<void>((resolve) => { notifyHeldBuild = resolve; });
+  const artifactBytes = Buffer.from('synthetic-firmware-for-postgres-lifecycle');
+  const worker = createHttpServer((request, response) => {
+    workerRequestCount += 1;
+    request.resume();
+    request.once('end', () => {
+      if (holdNextBuild) {
+        holdNextBuild = false;
+        heldResponse = response;
+        notifyHeldBuild?.();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      response.end([
+        { type: 'log', line: 'synthetic build complete' },
+        { type: 'result', exitCode: 0, artifactBase64: artifactBytes.toString('base64') },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n');
+    });
+  });
+
+  let workerPort = 0;
+  try {
+    await new Promise<void>((resolve, reject) => worker.once('error', reject).listen(0, '127.0.0.1', resolve));
+    workerPort = (worker.address() as AddressInfo).port;
+    process.env.FIRMWARE_BUILD_WORKER_URL = `http://127.0.0.1:${workerPort}/build`;
+
+    await database.query('INSERT INTO public.registered_nodes (uid, label) VALUES ($1, $2)', [uid, 'Durable lifecycle node']);
+    const registration = new RegistrationImportExport(new PostgresRegistryRepository(database));
+    const registry = await registration.loadRegistry(siteJson());
+    const cfg: EdgeConfig = {
+      edgeId: 'durable-lifecycle-test', keys: [Buffer.from('test-key')], allowUnsigned: false,
+      udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: join(directory, 'must-not-be-used.json'),
+      persistenceMode: 'postgres', postgres: pg, dataDir: directory, recordRaw: false,
+      consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'lifecycle-admin', flashToken: null,
+      pushUrls: [], pushToken: '', publishMs: 60_000, gatewayPort: 0, gatewayToken: null,
+      nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
+    };
+    app = createEdgeApplication(cfg, registry, { postgres: database });
+    await app.start();
+    const consolePort = (app.consoleServer.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${consolePort}`;
+    const authorization = `Basic ${Buffer.from('operator:lifecycle-admin').toString('base64')}`;
+    const headers = { authorization, 'x-tm-console': '1', 'content-type': 'application/json' };
+    const downlinks: Buffer[] = [];
+    const nodeIdentity = identity(uid);
+    const route = {
+      kind: 'direct' as const,
+      address: `ws:${uid}:synthetic-session`,
+      session: {
+        uid, sessionId: 'synthetic-session', key: Buffer.from('test-key'),
+        send: (packet: Buffer) => { downlinks.push(packet); return true; },
+        grantOta: () => true,
+        admit: () => null,
+      },
+    };
+    assert.equal(app.runtime.ingest.handle(report(nodeIdentity, [], 1), route).ok, true);
+
+    const firstUpload = await createUpload(base, headers);
+    uploadIds.push(firstUpload);
+    assert.equal((await startBuild(base, headers, firstUpload)).status, 202);
+    await waitForJobLifecycle(database, firstUpload, 'succeeded');
+    const buildId = (await database.query(
+      'SELECT artifact_id FROM public.firmware_build_jobs WHERE upload_id = $1', [firstUpload],
+    ))[0].artifact_id as string;
+    artifactIds.push(buildId);
+
+    const commandResponse = await fetch(`${base}/api/nodes/${encodeURIComponent(uid)}/command`, {
+      method: 'POST', headers, body: JSON.stringify({ op: 'identify' }),
+    });
+    assert.equal(commandResponse.status, 200, await commandResponse.text());
+    assert.equal(downlinks.length, 1, 'the composed command service dispatches over the active direct-node route');
+    assert.deepEqual(await database.query(
+      'SELECT outcome FROM public.command_outcomes WHERE node_id = $1 ORDER BY id', [uid],
+    ), [{ outcome: 'requested' }, { outcome: 'sent' }]);
+
+    const startRollout = async () => {
+      const response = await fetch(`${base}/api/firmware/rollout`, {
+        method: 'POST', headers, body: JSON.stringify({ buildId, target: { kind: 'node', uid } }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<{ id: string }>;
+    };
+    const firstRollout = await startRollout();
+    rolloutIds.push(firstRollout.id);
+    await waitForDownlinkCount(downlinks, 2);
+    assert.ok(downlinks.length >= 2, 'the persisted rollout dispatches its pilot OTA request');
+    const firstCancel = await fetch(`${base}/api/firmware/rollout/cancel`, { method: 'POST', headers });
+    assert.equal(firstCancel.status, 200, await firstCancel.text());
+    assert.equal((await database.query('SELECT stage FROM public.firmware_rollouts WHERE id = $1', [firstRollout.id]))[0].stage, 'stopped');
+
+    const secondRollout = await startRollout();
+    rolloutIds.push(secondRollout.id);
+    await waitForDownlinkCount(downlinks, 3);
+    holdNextBuild = true;
+    heldBuildStarted = new Promise<void>((resolve) => { notifyHeldBuild = resolve; });
+    const secondUpload = await createUpload(base, headers);
+    uploadIds.push(secondUpload);
+    assert.equal((await startBuild(base, headers, secondUpload)).status, 202);
+    await heldBuildStarted;
+    await waitForJobLifecycle(database, secondUpload, 'running');
+
+    runCompose('stop', 'postgres-test');
+    databaseStopped = true;
+    const readyResponse = await fetch(`${base}/readyz`, { headers: { authorization } });
+    const readiness = await readyResponse.json() as { ready: boolean; components: { persistence: { available: boolean } } };
+    assert.equal(readiness.ready, true, 'the edge process remains live through a running database outage');
+    assert.equal(readiness.components.persistence.available, false);
+
+    const sentBeforeOutageCommand = downlinks.length;
+    const rejectedCommand = await fetch(`${base}/api/nodes/${encodeURIComponent(uid)}/command`, {
+      method: 'POST', headers, body: JSON.stringify({ op: 'identify' }),
+    });
+    assert.equal(rejectedCommand.status, 503);
+    assert.equal(downlinks.length, sentBeforeOutageCommand, 'a command is not dispatched when intent persistence is unavailable');
+
+    const rejectedCancel = await fetch(`${base}/api/firmware/rollout/cancel`, { method: 'POST', headers });
+    assert.equal(rejectedCancel.status, 503);
+    assert.notEqual(app.runtime.rolloutService.current() && (app.runtime.rolloutService.current() as { stage: string }).stage, 'stopped',
+      'failed cancellation restores the last in-memory rollout state');
+    assert.equal(app.runtime.ingest.handle(report(nodeIdentity, [], 2), route).ok, true,
+      'live packet ingestion continues without PostgreSQL calls');
+
+    await app.stop();
+    app = null;
+    assert.ok(heldResponse, 'the worker had an active request when the edge shut down');
+    heldResponse = null;
+
+    runCompose('start', 'postgres-test');
+    databaseStopped = false;
+    await waitForDatabase(database);
+    const restoredRegistry = await registration.loadRegistry(siteJson());
+    restartedApp = createEdgeApplication(cfg, restoredRegistry, { postgres: database });
+    await restartedApp.start();
+    assert.equal(workerRequestCount, 2, 'startup recovery does not submit the interrupted build to the worker again');
+    assert.equal((await database.query(
+      'SELECT lifecycle FROM public.firmware_build_jobs WHERE upload_id = $1', [secondUpload],
+    ))[0].lifecycle, 'interrupted');
+    assert.ok((await database.query('SELECT outcome FROM public.command_outcomes WHERE node_id = $1', [uid]))
+      .some((row: { outcome: string }) => row.outcome === 'uncertain'), 'restart reconciles the sent command to uncertain');
+    const recoveredRollouts = await new PostgresRolloutRepository(database).history();
+    assert.ok(recoveredRollouts.some((item) => item.id === secondRollout.id && item.recoveryState === 'interrupted'),
+      'restart retains the rollout as interrupted and does not replay it');
+  } finally {
+    if (databaseStopped) {
+      runCompose('start', 'postgres-test');
+      await waitForDatabase(database);
+      databaseStopped = false;
+    }
+    await restartedApp?.stop().catch(() => undefined);
+    await app?.stop().catch(() => undefined);
+    if (database.isInitialized) {
+      await database.query('DELETE FROM public.command_outcomes WHERE node_id = $1', [uid]).catch(() => undefined);
+      if (rolloutIds.length) await database.query('DELETE FROM public.firmware_rollouts WHERE id = ANY($1::text[])', [rolloutIds]).catch(() => undefined);
+      if (uploadIds.length) {
+        const jobs = await database.query('DELETE FROM public.firmware_build_jobs WHERE upload_id = ANY($1::text[]) RETURNING artifact_id', [uploadIds]).catch(() => []);
+        for (const row of jobs as Array<{ artifact_id?: string }>) if (row.artifact_id) artifactIds.push(row.artifact_id);
+      }
+      if (artifactIds.length) await database.query('DELETE FROM public.firmware_artifacts WHERE id = ANY($1::text[])', [artifactIds]).catch(() => undefined);
+      await database.query('DELETE FROM public.registered_nodes WHERE uid = $1', [uid]).catch(() => undefined);
+    }
+    await new Promise<void>((resolve) => worker.close(() => resolve()));
+    if (previousWorkerUrl === undefined) delete process.env.FIRMWARE_BUILD_WORKER_URL;
+    else process.env.FIRMWARE_BUILD_WORKER_URL = previousWorkerUrl;
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+async function createUpload(base: string, headers: Record<string, string>): Promise<string> {
+  const response = await fetch(`${base}/api/firmware/uploads`, { method: 'POST', headers });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { uploadId: string };
+  for (const [path, content] of [
+    ['platformio.ini', '[env:tmflash]\nplatform = native\n'],
+    ['include/tm_config.h', '#define TM_FW_VERSION "test-1"\n'],
+  ] as const) {
+    const file = await fetch(`${base}/api/firmware/uploads/${body.uploadId}/files?path=${encodeURIComponent(path)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/octet-stream' }, body: content,
+    });
+    assert.equal(file.status, 200, await file.text());
+  }
+  return body.uploadId;
+}
+
+async function startBuild(base: string, headers: Record<string, string>, uploadId: string): Promise<Response> {
+  return fetch(`${base}/api/firmware/uploads/${uploadId}/build`, { method: 'POST', headers });
+}
+
+async function waitForJobLifecycle(
+  database: import('typeorm').DataSource, uploadId: string, expected: string,
+): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 10_000) {
+    const rows = await database.query('SELECT lifecycle FROM public.firmware_build_jobs WHERE upload_id = $1', [uploadId]);
+    if (rows[0]?.lifecycle === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`firmware build ${uploadId} did not reach ${expected}`);
+}
+
+async function waitForDownlinkCount(downlinks: readonly Buffer[], expected: number): Promise<void> {
+  const started = Date.now();
+  while (downlinks.length < expected && Date.now() - started < 5_000) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(downlinks.length >= expected, `expected ${expected} downlink packet(s), observed ${downlinks.length}`);
+}
+
+function randomMac(): string {
+  const hex = randomUUID().replaceAll('-', '').slice(0, 12).match(/.{2}/g);
+  if (!hex) throw new Error('could not generate an integration-test node identity');
+  return hex.join(':');
+}
 
 async function exercisePostgresEdgeCutover(
   pg: ReturnType<typeof loadPostgresConfig>['runtime'],

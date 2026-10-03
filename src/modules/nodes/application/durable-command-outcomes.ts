@@ -93,7 +93,18 @@ export class DurableCommandOutcomes {
     const items = [...this.pending.values()];
     this.pending.clear();
     for (const item of items) clearTimeout(item.timer);
-    if (count > 0) await this.repository.markInFlightUncertain?.(this.now());
+    if (count > 0) {
+      try {
+        await this.repository.markInFlightUncertain?.(this.now());
+      } catch {
+        // Keep shutdown bounded; initialize() reconciles durable in-flight rows on restart.
+        operationalLog('node_command.reconciliation_deferred', {
+          component: 'node-command',
+          outcome: 'uncertain',
+          count,
+        });
+      }
+    }
   }
 
   private async recordOutcome(
