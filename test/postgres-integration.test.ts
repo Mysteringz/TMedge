@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import dgram from 'node:dgram';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { loadPostgresConfig } from '../src/infrastructure/postgres/config.js';
@@ -12,9 +17,10 @@ import type {
   ProvisioningTransaction,
 } from '../src/modules/provisioning/repositories/provisioning-repository.js';
 import { PostgresProvisioningRepository } from '../src/infrastructure/postgres/provisioning-repository.js';
+import { DatabaseProvisioningService } from '../src/modules/provisioning/application/database-provisioning-service.js';
 import { PostgresRegistryRepository } from '../src/infrastructure/postgres/registry-repository.js';
 import { RegistrationImportExport } from '../src/modules/registration/application/registration-import-export.js';
-import { nodesJson, siteJson } from './fixtures.js';
+import { identity, nodesJson, report, siteJson } from './fixtures.js';
 import {
   PostgresFirmwareArtifactRepository,
   PostgresFirmwareBuildJobRepository,
@@ -321,13 +327,44 @@ test('registration schema and provisioning repository enforce persistence invari
         [rollback.id],
       ))[0].count, 1, 'retry creates exactly one approval audit event');
     } finally {
-      await runtime.query('DELETE FROM provisioning_audit_events WHERE subject_id = ANY($1::text[])', [requestIds]);
-      await runtime.query('DELETE FROM provisioning_requests WHERE id = ANY($1::uuid[])', [requestIds]);
-      await runtime.query('DELETE FROM registered_nodes WHERE uid = ANY($1::text[])', [nodeUids]);
+      await migrator.query('DELETE FROM provisioning_audit_events WHERE subject_id = ANY($1::text[])', [requestIds]);
+      await migrator.query('DELETE FROM provisioning_requests WHERE id = ANY($1::uuid[])', [requestIds]);
+      await migrator.query('DELETE FROM registered_nodes WHERE uid = ANY($1::text[])', [nodeUids]);
     }
 
     const registryRepository = new PostgresRegistryRepository(runtime);
     const importExport = new RegistrationImportExport(registryRepository);
+    const provisionedUid = '30:ed:a0:cc:dd:05';
+    const provisionedRequestIds: string[] = [];
+    try {
+      const liveRegistry = await importExport.loadRegistry(siteJson());
+      const service = new DatabaseProvisioningService(new PostgresProvisioningRepository(runtime), liveRegistry, {
+        token: 'integration-provisioning-token-32chars',
+      });
+      const queued = await service.request({ uid: provisionedUid, label: 'DB admitted identity' }, 'integration-test');
+      assert.equal(queued.status, 'pending');
+      if (queued.status !== 'pending') throw new Error('expected a pending provisioning request');
+      provisionedRequestIds.push(queued.request.id);
+      const approved = await service.approve(queued.request.id, 'integration-operator');
+      assert.equal(approved.uid, provisionedUid);
+      assert.equal(liveRegistry.nodes.get(provisionedUid)?.floorId, null, 'live activation only admits an unplaced identity');
+      const restartedRegistry = await importExport.loadRegistry(siteJson());
+      assert.equal(restartedRegistry.nodes.get(provisionedUid)?.label, 'DB admitted identity', 'a fresh startup loader sees the committed identity');
+      assert.equal(restartedRegistry.nodes.get(provisionedUid)?.pose, null);
+      assert.equal((await runtime.query(
+        "SELECT count(*)::int AS count FROM provisioning_audit_events WHERE subject_id = $1 AND action = 'request.approved'",
+        [queued.request.id],
+      ))[0].count, 1, 'approval and its audit event commit once');
+    } finally {
+      if (provisionedRequestIds.length) {
+        await migrator.query('DELETE FROM provisioning_audit_events WHERE subject_id = ANY($1::text[])', [provisionedRequestIds]);
+        await migrator.query('DELETE FROM provisioning_requests WHERE id = ANY($1::uuid[])', [provisionedRequestIds]);
+      }
+      await migrator.query('DELETE FROM registered_nodes WHERE uid = $1', [provisionedUid]);
+    }
+
+    await exercisePostgresEdgeCutover(config.runtime, runtime, migrator);
+
     const registrationFile = nodesJson();
     importedRegistryUids = registrationFile.nodes.map((node, index) => {
       const uid = `aa:bb:cc:dd:ee:${(index + 1).toString(16).padStart(2, '0')}`;
@@ -616,3 +653,264 @@ test('registration schema and provisioning repository enforce persistence invari
     await closePostgres(migrator);
   }
 });
+
+async function exercisePostgresEdgeCutover(
+  pg: ReturnType<typeof loadPostgresConfig>['runtime'],
+  database: import('typeorm').DataSource,
+  migrator: import('typeorm').DataSource,
+): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), 'tmedge-cutover-'));
+  const nodesPath = join(directory, 'must-not-be-read-or-created.json');
+  const projectRoot = dirname(dirname(testDirectory));
+  const composeArgs = ['compose', '-f', 'docker-compose.postgres-test.yml'];
+  const runCompose = (...args: string[]) => execFileSync('docker', [...composeArgs, ...args], {
+    cwd: projectRoot, stdio: 'pipe', encoding: 'utf8',
+  });
+  const failingPort = await freeTcpPort();
+  let failed: EdgeProcess | null = null;
+  let live: EdgeProcess | null = null;
+  let restarted: EdgeProcess | null = null;
+  let databaseStopped = false;
+  const token = 'cutover-token-with-at-least-32-chars';
+  const uid = '30:ed:a0:cc:dd:06';
+  const outageUid = '30:ed:a0:cc:dd:07';
+  const requestIds: string[] = [];
+  try {
+    failed = await launchPostgresEdge(pg, directory, failingPort);
+    await waitForExit(failed.child, 15_000);
+    assert.equal(failed.child.exitCode, 2, failed.state.output);
+    assert.match(failed.state.output, /PostgreSQL registry could not be opened or validated/);
+
+    live = await launchPostgresEdge(pg, directory, pg.port);
+    const startupLine = await waitForOutput(live, /registered nodes/, 15_000);
+    assert.match(startupLine, /0 registered nodes/, 'PostgreSQL mode starts from the database view');
+    assert.equal(existsSync(nodesPath), false, 'approval and restart did not create or mutate nodes.json');
+
+    const base = `http://127.0.0.1:${live.consolePort}`;
+    const queued = await queueNode(base, token, uid, 'Process cutover node');
+    requestIds.push(queued.id);
+    assert.equal((await decideNode(base, queued.id, 'approve')).status, 200);
+    const outagePending = await queueNode(base, token, outageUid, 'Outage retry node');
+    requestIds.push(outagePending.id);
+
+    runCompose('stop', 'postgres-test');
+    databaseStopped = true;
+    await waitForAcceptedPacketDuringOutage(base, live, uid);
+    const rejectedWhileDown = await decideNode(base, outagePending.id, 'approve');
+    assert.equal(rejectedWhileDown.status, 409, 'durable approval is rejected while PostgreSQL is unavailable');
+    assert.equal(live.child.exitCode, null, 'the edge process remains running during database outage');
+    const liveUids = await readLiveNodeUids(base);
+    assert.ok(liveUids.includes(uid), 'the last committed identity remains active during outage');
+    assert.ok(!liveUids.includes(outageUid), 'the failed approval does not activate an uncommitted identity');
+    assert.equal(existsSync(nodesPath), false, 'the outage does not trigger a nodes.json fallback');
+
+    runCompose('start', 'postgres-test');
+    databaseStopped = false;
+    await waitForDatabase(database);
+    assert.equal((await decideNode(base, outagePending.id, 'approve')).status, 200, 'operator retry commits after recovery');
+    await stopChild(live.child);
+
+    restarted = await launchPostgresEdge(pg, directory, pg.port);
+    const restartedLine = await waitForOutput(restarted, /registered nodes/, 15_000);
+    assert.match(restartedLine, /2 registered nodes/, 'restart loads both committed registrations from PostgreSQL');
+    assert.equal(existsSync(nodesPath), false, 'approval and restart did not create or mutate nodes.json');
+  } finally {
+    let cleanupFailure: unknown;
+    if (databaseStopped) {
+      try {
+        runCompose('start', 'postgres-test');
+        await waitForDatabase(database);
+        databaseStopped = false;
+      } catch (error) {
+        cleanupFailure = error;
+      }
+    }
+    for (const edge of [failed, live, restarted]) {
+      if (edge && edge.child.exitCode === null) {
+        try { await stopChild(edge.child); }
+        catch (error) { cleanupFailure ??= error; }
+      }
+    }
+    if (requestIds.length) {
+      try {
+        await migrator.query('DELETE FROM provisioning_audit_events WHERE subject_id = ANY($1::text[])', [requestIds]);
+        await migrator.query('DELETE FROM provisioning_requests WHERE id = ANY($1::uuid[])', [requestIds]);
+      } catch (error) {
+        cleanupFailure ??= error;
+      }
+    }
+    try { await migrator.query('DELETE FROM registered_nodes WHERE uid = ANY($1::text[])', [[uid, outageUid]]); }
+    catch (error) { cleanupFailure ??= error; }
+    rmSync(directory, { recursive: true, force: true });
+    if (cleanupFailure) throw cleanupFailure;
+  }
+}
+
+async function queueNode(base: string, token: string, uid: string, label: string): Promise<{ id: string }> {
+  const response = await fetch(`${base}/api/provision/request`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ uid, label }),
+  });
+  assert.equal(response.status, 202, await response.clone().text());
+  return response.json() as Promise<{ id: string }>;
+}
+
+async function decideNode(base: string, id: string, verdict: 'approve' | 'deny'): Promise<Response> {
+  return fetch(`${base}/api/provision/requests/${id}/${verdict}`, {
+    method: 'POST', signal: AbortSignal.timeout(10_000),
+    headers: {
+      authorization: `Basic ${Buffer.from('edge-admin:edge-admin-password').toString('base64')}`,
+      'x-tm-console': '1',
+    },
+  });
+}
+
+async function waitForAcceptedPacketDuringOutage(base: string, edge: EdgeProcess, uid: string): Promise<void> {
+  const auth = `Basic ${Buffer.from('edge-admin:edge-admin-password').toString('base64')}`;
+  const tokenResponse = await fetch(`${base}/api/ws-token`, { headers: { authorization: auth } });
+  assert.equal(tokenResponse.status, 200);
+  const { token } = await tokenResponse.json() as { token: string };
+  const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?token=${encodeURIComponent(token)}`);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener('open', () => resolve(), { once: true });
+      socket.addEventListener('error', () => reject(new Error('console WebSocket failed during database outage')), { once: true });
+    });
+    const reportReceived = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('signed report did not reach the running edge during database outage')), 5000);
+      socket.addEventListener('message', (event) => {
+        const message = JSON.parse(String(event.data)) as { type?: string; uid?: string };
+        if (message.type === 'report' && message.uid === uid) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+    const packet = report(identity(uid), [], 1);
+    const sender = dgram.createSocket('udp4');
+    await new Promise<void>((resolve, reject) => sender.send(packet, edge.udpPort, '127.0.0.1', (error) => {
+      sender.close();
+      if (error) reject(error); else resolve();
+    }));
+    await reportReceived;
+  } finally {
+    socket.close();
+  }
+}
+
+async function readLiveNodeUids(base: string): Promise<string[]> {
+  const auth = `Basic ${Buffer.from('edge-admin:edge-admin-password').toString('base64')}`;
+  const tokenResponse = await fetch(`${base}/api/ws-token`, { headers: { authorization: auth } });
+  assert.equal(tokenResponse.status, 200);
+  const { token } = await tokenResponse.json() as { token: string };
+  const socket = new WebSocket(`${base.replace('http', 'ws')}/ws?token=${encodeURIComponent(token)}`);
+  try {
+    const state = await new Promise<{ nodes?: Array<{ uid?: string }> }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('console state did not arrive during database outage')), 5000);
+      socket.addEventListener('message', (event) => {
+        const message = JSON.parse(String(event.data)) as { type?: string; nodes?: Array<{ uid?: string }> };
+        if (message.type === 'state') {
+          clearTimeout(timer);
+          resolve(message);
+        }
+      });
+      socket.addEventListener('error', () => reject(new Error('console WebSocket failed while reading live state')), { once: true });
+    });
+    return (state.nodes ?? []).flatMap((node) => node.uid ? [node.uid] : []);
+  } finally {
+    socket.close();
+  }
+}
+
+async function waitForDatabase(database: import('typeorm').DataSource): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 30_000) {
+    try {
+      await database.query('SELECT 1');
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error('disposable PostgreSQL test service did not recover');
+}
+
+interface EdgeProcess {
+  child: ChildProcess;
+  state: { output: string };
+  consolePort: number;
+  udpPort: number;
+}
+
+async function launchPostgresEdge(
+  pg: ReturnType<typeof loadPostgresConfig>['runtime'],
+  directory: string,
+  connectPort: number,
+): Promise<EdgeProcess> {
+  const consolePort = await freeTcpPort();
+  const udpPort = await freeUdpPort();
+  const projectRoot = dirname(dirname(testDirectory));
+  const child = spawn(process.execPath, [join(projectRoot, 'dist/src/edge/main.js')], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      TM_KEY: 'test-key', WEB_PUSH_URLS: '', PERSISTENCE_MODE: 'postgres',
+      PGHOST: pg.host, PGPORT: String(connectPort), PGDATABASE: pg.database,
+      PG_RUNTIME_USER: pg.username, PG_RUNTIME_PASSWORD: pg.password,
+      SITE_CONFIG: join(projectRoot, 'config/site.json'),
+      NODES_CONFIG: join(directory, 'must-not-be-read-or-created.json'),
+      DATA_DIR: directory, UDP_PORT: String(udpPort), UDP_HOST: '127.0.0.1',
+      CONSOLE_PORT: String(consolePort), CONSOLE_HOST: '127.0.0.1',
+      ADMIN_PASSWORD: 'edge-admin-password', TMFLASH_TOKEN: 'cutover-token-with-at-least-32-chars',
+      ALGO_PORT: '0', NODE_PORT: '0', GATEWAY_PORT: '0', PUBLISH_MS: '60000',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const state = { output: '' };
+  child.stdout?.on('data', (chunk: Buffer) => { state.output += chunk.toString(); });
+  child.stderr?.on('data', (chunk: Buffer) => { state.output += chunk.toString(); });
+  return { child, state, consolePort, udpPort };
+}
+
+async function waitForOutput(edge: EdgeProcess, pattern: RegExp, timeoutMs: number): Promise<string> {
+  const started = Date.now();
+  while (!pattern.test(edge.state.output)) {
+    if (edge.child.exitCode !== null) throw new Error(`edge exited before readiness: ${edge.state.output}`);
+    if (Date.now() - started > timeoutMs) throw new Error(`edge did not become ready: ${edge.state.output}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return edge.state.output;
+}
+
+async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('edge process did not exit')), timeoutMs);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  await waitForExit(child, 15_000);
+  assert.equal(child.exitCode, 0, 'edge exits cleanly after SIGTERM');
+}
+
+async function freeTcpPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('could not allocate a test TCP port');
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
+
+async function freeUdpPort(): Promise<number> {
+  const socket = dgram.createSocket('udp4');
+  await new Promise<void>((resolve, reject) => socket.once('error', reject).bind(0, '127.0.0.1', resolve));
+  const address = socket.address();
+  socket.close();
+  return address.port;
+}

@@ -14,7 +14,8 @@ import { KEY, nodesJson, siteJson } from './fixtures.js';
 function config(): EdgeConfig {
   return {
     edgeId: 'lifecycle-test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1',
-    sitePath: '', nodesPath: '', dataDir: mkdtempSync(join(tmpdir(), 'tmedge-lifecycle-')), recordRaw: false,
+    sitePath: '', nodesPath: '', persistenceMode: 'file', postgres: null,
+    dataDir: mkdtempSync(join(tmpdir(), 'tmedge-lifecycle-')), recordRaw: false,
     consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', flashToken: null,
     pushUrls: [], pushToken: '', publishMs: 60_000, gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS,

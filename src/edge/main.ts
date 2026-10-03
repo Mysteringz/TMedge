@@ -1,9 +1,15 @@
 /** Process entry point: configuration, composition, signals, and fatal startup handling. */
-import { accessSync, constants, realpathSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadEdgeConfig, EnvError } from './config.js';
 import { createEdgeApplication } from './composition-root.js';
 import { ConfigError, loadRegistry } from './registry.js';
+import { RegistrationImportExport } from '../modules/registration/application/registration-import-export.js';
+import { DatabaseProvisioningService } from '../modules/provisioning/application/database-provisioning-service.js';
+import { PostgresRegistryRepository } from '../infrastructure/postgres/registry-repository.js';
+import { PostgresProvisioningRepository } from '../infrastructure/postgres/provisioning-repository.js';
+import { closePostgres, openPostgres } from '../infrastructure/postgres/data-source.js';
+import type { DataSource } from 'typeorm';
 
 function checkNodesWritable(nodesPath: string): void {
   try {
@@ -18,10 +24,13 @@ function checkNodesWritable(nodesPath: string): void {
 }
 
 async function main(): Promise<void> {
-  const loaded = loadConfiguration();
+  const loaded = await loadConfiguration();
   if (!loaded) return;
-  const { cfg, registry } = loaded;
-  const edge = createEdgeApplication(cfg, registry);
+  const { cfg, registry, source, provisioningService } = loaded;
+  const edge = createEdgeApplication(cfg, registry, {
+    provisioningService,
+    closePersistence: source ? () => closePostgres(source) : undefined,
+  });
   const rejectBudgetTimer = installRuntimeLogs(edge.runtime);
   let shuttingDown = false;
   const shutdown = async () => {
@@ -53,20 +62,58 @@ async function main(): Promise<void> {
   }
 }
 
-function loadConfiguration() {
+async function loadConfiguration(): Promise<{
+  cfg: ReturnType<typeof loadEdgeConfig>;
+  registry: ReturnType<typeof loadRegistry>;
+  source: DataSource | null;
+  provisioningService: DatabaseProvisioningService | undefined;
+} | null> {
+  let source: DataSource | null = null;
   try {
     const cfg = loadEdgeConfig();
-    const registry = loadRegistry(cfg.sitePath, cfg.nodesPath);
-    if (cfg.flashToken) checkNodesWritable(cfg.nodesPath);
-    return { cfg, registry };
+    if (cfg.persistenceMode === 'file') {
+      const registry = loadRegistry(cfg.sitePath, cfg.nodesPath);
+      if (cfg.flashToken) checkNodesWritable(cfg.nodesPath);
+      return { cfg, registry, source: null, provisioningService: undefined };
+    }
+    if (!cfg.postgres) throw new EnvError('PostgreSQL runtime configuration is missing');
+    source = await openPostgres(cfg.postgres);
+    let site: unknown;
+    try {
+      site = JSON.parse(readFileSync(cfg.sitePath, 'utf8'));
+    } catch (error) {
+      throw new ConfigError(`${cfg.sitePath}: ${(error as Error).message}`);
+    }
+    const registryRepository = new PostgresRegistryRepository(source);
+    const registration = new RegistrationImportExport(registryRepository);
+    const registry = await registration.loadRegistry(site);
+    const provisioningService = new DatabaseProvisioningService(
+      new PostgresProvisioningRepository(source),
+      registry,
+      { token: cfg.flashToken },
+    );
+    return { cfg, registry, source, provisioningService };
   } catch (error) {
+    if (source) await closePostgres(source).catch(() => undefined);
     if (error instanceof EnvError || error instanceof ConfigError) {
       console.error(`[edge] refusing to start: ${error.message}`);
       process.exitCode = 2;
       return null;
     }
-    throw error;
+    if (error instanceof Error && 'name' in error && error.name === 'PostgresConfigError') {
+      console.error(`[edge] refusing to start: ${error.message}`);
+    } else if (source || loadEdgePersistenceMode()) {
+      console.error('[edge] refusing to start: PostgreSQL registry could not be opened or validated');
+    } else {
+      console.error(`[edge] refusing to start: ${errorMessage(error)}`);
+    }
+    process.exitCode = 2;
+    return null;
   }
+}
+
+function loadEdgePersistenceMode(): boolean {
+  return process.env.PERSISTENCE_MODE === 'postgres';
 }
 
 function installRuntimeLogs(runtime: ReturnType<typeof createEdgeApplication>['runtime']): NodeJS.Timeout {

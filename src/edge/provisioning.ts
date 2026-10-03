@@ -23,11 +23,8 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { NodeDef, Registry } from './registry.js';
-
-/** A request nobody has answered goes stale rather than waiting forever. */
-export const REQUEST_TTL_MS = 30 * 60_000;
-/** One machine cannot fill the console with requests. */
-export const MAX_PENDING = 32;
+import { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
+export { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
 
 const UID_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
 const LABEL_RE = /^[\w .,'()/-]{1,60}$/;

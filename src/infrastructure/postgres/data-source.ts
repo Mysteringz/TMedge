@@ -29,8 +29,13 @@ export function createPostgresDataSource(
 /** Initialize one pool; the caller owns closing it through closePostgres. */
 export async function openPostgres(config: PostgresConnectionConfig): Promise<DataSource> {
   const source = createPostgresDataSource(config);
-  await source.initialize();
-  return source;
+  try {
+    await source.initialize();
+    return source;
+  } catch (error) {
+    if (source.isInitialized) await source.destroy().catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Close an initialized pool. Repeated shutdown calls are safe. */

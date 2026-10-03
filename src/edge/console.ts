@@ -21,6 +21,7 @@ import { FirmwareStoreExecutor } from '../infrastructure/firmware-build/firmware
 import { RolloutImageUsageQuery } from '../infrastructure/firmware-build/rollout-image-usage-query.js';
 import { Provisioning } from './provisioning.js';
 import { FileProvisioningService } from '../infrastructure/provisioning/file-provisioning-service.js';
+import type { ProvisioningService } from '../modules/provisioning/application/provisioning-service.js';
 import { createProvisioningAdminRouter, createProvisioningToolRouter } from '../modules/provisioning/routes/provisioning-routers.js';
 import { applicationErrorHandler } from '../infrastructure/http/errors.js';
 import type { EdgeRuntime } from './runtime.js';
@@ -39,14 +40,14 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: FirmwareBuildJobs; listen?: boolean } = {}): Server {
+export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: FirmwareBuildJobs; provisioningService?: ProvisioningService; listen?: boolean } = {}): Server {
   const { adminPassword, consolePort, consoleHost } = rt.cfg;
   const provisioning = new Provisioning(rt.reg, {
     token: rt.cfg.flashToken,
     nodesPath: rt.cfg.nodesPath,
     auditPath: join(rt.cfg.dataDir, 'provisioning.jsonl'),
   });
-  const provisioningService = new FileProvisioningService(provisioning);
+  const provisioningService = options.provisioningService ?? new FileProvisioningService(provisioning);
   let broadcastProvisioning = (_message: unknown): void => {};
   const app = express();
   app.disable('x-powered-by');

@@ -17,6 +17,7 @@ import type { EdgeConfig } from './config.js';
 import type { Registry } from './registry.js';
 import { EdgeRuntime } from './runtime.js';
 import { startConsole, stopConsole } from './console.js';
+import type { ProvisioningService } from '../modules/provisioning/application/provisioning-service.js';
 
 /** Creates the runtime with its infrastructure dependencies wired at the edge boundary. */
 export function createEdgeRuntime(cfg: EdgeConfig, reg: Registry, occupancy: OccupancyOptions = DEFAULT_OCCUPANCY): EdgeRuntime {
@@ -77,16 +78,18 @@ export function createEdgeRuntime(cfg: EdgeConfig, reg: Registry, occupancy: Occ
 /** Composes and coordinates the required edge listeners and their lifecycles. */
 export interface EdgeApplicationOptions {
   firmwareBuildJobs?: FirmwareBuildJobs;
+  provisioningService?: ProvisioningService;
+  closePersistence?: () => Promise<void>;
 }
 
 export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: EdgeApplicationOptions = {}): EdgeApplication {
   const runtime = createEdgeRuntime(cfg, reg);
   const builds = options.firmwareBuildJobs ?? createFirmwareBuildJobs(runtime);
-  const consoleServer = startConsole(runtime, { firmwareBuildJobs: builds, listen: false });
+  const consoleServer = startConsole(runtime, { firmwareBuildJobs: builds, provisioningService: options.provisioningService, listen: false });
   const debuggerServer = cfg.algoPort > 0
     ? startAlgo(runtime, cfg.algoPort, cfg.consoleHost, { listen: false, dataDir: cfg.dataDir })
     : null;
-  return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg);
+  return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg, options.closePersistence);
 }
 
 function createFirmwareBuildJobs(runtime: EdgeRuntime): FirmwareBuildJobs {
@@ -104,6 +107,7 @@ export class EdgeApplication {
     readonly consoleServer: Server,
     readonly debuggerServer: AlgoServerHandle | null,
     private readonly config: EdgeConfig,
+    private readonly closePersistence?: () => Promise<void>,
   ) {}
 
   /** Binds every configured listener before starting periodic runtime work. */
@@ -141,7 +145,8 @@ export class EdgeApplication {
     const cleanupResults = await Promise.allSettled(cleanup);
     const closeResults = await Promise.allSettled(closeServers);
     const runtimeResult = await Promise.allSettled([this.runtime.stop()]);
-    const failure = [...cleanupResults, ...closeResults, ...runtimeResult]
+    const persistenceResult = this.closePersistence ? await Promise.allSettled([this.closePersistence()]) : [];
+    const failure = [...cleanupResults, ...closeResults, ...runtimeResult, ...persistenceResult]
       .find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failure) throw failure.reason;
   }
