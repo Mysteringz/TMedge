@@ -76,12 +76,21 @@ export class ConsoleWebSocketAdapter {
     this.source.off('report', this.onReport);
     this.source.off('raw', this.onRaw);
     this.source.off('rgb', this.onRgb);
+    const clientClosures: Promise<void>[] = [];
     for (const client of this.wss.clients) {
       this.subscriptions.delete(client);
+      const closed = client.readyState === 3 ? Promise.resolve() : new Promise<void>((resolve) => {
+        client.once('close', () => resolve());
+        const timeout = setTimeout(resolve, 1000);
+        timeout.unref();
+      });
+      clientClosures.push(closed);
       client.close(1001, 'server shutting down');
       client.terminate();
     }
-    this.closePromise = new Promise((resolve) => this.wss.close(() => resolve()));
+    this.closePromise = Promise.all(clientClosures)
+      .then(() => new Promise<void>((resolve) => this.wss.close(() => resolve())))
+      .then(() => new Promise<void>((resolve) => setImmediate(resolve)));
     return this.closePromise;
   }
 

@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { FirmwareStore } from './firmware.js';
+import type { FirmwareBuildJobService } from '../modules/firmware/application/firmware-build-job-service.js';
 import { FirmwareBuildJobs } from '../modules/firmware/application/firmware-build-jobs.js';
 import { createFirmwareRouter } from '../modules/firmware/routes/firmware-router.js';
 import { FirmwareStoreExecutor } from '../infrastructure/firmware-build/firmware-store-executor.js';
@@ -40,14 +41,17 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: FirmwareBuildJobs; provisioningService?: ProvisioningService; listen?: boolean } = {}): Server {
+export function startConsole(rt: EdgeRuntime, options: {
+  firmwareBuildJobs?: FirmwareBuildJobService;
+  provisioningService?: ProvisioningService;
+  listen?: boolean;
+} = {}): Server {
   const { adminPassword, consolePort, consoleHost } = rt.cfg;
-  const provisioning = new Provisioning(rt.reg, {
+  const provisioningService = options.provisioningService ?? new FileProvisioningService(new Provisioning(rt.reg, {
     token: rt.cfg.flashToken,
     nodesPath: rt.cfg.nodesPath,
     auditPath: join(rt.cfg.dataDir, 'provisioning.jsonl'),
-  });
-  const provisioningService = options.provisioningService ?? new FileProvisioningService(provisioning);
+  }));
   let broadcastProvisioning = (_message: unknown): void => {};
   const app = express();
   app.disable('x-powered-by');
@@ -132,7 +136,9 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
       raw: (uid) => rt.lastRaw(uid),
     },
     executeCommand: new ExecuteNodeCommand(({ uid, opcode, argument, value }) =>
-      rt.ingest.sendCommand(uid, opcode, argument, value).then(() => undefined)),
+      rt.commandOutcomes
+        ? rt.commandOutcomes.send({ uid, opcode, argument, value }, { id: 'console', kind: 'console' })
+        : rt.ingest.sendCommand(uid, opcode, argument, value).then(() => undefined)),
     resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursor(uid)),
     mutating,
   }));
@@ -145,13 +151,13 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
 
   // A short-lived token for the WebSocket, which cannot carry basic auth reliably.
   const firmwareBuildWorker = new FirmwareBuildWorkerClient();
-  const firmwareBuildJobs = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware, firmwareBuildWorker));
+  const firmwareBuildJobs: FirmwareBuildJobService = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware, firmwareBuildWorker));
   const imageInUse = new RolloutImageUsageQuery(rt.rollouts);
   rt.firmware.cleanup(imageInUse);
   app.use('/api', createFirmwareRouter({
     firmware: rt.firmware,
     buildJobs: firmwareBuildJobs,
-    rollouts: rt.rollouts,
+    rollouts: rt.rolloutService,
     imageInUse,
     mutating,
     buildWorkerConfigured: () => firmwareBuildWorker.configured,
@@ -162,7 +168,7 @@ export function startConsole(rt: EdgeRuntime, options: { firmwareBuildJobs?: Fir
   live.start();
   let cleanup: Promise<void> | null = null;
   const dispose = () => {
-    cleanup ??= Promise.all([firmwareBuildJobs.dispose(), live.close()]).then(() => undefined);
+    cleanup ??= Promise.all([firmwareBuildJobs.dispose?.() ?? Promise.resolve(), live.close()]).then(() => undefined);
     return cleanup;
   };
   consoleCleanups.set(server, dispose);

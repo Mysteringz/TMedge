@@ -1,5 +1,6 @@
 import type { OccupancySnapshot } from '../../../shared/types.js';
 import type { OccupancyHistoryRecord, OccupancyHistoryRepository } from '../repositories/occupancy-history-repository.js';
+import { operationalLog } from '../../../shared/logging/operational-logger.js';
 
 const MINUTE_MS = 60_000;
 const DEFAULT_MAX_PENDING_ROWS = 5_000;
@@ -12,6 +13,7 @@ export interface OccupancyHistorySinkOptions {
   batchSize?: number;
   maxAttempts?: number;
   retryDelayMs?: number;
+  now?: () => number;
 }
 
 export interface OccupancyHistorySinkStats {
@@ -19,6 +21,7 @@ export interface OccupancyHistorySinkStats {
   droppedRows: number;
   failedBatches: number;
   lastError: string | null;
+  lastSuccessfulWriteAt: number | null;
 }
 
 interface PendingEntry { record: OccupancyHistoryRecord; attempts: number }
@@ -34,9 +37,11 @@ export class BoundedOccupancyHistorySink {
   private readonly batchSize: number;
   private readonly maxAttempts: number;
   private readonly retryDelayMs: number;
+  private readonly now: () => number;
   private droppedRows = 0;
   private failedBatches = 0;
   private lastError: string | null = null;
+  private lastSuccessfulWriteAt: number | null = null;
   private flushing: Promise<void> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -46,6 +51,7 @@ export class BoundedOccupancyHistorySink {
     this.batchSize = positiveInt(options.batchSize ?? DEFAULT_BATCH_SIZE, 'batchSize');
     this.maxAttempts = positiveInt(options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, 'maxAttempts');
     this.retryDelayMs = Math.max(1, options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
+    this.now = options.now ?? Date.now;
   }
 
   /** Copies the compact minute rows and returns immediately; persistence proceeds in the background. */
@@ -88,13 +94,19 @@ export class BoundedOccupancyHistorySink {
   }
 
   stats(): OccupancyHistorySinkStats {
-    return { queuedRows: this.queuedRows(), droppedRows: this.droppedRows, failedBatches: this.failedBatches, lastError: this.lastError };
+    return { queuedRows: this.queuedRows(), droppedRows: this.droppedRows, failedBatches: this.failedBatches,
+      lastError: this.lastError, lastSuccessfulWriteAt: this.lastSuccessfulWriteAt };
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
     this.clearRetryTimer();
-    await this.flushing;
+    if (this.flushing) {
+      await Promise.race([this.flushing, new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, 5000);
+        timeout.unref();
+      })]);
+    }
     this.droppedRows += this.pending.size;
     this.pending.clear();
   }
@@ -115,9 +127,11 @@ export class BoundedOccupancyHistorySink {
           else if (current) current.attempts = 0;
         }
         this.lastError = null;
+        this.lastSuccessfulWriteAt = this.now();
       } catch (error) {
         this.failedBatches += 1;
         this.lastError = error instanceof Error ? error.message : String(error);
+        operationalLog('occupancy_history.write_failed', { component: 'occupancy-history', outcome: 'retrying', count: entries.length });
         for (let index = 0; index < keys.length; index += 1) {
           const key = keys[index]!;
           this.inFlightEntries.delete(values[index]!);

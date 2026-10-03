@@ -114,6 +114,9 @@ test('edge shutdown closes live console sockets, stops a build, and flushes reco
     app.runtime.recorder.snapshot(app.runtime.latest);
     await app.stop();
     await app.stop();
+    if (socket.readyState !== WebSocket.CLOSED) {
+      await new Promise<void>((resolve) => socket.addEventListener('close', () => resolve(), { once: true }));
+    }
     assert.equal(app.runtime.isStarted, false);
     assert.equal(disposedBuilds, 1);
     assert.equal(socket.readyState, WebSocket.CLOSED);

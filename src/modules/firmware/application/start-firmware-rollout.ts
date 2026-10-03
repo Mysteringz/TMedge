@@ -5,13 +5,13 @@ import type { RolloutTarget } from '../../rollouts/domain/rollout-target.js';
 export class StartFirmwareRollout {
   constructor(private readonly rollouts: RolloutService) {}
 
-  execute(input: unknown, actor: string): unknown {
+  async execute(input: unknown, actor: string): Promise<unknown> {
     const body = record(input);
     if (typeof body.buildId !== 'string' || !body.buildId || !body.target) {
       throw new Error('buildId and target are required');
     }
     const target = parseTarget(body.target);
-    return this.rollouts.start(body.buildId, target, actor);
+    return await this.rollouts.start(body.buildId, target, actor);
   }
 }
 

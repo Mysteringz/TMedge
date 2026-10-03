@@ -3,6 +3,7 @@ import type { FirmwareBuildJobService } from '../application/firmware-build-job-
 import { StartFirmwareRollout } from '../application/start-firmware-rollout.js';
 import type { FirmwareArtifactFiles, ImageInUseQuery } from '../repositories/firmware-repository.js';
 import type { RolloutService } from '../../rollouts/application/rollout-service.js';
+import { asyncHandler } from '../../../infrastructure/http/errors.js';
 
 export interface FirmwareRouterDependencies {
   firmware: FirmwareArtifactFiles;
@@ -16,22 +17,22 @@ export interface FirmwareRouterDependencies {
 /** Creates the legacy firmware HTTP routes with injected application dependencies. */
 export function createFirmwareRouter(dependencies: FirmwareRouterDependencies): Router {
   const router = Router();
-  router.get('/firmware', getFirmwareStatus(dependencies));
+  router.get('/firmware', asyncHandler(getFirmwareStatus(dependencies)));
   router.post('/firmware/cleanup', dependencies.mutating, cleanupFirmware(dependencies));
   router.post('/firmware/uploads', dependencies.mutating, startFirmwareUpload(dependencies));
   router.post('/firmware/uploads/:id/files', dependencies.mutating, express.raw({ type: '*/*', limit: '8mb' }), addFirmwareFile(dependencies));
-  router.post('/firmware/uploads/:id/build', dependencies.mutating, startFirmwareBuild(dependencies));
+  router.post('/firmware/uploads/:id/build', dependencies.mutating, asyncHandler(startFirmwareBuild(dependencies)));
   router.delete('/firmware/:id', dependencies.mutating, deleteFirmwareImage(dependencies));
-  router.post('/firmware/rollout', dependencies.mutating, startFirmwareRollout(dependencies));
-  router.post('/firmware/rollout/cancel', dependencies.mutating, cancelFirmwareRollout(dependencies));
+  router.post('/firmware/rollout', dependencies.mutating, asyncHandler(startFirmwareRollout(dependencies)));
+  router.post('/firmware/rollout/cancel', dependencies.mutating, asyncHandler(cancelFirmwareRollout(dependencies)));
   return router;
 }
 
 function getFirmwareStatus(dependencies: FirmwareRouterDependencies): RequestHandler {
-  return (_req, res) => res.json({
+  return async (_req, res) => res.json({
     pio: dependencies.buildWorkerConfigured(),
     builds: dependencies.firmware.list(),
-    building: dependencies.buildJobs.status(),
+    building: await dependencies.buildJobs.status(),
     rollout: dependencies.rollouts.current(),
     history: dependencies.rollouts.history(),
     diskBytes: dependencies.firmware.diskBytes(),
@@ -64,7 +65,7 @@ function addFirmwareFile(dependencies: FirmwareRouterDependencies): RequestHandl
 }
 
 function startFirmwareBuild(dependencies: FirmwareRouterDependencies): RequestHandler {
-  return (req, res) => dependencies.buildJobs.start(req.params.id ?? '', { id: 'console', kind: 'console' })
+  return async (req, res) => await dependencies.buildJobs.start(req.params.id ?? '', { id: 'console', kind: 'console' })
     ? res.status(202).json({ ok: true })
     : res.status(409).json({ error: 'a build is already running' });
 }
@@ -79,9 +80,9 @@ function deleteFirmwareImage(dependencies: FirmwareRouterDependencies): RequestH
 
 function startFirmwareRollout(dependencies: FirmwareRouterDependencies): RequestHandler {
   const useCase = new StartFirmwareRollout(dependencies.rollouts);
-  return (req, res) => {
+  return async (req, res) => {
     try {
-      return res.json(useCase.execute(req.body, 'console'));
+      return res.json(await useCase.execute(req.body, 'console'));
     } catch (error: unknown) {
       return res.status(400).json({ error: errorMessage(error) });
     }
@@ -89,8 +90,8 @@ function startFirmwareRollout(dependencies: FirmwareRouterDependencies): Request
 }
 
 function cancelFirmwareRollout(dependencies: FirmwareRouterDependencies): RequestHandler {
-  return (_req, res) => {
-    dependencies.rollouts.cancel('console');
+  return async (_req, res) => {
+    await dependencies.rollouts.cancel('console');
     return res.json({ ok: true });
   };
 }

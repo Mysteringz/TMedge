@@ -18,16 +18,40 @@ import type { Registry } from './registry.js';
 import { EdgeRuntime } from './runtime.js';
 import { startConsole, stopConsole } from './console.js';
 import type { ProvisioningService } from '../modules/provisioning/application/provisioning-service.js';
+import type { DataSource } from 'typeorm';
+import type { FirmwareBuildJobService } from '../modules/firmware/application/firmware-build-job-service.js';
+import { DurableFirmwareBuildJobService } from '../modules/firmware/application/durable-firmware-build-job-service.js';
+import { PostgresFirmwareArtifactRepository, PostgresFirmwareBuildJobRepository } from '../infrastructure/postgres/firmware-build-repositories.js';
+import { PostgresOccupancyHistoryRepository } from '../infrastructure/postgres/occupancy-history-repository.js';
+import { BoundedOccupancyHistorySink } from '../modules/occupancy-history/application/bounded-occupancy-history-sink.js';
+import { DurableCommandOutcomes } from '../modules/nodes/application/durable-command-outcomes.js';
+import { PostgresCommandOutcomeRepository } from '../infrastructure/postgres/command-outcome-repository.js';
+import { PostgresRolloutRepository } from '../infrastructure/postgres/rollout-repository.js';
+import { DurableRolloutService } from '../modules/rollouts/application/durable-rollout-service.js';
+import type { RolloutRepository } from '../modules/rollouts/repositories/rollout-repository.js';
+import { postgresAvailability } from '../infrastructure/postgres/data-source.js';
+
+/** Persistence adapters are optional in legacy file mode. */
+export interface EdgeRuntimePersistenceOptions {
+  occupancyHistory?: BoundedOccupancyHistorySink;
+  commandOutcomeRepository?: PostgresCommandOutcomeRepository;
+  rolloutRepository?: RolloutRepository;
+  persistenceAvailable?: () => Promise<boolean>;
+}
 
 /** Creates the runtime with its infrastructure dependencies wired at the edge boundary. */
-export function createEdgeRuntime(cfg: EdgeConfig, reg: Registry, occupancy: OccupancyOptions = DEFAULT_OCCUPANCY): EdgeRuntime {
+export function createEdgeRuntime(
+  cfg: EdgeConfig, reg: Registry, occupancy: OccupancyOptions = DEFAULT_OCCUPANCY,
+  persistence: EdgeRuntimePersistenceOptions = {},
+): EdgeRuntime {
   let runtime: EdgeRuntime | null = null;
   let gateways: GatewayServer | null = null;
   let direct: NodeServer | null = null;
   const engine = new OccupancyEngine(reg, cfg.edgeId, occupancy);
   const recorder = new Recorder(cfg.dataDir, cfg.recordRaw);
   const publisher = new Publisher(cfg.pushUrls, cfg.pushToken);
-  const firmware = new FirmwareStore(join(cfg.dataDir, 'firmware'), { log: logRuntime });
+  const occupancyHistory = persistence.occupancyHistory ?? null;
+  const firmware = new FirmwareStore(join(cfg.dataDir, 'firmware'), { log: logRuntime, persistMetadata: cfg.persistenceMode === 'file' });
   const ingest = new Ingest({
     port: cfg.udpPort,
     host: cfg.udpHost,
@@ -71,30 +95,65 @@ export function createEdgeRuntime(cfg: EdgeConfig, reg: Registry, occupancy: Occ
       log: logRuntime,
     });
   }
-  runtime = new EdgeRuntime(cfg, reg, { ingest, engine, recorder, publisher, gateways, direct, firmware, rollouts });
+  const commandOutcomes = persistence.commandOutcomeRepository
+    ? new DurableCommandOutcomes(persistence.commandOutcomeRepository, (command) => ingest.sendCommand(command.uid, command.opcode, command.argument, command.value))
+    : null;
+  const rolloutService = persistence.rolloutRepository
+    ? new DurableRolloutService(rollouts, persistence.rolloutRepository)
+    : rollouts;
+  runtime = new EdgeRuntime(cfg, reg, {
+    ingest, engine, recorder, publisher, gateways, direct, firmware, rollouts,
+    occupancyHistory: occupancyHistory ?? undefined, commandOutcomes: commandOutcomes ?? undefined, rolloutService,
+    persistenceAvailable: persistence.persistenceAvailable,
+  });
   return runtime;
 }
 
 /** Composes and coordinates the required edge listeners and their lifecycles. */
 export interface EdgeApplicationOptions {
-  firmwareBuildJobs?: FirmwareBuildJobs;
+  firmwareBuildJobs?: FirmwareBuildJobService;
   provisioningService?: ProvisioningService;
+  postgres?: DataSource;
   closePersistence?: () => Promise<void>;
+  occupancyHistory?: BoundedOccupancyHistorySink;
 }
 
 export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: EdgeApplicationOptions = {}): EdgeApplication {
-  const runtime = createEdgeRuntime(cfg, reg);
-  const builds = options.firmwareBuildJobs ?? createFirmwareBuildJobs(runtime);
-  const consoleServer = startConsole(runtime, { firmwareBuildJobs: builds, provisioningService: options.provisioningService, listen: false });
+  const runtime = createEdgeRuntime(cfg, reg, DEFAULT_OCCUPANCY, {
+    occupancyHistory: options.occupancyHistory ?? (options.postgres ? new BoundedOccupancyHistorySink(new PostgresOccupancyHistoryRepository(options.postgres)) : undefined),
+    commandOutcomeRepository: options.postgres ? new PostgresCommandOutcomeRepository(options.postgres) : undefined,
+    rolloutRepository: options.postgres ? new PostgresRolloutRepository(options.postgres) : undefined,
+    persistenceAvailable: options.postgres ? async () => (await postgresAvailability(options.postgres!)).available : undefined,
+  });
+  const builds = options.firmwareBuildJobs ?? (options.postgres ? createDurableFirmwareBuildJobs(runtime, options.postgres) : createFirmwareBuildJobs(runtime));
+  const consoleServer = startConsole(runtime, {
+    firmwareBuildJobs: builds, provisioningService: options.provisioningService, listen: false,
+  });
   const debuggerServer = cfg.algoPort > 0
     ? startAlgo(runtime, cfg.algoPort, cfg.consoleHost, { listen: false, dataDir: cfg.dataDir })
     : null;
-  return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg, options.closePersistence);
+  return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg, options.closePersistence,
+    async () => {
+      if (builds instanceof DurableFirmwareBuildJobService) await builds.initialize();
+      await runtime.commandOutcomes?.initialize();
+      await runtime.rolloutService.initialize?.();
+    });
 }
 
 function createFirmwareBuildJobs(runtime: EdgeRuntime): FirmwareBuildJobs {
   const worker = new FirmwareBuildWorkerClient();
   return new FirmwareBuildJobs(new FirmwareStoreExecutor(runtime.firmware, worker));
+}
+
+function createDurableFirmwareBuildJobs(runtime: EdgeRuntime, source: DataSource): DurableFirmwareBuildJobService {
+  const artifacts = new PostgresFirmwareArtifactRepository(source, { read: (id, sha256, size) => runtime.firmware.readArtifactContent(id, sha256, size) });
+  return new DurableFirmwareBuildJobService({
+    repository: new PostgresFirmwareBuildJobRepository(source, { read: (id, sha256, size) => runtime.firmware.readArtifactContent(id, sha256, size) }),
+    artifacts,
+    executor: new FirmwareStoreExecutor(runtime.firmware, new FirmwareBuildWorkerClient(), true),
+    hydrateArtifacts: (rows, jobs) => runtime.firmware.hydrateDurableArtifacts(rows, jobs),
+    activateArtifact: (id) => runtime.firmware.activateBuild(id),
+  });
 }
 
 /** Owns startup and shutdown of all long-lived edge components. */
@@ -108,12 +167,14 @@ export class EdgeApplication {
     readonly debuggerServer: AlgoServerHandle | null,
     private readonly config: EdgeConfig,
     private readonly closePersistence?: () => Promise<void>,
+    private readonly initializePersistence?: () => Promise<void>,
   ) {}
 
   /** Binds every configured listener before starting periodic runtime work. */
   async start(): Promise<void> {
     if (this.state !== 'new') throw new Error(`edge application cannot start from state ${this.state}`);
     try {
+      await this.initializePersistence?.();
       await this.runtime.ingest.start();
       await this.runtime.gateways?.listen();
       await this.runtime.direct?.listen();

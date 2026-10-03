@@ -13,6 +13,7 @@ export class ExecuteNodeCommand {
     try {
       await this.dispatch(command);
     } catch (error: unknown) {
+      if (error instanceof ApplicationError && error.kind === 'unavailable') throw error;
       throw new ApplicationError('conflict', error instanceof Error ? error.message : String(error));
     }
   }

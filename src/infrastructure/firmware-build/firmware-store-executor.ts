@@ -7,7 +7,7 @@ import { FirmwareBuildWorkerClient } from './firmware-build-worker-client.js';
 export class FirmwareStoreExecutor implements FirmwareBuildExecutor {
   private readonly worker: FirmwareBuildWorker;
 
-  constructor(private readonly store: FirmwareStore, worker?: FirmwareBuildWorker) {
+  constructor(private readonly store: FirmwareStore, worker?: FirmwareBuildWorker, private readonly deferActivation = false) {
     this.worker = worker ?? new FirmwareBuildWorkerClient();
   }
 
@@ -16,7 +16,7 @@ export class FirmwareStoreExecutor implements FirmwareBuildExecutor {
     const result = await this.worker.build(workspace, reportProgress);
     if (result.exitCode !== 0) throw withLog(new FirmwareError(`build failed (pio exit ${result.exitCode})`), result.log);
     if (!result.artifact) throw withLog(new FirmwareError('the build worker returned no firmware image'), result.log);
-    const built = this.store.completeBuild(request.uploadId, request.actor.id, result.log, result.artifact);
+    const built = this.store.completeBuild(request.uploadId, request.actor.id, result.log, result.artifact, { deferActivation: this.deferActivation });
     return {
       artifact: { id: built.id, sha256: built.sha256, size: built.size, version: built.version },
       stagedOutputId: built.id,

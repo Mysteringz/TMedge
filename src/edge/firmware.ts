@@ -85,8 +85,10 @@ interface Upload {
 export class FirmwareStore implements FirmwareArtifactFiles {
   private readonly uploads = new Map<string, Upload>();
   private readonly builds = new Map<string, FirmwareBuild>();
+  private readonly pendingBuilds = new Map<string, FirmwareBuild>();
   private readonly limits: FirmwareLimits;
   private readonly now: () => number;
+  private readonly persistMetadata: boolean;
   private readonly artifactContent: FirmwareArtifactContentStorage;
   private readonly metadata: FirmwareBuildMetadataStorage;
   private lastCleanup: FirmwareCleanupReport = emptyFirmwareCleanupReport();
@@ -97,10 +99,12 @@ export class FirmwareStore implements FirmwareArtifactFiles {
       limits?: Partial<FirmwareLimits>; now?: () => number; log?: (m: string) => void;
       artifactContent?: FirmwareArtifactContentStorage;
       metadata?: FirmwareBuildMetadataStorage;
+      persistMetadata?: boolean;
     } = {},
   ) {
     this.limits = { ...DEFAULTS, ...opts.limits };
     this.now = opts.now ?? Date.now;
+    this.persistMetadata = opts.persistMetadata ?? true;
     mkdirSync(join(this.dir, 'builds'), { recursive: true });
     mkdirSync(join(this.dir, 'uploads'), { recursive: true });
     this.artifactContent = opts.artifactContent ?? new FirmwareArtifactContentStore(join(this.dir, 'artifacts'));
@@ -109,7 +113,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
   }
 
   private loadBuilds(): void {
-    for (const build of this.metadata.load()) this.builds.set(build.id, build);
+    if (this.persistMetadata) for (const build of this.metadata.load()) this.builds.set(build.id, build);
   }
 
   list(): FirmwareBuild[] {
@@ -125,6 +129,11 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     const b = this.builds.get(id);
     if (!b || b.state !== 'ready') return null;
     return this.artifactContent.read(id, b.sha256, b.size);
+  }
+
+  /** Reads a verified content-addressed image for durable metadata validation. */
+  readArtifactContent(id: string, sha256: string, size: number): Buffer | null {
+    return this.artifactContent.read(id, sha256, size);
   }
 
   // --- upload ---------------------------------------------------------------
@@ -194,7 +203,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
   }
 
   /** Validates and promotes the worker's staged firmware image. */
-  completeBuild(uploadId: string, by: string, log: readonly string[], bytes: Buffer): FirmwareBuild {
+  completeBuild(uploadId: string, by: string, log: readonly string[], bytes: Buffer, options: { deferActivation?: boolean } = {}): FirmwareBuild {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');
     const root = this.buildWorkspace(uploadId);
@@ -218,13 +227,43 @@ export class FirmwareStore implements FirmwareArtifactFiles {
       sourceBytes: up.bytes,
       log: log.slice(-60),
     };
-    this.metadata.save(build);
-    this.builds.set(id, build);
+    if (options.deferActivation) this.pendingBuilds.set(id, build);
+    else {
+      if (this.persistMetadata) this.metadata.save(build);
+      this.builds.set(id, build);
+    }
     // The sources have done their job; the image and its log are what matter.
     rmSync(up.dir, { recursive: true, force: true });
     this.uploads.delete(uploadId);
     this.opts.log?.(`firmware: built ${build.version} ${id} (${bytes.length} bytes)`);
     return build;
+  }
+
+  /** Makes a locally verified image visible only after its durable metadata commit. */
+  activateBuild(id: string): void {
+    const build = this.pendingBuilds.get(id);
+    if (!build) throw new FirmwareError(`no staged firmware build ${id}`);
+    if (this.persistMetadata) this.metadata.save(build);
+    this.builds.set(id, build);
+    this.pendingBuilds.delete(id);
+  }
+
+  /** Rehydrates usable image views from database rows plus successful durable build records. */
+  hydrateDurableArtifacts(artifacts: readonly { id: string; sha256: string; size: number; version: string }[],
+    jobs: readonly { lifecycle: string; actor: { id: string }; startedAt: number; finishedAt: number | null; artifact: { id: string; sha256: string; size: number; version: string } | null; log: readonly string[] }[]): void {
+    this.builds.clear();
+    this.pendingBuilds.clear();
+    for (const artifact of artifacts) {
+      const job = jobs.find((entry) => entry.lifecycle === 'succeeded' && entry.artifact?.id === artifact.id
+        && entry.artifact.sha256 === artifact.sha256 && entry.artifact.size === artifact.size
+        && entry.artifact.version === artifact.version);
+      const bytes = this.artifactContent.read(artifact.id, artifact.sha256, artifact.size);
+      if (!job || !bytes || bytes.length !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) continue;
+      this.builds.set(artifact.id, {
+        ...artifact, state: 'ready', uploadedBy: job.actor.id, uploadedAt: job.startedAt,
+        builtAt: job.finishedAt, files: 0, sourceBytes: 0, log: [...job.log].slice(-60),
+      });
+    }
   }
 
   /** Throw away an upload that was never built. */
@@ -262,7 +301,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     const build = this.builds.get(id);
     if (!build) return false;
     this.artifactContent.remove(id);
-    this.metadata.remove(id);
+    if (this.persistMetadata) this.metadata.remove(id);
     this.builds.delete(id);
     return true;
   }

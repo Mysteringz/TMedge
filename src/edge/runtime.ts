@@ -19,6 +19,9 @@ import type { Rollouts } from './rollout.js';
 import type { GatewayServer } from './gwlink.js';
 import type { NodeServer } from './nodelink.js';
 import type { Publisher } from './publisher.js';
+import type { BoundedOccupancyHistorySink } from '../modules/occupancy-history/application/bounded-occupancy-history-sink.js';
+import type { DurableCommandOutcomes } from '../modules/nodes/application/durable-command-outcomes.js';
+import type { RolloutService } from '../modules/rollouts/application/rollout-service.js';
 
 export const EDGE_VERSION = '1.0.0';
 
@@ -47,6 +50,10 @@ export interface EdgeRuntimeServices {
   direct: NodeServer | null;
   firmware: FirmwareStore;
   rollouts: Rollouts;
+  occupancyHistory?: BoundedOccupancyHistorySink;
+  commandOutcomes?: DurableCommandOutcomes;
+  rolloutService?: RolloutService;
+  persistenceAvailable?: () => Promise<boolean>;
 }
 
 export class EdgeRuntime extends EventEmitter {
@@ -66,6 +73,10 @@ export class EdgeRuntime extends EventEmitter {
   private started = false;
   readonly firmware: FirmwareStore;
   readonly rollouts: Rollouts;
+  readonly occupancyHistory: BoundedOccupancyHistorySink | null;
+  readonly commandOutcomes: DurableCommandOutcomes | null;
+  readonly rolloutService: RolloutService;
+  readonly persistenceAvailable: (() => Promise<boolean>) | null;
   private lastRecordedMinute = -1;
   latest: OccupancySnapshot;
 
@@ -83,11 +94,15 @@ export class EdgeRuntime extends EventEmitter {
     this.direct = services.direct;
     this.firmware = services.firmware;
     this.rollouts = services.rollouts;
+    this.occupancyHistory = services.occupancyHistory ?? null;
+    this.commandOutcomes = services.commandOutcomes ?? null;
+    this.rolloutService = services.rolloutService ?? services.rollouts;
+    this.persistenceAvailable = services.persistenceAvailable ?? null;
     for (const f of reg.floors) this.dwell.set(f.id, new DwellMap(f.width, f.height));
     this.ingest.on('report', (p, _a, at) => this.onReport(p, at));
     this.ingest.on('raw', (p, _a, at) => this.onRaw(p, at));
     this.ingest.on('status', (p, _a, at) => this.onStatus(p, at));
-    this.ingest.on('ota', (p) => this.rollouts.onOtaStatus(p.uid, p));
+    this.ingest.on('ota', (p) => setImmediate(() => this.rollouts.onOtaStatus(p.uid, p)));
     this.latest = this.engine.snapshot(Date.now());
   }
 
@@ -101,7 +116,11 @@ export class EdgeRuntime extends EventEmitter {
     this.started = true;
     // A rollout moves on its own: nodes report, gateways take delivery, and
     // stalled nodes have to time out even when nobody is watching a console.
-    this.rolloutTimer = setInterval(() => this.rollouts.tick(), 1000);
+    this.rolloutTimer = setInterval(() => {
+      const tick = this.rolloutService.tick?.();
+      if (tick instanceof Promise) void tick.catch(() => console.error('[edge] rollout persistence unavailable; dispatch paused'));
+      else if (!this.rolloutService.tick) this.rollouts.tick();
+    }, 1000);
     this.rolloutTimer.unref();
     this.publishTimer = setInterval(() => this.tick(Date.now()), this.cfg.publishMs);
     this.publishTimer.unref();
@@ -119,13 +138,18 @@ export class EdgeRuntime extends EventEmitter {
   }
 
   private async stopComponents(): Promise<void> {
-    const results = await Promise.allSettled([
+    const transportResults = await Promise.allSettled([
       this.ingest.stop(),
       this.gateways?.close() ?? Promise.resolve(),
       this.direct?.close() ?? Promise.resolve(),
-      this.recorder.close(),
     ]);
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    const drainResults = await Promise.allSettled([
+      this.recorder.close(),
+      this.occupancyHistory?.dispose() ?? Promise.resolve(),
+      this.commandOutcomes?.dispose() ?? Promise.resolve(),
+      this.rolloutService.dispose?.() ?? Promise.resolve(),
+    ]);
+    const failure = [...transportResults, ...drainResults].find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failure) throw failure.reason;
   }
 
@@ -136,6 +160,7 @@ export class EdgeRuntime extends EventEmitter {
     if (minute !== this.lastRecordedMinute) {
       this.lastRecordedMinute = minute;
       this.recorder.snapshot(this.latest);
+      this.occupancyHistory?.enqueue(this.latest);
     }
     this.emit('snapshot', this.latest);
     return this.latest;
@@ -193,6 +218,7 @@ export class EdgeRuntime extends EventEmitter {
     const i = this.infoFor(p.uid);
     i.status = p;
     i.statusAt = at;
+    this.commandOutcomes?.observeStatus(p.uid, p.lastCmd);
   }
 
   lastRaw(uid: string): RawFrameMessage | null {

@@ -40,6 +40,7 @@ export interface NodeUpdate {
   error?: string;
   startedAt: number | null;
   updatedAt: number;
+  outcomeUncertain?: boolean;
 }
 
 export interface RolloutView {
@@ -52,6 +53,7 @@ export interface RolloutView {
   finishedAt: number | null;
   /** pilot -> rest -> done, or stopped when the pilot failed. */
   stage: 'pilot' | 'rest' | 'done' | 'stopped';
+  recoveryState?: 'interrupted';
   note: string;
   nodes: NodeUpdate[];
 }
@@ -77,6 +79,8 @@ export interface RolloutDeps {
   nodes(): RolloutNode[];
   sendImageToGateway(gatewayId: string, meta: { id: string; size: number; sha256: string }, bytes: Buffer): boolean;
   sendOta(uid: string, image: { port: number; size: number; sha256: string; path: string }): Promise<void>;
+  /** Durable adapter commits the current snapshot before any image/OTA dispatch. */
+  beforeDispatch?(): Promise<void>;
   /** A node's part in the rollout is over: revoke anything issued for it (download grants). */
   onNodeDone?(uid: string): void;
   /** Port the edge itself serves images on, for a node that talks to it directly. */
@@ -113,10 +117,17 @@ export class Rollouts {
   /** Gateways that have taken delivery of the image being rolled out. */
   private readonly gatewaysReady = new Map<string, { port: number; at: number }>();
   private readonly gatewaysAsked = new Map<string, number>();
+  private readonly launching = new Set<string>();
+  private beforeDispatch: (() => Promise<void>) | undefined;
 
   constructor(private readonly deps: RolloutDeps, timings: Partial<RolloutTimings> = {}) {
     this.now = deps.now ?? Date.now;
     this.timings = { ...DEFAULT_TIMINGS, ...timings };
+    this.beforeDispatch = deps.beforeDispatch;
+  }
+
+  setBeforeDispatch(hook: (() => Promise<void>) | undefined): void {
+    this.beforeDispatch = hook;
   }
 
   current(): RolloutView | null { return this.active; }
@@ -135,6 +146,15 @@ export class Rollouts {
   }
   history(): RolloutView[] { return [...this.past].reverse(); }
 
+  /** Restores committed history without dispatching any operation. */
+  restore(current: RolloutView | null, history: readonly RolloutView[]): void {
+    this.active = current;
+    this.past.splice(0, this.past.length, ...history.slice(-20));
+    this.gatewaysReady.clear();
+    this.gatewaysAsked.clear();
+    this.launching.clear();
+  }
+
   /** Which nodes a target picks, in the order they would be updated. */
   select(target: RolloutTarget): RolloutNode[] {
     const all = this.deps.nodes();
@@ -145,7 +165,7 @@ export class Rollouts {
     return pick.filter((n) => n.online && n.address !== null && n.transport !== null);
   }
 
-  start(buildId: string, target: RolloutTarget, by: string): RolloutView {
+  start(buildId: string, target: RolloutTarget, by: string, deferDispatch = false): RolloutView {
     if (this.active && this.active.stage !== 'done' && this.active.stage !== 'stopped') {
       throw new RolloutError('an update is already running');
     }
@@ -180,7 +200,7 @@ export class Rollouts {
       })),
     };
     this.deps.log?.(`rollout ${this.active.id}: ${image.version} (${buildId}) to ${chosen.length} node(s), pilot ${chosen[0]?.uid}`);
-    this.tick();
+    if (!deferDispatch) this.tick();
     return this.active;
   }
 
@@ -263,7 +283,7 @@ export class Rollouts {
     const pilot = r.nodes[0];
     if (!pilot) return;
     if (r.stage === 'pilot') {
-      if (pilot.state === 'queued') this.begin(pilot);
+      if (pilot.state === 'queued') void this.begin(pilot);
       else if (pilot.state === 'confirmed') {
         r.stage = r.nodes.length > 1 ? 'rest' : 'done';
         r.note = r.nodes.length > 1 ? 'pilot confirmed; updating the rest' : 'done';
@@ -283,7 +303,7 @@ export class Rollouts {
       for (const n of r.nodes.slice(1)) {
         if (inFlight >= this.timings.batch) break;
         if (n.state !== 'queued') continue;
-        this.begin(n);
+        void this.begin(n);
         if (n.startedAt !== null) inFlight += 1;
       }
     }
@@ -299,6 +319,14 @@ export class Rollouts {
   // --- internals ------------------------------------------------------------
 
   private begin(node: NodeUpdate): void {
+    if (this.launching.has(node.uid)) return;
+    this.launching.add(node.uid);
+    const task = this.beginOnce(node);
+    if (this.beforeDispatch) void task.finally(() => this.launching.delete(node.uid));
+    else this.launching.delete(node.uid);
+  }
+
+  private async beginOnce(node: NodeUpdate): Promise<void> {
     const r = this.active;
     if (!r) return;
     const image = this.deps.image(r.buildId);
@@ -307,7 +335,7 @@ export class Rollouts {
       return;
     }
     if (node.transport === 'direct') {
-      this.request(node, 443, image);
+      await this.request(node, 443, image);
       return;
     }
     // A node behind a gateway downloads from that gateway, so the image has
@@ -317,26 +345,39 @@ export class Rollouts {
       if (!ready) {
         const asked = this.gatewaysAsked.get(node.gatewayId);
         if (asked === undefined) {
-          const sent = this.deps.sendImageToGateway(node.gatewayId, { id: r.buildId, size: image.size, sha256: image.sha256 }, image.bytes);
           this.gatewaysAsked.set(node.gatewayId, this.now());
+          try {
+            if (this.beforeDispatch) await this.beforeDispatch();
+          } catch {
+            this.gatewaysAsked.delete(node.gatewayId);
+            return;
+          }
+          const sent = this.deps.sendImageToGateway(node.gatewayId, { id: r.buildId, size: image.size, sha256: image.sha256 }, image.bytes);
           if (!sent) this.set(node, 'failed', `gateway ${node.gatewayId} is not connected`);
         } else if (this.now() - asked > this.timings.imageMs) {
           this.set(node, 'failed', `gateway ${node.gatewayId} never took the image`);
         }
         return;   // try again on the next tick
       }
-      this.request(node, ready.port, image);
+      await this.request(node, ready.port, image);
       return;
     }
-    this.request(node, this.deps.directPort, image);
+    await this.request(node, this.deps.directPort, image);
   }
 
-  private request(node: NodeUpdate, port: number, image: { sha256: string; size: number }): void {
+  private async request(node: NodeUpdate, port: number, image: { sha256: string; size: number }): Promise<void> {
     const r = this.active;
     if (!r) return;
     this.set(node, 'sending');
     node.startedAt = this.now();
-    this.deps.sendOta(node.uid, { port, size: image.size, sha256: image.sha256, path: `/fw/${r.buildId}.bin` })
+    try {
+      if (this.beforeDispatch) await this.beforeDispatch();
+    } catch {
+      node.state = 'queued';
+      node.startedAt = null;
+      return;
+    }
+    await this.deps.sendOta(node.uid, { port, size: image.size, sha256: image.sha256, path: `/fw/${r.buildId}.bin` })
       .catch((err: unknown) => {
         this.set(node, 'failed', err instanceof Error ? err.message : String(err));
         this.tick();

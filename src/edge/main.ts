@@ -29,6 +29,7 @@ async function main(): Promise<void> {
   const { cfg, registry, source, provisioningService } = loaded;
   const edge = createEdgeApplication(cfg, registry, {
     provisioningService,
+    postgres: source ?? undefined,
     closePersistence: source ? () => closePostgres(source) : undefined,
   });
   const rejectBudgetTimer = installRuntimeLogs(edge.runtime);

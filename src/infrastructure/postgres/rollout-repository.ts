@@ -31,7 +31,7 @@ export class PostgresRolloutRepository implements RolloutRepository {
 
   async history(): Promise<RolloutRecord[]> {
     const rows = await this.source.query(
-      `SELECT id FROM public.firmware_rollouts WHERE stage IN ('done', 'stopped') ORDER BY started_at DESC, id`,
+      `SELECT id FROM public.firmware_rollouts WHERE stage IN ('done', 'stopped') ORDER BY started_at DESC, id LIMIT 20`,
     ) as Array<{ id: string }>;
     const records: RolloutRecord[] = [];
     for (const row of rows) {

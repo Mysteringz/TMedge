@@ -33,6 +33,22 @@ export class PostgresCommandOutcomeRepository implements CommandOutcomeRepositor
       }
     });
   }
+
+  /** Startup records uncertainty for sent commands that have no terminal outcome; it never replays them. */
+  async markInFlightUncertain(at: number): Promise<void> {
+    await this.source.query(
+      `INSERT INTO public.command_outcomes (command_id, node_id, command, actor_id, actor_kind, outcome, occurred_at)
+       SELECT latest.command_id, latest.node_id, latest.command, latest.actor_id, latest.actor_kind, 'uncertain', $1
+       FROM (
+         SELECT DISTINCT ON (command_id) command_id, node_id, command, actor_id, actor_kind
+         FROM public.command_outcomes ORDER BY command_id, occurred_at DESC, id DESC
+       ) latest
+       WHERE NOT EXISTS (
+         SELECT 1 FROM public.command_outcomes terminal
+         WHERE terminal.command_id = latest.command_id AND terminal.outcome IN ('acknowledged', 'timed-out', 'uncertain', 'failed')
+       ) ON CONFLICT (command_id, outcome) DO NOTHING`, [new Date(at)],
+    );
+  }
 }
 
 function epoch(value: Date | string): number {
