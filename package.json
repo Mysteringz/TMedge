@@ -9,6 +9,8 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && npm run build:app && npm run build:algo",
     "db:migrate": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/postgres-migrate.js up",
     "db:revert": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/postgres-migrate.js down",
+    "db:registry:export": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/registry-export.js",
+    "db:registry:import": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/registry-import.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck && npm --prefix algo-app run typecheck",
     "test": "tsc -p tsconfig.json && node --test dist/test/*.test.js",
     "crosscheck": "tsc -p tsconfig.json && node dist/src/tools/crosscheck.js",
