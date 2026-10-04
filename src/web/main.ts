@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { searchSeats } from '../shared/seats.js';
-import { AuthError, parseCookies, RateLimiter, Sessions, turnstileCheck, UserStore, type HumanCheck } from './auth.js';
+import { AuthError, parseCookies, RateLimiter, Sessions, turnstileCheck, turnstileFromEnv, UserStore, type HumanCheck } from './auth.js';
 import { isSnapshot, SnapshotStore } from './store.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -66,27 +66,8 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
     cookieSecure: env.COOKIE_SECURE === '1',
     trustProxy: !env.TRUST_PROXY || env.TRUST_PROXY === '0' ? false : env.TRUST_PROXY === '1' ? true : env.TRUST_PROXY,
     staleMs: Number(env.STALE_MS || 30_000),
-    turnstile: loadTurnstile(env),
+    turnstile: turnstileFromEnv(env),
   };
-}
-
-/**
- * Both keys or neither. One without the other is a half-made setup: a site key
- * alone would draw a widget nobody checks, and a secret alone would refuse
- * every student because the page has no widget to solve.
- */
-function loadTurnstile(env: NodeJS.ProcessEnv): WebConfig['turnstile'] {
-  const siteKey = env.TURNSTILE_SITE_KEY?.trim() ?? '';
-  const secretKey = env.TURNSTILE_SECRET_KEY?.trim() ?? '';
-  if (!siteKey && !secretKey) return null;
-  if (!siteKey || !secretKey) throw new Error('set TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY together, or neither');
-  // The site key lands in an HTML attribute; keep it to what Cloudflare issues.
-  if (!/^[\w-]{8,100}$/.test(siteKey)) throw new Error('TURNSTILE_SITE_KEY does not look like a Turnstile site key');
-  // The pages a token may have been solved on. Without it every token would
-  // fail siteverify's hostname check, i.e. nobody could sign in: refuse now.
-  const hostnames = (env.TURNSTILE_HOSTNAMES ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
-  if (hostnames.length === 0) throw new Error('TURNSTILE_HOSTNAMES must list the site\'s hostnames, e.g. hkumyseat.com');
-  return { siteKey, secretKey, hostnames };
 }
 
 /**

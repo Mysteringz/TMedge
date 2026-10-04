@@ -15,7 +15,8 @@
     "edge": "node --env-file-if-exists=.env dist/src/edge/main.js",
     "web": "node --env-file-if-exists=.env dist/src/web/main.js",
     "simulate": "node --env-file-if-exists=.env dist/src/tools/simulator.js",
-    "user": "node --env-file-if-exists=.env dist/src/tools/user.js"
+    "user": "node --env-file-if-exists=.env dist/src/tools/user.js",
+    "algo-user": "node --env-file-if-exists=.env dist/src/tools/algouser.js"
   },
   "dependencies": {
     "express": "^4.21.2",

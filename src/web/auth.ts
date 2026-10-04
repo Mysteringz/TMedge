@@ -221,3 +221,27 @@ export function turnstileCheck(
     }
   };
 }
+
+export interface TurnstileConfig { siteKey: string; secretKey: string; hostnames: string[] }
+
+/**
+ * Both keys or neither. One without the other is a half-made setup: a site key
+ * alone would draw a widget nobody checks, and a secret alone would refuse
+ * every student because the page has no widget to solve.
+ *
+ * Shared by the web tier and the edge's algo console: both processes read the
+ * same .env, so one widget and one rule set covers both sign-in pages.
+ */
+export function turnstileFromEnv(env: NodeJS.ProcessEnv): TurnstileConfig | null {
+  const siteKey = env.TURNSTILE_SITE_KEY?.trim() ?? '';
+  const secretKey = env.TURNSTILE_SECRET_KEY?.trim() ?? '';
+  if (!siteKey && !secretKey) return null;
+  if (!siteKey || !secretKey) throw new Error('set TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY together, or neither');
+  // The site key lands in an HTML attribute; keep it to what Cloudflare issues.
+  if (!/^[\w-]{8,100}$/.test(siteKey)) throw new Error('TURNSTILE_SITE_KEY does not look like a Turnstile site key');
+  // The pages a token may have been solved on. Without it every token would
+  // fail siteverify's hostname check, i.e. nobody could sign in: refuse now.
+  const hostnames = (env.TURNSTILE_HOSTNAMES ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (hostnames.length === 0) throw new Error('TURNSTILE_HOSTNAMES must list the site\'s hostnames, e.g. hkumyseat.com');
+  return { siteKey, secretKey, hostnames };
+}
