@@ -99,6 +99,12 @@ test('tables are ordered and addressed the way a person walks the room', () => {
   assert.deepEqual(gridPosition(f.tables, 'M10'), { row: 1, column: 4, rows: 2, columns: 5 });
   assert.equal(label(['M3']), 'Table M3');
   assert.equal(label(['M3', 'M4']), 'Tables M3–M4');
+  assert.equal(label(['M3', 'M4', 'M5']), 'Tables M3–M5');
+  // A run that skips a table is a list: a range would name tables the group is
+  // not being sent to, which is the one thing this label must never do.
+  assert.equal(label(['M3', 'M7']), 'Tables M3, M7');
+  assert.equal(label(['M3', 'B4']), 'Tables M3, B4');
+  assert.equal(label([]), 'No table');
 });
 
 test('the pilot venue names the floors the edge actually publishes', () => {

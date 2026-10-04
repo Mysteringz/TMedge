@@ -10,6 +10,7 @@
  * automatically, so without it any page the admin visits could reboot nodes.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -134,6 +135,23 @@ export function startConsole(rt: EdgeRuntime): Server {
   });
 
   app.use(express.json({ limit: '4kb' }));
+  // public-console/index.html is tracked; the modules it loads are compiled
+  // into public-console/js by `npm run build` and are not. A fresh checkout
+  // therefore serves a page that loads, 404s its own script and sits there
+  // blank, so an unbuilt console says so on the page and in the edge's log
+  // instead. After the admin check, like everything else a person can read.
+  const consoleEntry = join(ROOT, 'public-console', 'js', 'console-client', 'app.js');
+  if (!existsSync(consoleEntry)) {
+    console.warn('[edge] console UI is not built (missing public-console/js/console-client/app.js): run `npm run build`');
+    app.get(['/', '/index.html'], (_req, res) => {
+      res.status(503).type('html').send(
+        '<!doctype html><meta charset="utf-8"><title>TMedge console</title>'
+        + '<body style="font:16px/1.5 system-ui;padding:2rem;max-width:40rem">'
+        + '<h1>The console UI is not built</h1>'
+        + '<p>Run <code>npm run build</code> in the release directory, then reload this page.</p>',
+      );
+    });
+  }
   // Never cached. Express would send max-age=0 with an ETag, which is correct
   // and not enough: Cloudflare caches by file extension in front of this, so a
   // .js file can be served from the edge long after a deploy -- the same trap

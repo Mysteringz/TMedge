@@ -110,13 +110,33 @@ export function allocate(floor: FloorState, n: number): Allocation | null {
   return { shares, label: label(shares.map((s) => s.name)), seats: n, waste: best.waste };
 }
 
-/** "Table M3" for one, "Tables M3-M5" for a run, otherwise a list. */
+/**
+ * "Table M3" for one, "Tables M3–M5" for a run of consecutive names, otherwise
+ * a list ("Tables M3, M7").
+ *
+ * A range is only honest when the names really are consecutive: a run that
+ * crosses a gap written as "Tables M3–M7" would name tables the group is not
+ * being sent to.
+ */
 export function label(names: string[]): string {
   if (names.length === 0) return 'No table';
-  if (names.length === 1) return `Table ${names[0]}`;
   const first = names[0] ?? '';
+  if (names.length === 1) return `Table ${first}`;
   const last = names[names.length - 1] ?? '';
-  return `Tables ${first}–${last}`;
+  return consecutive(names) ? `Tables ${first}–${last}` : `Tables ${names.join(', ')}`;
+}
+
+/** One prefix with numbers that step by one: M3, M4, M5. Anything else is a list. */
+function consecutive(names: string[]): boolean {
+  let previous: { prefix: string; n: number } | null = null;
+  for (const name of names) {
+    const m = /^(.*?)(\d+)$/.exec(name);
+    if (!m) return false;
+    const step = { prefix: m[1] ?? '', n: Number(m[2] ?? NaN) };
+    if (previous && (step.prefix !== previous.prefix || step.n !== previous.n + 1)) return false;
+    previous = step;
+  }
+  return previous !== null;
 }
 
 /** Free seats a space can actually promise: unknown tables count for nothing. */

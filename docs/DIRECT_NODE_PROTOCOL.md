@@ -1,10 +1,19 @@
 # tmnode.v1 — direct node protocol
 
-Status: **implemented, not deployed.** Edge: `src/edge/nodelink.ts`. Node:
-`TMsense/src/tm_cloud_session.cpp` (+ `tm_ws.cpp`, `tm_cloud_proto.cpp`,
-`tm_cloud.cpp`). Both ends are checked against each other by
-`npm run crosscheck`, which runs the firmware's own session code against this
+Status: **implemented and crosschecked; not enabled in production.** Edge:
+`src/edge/nodelink.ts`. Node: `TMsense/src/tm_cloud_session.cpp` (+ `tm_ws.cpp`,
+`tm_cloud_proto.cpp`, `tm_cloud.cpp`). Both ends are checked against each other
+by `npm run crosscheck`, which runs the firmware's own session code against this
 edge's listener.
+
+The listener ships **off**: with `NODE_PORT` unset it does not exist, so no
+production node uses this transport yet. The node side has been exercised on
+hardware (a TMsense 1.4 image flashed over 1.3 keeping its NVS, the production
+builds' TLS and refusal behaviour, and the reconnect backoff) and the firmware's
+session code is run against this listener by the crosscheck; the full
+end-to-end session on hardware is still pending. Enabling it is a sequence of
+separately approved steps — see `DIRECT_NODE_RUNBOOK.md`, whose §7 records what
+has and has not been proven.
 
 A TMsense node with `transport wss` reaches TMedge itself — one outbound TLS
 WebSocket, no gateway machine at the site. This is a **transport**, not a new

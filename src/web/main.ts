@@ -12,7 +12,7 @@
  * other people see.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +90,31 @@ function assetVersion(): string {
     }
   }
   return h.digest('hex').slice(0, 10);
+}
+
+/**
+ * Build output the shell asks for but this checkout does not have.
+ *
+ * `public-web/index.html` is tracked; the bundle it points at lives in
+ * `public-web/app/`, which is build output and git-ignored. On a fresh clone
+ * the page would load, 404 its module and sit there blank, so the entry point
+ * asks this first and says what to run instead. Only `/app/` is checked: the
+ * photographs, floor models and three.js under `/assets/` and `/vendor/` are
+ * tracked, so they are always there.
+ */
+export function missingAppAssets(publicDir: string = PUBLIC): string[] {
+  let shell: string;
+  try {
+    shell = readFileSync(join(publicDir, 'index.html'), 'utf8');
+  } catch {
+    return ['index.html'];
+  }
+  const missing: string[] = [];
+  for (const m of shell.matchAll(/(?:src|href)=["'](\/app\/[^"'?#]+)/g)) {
+    const asset = m[1];
+    if (asset && !existsSync(join(publicDir, asset))) missing.push(asset);
+  }
+  return missing;
 }
 
 /**
@@ -283,6 +308,12 @@ export function createWebApp(cfg: WebConfig) {
     res.json({ email: u?.email, name: u?.name });
   });
   app.get('/api/occupancy', requireUser, (_req, res) => res.json(store.view()));
+  /**
+   * Seat-level suggestions, for API clients. The bundled student app does not
+   * call this: it computes its own answer from the live snapshot with the
+   * shared `allocate()` (table runs) so the list and the plan beside it cannot
+   * disagree. Keep the two rules in step if either changes.
+   */
   app.get('/api/search', requireUser, (req, res) => {
     const n = Number(req.query.seats);
     if (!Number.isInteger(n) || n < 1 || n > 30) return res.status(400).json({ error: 'seats must be a whole number 1..30' });
@@ -352,6 +383,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     cfg = loadWebConfig();
   } catch (err) {
     console.error(`[web] refusing to start: ${(err as Error).message}`);
+    process.exit(2);
+  }
+  // A tier that answers the API but serves a page that cannot load is worse
+  // than one that says why it will not start: the failure is otherwise a blank
+  // screen and a 404 in a browser console nobody is watching.
+  const missing = missingAppAssets();
+  if (missing.length > 0) {
+    console.error(`[web] refusing to start: the student app is not built (missing ${missing.join(', ')}). Run \`npm run build\` first.`);
     process.exit(2);
   }
   const { server, users } = createWebApp(cfg);
