@@ -30,6 +30,10 @@ export function Home({ user }: { user: string }) {
   }, []);
 
   return (
+    <>
+    {/* Behind everything, and bigger than the tab: only part of the ring is
+        ever on screen, turning slowly past the modules. */}
+    <div className="cx-donut-stage" aria-hidden="true"><Donut /></div>
     <main className="cx-home-main">
       <section className="cx-home-left">
         <div className="cx-kicker">&gt; SELECT MODULE</div>
@@ -50,25 +54,33 @@ export function Home({ user }: { user: string }) {
           ))}
         </div>
       </section>
-      <section className="cx-home-right" aria-hidden="true">
-        <Donut />
-      </section>
     </main>
+    </>
   );
 }
+
+/**
+ * Radians per second: about 80 s per turn. Time-based rather than per-frame,
+ * so it keeps the same stately pace on a 60 Hz laptop and a 120 Hz display.
+ */
+const SPIN_A = 0.08;
+const SPIN_B = 0.035;
 
 function Donut() {
   const el = useRef<HTMLPreElement>(null);
   useEffect(() => {
     // Someone who asked for less motion gets a still torus.
     const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let a = 0, b = 0, raf = 0;
-    const tick = () => {
-      a += 0.035; b += 0.017;
-      if (el.current) el.current.textContent = donutFrame(a, b);
+    let raf = 0;
+    const t0 = performance.now();
+    // Start mid-turn: a torus seen exactly edge-on or face-on is the least
+    // interesting frame there is, and a slow spin would hold it for seconds.
+    const tick = (now: number) => {
+      const t = (now - t0) / 1000;
+      if (el.current) el.current.textContent = donutFrame(1.1 + t * SPIN_A, 0.6 + t * SPIN_B);
       if (!still) raf = requestAnimationFrame(tick);
     };
-    tick();
+    tick(t0);
     return () => cancelAnimationFrame(raf);
   }, []);
   return <pre ref={el} className="cx-donut" />;
