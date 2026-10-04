@@ -11,11 +11,11 @@ case "$role" in
   algo-user) exec node dist/src/tools/algouser.js "$@" ;;
   health)
     # The web tier answers /healthz; the edge's console port answers (401 = up,
-    # password required; 302 = up, sending browsers to the algo console).
+    # password required).
     exec node -e '
       const tryGet = (u) => fetch(u, { redirect: "manual", signal: AbortSignal.timeout(4000) }).then((r) => r.status).catch(() => 0);
       Promise.all([tryGet("http://127.0.0.1:" + (process.env.WEB_PORT || 8080) + "/healthz"),
                    tryGet("http://127.0.0.1:" + (process.env.CONSOLE_PORT || 8090) + "/")])
-        .then(([w, c]) => process.exit(w === 200 || c === 200 || c === 401 || c === 302 ? 0 : 1));' ;;
+        .then(([w, c]) => process.exit(w === 200 || c === 200 || c === 401 ? 0 : 1));' ;;
   *) echo "usage: tmedge <edge|web|sim|user|algo-user|health> [args]" >&2; exit 64 ;;
 esac

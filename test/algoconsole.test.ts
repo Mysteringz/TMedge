@@ -134,9 +134,20 @@ test('console writes still need their header, and the cookie alone is not enough
 test('the console port keeps the device endpoints and sends a browser on to module 03', async () => {
   const { consoleBase } = await boot();
   const page = await fetch(`${consoleBase}/`, { redirect: 'manual' });
-  assert.equal(page.status, 302, 'the deploy health check accepts this');
-  assert.equal(page.headers.get('location'), 'http://127.0.0.1:8091/console');
+  // 200 or 401, nothing else: the health check production runs is pinned on
+  // the box (a release cannot replace it), and a 302 here rolled a deploy back.
+  assert.equal(page.status, 200, 'the pinned deploy health check accepts only 200 or 401 from this port');
+  assert.match(await page.text(), /http-equiv="refresh" content="0; url=http:\/\/127\.0\.0\.1:8091\/console"/, 'and the page forwards the browser at once');
   assert.equal(page.headers.get('www-authenticate'), null, 'no browser password prompt here either');
+  // The target is built from the Host header; it must not become markup.
+  const { request } = await import('node:http');
+  const port = new URL(consoleBase).port;
+  const body = await new Promise<string>((resolve, reject) => {
+    request({ host: '127.0.0.1', port, path: '/', headers: { host: 'x"><script>alert(1)</script>' } }, (r) => {
+      let b = ''; r.on('data', (c: Buffer) => { b += c.toString(); }); r.on('end', () => resolve(b));
+    }).on('error', reject).end();
+  });
+  assert.ok(!body.includes('<script>'), 'a hostile Host header is escaped, not injected');
   const api = await fetch(`${consoleBase}/api/state`);
   assert.equal(api.status, 410, 'the old API says where it went instead of serving raw frames past a password');
 

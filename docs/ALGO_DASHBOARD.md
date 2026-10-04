@@ -267,7 +267,9 @@ provisioning queue, the live feed) exists once and is served in two places:
   (`/fw/<id>.bin`) and TMflash (`/api/provision/request|status`) -- stays on
   CONSOLE_PORT (8090). Those callers are devices with their own
   credentials and already know that address. Everything else there now
-  redirects a browser to the algo console's `/console`
+  forwards a browser to the algo console's `/console` (a 200 page with a
+  meta refresh, not a 302: production's pinned health check accepts only
+  200 or 401 from this port)
   (`console.<domain>` -> `https://algo.<domain>/console`, otherwise the same
   host on ALGO_PORT) and answers its old API with `410`.
 

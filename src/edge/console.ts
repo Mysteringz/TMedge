@@ -45,6 +45,8 @@ function safeEqual(a: string, b: string): boolean {
 /** How many nodes one console may watch raw frames from at once. */
 const MAX_SUBSCRIPTIONS = 64;
 
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
 export interface ConsoleCore {
   /** Endpoints for devices and TMflash: their own credentials, never a person's. */
   machine: Router;
@@ -417,9 +419,21 @@ export function startConsole(rt: EdgeRuntime, core: ConsoleCore = createConsole(
   if (moved) {
     app.use((req: Request, res: Response) => {
       res.set('Cache-Control', 'no-store');
-      // A page goes on to the new home; an API caller gets told, not a page.
-      if (req.method === 'GET' && !req.path.startsWith('/api/')) return res.redirect(moved(req));
-      return res.status(410).json({ error: 'the console moved', location: moved(req) });
+      // An API caller is told, not sent a page.
+      if (req.method !== 'GET' || req.path.startsWith('/api/')) {
+        return res.status(410).json({ error: 'the console moved', location: moved(req) });
+      }
+      // A browser goes on to the new home -- with a 200 page that forwards
+      // at once, not a 302. The deploy's health check probes this port's /
+      // and accepts only 200 or 401, and the copy of that check production
+      // runs is pinned on the box (/opt/tmedge-deploy, installed by hand;
+      // a release cannot replace it). A 302 here rolled a release back on
+      // 2026-10-04. The URL is built from the Host header, so it is escaped.
+      const to = escapeHtml(moved(req));
+      return res.status(200).set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'").type('html').send(
+        `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${to}">`
+        + `<title>The console moved</title><p>The console is now module 03 of the algo console: <a href="${to}">${to}</a></p>`,
+      );
     });
   } else {
     app.use((req: Request, res: Response, next: NextFunction) => {

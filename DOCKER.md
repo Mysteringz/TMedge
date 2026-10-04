@@ -114,7 +114,7 @@ from the first argument:
 | `tmedge web` | Student site and API (`dist/src/web/main.js`) |
 | `tmedge sim [args]` | Simulator (`dist/src/tools/simulator.js`) |
 | `tmedge user …` | Account management |
-| `tmedge health` | Healthcheck: web `/healthz` is 200, or the console port answers (401 or 302 counts as up) |
+| `tmedge health` | Healthcheck: web `/healthz` is 200, or the console port answers (401 counts as up) |
 
 ### The compose stack
 
