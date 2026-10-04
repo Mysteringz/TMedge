@@ -98,9 +98,15 @@ test('signed in, the console page, its API and its live feed all work under /con
   try {
     const uid = [...rt.reg.nodes.keys()][0] ?? '';
     ws.send(JSON.stringify({ type: 'subscribe', uids: [uid] }));
-    await new Promise((r) => setTimeout(r, 60));
-    rt.emit('raw', { uid, frame: 1, tMin: 20, step: 0.05, pixels: Array(768).fill(120), receivedAt: Date.now() });
-    await new Promise((r) => setTimeout(r, 100));
+    // The subscription has no acknowledgement, and a slow CI runner can take
+    // longer than any fixed pause to apply it; a frame sent before then
+    // reaches nobody, correctly. So keep sending frames, as a node would,
+    // until one arrives or the deadline says it never will.
+    const deadline = Date.now() + 5000;
+    for (let frame = 1; Date.now() < deadline && !seen.some((m) => m.type === 'raw' && m.uid === uid); frame++) {
+      rt.emit('raw', { uid, frame, tMin: 20, step: 0.05, pixels: Array(768).fill(120), receivedAt: Date.now() });
+      await new Promise((r) => setTimeout(r, 50));
+    }
     assert.ok(seen.some((m) => m.type === 'state'), 'the state arrives on connect');
     assert.ok(seen.some((m) => m.type === 'raw' && m.uid === uid), 'and raw frames for the node it asked for');
   } finally {
