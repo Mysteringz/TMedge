@@ -22,6 +22,7 @@ import { encodeFrame } from './frames.js';
 import { validate } from './graph.js';
 import { defaultPipeline, NODE_SPECS, specOf } from './nodes.js';
 import { PairRecorder } from './pairs.js';
+import { TrainingSpool } from './training-spool.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
@@ -51,7 +52,14 @@ export function startAlgo(
   mkdirSync(dir, { recursive: true });
   // Training data for the ML locator. Off by default: it writes to disk and
   // holds pictures of a room, so somebody has to ask for it.
-  const pairs = new PairRecorder({ dir: join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pairs') });
+  const pairsDir = join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pairs');
+  if (process.env.TRAINING_STORAGE && !['postgres', 'files'].includes(process.env.TRAINING_STORAGE)) {
+    throw new Error('TRAINING_STORAGE must be postgres or files');
+  }
+  mkdirSync(pairsDir, { recursive: true });
+  const spool = process.env.TRAINING_STORAGE === 'postgres'
+    ? new TrainingSpool(join(process.env.DATA_DIR || join(ROOT, 'data'), 'training'), join(pairsDir, 'recording.on')) : null;
+  const pairs = spool ?? new PairRecorder({ dir: pairsDir });
   // The env var forces it on; otherwise the recorder remembers what it was
   // last told, so a deploy does not quietly stop a collection run.
   if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setRecording(true);
@@ -86,6 +94,8 @@ export function startAlgo(
   // stepping backwards possible at all.
   rt.on('raw', (msg) => {
     algo.frames.addRaw(msg);
+    const node = rt.reg.nodes.get(msg.uid);
+    if (node && !node.simulated) spool?.raw(msg, { floorId: node.floorId, pose: node.pose, detector: node.detector });
     scheduleRun('frame');
   });
   // Every RGB frame is offered to the recorder, which keeps it only when a

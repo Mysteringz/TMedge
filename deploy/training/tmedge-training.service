@@ -1,0 +1,20 @@
+[Unit]
+Description=Verify and transfer training recordings to PostgreSQL
+After=tmedge-training-tunnel.service
+Wants=tmedge-training-tunnel.service
+
+[Service]
+User=tmedge
+UMask=0077
+EnvironmentFile=/opt/tmedge-training/database.env
+ExecStart=/opt/tmedge-training/venv/bin/python /opt/tmedge-training/worker.py --spool /var/lib/tmedge/training --legacy /var/lib/tmedge/algo/pairs --delete-legacy
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tmedge/training /var/lib/tmedge/algo/pairs
+
+[Install]
+WantedBy=multi-user.target
