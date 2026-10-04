@@ -21,8 +21,9 @@ src/shared/geometry.ts   110° f-theta pixel <-> floor, height-aware
 src/shared/seats.ts      seat layout + "N seats together" (server and client share it)
 src/web/                 student web tier (auth, snapshot store, API, WS)
 web-app/                 student UI: React + Vite, builds into public-web/app/
-src/algo/                algo debugger: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
-algo-app/                its editor: React + React Flow, builds into public-algo/
+src/algo/                algo console: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
+src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
+algo-app/                its UI: 8-bit console shell (src/console/) + the React Flow editor at /flow
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
 ```

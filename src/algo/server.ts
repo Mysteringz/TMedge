@@ -1,10 +1,10 @@
 /**
- * The algo debugger's API: `algo.hkumyseat.com`.
+ * The algo console's API: `algo.hkumyseat.com`.
  *
  * Separate port and separate app from the student web tier on purpose. This
  * one serves thermal imagery and writes parameters into live sensors, so it
- * belongs with the console on the edge, behind the same admin password and
- * the same Cloudflare Access in front of it -- never on the tier students can
+ * belongs with the console on the edge, behind its own sign-in (auth.ts) and
+ * the Cloudflare Access in front of it -- never on the tier students can
  * reach.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
+import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
 import { encodeFrame } from './frames.js';
 import { validate } from './graph.js';
@@ -34,7 +35,11 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server: Server; algo: AlgoRuntime } {
+export function startAlgo(
+  rt: EdgeRuntime, port: number, host: string,
+  authCfg: AlgoAuthConfig = loadAlgoAuthConfig(process.env, rt.cfg.adminPassword),
+): { server: Server; algo: AlgoRuntime } {
+  const auth = createAlgoAuth(authCfg);
   const broker = new ParamBroker(rt);
   broker.start();
   const algo = new AlgoRuntime(rt, broker);
@@ -97,19 +102,59 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     if (report) algo.frames.addReport(uid, report.frame, dets, report.flags);
   });
 
+  // Turnstile is a script plus an iframe from Cloudflare; allow exactly that
+  // origin, and only when it is switched on. Fonts come from Google, as on
+  // the student site.
+  const cf = authCfg.turnstile ? ' https://challenges.cloudflare.com' : '';
+  const csp = `default-src 'self'; script-src 'self'${cf}; frame-src${cf || " 'none'"}; img-src 'self' data:; ` +
+    "style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; " +
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
+  /**
+   * The one HTML page, for every screen. Read per request rather than at
+   * start-up: an edge without a built client must still start (the tests, a
+   * fresh checkout), and it costs a file read on a page nobody caches.
+   */
+  const sendShell = (res: Response) => {
+    const index = join(PUBLIC, 'index.html');
+    if (!existsSync(index)) return res.status(503).send('the algo dashboard is not built (npm run build)');
+    return res.type('html').send(readFileSync(index, 'utf8').replaceAll('{{turnstile}}', authCfg.turnstile?.siteKey ?? ''));
+  };
+
   const app = express();
   app.disable('x-powered-by');
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'Cache-Control': 'no-store' });
-    const pass = rt.cfg.adminPassword;
-    if (!pass) return next();
-    const h = req.headers.authorization ?? '';
-    const [scheme, b64] = h.split(' ');
-    const given = scheme === 'Basic' && b64 ? Buffer.from(b64, 'base64').toString().split(':').slice(1).join(':') : '';
-    if (given && safeEqual(given, pass)) return next();
-    return res.set('WWW-Authenticate', 'Basic realm="TMedge algo"').status(401).send('authentication required');
+  // cloudflared connects from loopback. Without this every visitor is
+  // 127.0.0.1 to the sign-in limiter (ten wrong guesses by anyone would lock
+  // out everyone) and no request looks like HTTPS, so the cookie would never
+  // be marked Secure.
+  if (authCfg.trustProxy) app.set('trust proxy', authCfg.trustProxy === true ? 'loopback' : authCfg.trustProxy);
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.set({
+      'Content-Security-Policy': csp, 'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'same-origin', 'Cache-Control': 'no-store',
+    });
+    next();
   });
+
+  // --- before sign-in: the form, the endpoints it posts to, the bundle -----
+  app.use(auth.router);
+  app.get(['/login', '/login/'], (req, res) => {
+    if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
+    return sendShell(res);
+  });
+  // The raw template would otherwise be served by the static handler below,
+  // past the gate and with its placeholders still in.
+  app.get('/index.html', (_req, res) => res.redirect('/'));
+  // The bundle holds no data; it is what draws the sign-in page.
+  app.use(express.static(PUBLIC, { index: false, setHeaders: (r) => r.set('Cache-Control', 'no-store') }));
+
+  // --- everything else needs a signed-in engineer ---------------------------
+  app.use(auth.requireUser);
+  /** Who did it, for the audit log: a real account now, not a shared password. */
+  const by = (res: Response) => `algo:${String(res.locals.user ?? 'unknown')}`;
   app.use(express.json({ limit: '256kb' }));
+
+  app.get('/api/me', (_req, res) => res.json({ user: res.locals.user, auth: authCfg.enabled }));
 
   /** Writes need a header a cross-site form cannot send. */
   const mutating = (req: Request, res: Response, next: NextFunction) => {
@@ -241,7 +286,7 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     try {
       const change = await broker.apply({
         uid: body.uid ?? pipeline.uid, nodeId: n.id, param: ps.id,
-        binding: ps.binding, value: body.value, by: 'algo-dashboard',
+        binding: ps.binding, value: body.value, by: by(res),
       });
       delete n.params[ps.id];   // it is the live value now, not an edit
       scheduleRun('params');
@@ -253,13 +298,13 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
 
   app.post('/api/params/commit', mutating, (req, res) => {
     const { param, uid } = (req.body ?? {}) as { param?: string; uid?: string };
-    const ok = broker.commit(uid ?? pipeline.uid, String(param), 'algo-dashboard');
+    const ok = broker.commit(uid ?? pipeline.uid, String(param), by(res));
     res.json({ ok });
   });
 
   app.post('/api/params/revert', mutating, async (req, res) => {
     const { param, uid } = (req.body ?? {}) as { param?: string; uid?: string };
-    const ok = await broker.revert(uid ?? pipeline.uid, String(param), 'algo-dashboard');
+    const ok = await broker.revert(uid ?? pipeline.uid, String(param), by(res));
     scheduleRun('params');
     res.json({ ok });
   });
@@ -267,7 +312,7 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
   app.post('/api/params/persist', mutating, async (req, res) => {
     const uid = String((req.body as { uid?: string }).uid ?? pipeline.uid);
     try {
-      await broker.persist(uid, 'algo-dashboard');
+      await broker.persist(uid, by(res));
       return res.json({ ok: true });
     } catch (err) {
       return res.status(409).json({ error: (err as Error).message });
@@ -325,10 +370,10 @@ export function startAlgo(rt: EdgeRuntime, port: number, host: string): { server
     res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(String(exp)).digest('hex')}` });
   });
 
-  app.use(express.static(PUBLIC, { index: 'index.html', setHeaders: (r) => r.set('Cache-Control', 'no-store') }));
-  app.get('*', (_req, res) => {
-    if (!existsSync(join(PUBLIC, 'index.html'))) return res.status(503).send('the algo dashboard is not built (npm run build)');
-    return res.sendFile(join(PUBLIC, 'index.html'));
+  // Home, /flow, /train: every screen is routed in the browser.
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'no such endpoint' });
+    return sendShell(res);
   });
 
   const server = createServer(app);

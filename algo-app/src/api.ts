@@ -53,6 +53,9 @@ export interface SourceNode {
 const write = { 'content-type': 'application/json', 'x-tm-algo': '1' };
 
 async function json<T>(r: Response): Promise<T> {
+  // The session ended under us (expired, signed out in another tab, account
+  // removed): go and sign in, then come back to this page.
+  if (r.status === 401) location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
   if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`);
   return (await r.json()) as T;
 }

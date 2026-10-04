@@ -2,6 +2,7 @@
 import { accessSync, constants, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadEdgeConfig, EnvError } from './config.js';
+import { AlgoUsers, loadAlgoAuthConfig, type AlgoAuthConfig } from '../algo/auth.js';
 import { startAlgo } from '../algo/server.js';
 import { startConsole } from './console.js';
 import { ConfigError, loadRegistry } from './registry.js';
@@ -34,8 +35,16 @@ function checkNodesWritable(nodesPath: string): void {
 function main(): void {
   let cfg;
   let reg;
+  let algoAuth: AlgoAuthConfig | null = null;
   try {
     cfg = loadEdgeConfig();
+    if (cfg.algoPort > 0) {
+      try {
+        algoAuth = loadAlgoAuthConfig(process.env, cfg.adminPassword);
+      } catch (err) {
+        throw new EnvError((err as Error).message);
+      }
+    }
     reg = loadRegistry(cfg.sitePath, cfg.nodesPath);
     if (cfg.flashToken) checkNodesWritable(cfg.nodesPath);
   } catch (err) {
@@ -74,12 +83,20 @@ function main(): void {
 
   // The algo debugger: thermal imagery and live parameter writes, so it sits
   // beside the console on the edge and never on the student tier.
-  if (cfg.algoPort > 0) {
-    const { server: algoServer } = startAlgo(rt, cfg.algoPort, cfg.consoleHost);
+  if (cfg.algoPort > 0 && algoAuth) {
+    const auth = algoAuth;
+    const { server: algoServer } = startAlgo(rt, cfg.algoPort, cfg.consoleHost, auth);
     algoServer.on('listening', () => {
       const a = algoServer.address();
       const where = typeof a === 'object' && a ? `${a.address}:${a.port}` : String(a);
-      console.log(`[edge] algo debugger http://${where}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);
+      if (!auth.enabled) {
+        console.log(`[edge] algo console http://${where} (localhost only: no ADMIN_PASSWORD, no sign-in)`);
+        return;
+      }
+      const users = new AlgoUsers(auth.usersPath).size;
+      console.log(`[edge] algo console http://${where} (sign-in: ${users} account(s) in ${auth.usersPath}, turnstile ${auth.turnstile ? `on for ${auth.turnstile.hostnames.join(', ')}` : 'off'})`);
+      // Not fatal -- the edge's real job is the sensors -- but nobody can get in.
+      if (users === 0) console.warn('[edge] algo console has no accounts; add one with: npm run algo-user -- add <name>');
     });
   }
 
