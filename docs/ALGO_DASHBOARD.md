@@ -192,16 +192,69 @@ src/algo/nodes.ts      the node catalogue and the default graph
 src/algo/graph.ts      typed connections, cycles, execution order
 src/algo/runtime.ts    runs the graph over one frame
 src/algo/server.ts     HTTP + WS on ALGO_PORT
-algo-app/              the editor: React + React Flow, built into public-algo/
+src/algo/auth.ts       sign-in: accounts, session cookie, Turnstile
+src/tools/algouser.ts  npm run algo-user
+algo-app/              the console (algo-app/src/console/) around the editor (React + React Flow), built into public-algo/
 ```
+
+## Signing in
+
+`algo.hkumyseat.com` is a console with a sign-in page, not a browser
+password prompt. Cloudflare Access still sits in front; behind it:
+
+- `/login` is the page: username, password, Cloudflare Turnstile. The
+  server checks the Turnstile token (action `algo-login`, one of
+  `TURNSTILE_HOSTNAMES`) *before* the password, after a per-address limit of
+  10 tries in 5 minutes. It fails closed: no token, or siteverify
+  unreachable, means no sign-in.
+- Accounts are per person, in `data/algo/users.json` (scrypt hashes; override
+  with `ALGO_USERS_FILE`). Manage them on the box:
+
+  ```sh
+  npm run algo-user -- add <name>      # prompts for the password (12+ chars)
+  npm run algo-user -- remove <name>   # signed out on their next request
+  npm run algo-user -- list
+  ```
+
+  The edge re-reads the file when it changes; no restart. The audit log
+  records `algo:<name>` for every parameter write.
+- The session is an HttpOnly, SameSite=Lax cookie (`tm_algo`, 12 h), signed
+  with a key derived from `SESSION_SECRET` (or `ALGO_SESSION_SECRET`) so a
+  student-tier session can never pass here. Lax, not Strict, because the
+  first navigation arrives from Cloudflare Access's login on another site.
+- Pages (`/`, `/flow`, `/train`) redirect to `/login?next=…` when signed out;
+  `/api/*` answers `401` with no `WWW-Authenticate` header, which is what
+  keeps the browser from drawing its own dialog (and is still what the
+  deploy health check counts as up).
+- Sign-in is on whenever `ADMIN_PASSWORD` is set -- the edge's signal that
+  it listens beyond localhost. Without it the port binds to 127.0.0.1 and
+  there is no sign-in at all. `ADMIN_PASSWORD` itself is not an algo login;
+  it remains the debug console's (`console.hkumyseat.com`, still Basic).
+- `TRUST_PROXY=1` (already set for the web tier) makes the limiter see each
+  visitor behind cloudflared, and the cookie `Secure` over HTTPS.
+- Turnstile only accepts tokens solved on `TURNSTILE_HOSTNAMES`, so opening
+  the console on localhost, the LAN or the tailnet cannot sign in while
+  Turnstile is on. Use the public hostname, or Cloudflare's test keys locally.
+- A live WebSocket is authorised when it opens; signing out ends it when the
+  page leaves `/flow`, not server-side.
+
+## Screens
+
+- `/login` — sign-in.
+- `/` — module select (↑ ↓, 1 / 2, enter).
+- `/flow` — module 01, the node-graph debugger described above, unchanged.
+- `/train` — module 02, ML Training: a placeholder until there is a sandboxed
+  job runner to back it.
 
 ## API
 
-Behind the admin password, and behind Cloudflare Access in front of that.
-Writes additionally require `x-tm-algo: 1`, which a cross-site form cannot
-send.
+Signed-in only (above). Writes additionally require `x-tm-algo: 1`, which a
+cross-site form cannot send.
 
 ```
+POST /auth/login                 {username, password, next?, cf-turnstile-response} -> cookie
+POST /auth/logout                clears it
+GET  /api/me                     {user}
 GET  /api/catalogue              node specs, edge parameter limits, revert window
 GET  /api/sources                nodes, whether they are online, sending RAW, public
 GET  /api/pipeline               the graph, its problems, which params are edited
@@ -233,6 +286,12 @@ sudo rsync -a --relative \
   TMsense/./test/host/detector_host.cpp  <box>:/opt/
 echo 'TMSENSE_DIR=/opt/TMsense' >> /opt/tmedge-shared/.env
 ```
+
+Sign-in needs, once per box: at least one account (`cd /opt/tmedge && sudo -u
+tmedge npm run algo-user -- add <name>`), and `algo.hkumyseat.com` added to
+`TURNSTILE_HOSTNAMES` in the shared `.env` *and* to the Turnstile widget's
+hostname list in the Cloudflare dashboard. Until both, the console refuses
+every sign-in (it fails closed).
 
 `TMSENSE_DIR` matters because `/opt/tmedge` is a symlink into a release
 directory, so the relative `../TMsense` the debugger would otherwise use
