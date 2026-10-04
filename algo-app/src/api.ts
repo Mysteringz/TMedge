@@ -69,6 +69,11 @@ export const api = {
   putPipeline: (p: Pipeline) => fetch('/api/pipeline', { method: 'PUT', headers: write, body: JSON.stringify(p) })
     .then(json<{ ok: boolean; pipeline: Pipeline }>),
   savePipeline: (name: string) => fetch('/api/pipeline/save', { method: 'POST', headers: write, body: JSON.stringify({ name }) }).then(json),
+  /**
+   * The other half of "save": the server has the graph, the picker that lists
+   * `saved` and calls this is not built yet, so a saved pipeline is currently
+   * write-only. Kept because it works and is what the picker will call.
+   */
   loadPipeline: (name: string) => fetch('/api/pipeline/load', { method: 'POST', headers: write, body: JSON.stringify({ name }) })
     .then(json<{ pipeline: Pipeline }>),
   resetPipeline: () => fetch('/api/pipeline/reset', { method: 'POST', headers: write }).then(json<{ pipeline: Pipeline }>),

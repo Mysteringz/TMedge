@@ -3,14 +3,14 @@
  * when data goes stale.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
 import { Sessions, turnstileCheck } from '../src/web/auth.js';
-import { createWebApp, loadWebConfig } from '../src/web/main.js';
+import { createWebApp, loadWebConfig, missingAppAssets } from '../src/web/main.js';
 import { SnapshotStore } from '../src/web/store.js';
 import { findGroup, searchSeats } from '../src/shared/seats.js';
 import type { OccupancySnapshot, TableState } from '../src/shared/types.js';
@@ -303,4 +303,23 @@ test('turnstileCheck: only success for the same action on our own hostname passe
   const down = (async () => { throw new Error('unreachable'); }) as unknown as typeof fetch;
   assert.equal(await turnstileCheck('k', ['hkumyseat.com'], down, () => {})('t', 'login', undefined), false);
   assert.equal(await check(good)('', 'login', undefined), false);
+});
+
+test('web: a shell whose app bundle is missing is reported, not served blank', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tmweb-shell-'));
+  try {
+    assert.deepEqual(missingAppAssets(join(dir, 'nowhere')), ['index.html'], 'no shell at all');
+    writeFileSync(join(dir, 'index.html'),
+      '<script type="module" src="/app/index-abc123.js"></script>'
+      + '<link rel="stylesheet" href="/app/index-abc123.css">'
+      + '<link rel="icon" href="/favicon.svg">');
+    // Only the bundle is build output; the tracked assets are not its business.
+    assert.deepEqual(missingAppAssets(dir), ['/app/index-abc123.js', '/app/index-abc123.css']);
+    mkdirSync(join(dir, 'app'));
+    writeFileSync(join(dir, 'app', 'index-abc123.js'), '');
+    writeFileSync(join(dir, 'app', 'index-abc123.css'), '');
+    assert.deepEqual(missingAppAssets(dir), [], 'a built shell passes');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

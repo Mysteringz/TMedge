@@ -151,7 +151,13 @@ export function capacityOf(floor: CampusFloor): number {
   return Math.max(0, ...floor.tables.map((t) => t.capacity));
 }
 
-/** Tables a group of `seats` could actually take, largest run first. */
+/**
+ * Tables a group of `seats` could take at all, in walking order.
+ *
+ * No screen calls this yet — Spaces marks the same tables from the live
+ * snapshot — but it is the table-level form of the question the seat search
+ * asks, so the rule has one home when the next view needs it.
+ */
 export function freeTables(floor: CampusFloor, seats: number): TableState[] {
   if (isDark(floor)) return [];
   return walkOrder(floor.tables).filter((t) => t.status !== 'unknown' && (t.free ?? 0) >= Math.min(seats, t.capacity));

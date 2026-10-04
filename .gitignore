@@ -12,4 +12,11 @@ public-algo/
 
 # macOS and editors leave "name 2.ext" copies behind; they compiled quietly
 # once, as a second copy of a file whose whole point is that there is one.
-* [0-9].*
+# Scoped to the sources that are compiled or run by the tests: the old blanket
+# rule also hid legitimate files anywhere else (a "Library 2.jpg" among the
+# photographs, a "notes 3.md"), and a file git silently ignores is worse than a
+# duplicate in a build.
+src/**/* [0-9].*
+test/**/* [0-9].*
+web-app/src/**/* [0-9].*
+algo-app/src/**/* [0-9].*
