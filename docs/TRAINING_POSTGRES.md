@@ -109,3 +109,27 @@ To revert collection, turn recording off, drain the outbox, set
 activate the previous release). This does not delete PostgreSQL data. Use the
 exporter if an older disk-only trainer needs the corpus. Restoring the initial
 archive must target an empty staging directory first, not overwrite live files.
+
+## Verification on 2026-10-04
+
+Live application release: `20261004T093911Z-7c24131550f1`, based on the latest
+`bc59544` deployment-tooling update. Source is committed locally on
+`feat/training-postgres` in `.training-postgres/`; it has not been pushed.
+
+All 7,052 historical pairs were migrated and verified: 7,052 thermal payloads
+and 7,052 JPEGs (184,070,916 payload bytes). A bounded live test then committed
+24 thermal and 49 RGB frames, yielding 22 additional pairs. Totals: 7,076
+thermal frames, 7,101 RGB frames and 7,074 matched samples. The queue drained
+and the original recording-off switch was restored. Both transfer services
+are enabled and running. Edge, web and node-listener health checks passed.
+
+Verification: typecheck; 140 passing application tests, one pre-existing
+NumPy/OpenCV-dependent trainer test skipped; 19 firmware crosschecks;
+archive tests; 13 deployment rehearsal checks; real-database deduplication,
+source removal after commit, conflicting-record retention, hash rejection,
+768-temperature array checks and a one-pair trainer-compatible export.
+Reader SELECT is allowed, reader INSERT and ingestion DELETE are denied.
+
+The requested private training database changes the old edge-only storage
+boundary: training imagery now leaves the edge over the private Tailscale SSH
+tunnel to this database. Student-facing APIs still contain no imagery.
