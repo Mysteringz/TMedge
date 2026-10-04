@@ -7,6 +7,12 @@
 #   deploy/deploy.sh migrate         one-time: convert the box to releases/
 #   deploy/deploy.sh rollback [id]   back to the previous release (or <id>)
 #   deploy/deploy.sh list            releases on the box, current marked
+#   deploy/deploy.sh receiver-check  fail unless the box's pinned deploy tools
+#                                    match this checkout's deploy/ (run before
+#                                    every artifact upload, too)
+#   deploy/deploy.sh receiver-install  admin key only: install this checkout's
+#                                    reviewed deploy tools on the box (a clean
+#                                    copy of origin/main), then check them
 #
 # Options for a deploy:
 #   --skip-checks   do not re-run typecheck/test/crosscheck (CI already did)
@@ -90,8 +96,72 @@ cmd_deploy() {
   say "done: release is live"
 }
 
+# The receiver and remote.sh that run a CI deploy are installed on the box by
+# hand and a release cannot replace them (pipeline.md). When they fall behind
+# this checkout, the release is health-checked by rules it was not tested
+# against: on 2026-10-04 a release that passed every check here was rolled
+# back by an older remote.sh. So promote nothing until they match.
+cmd_receiver_check() {
+  local want got
+  want="$(python3 - "$REPO/deploy" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+print(json.dumps({n: hashlib.sha256((d / n).read_bytes()).hexdigest()
+                  for n in ('remote.sh', 'release.py', 'ci-receiver.py')}, sort_keys=True))
+PY
+)"
+  if [ "$HOST" = local ]; then
+    # Test only: compare against a scratch install, if the test made one.
+    [ -n "${TM_RECEIVER_DIR:-}" ] || { say "receiver check skipped (local)"; return 0; }
+    got="$(python3 "$TM_RECEIVER_DIR/ci-receiver.py" version 2>/dev/null || true)"
+  elif [ "${DEPLOY_RESTRICTED_KEY:-0}" = 1 ]; then
+    got="$("${SSH[@]}" "$HOST" version 2>/dev/null || true)"
+  else
+    got="$("${SSH[@]}" "$HOST" "sudo /opt/tmedge-deploy/ci-receiver.py version" 2>/dev/null || true)"
+  fi
+  if [ "$got" != "$want" ]; then
+    local stale
+    stale="$(python3 - "$want" "${got:-{\}}" <<'PY'
+import json, sys
+want = json.loads(sys.argv[1])
+try:
+    got = json.loads(sys.argv[2])
+except ValueError:
+    got = {}
+print(', '.join(n for n in want if got.get(n) != want[n]) or 'all (no version reported)')
+PY
+)"
+    die "the box's deploy tools in /opt/tmedge-deploy differ from this release's deploy/ ($stale). Reinstall the reviewed files first (deploy/pipeline.md, \"Receiver installation\"); nothing was uploaded."
+  fi
+  say "receiver matches this release's deploy tools"
+}
+
+# The privileged half of the pipeline, updated the only way it may be: by an
+# administrator, from reviewed code. "Reviewed" here means exactly what main
+# is -- merged through a PR with green CI -- so the checkout must be a clean
+# copy of origin/main. Each file is written beside its target and renamed
+# over it, so a receiver mid-deploy never reads half a file. The CI key and
+# account are untouched (install-ci-receiver.sh is for creating or rotating
+# those).
+cmd_receiver_install() {
+  [ "$HOST" != local ] || die "receiver-install needs a real host"
+  [ "${DEPLOY_RESTRICTED_KEY:-0}" != 1 ] || die "the CI key cannot install the receiver; use the administrator's key"
+  [ -z "$(git status --porcelain)" ] || die "uncommitted changes; install only reviewed files"
+  git fetch -q origin main
+  [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "HEAD is not origin/main; check out main (reviewed) first"
+  local f
+  for f in remote.sh release.py ci-receiver.py; do
+    "${SSH[@]}" "$HOST" "sudo sh -c 'umask 022; cat > /opt/tmedge-deploy/.$f.new && chown root:root /opt/tmedge-deploy/.$f.new && chmod 755 /opt/tmedge-deploy/.$f.new && mv -f /opt/tmedge-deploy/.$f.new /opt/tmedge-deploy/$f'" \
+      < "$REPO/deploy/$f" || die "installing $f failed"
+    say "installed $f"
+  done
+  cmd_receiver_check
+}
+
 cmd_artifact() {
   local archive="${1:?archive required}" digest id
+  cmd_receiver_check
   digest="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$archive")"
   if [ "$HOST" = local ]; then
     local incoming; incoming="$(mktemp -d "$REMOTE_BASE/tmedge-releases/.incoming-XXXXXX")"
@@ -116,5 +186,7 @@ case "$cmd" in
   migrate)  remote migrate ;;
   rollback) shift; remote rollback "$@" ;;
   list)     remote list ;;
-  *) die "usage: deploy.sh [deploy] [--skip-checks] [--allow-dirty] | migrate | rollback [id] | list" ;;
+  receiver-check) cmd_receiver_check ;;
+  receiver-install) cmd_receiver_install ;;
+  *) die "usage: deploy.sh [deploy] [--skip-checks] [--allow-dirty] | migrate | rollback [id] | list | receiver-check | receiver-install" ;;
 esac

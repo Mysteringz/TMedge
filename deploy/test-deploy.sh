@@ -223,5 +223,19 @@ else
   ok "(tree is clean; dirty refusal not exercised this run)"
 fi
 
+echo "claim: nothing is promoted while the box's pinned deploy tools differ from the release's"
+# The box's receiver and remote.sh are installed by hand; a release cannot
+# replace them. On 2026-10-04 a stale remote.sh rolled back a release that
+# passed this very rehearsal, because the rehearsal ran the repo's copy.
+rcv="$T/receiver"; mkdir -p "$rcv"
+cp "$REPO/deploy/remote.sh" "$REPO/deploy/release.py" "$REPO/deploy/ci-receiver.py" "$rcv/"
+TM_RECEIVER_DIR="$rcv" "$REPO/deploy/deploy.sh" receiver-check >/dev/null 2>&1 || fail "matching tools were refused"
+echo '# older' >> "$rcv/remote.sh"
+before="$(ls "$TM_BASE/tmedge-releases")"
+out="$(TM_RECEIVER_DIR="$rcv" "$REPO/deploy/deploy.sh" artifact "$T/never-read.tar.gz" 2>&1)" && fail "an artifact was promoted past a stale receiver"
+grep -q "differ from this release's deploy/ (remote.sh)" <<<"$out" || fail "unexpected: $out"
+[ "$(ls "$TM_BASE/tmedge-releases")" = "$before" ] || fail "something was uploaded anyway"
+ok "matching tools pass; a stale remote.sh stops the artifact before upload and names the file"
+
 echo
 echo "deploy pipeline: $pass checks passed"

@@ -89,6 +89,19 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tmedge_ci
           chmod 600 ~/.ssh/tmedge_ci
           printf '%s\n' "$HOST_KEYS" > ~/.ssh/known_hosts
+      # The receiver and remote.sh on the box are installed by hand and a
+      # release cannot replace them. If they differ from this commit's
+      # deploy/, the release would be health-checked by rules it was never
+      # tested against, so stop here, before anything is uploaded.
+      - name: Check the server's deploy tools match this release
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: /home/runner/.ssh/tmedge_ci
+          DEPLOY_RESTRICTED_KEY: 1
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          deploy/deploy.sh receiver-check
       - name: Deploy the tested artifact
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
