@@ -75,6 +75,19 @@ class Transport(unittest.TestCase):
             self.run_command('deploy ' + self.digest)
         self.assertFalse((self.base / self.id).exists())
 
+    def test_version_reports_the_installed_tools(self):
+        tools = self.root / 'tools'
+        tools.mkdir()
+        for name in receiver.TOOLS:
+            (tools / name).write_text(name)
+        out = io.StringIO()
+        with patch.object(receiver, 'TOOLS_DIR', tools), patch.object(sys, 'argv', ['receiver', 'version']), \
+             patch.object(sys, 'stdout', out):
+            receiver.main()
+        reported = json.loads(out.getvalue())
+        self.assertEqual(reported, {n: hashlib.sha256(n.encode()).hexdigest() for n in receiver.TOOLS})
+        self.assertFalse(self.base.exists(), 'reporting touches no release state')
+
     def test_concurrent_receive_is_refused(self):
         self.base.mkdir()
         with (self.base / '.lock').open('w') as lock:

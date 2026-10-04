@@ -16,6 +16,14 @@ from release import extract, MAX_BYTES
 
 BASE = Path('/opt/tmedge-releases')
 REMOTE = Path(__file__).resolve().parent / 'remote.sh'
+# The privileged tools installed beside this file. A release cannot replace
+# them, so they can fall behind the repo; `version` lets a deploy compare.
+TOOLS_DIR = Path(__file__).resolve().parent
+TOOLS = ('remote.sh', 'release.py', 'ci-receiver.py')
+
+
+def tool_hashes(directory):
+    return {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in TOOLS}
 
 
 def main():
@@ -25,8 +33,11 @@ def main():
     if command == 'status':
         subprocess.run(['bash', str(REMOTE), 'list'], check=True)
         return
+    if command == 'version':
+        print(json.dumps(tool_hashes(TOOLS_DIR), sort_keys=True))
+        return
     if not match:
-        raise ValueError('only status and deploy <sha256> are permitted')
+        raise ValueError('only status, version and deploy <sha256> are permitted')
     BASE.mkdir(exist_ok=True)
     # Serialize the complete receive/install/switch transaction. remote.sh also
     # takes the shared activation lock used by manual deployments.

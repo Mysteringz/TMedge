@@ -92,8 +92,9 @@ Each release gets `/opt/tmedge-releases/<timestamp>-<commit>/`; `/opt/tmedge`
 is an atomic symlink to the live one. The shared `.env` stays in
 `/opt/tmedge-shared/` with mode 600. Data stays under `/var/lib/tmedge`.
 Health requires all three services to remain active without automatic restarts,
-the web health endpoint to report a fresh edge snapshot, and the console and
-algo debugger to respond. A restart-command failure or failed health check
+the web health endpoint to report a fresh edge snapshot, the console port
+and the algo console to respond (200 or 401), and the direct node listener,
+when configured, to answer its `/healthz`. A restart-command failure or failed health check
 restores the previous release. If restoring also fails, deployment reports a
 failure and the operator must inspect systemd logs. The five newest eligible
 releases are retained; live and immediate rollback releases are protected.
@@ -128,6 +129,37 @@ over an already verified administrator SSH connection. Set environment
 variable `DEPLOY_HOST` to `tmedge-ci@<EC2 hostname>`. Never put the personal EC2
 administrator key into CI. Reinstall reviewed receiver files when they change;
 artifacts cannot replace the privileged receiver.
+
+### Keeping the receiver in step
+
+`remote.sh` (which health-checks and rolls back), `release.py` and
+`ci-receiver.py` run from `/opt/tmedge-deploy`, not from the release. CI tests
+the repo's copies, so when the box's copies fall behind, a release is judged
+by rules it was never tested against. On 2026-10-04 that rolled back a
+release which had passed every check: the repo's `remote.sh` accepted a new
+response from the console port and the installed one, from 2026-09-25, did
+not.
+
+So the deploy now compares them first. `ci-receiver.py version` reports the
+sha256 of the three installed files, and `deploy/deploy.sh receiver-check`
+(an explicit step in `Deploy production`, and the first thing
+`deploy.sh artifact` does) refuses to upload anything if they differ from the
+release's `deploy/`. The failure names the stale files. A receiver too old
+to answer `version` counts as stale.
+
+When a PR changes any of those three files, the administrator updates the
+box after merging and before approving the deploy:
+
+```sh
+git checkout main && git pull
+deploy/deploy.sh receiver-install   # administrator key; clean origin/main only
+```
+
+It writes each file beside its target and renames it into place (root-owned,
+755), then runs `receiver-check`. It does not touch the CI account or key.
+Use `install-ci-receiver.sh` only to create that account or rotate the key.
+If a deploy was refused for a stale receiver, re-run its failed job after
+installing.
 
 The algo preview compiles the separate firmware sources selected by the
 server's `TMSENSE_DIR`. When changing the pinned firmware detector, update that
