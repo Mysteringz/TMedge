@@ -28,6 +28,7 @@ if __name__ == '__main__':
       REVOKE CREATE ON SCHEMA public FROM PUBLIC;
       GRANT USAGE ON SCHEMA training TO crowdaware_ingest, crowdaware_reader;
       GRANT SELECT, INSERT ON training.frames, training.pairs TO crowdaware_ingest;
+      GRANT SELECT ON training.ml_samples TO crowdaware_ingest;
       GRANT SELECT ON ALL TABLES IN SCHEMA training TO crowdaware_reader;
       ALTER DEFAULT PRIVILEGES IN SCHEMA training GRANT SELECT ON TABLES TO crowdaware_reader;
       ''', 'crowdaware_training')
