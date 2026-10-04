@@ -16,6 +16,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
+import type { ConsoleCore } from '../edge/console.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
 import { encodeFrame } from './frames.js';
 import { validate } from './graph.js';
@@ -38,6 +39,8 @@ function safeEqual(a: string, b: string): boolean {
 export function startAlgo(
   rt: EdgeRuntime, port: number, host: string,
   authCfg: AlgoAuthConfig = loadAlgoAuthConfig(process.env, rt.cfg.adminPassword),
+  /** The debug console, hosted here as module 03 when given (edge/console.ts). */
+  consoleCore?: ConsoleCore,
 ): { server: Server; algo: AlgoRuntime } {
   const auth = createAlgoAuth(authCfg);
   const broker = new ParamBroker(rt);
@@ -106,7 +109,8 @@ export function startAlgo(
   // origin, and only when it is switched on. Fonts come from Google, as on
   // the student site.
   const cf = authCfg.turnstile ? ' https://challenges.cloudflare.com' : '';
-  const csp = `default-src 'self'; script-src 'self'${cf}; frame-src${cf || " 'none'"}; img-src 'self' data:; ` +
+  // frame-src 'self': module 03 is the debug console in a same-origin frame.
+  const csp = `default-src 'self'; script-src 'self'${cf}; frame-src 'self'${cf}; img-src 'self' data:; ` +
     "style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; " +
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
@@ -152,6 +156,23 @@ export function startAlgo(
   app.use(auth.requireUser);
   /** Who did it, for the audit log: a real account now, not a shared password. */
   const by = (res: Response) => `algo:${String(res.locals.user ?? 'unknown')}`;
+
+  // Module 03: the debug console, as it is, in a frame of its own. Its page
+  // is a separate document with its own global stylesheet and a module that
+  // runs once per page load -- a frame keeps both from colliding with the
+  // React app. Its CSP differs from the shell's in two ways: it may be
+  // framed by this origin (and nothing else), and it shows rig RGB from
+  // blob: URLs.
+  if (consoleCore) {
+    const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; " +
+      "connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'";
+    app.use('/console-app', (req: Request, res: Response, next: NextFunction) => {
+      // Relative URLs in the console's page need the trailing slash.
+      if (req.originalUrl === '/console-app') return res.redirect('/console-app/');
+      res.set('Content-Security-Policy', consoleCsp);
+      return next();
+    }, consoleCore.ui);
+  }
   app.use(express.json({ limit: '256kb' }));
 
   app.get('/api/me', (_req, res) => res.json({ user: res.locals.user, auth: authCfg.enabled }));
@@ -382,6 +403,14 @@ export function startAlgo(
 
   server.on('upgrade', (req: IncomingMessage, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://x');
+    // The console's live feed. Its token comes from /console-app/api/ws-token,
+    // which only a signed-in engineer can reach.
+    if (url.pathname === '/console-app/ws') {
+      if (consoleCore?.upgrade(req, socket, head, '/console-app/ws')) return;
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const [exp, mac] = (url.searchParams.get('token') ?? '').split('.');
     const ok = url.pathname === '/ws' && exp && mac && Number(exp) > Date.now() &&
       safeEqual(mac, createHmac('sha256', wsSecret).update(exp).digest('hex'));

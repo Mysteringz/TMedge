@@ -2,7 +2,8 @@
 # Open the TMedge dashboards on a Mac whose VPN (NordVPN) blocks tailnet traffic.
 # Tunnels through the userspace Tailscale client to the live box, then:
 #   http://localhost:8080   student dashboard
-#   http://localhost:8090   debug console
+#   http://localhost:8091   algo console (sign in; 03 is the debug console)
+#   (localhost:8090, the old console address, sends you to 8091/console)
 # Ctrl-C to close. Needs the userspace client running (see deploy/proxmox-vm.md).
 #
 # The default is the production EC2 host (deploy/aws-ec2.md). The Proxmox VM
@@ -34,5 +35,5 @@ set -- -N -o ExitOnForwardFailure=yes \
   -o StrictHostKeyChecking=accept-new
 [ -n "$KEY" ] && set -- "$@" -i "$KEY"
 exec ssh "$@" \
-  -L 8080:127.0.0.1:8080 -L 8090:127.0.0.1:8090 \
+  -L 8080:127.0.0.1:8080 -L 8090:127.0.0.1:8090 -L 8091:127.0.0.1:8091 \
   "$DASH_USER@$HOST"

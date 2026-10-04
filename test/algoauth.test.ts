@@ -139,11 +139,11 @@ test('Turnstile is checked for this form before the password is', async () => {
 
 test('the CSP admits Cloudflare only while Turnstile is on', async () => {
   const off = await boot();
-  assert.match((await fetch(`${off.base}/login`)).headers.get('content-security-policy') ?? '', /frame-src 'none'/);
+  assert.match((await fetch(`${off.base}/login`)).headers.get('content-security-policy') ?? '', /frame-src 'self';/);
   const on = await boot({ turnstile: { siteKey: '1x00000000000000000000AA', secretKey: 's', hostnames: ['h'], check: async () => true } });
   const csp = (await fetch(`${on.base}/login`)).headers.get('content-security-policy') ?? '';
   assert.match(csp, /script-src 'self' https:\/\/challenges\.cloudflare\.com/);
-  assert.match(csp, /frame-src https:\/\/challenges\.cloudflare\.com/);
+  assert.match(csp, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
 });
 
 test('sign-in refuses cross-origin and malformed Origin headers', async () => {

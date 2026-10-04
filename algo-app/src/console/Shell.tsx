@@ -1,7 +1,8 @@
 /**
  * The console around everything: sign-in, module select, and the modules.
- * Module 01 is the algo debugger exactly as it was (App.tsx), under the
- * console's top bar; nothing inside it changed.
+ * Module 01 is the algo debugger exactly as it was (App.tsx), and module 03
+ * the edge's debug console (formerly console.hkumyseat.com), each under the
+ * console's top bar; nothing inside either changed.
  */
 import { useEffect, useState } from 'react';
 import { Root as FlowApp } from '../App.tsx';
@@ -53,6 +54,17 @@ export function Shell() {
       <div className="cx cx-page">
         <Backdrop />
         <Login onSignedIn={setUser} />
+      </div>
+    );
+  }
+
+  if (screen === 'console') {
+    return (
+      <div className="cx-flow">
+        <div className="cx cx-flow-bar"><Nav user={user} crumb="debug-console" onSignOut={signOut} /></div>
+        {/* Its own document: the console's global stylesheet and run-once
+            module stay out of this app (see src/algo/server.ts). */}
+        <iframe className="cx-frame" src="/console-app/" title="Debug console" />
       </div>
     );
   }

@@ -197,6 +197,7 @@
 .cx-flow-bar { background: #161826; border-bottom: 1px solid var(--line); }
 .cx-flow-bar .cx-nav { padding: 8px 14px; }
 /* App.tsx's .app is 100vh on its own; here it shares the screen with the bar. */
+.cx-frame { flex: 1; min-height: 0; width: 100%; border: 0; display: block; background: #0f1115; }
 .cx-flow > .app { flex: 1; min-height: 0; height: auto; }
 
 /* — phones — */

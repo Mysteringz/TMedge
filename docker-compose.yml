@@ -39,7 +39,8 @@ services:
     ports:
       - "${BIND_ADDR:-127.0.0.1}:5200:5200/udp"   # TMnodes sending directly
       - "${BIND_ADDR:-127.0.0.1}:5210:5210"       # access gateways (TMWAccess), raw TCP or WebSocket
-      - "${BIND_ADDR:-127.0.0.1}:8090:8090"       # debug console (admin)
+      - "${BIND_ADDR:-127.0.0.1}:8090:8090"       # console port: device endpoints; browsers are sent to 8091/console
+      - "${BIND_ADDR:-127.0.0.1}:8091:8091"       # algo console (sign-in): debugger, debug console (module 03)
       - "${BIND_ADDR:-127.0.0.1}:5211:5211"       # direct TMsense nodes (with NODE_PORT=5211)
     # Nodes that talk to the edge directly (not through a gateway) are sent
     # commands at their source address; on Linux, uncomment host networking

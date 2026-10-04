@@ -193,6 +193,7 @@ src/algo/graph.ts      typed connections, cycles, execution order
 src/algo/runtime.ts    runs the graph over one frame
 src/algo/server.ts     HTTP + WS on ALGO_PORT
 src/algo/auth.ts       sign-in: accounts, session cookie, Turnstile
+src/edge/console.ts    module 03's core (mounted at /console-app/) + the console port
 src/tools/algouser.ts  npm run algo-user
 algo-app/              the console (algo-app/src/console/) around the editor (React + React Flow), built into public-algo/
 ```
@@ -229,7 +230,8 @@ password prompt. Cloudflare Access still sits in front; behind it:
 - Sign-in is on whenever `ADMIN_PASSWORD` is set -- the edge's signal that
   it listens beyond localhost. Without it the port binds to 127.0.0.1 and
   there is no sign-in at all. `ADMIN_PASSWORD` itself is not an algo login;
-  it remains the debug console's (`console.hkumyseat.com`, still Basic).
+  it only guards the debug console on CONSOLE_PORT when the algo console is
+  off (`ALGO_PORT=0`).
 - `TRUST_PROXY=1` (already set for the web tier) makes the limiter see each
   visitor behind cloudflared, and the cookie `Secure` over HTTPS.
 - Turnstile only accepts tokens solved on `TURNSTILE_HOSTNAMES`, so opening
@@ -245,6 +247,32 @@ password prompt. Cloudflare Access still sits in front; behind it:
 - `/flow` — module 01, the node-graph debugger described above, unchanged.
 - `/train` — module 02, ML Training: a placeholder until there is a sandboxed
   job runner to back it.
+- `/console` — module 03, the edge's debug console (formerly
+  `console.hkumyseat.com`): health, floor fusion, raw frames, node commands,
+  admitting TMflash nodes, firmware rollouts.
+
+### Module 03, the debug console
+
+`src/edge/console.ts` is one core with two routers, so its state (the
+provisioning queue, the live feed) exists once and is served in two places:
+
+- **`ui`** -- the screens -- is mounted here at `/console-app/`, behind this
+  sign-in, with its WebSocket at `/console-app/ws`. `/console` draws it in a
+  same-origin frame under the console's bar: it is its own document, with a
+  global stylesheet and a run-once module that would collide with the React
+  app. Its CSP allows framing by this origin only (`frame-ancestors 'self'`)
+  and `blob:` images (rig RGB). Its writes still need `x-tm-console: 1`, and
+  approvals, uploads and rollouts are recorded as `console:<name>`.
+- **`machine`** -- rig RGB uploads (`/api/demo/rgb`), firmware downloads
+  (`/fw/<id>.bin`) and TMflash (`/api/provision/request|status`) -- stays on
+  CONSOLE_PORT (8090). Those callers are devices with their own
+  credentials and already know that address. Everything else there now
+  redirects a browser to the algo console's `/console`
+  (`console.<domain>` -> `https://algo.<domain>/console`, otherwise the same
+  host on ALGO_PORT) and answers its old API with `410`.
+
+With `ALGO_PORT=0` the console port serves the screens itself, behind Basic
+auth, as before.
 
 ## API
 

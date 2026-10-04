@@ -554,7 +554,7 @@ function showNextJoin(): void {
 async function answerJoin(verdict: 'approve' | 'deny'): Promise<void> {
   const req = joinShowing;
   if (!req) return;
-  const res = await fetch(`/api/provision/requests/${encodeURIComponent(req.id)}/${verdict}`, {
+  const res = await fetch(`api/provision/requests/${encodeURIComponent(req.id)}/${verdict}`, {
     method: 'POST', headers: { 'x-tm-console': '1' },
   });
   if (!res.ok) {
@@ -587,7 +587,7 @@ function initJoin(): void {
 
 async function command(body: { op: string; param?: string | undefined; value?: number }): Promise<void> {
   if (!selected) return;
-  const res = await fetch(`/api/nodes/${selected}/command`, {
+  const res = await fetch(`api/nodes/${selected}/command`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-tm-console': '1' }, body: JSON.stringify(body),
   });
   const j = (await res.json()) as { note?: string; error?: string };
@@ -610,8 +610,12 @@ function select(uid: string | null): void {
 async function connect(): Promise<void> {
   const conn = $('#conn');
   try {
-    const { token } = (await (await fetch('/api/ws-token')).json()) as { token: string };
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+    const { token } = (await (await fetch('api/ws-token')).json()) as { token: string };
+    // Relative to the page: /ws on CONSOLE_PORT, /console-app/ws inside the
+    // algo console, which hosts this page under that prefix.
+    const wsUrl = new URL(`ws?token=${encodeURIComponent(token)}`, location.href);
+    wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(wsUrl);
     ws.onopen = () => {
       conn.textContent = 'live';
       conn.className = 'chip good';
@@ -678,13 +682,13 @@ async function connect(): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  layout = (await (await fetch('/api/layout')).json()) as Layout;
+  layout = (await (await fetch('api/layout')).json()) as Layout;
   initFirmware();
   initJoin();
   // Requests that arrived while nobody had the console open are still
   // waiting; a live WS event is not the only way one gets answered.
   try {
-    const j = (await (await fetch('/api/provision/requests')).json()) as { requests: JoinRequest[] };
+    const j = (await (await fetch('api/provision/requests')).json()) as { requests: JoinRequest[] };
     for (const r of j.requests) queueJoin(r);
   } catch {
     /* provisioning is optional; the rest of the console works without it */

@@ -112,9 +112,10 @@ node_health() {
 }
 
 # Healthy = every unit active and not restarted by systemd during SETTLE,
-# the student site's /healthz answers 200, the console and the algo
-# console answer at all (401 is correct: they want the admin password or a
-# signed-in session), and
+# the student site's /healthz answers 200, the console port and the algo
+# console answer at all (401 is correct: they want a password or a signed-in
+# session; 302 is the console port sending a browser on to the algo
+# console's module 03, which is where the console lives now), and
 # the direct node listener, if configured, answers its /healthz.
 healthy() {
   local s before=() i=0 web console algo node
@@ -134,7 +135,7 @@ healthy() {
       *) algo="$(http_status "$ALGO_HEALTH")" ;;
     esac
     node="$(node_health)"
-    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ]; } && [ "$algo" = ok ] &&
+    if [ "$web" = 200 ] && { [ "$console" = 200 ] || [ "$console" = 401 ] || [ "$console" = 302 ]; } && [ "$algo" = ok ] &&
        { [ "$node" = off ] || [ "$node" = 200 ]; } && snapshot_ready; then
       say "healthy: web $web, console $console, algo $algo, nodes $node"
       return 0

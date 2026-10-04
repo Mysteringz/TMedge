@@ -190,7 +190,7 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
     }
     // Deliberately no WWW-Authenticate header: that is what made the browser
     // draw its own password dialog. The deploy health check only needs a 401.
-    if (req.path.startsWith('/api/')) return void res.status(401).json({ error: 'sign in first' });
+    if (req.path.startsWith('/api/') || req.path.startsWith('/console-app/api/')) return void res.status(401).json({ error: 'sign in first' });
     return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
   };
 
