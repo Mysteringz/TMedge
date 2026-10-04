@@ -108,6 +108,9 @@
 .cx-who { font-family: var(--mono); white-space: nowrap; }
 .cx-online { width: 6px; height: 6px; background: var(--online); }
 .cx-out { font-size: 13px; white-space: nowrap; }
+/* The home donut can pass behind the bar's transparent button. */
+.cx .cx-out { background: color-mix(in srgb, var(--color-bg) 82%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.cx .cx-out:hover { background: color-mix(in srgb, var(--color-text) 7%, var(--color-bg)); }
 
 /* — login — */
 .cx-login { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-wrap: wrap; }
@@ -149,7 +152,9 @@
 .cx-module {
   display: grid; grid-template-columns: 20px 44px 1fr 24px; align-items: center; gap: 14px; text-align: left;
   padding: 20px 20px 20px 12px; border-radius: var(--radius-md); color: inherit; cursor: pointer; font: inherit;
-  background: color-mix(in srgb, var(--color-surface) 60%, transparent); border: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent); border: 1px solid var(--color-divider);
+  /* The donut turns behind these; blur it so the text on top stays text. */
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   transition: background .15s, border-color .15s;
 }
 .cx-module.is-on { background: color-mix(in srgb, #f28c38 8%, var(--color-surface)); border-color: var(--color-accent); }
@@ -162,11 +167,20 @@
 .cx-mod-desc { font-size: 13px; color: var(--color-neutral-400); text-wrap: pretty; }
 .cx-arrow { font-size: 18px; color: var(--color-neutral-600); display: flex; }
 .cx-module.is-on .cx-arrow { color: var(--color-accent); }
-.cx-home-right { flex: 1 1 460px; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.cx-donut-stage {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+  /* Strongest behind the empty right of the screen, faint under the modules. */
+  mask-image: linear-gradient(to right, rgba(0, 0, 0, .16) 0%, rgba(0, 0, 0, .2) 42%, black 78%);
+}
+/* 64 x 30 characters, about 38.4em x 30em in a monospace face at line-height
+   1. The font size is whichever makes it at least 1.6 tabs wide *and* 1.5
+   tabs tall, so on any screen shape only part of the ring fits. */
 .cx-donut {
-  margin: 0; font: 400 clamp(9px, 1.05vw, 13px)/1 var(--mono); color: var(--color-accent);
-  text-shadow: 0 0 8px color-mix(in srgb, #f28c38 55%, transparent);
-  white-space: pre; width: 482px; height: 392px; max-width: 100%; overflow: hidden;
+  position: absolute; left: 66%; top: 52%; transform: translate(-50%, -50%);
+  margin: 0; white-space: pre;
+  font: 400 max(4.2vw, 5vh) / 1 var(--mono);
+  color: var(--color-accent);
+  text-shadow: 0 0 .35em color-mix(in srgb, #f28c38 55%, transparent);
 }
 
 /* — ML training (coming soon) — */
@@ -209,11 +223,12 @@
   .cx-login-left { padding: 28px 16px; gap: 36px; flex-basis: 100%; }
   .cx-login-right { padding: 16px 16px 40px; min-height: 0; flex-basis: 100%; }
   .cx-home-main { padding: 24px 16px 48px; gap: 28px; }
-  .cx-home-left, .cx-home-right { flex-basis: 100%; }
+  .cx-home-left { flex-basis: 100%; }
   .cx-module { grid-template-columns: 12px 32px 1fr 18px; gap: 10px; padding: 16px 14px 16px 8px; }
   .cx-n { font-size: 18px; }
   .cx-mod-title { font-size: 17px; }
-  .cx-donut { height: auto; aspect-ratio: 482 / 392; font-size: 1.55vw; }
+  .cx-donut { left: 50%; top: 62%; }
+  .cx-donut-stage { mask-image: linear-gradient(to bottom, rgba(0, 0, 0, .14), rgba(0, 0, 0, .18) 55%, black 92%); }
   .cx-train { padding: 8px 16px 40px; }
   .cx-toast { left: 16px; max-width: calc(100vw - 32px); }
 }
