@@ -281,7 +281,7 @@ test('Turnstile config is both keys or neither', () => {
 
 test('turnstileCheck: only success for the same action on our own hostname passes, and an outage fails closed', async () => {
   const reply = (body: unknown, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
-  const check = (body: unknown, status = 200) => turnstileCheck('k', ['hkumyseat.com'], reply(body, status));
+  const check = (body: unknown, status = 200) => turnstileCheck('k', ['hkumyseat.com'], reply(body, status), () => {});
   const good = { success: true, action: 'login', hostname: 'hkumyseat.com' };
   assert.equal(await check(good)('t', 'login', '1.2.3.4'), true);
   assert.equal(await check({ ...good, action: 'signup' })('t', 'login', undefined), false, 'solved on another form');
@@ -290,8 +290,17 @@ test('turnstileCheck: only success for the same action on our own hostname passe
   assert.equal(await check({}, 500)('t', 'login', undefined), false);
   assert.equal(await check({ success: true, hostname: 'example.com', metadata: { result_with_testing_key: true } })('t', 'login', undefined), true, "Cloudflare's dummy keys work locally");
   assert.equal(await check({ success: true, hostname: 'hkumyseat.com' })('t', 'login', undefined), false, 'a real reply with no action does not');
-  assert.equal(await turnstileCheck('k', [], reply(good))('t', 'login', undefined), false, 'no allowlist, no pass');
+  assert.equal(await turnstileCheck('k', [], reply(good), () => {})('t', 'login', undefined), false, 'no allowlist, no pass');
+  // The refusal that actually happened in production: the token is fine, the
+  // allowlist names a host the site is not served on. The log must say so.
+  const said: string[] = [];
+  const wrongHost = turnstileCheck('k', ['www.hkumyseat.com'], reply(good), (m) => said.push(m));
+  assert.equal(await wrongHost('secret-token-value', 'login', undefined), false);
+  assert.match(said[0] ?? '', /login: token was solved on "hkumyseat.com", TURNSTILE_HOSTNAMES allows www.hkumyseat.com/);
+  await turnstileCheck('k', ['hkumyseat.com'], reply({ success: false, 'error-codes': ['invalid-input-secret'] }), (m) => said.push(m))('t', 'login', undefined);
+  assert.match(said[1] ?? '', /invalid-input-secret/);
+  assert.ok(!said.join('\n').includes('secret-token-value'));
   const down = (async () => { throw new Error('unreachable'); }) as unknown as typeof fetch;
-  assert.equal(await turnstileCheck('k', ['hkumyseat.com'], down)('t', 'login', undefined), false);
+  assert.equal(await turnstileCheck('k', ['hkumyseat.com'], down, () => {})('t', 'login', undefined), false);
   assert.equal(await check(good)('', 'login', undefined), false);
 });
