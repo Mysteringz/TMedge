@@ -38,7 +38,8 @@ export function Shell() {
 
   const signOut = async () => {
     try {
-      await fetch('/auth/logout', { method: 'POST', headers: { 'x-tm-algo': '1' } });
+      const response = await fetch('/auth/logout', { method: 'POST', headers: { 'x-tm-algo': '1' } });
+      if (!response.ok) throw new Error('logout refused');
     } catch {
       flash('could not reach the console; you may still be signed in');
       return;

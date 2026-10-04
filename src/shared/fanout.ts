@@ -18,7 +18,8 @@ export const MAX_CLIENT_BACKLOG = 1024 * 1024;
 
 /** Send unless this client is already behind. Returns whether it was sent. */
 export function sendLatest(ws: WebSocket, data: string | Buffer, maxBacklog = MAX_CLIENT_BACKLOG): boolean {
-  if (ws.readyState !== ws.OPEN || ws.bufferedAmount > maxBacklog) return false;
+  const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data.length;
+  if (ws.readyState !== ws.OPEN || ws.bufferedAmount + bytes > maxBacklog) return false;
   ws.send(data);
   return true;
 }

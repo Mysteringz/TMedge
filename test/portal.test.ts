@@ -12,6 +12,7 @@ import { allocate, floorIsDark, gridPosition, knownFree, label, largestTableFree
 import { spaceInfo, VENUES } from '../src/shared/venues.js';
 import { Sessions } from '../src/web/auth.js';
 import { asEmail, createWebApp } from '../src/web/main.js';
+import { disconnectedView } from '../web-app/src/live.js';
 import type { FloorState, TableState } from '../src/shared/types.js';
 
 /** Maker space A's real geometry: two rows of five six-seat tables. */
@@ -45,6 +46,17 @@ function floor(free: (number | null)[]): FloorState {
     },
   };
 }
+
+test('a disconnected portal turns every cached free table unknown', () => {
+  const original = { generatedAt: 1000, floors: [{ ...floor([6, 3, null]), edgeId: 'edge-a', updatedAt: 1000, stale: false }] };
+  const offline = disconnectedView(original);
+  assert.equal(offline.floors[0]?.stale, true);
+  assert.equal(allocate(offline.floors[0]!, 1), null);
+  assert.equal(knownFree(offline.floors[0]!), 0);
+  assert.equal(offline.floors[0]?.totals.unknownSeats, 18);
+  assert.ok(offline.floors[0]?.tables.every((t) => t.status === 'unknown' && t.free === null && t.occupied === null));
+  assert.equal(original.floors[0]?.tables[0]?.free, 6, 'the cached source is not mutated');
+});
 
 test('a group is sent to the fewest tables that seat them together', () => {
   // M1 full, M2 has 4, M3 and M4 empty.

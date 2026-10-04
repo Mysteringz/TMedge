@@ -142,9 +142,10 @@ test('a dual-cam node offers its camera beside the foreground mask, and a therma
 test('a live parameter change can always be taken back', async () => {
   const sent: { uid: string; opcode: number; arg0: number; value: number }[] = [];
   let deviceParams: Record<string, number> = { min_contrast: 60, min_peak: 120, raw_every: 0 };
+  let lastCommand = 0;
   let opts = { staleMs: 10_000, releaseMs: 20_000, seatRadiusCm: 80, enterWindow: 5, enterMin: 3, mergeCm: 50 };
   const rt = {
-    nodes: () => [{ uid: UID, status: { params: deviceParams } }],
+    nodes: () => [{ uid: UID, status: { params: deviceParams, lastCmd: lastCommand } }],
     engine: {
       options: () => opts,
       setOptions: (patch: Partial<typeof opts>) => { opts = { ...opts, ...patch }; return opts; },
@@ -154,6 +155,7 @@ test('a live parameter change can always be taken back', async () => {
         sent.push({ uid, opcode, arg0, value });
         // A real node applies it and says so in its next STATUS.
         if (opcode === 1 && arg0 === 0) deviceParams = { ...deviceParams, min_contrast: value };
+        return ++lastCommand;
       },
     },
   } as unknown as EdgeRuntime;

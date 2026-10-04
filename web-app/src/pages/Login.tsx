@@ -5,16 +5,15 @@
  */
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { GoogleButton, googleError } from '../GoogleButton.tsx';
 import { Turnstile, turnstileOn, type TurnstileHandle } from '../Turnstile.tsx';
 
-/** Only a path on this site: never an absolute URL someone put in a link. */
-export function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/dashboard/';
-  return raw;
-}
+import { safeNext } from '../../../src/web/navigation.js';
+export { safeNext } from '../../../src/web/navigation.js';
 
 export default function Login() {
-  const [error, setError] = useState<string | null>(null);
+  // A Google sign-in the server refused comes back here as ?error=.
+  const [error, setError] = useState<string | null>(() => googleError(new URLSearchParams(location.search).get('error')));
   const [busy, setBusy] = useState(false);
   const [human, setHuman] = useState<string | null>(null);
   const check = useRef<TurnstileHandle>(null);
@@ -79,25 +78,26 @@ export default function Login() {
 
       <div className="auth-panel">
         <h2>Student sign in</h2>
-        <p className="sub text-muted">Use your HKU Portal credentials to see live seat availability.</p>
+        <p className="sub text-muted">Use your HKUMySeat account to see live seat availability.</p>
         {error && <p className="form-error" role="alert">{error}</p>}
         <form onSubmit={submit}>
           <div className="fields">
             <div className="field">
-              <label className="field-label" htmlFor="uid">HKU Portal UID</label>
-              <input className="input" id="uid" name="email" type="text" placeholder="u3xxxxxxx" autoComplete="username" required autoFocus />
+              <label className="field-label" htmlFor="uid">HKU email or UID</label>
+              <input className="input" id="uid" name="email" maxLength={254} type="text" placeholder="u3xxxxxxx" autoComplete="username" required autoFocus />
             </div>
             <div className="field">
               <label className="field-label" htmlFor="pin">PIN</label>
-              <input className="input" id="pin" name="password" type="password" placeholder="••••••••" autoComplete="current-password" required />
+              <input className="input" id="pin" name="password" maxLength={1024} type="password" placeholder="••••••••" autoComplete="current-password" required />
             </div>
           </div>
           <Turnstile ref={check} action="login" onToken={setHuman} />
           <button className="btn btn-primary" type="submit" disabled={busy || (turnstileOn && !human)}>{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>
+        <GoogleButton next={next} />
         <div className="auth-links">
           <Link to={`/signup/?next=${encodeURIComponent(next)}`}>Create an account</Link>
-          <span className="text-muted">HKU credentials only</span>
+          <span className="text-muted">HKU UID or Google account</span>
         </div>
         <div className="auth-spacer" />
         <hr className="hr" />

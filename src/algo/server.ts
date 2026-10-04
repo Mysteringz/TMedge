@@ -27,6 +27,7 @@ import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
 import { sendLatest } from '../shared/fanout.js';
+import { requestUrl, sameOrigin } from '../shared/http.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
@@ -93,6 +94,7 @@ export function startAlgo(
   // Frames arrive whether or not anyone is looking; the ring is what makes
   // stepping backwards possible at all.
   rt.on('raw', (msg) => {
+    if (!rt.reg.nodes.has(msg.uid)) return;
     algo.frames.addRaw(msg);
     const node = rt.reg.nodes.get(msg.uid);
     if (node && !node.simulated) spool?.raw(msg, { floorId: node.floorId, pose: node.pose, detector: node.detector });
@@ -108,11 +110,12 @@ export function startAlgo(
   });
 
   rt.on('report', (uid, dets) => {
+    if (!rt.reg.nodes.has(uid)) return;
     // The report's own frame number, not the last RAW's: they are only the
     // same when a RAW happened to arrive for that frame, and the whole point
     // of the pairing is to know when it did.
     const report = rt.lastReport(uid);
-    if (report) algo.frames.addReport(uid, report.frame, dets, report.flags);
+    if (report) algo.frames.addReport(uid, report.frame, dets, report.flags, report.boot);
   });
 
   // Turnstile is a script plus an iframe from Cloudflare; allow exactly that
@@ -180,6 +183,7 @@ export function startAlgo(
       // Relative URLs in the console's page need the trailing slash.
       if (req.originalUrl === '/console-app') return res.redirect('/console-app/');
       res.set('Content-Security-Policy', consoleCsp);
+      res.locals.wsBinding = auth.sessionToken(req);
       return next();
     }, consoleCore.ui);
   }
@@ -241,7 +245,7 @@ export function startAlgo(
 
   app.post('/api/pipeline/save', mutating, (req, res) => {
     const name = String((req.body as { name?: string }).name ?? '').replace(/[^a-z0-9-_]/gi, '');
-    if (!name) return res.status(400).json({ error: 'a name of letters, digits, - and _ please' });
+    if (!name || name.length > 64) return res.status(400).json({ error: 'a name of 1-64 letters, digits, - and _ please' });
     writeFileSync(join(dir, `${name}.json`), JSON.stringify({ ...pipeline, id: name }, null, 2));
     return res.json({ ok: true, name });
   });
@@ -277,7 +281,7 @@ export function startAlgo(
     return res.json({ ...encodeFrame(pair), observed: pair.deviceDetections });
   });
 
-  app.post('/api/run', async (req, res) => {
+  app.post('/api/run', mutating, async (req, res) => {
     const body = (req.body ?? {}) as { frame?: number; only?: string };
     try {
       const result = await algo.run(pipeline, { frame: body.frame, only: body.only });
@@ -396,9 +400,9 @@ export function startAlgo(
     res.json({ ok: true, removed, ...pairs.stats() });
   });
 
-  app.get('/api/ws-token', (_req, res) => {
+  app.get('/api/ws-token', (req, res) => {
     const exp = Date.now() + 60_000;
-    res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(String(exp)).digest('hex')}` });
+    res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(`${exp}:${auth.sessionToken(req)}`).digest('hex')}` });
   });
 
   // Home, /flow, /train: every screen is routed in the browser.
@@ -408,29 +412,46 @@ export function startAlgo(
   });
 
   const server = createServer(app);
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
-  const clients = new Set<WebSocket>();
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
+  const clients = new Map<WebSocket, { req: IncomingMessage; binding: string }>();
+  auth.onLogout((binding) => {
+    for (const [ws, client] of clients) if (client.binding === binding) ws.terminate();
+    consoleCore?.closeSessions(binding);
+  });
 
   server.on('upgrade', (req: IncomingMessage, socket, head) => {
-    const url = new URL(req.url ?? '/', 'http://x');
+    socket.on('error', () => undefined);
+    const url = requestUrl(req.url);
+    if (!url || !sameOrigin(req) || clients.size >= 64) {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    // A one-minute WS token is bound to this live session. Removing an
+    // account, resetting its password or logging out also ends its feeds.
+    if (!auth.userOf(req)) {
+      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    const binding = auth.sessionToken(req);
     // The console's live feed. Its token comes from /console-app/api/ws-token,
     // which only a signed-in engineer can reach.
     if (url.pathname === '/console-app/ws') {
-      if (consoleCore?.upgrade(req, socket, head, '/console-app/ws')) return;
+      if (consoleCore?.upgrade(req, socket, head, '/console-app/ws', { binding, valid: () => !!auth.userOf(req) })) return;
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
     const [exp, mac] = (url.searchParams.get('token') ?? '').split('.');
     const ok = url.pathname === '/ws' && exp && mac && Number(exp) > Date.now() &&
-      safeEqual(mac, createHmac('sha256', wsSecret).update(exp).digest('hex'));
+      safeEqual(mac, createHmac('sha256', wsSecret).update(`${exp}:${binding}`).digest('hex'));
     if (!ok) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      clients.add(ws);
+      clients.set(ws, { req, binding });
+      ws.on('error', () => ws.terminate());
       ws.on('close', () => clients.delete(ws));
       ws.send(JSON.stringify({ type: 'pipeline_state', pipeline, live }));
     });
@@ -439,7 +460,10 @@ export function startAlgo(
   const send = (msg: unknown) => {
     const s = JSON.stringify(msg);
     // A browser that is behind is skipped, not queued for (sendLatest).
-    for (const ws of clients) sendLatest(ws, s);
+    for (const [ws, client] of clients) {
+      if (!auth.userOf(client.req)) { ws.terminate(); continue; }
+      sendLatest(ws, s);
+    }
   };
 
   // Live mode runs the graph as frames arrive; paused holds the frame the
@@ -491,7 +515,8 @@ function loadPipeline(dir: string, name: string): Pipeline | null {
   const path = join(dir, `${name}.json`);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as Pipeline;
+    const pipeline = JSON.parse(readFileSync(path, 'utf8')) as Pipeline;
+    return validate(pipeline).length === 0 ? pipeline : null;
   } catch {
     return null;
   }

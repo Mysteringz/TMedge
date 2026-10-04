@@ -314,3 +314,15 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
 
 /* Turnstile's iframe sizes itself; this only gives it room under the fields. */
 .turnstile { margin-top: 20px; min-height: 65px }
+
+/* "Continue with Google": secondary to the UID form, so outlined, not filled. */
+.auth-or { display: flex; align-items: center; gap: 12px; margin: 18px 0 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: color-mix(in srgb, var(--color-text) 55%, transparent) }
+.auth-or::before, .auth-or::after { content: ''; flex: 1; border-top: 1px solid currentColor; opacity: .4 }
+.btn-google {
+  display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%;
+  margin-top: 14px; padding: 12px 16px; min-height: 52px; box-sizing: border-box;
+  border: 2px solid var(--color-text); background: var(--color-bg); color: var(--color-text);
+  font-size: 14px; font-weight: 600; text-decoration: none;
+}
+.btn-google:hover { background: var(--color-text); color: var(--color-bg) }
+.btn-google svg { flex: none; background: #fff; padding: 2px; box-sizing: content-box }

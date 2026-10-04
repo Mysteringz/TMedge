@@ -136,6 +136,7 @@ export class OccupancyEngine {
    * students are told about a real room, and the caller is a web request.
    */
   setOptions(patch: Partial<OccupancyOptions>): OccupancyOptions {
+    if (Object.values(patch).some((value) => !Number.isFinite(value))) throw new Error('occupancy settings must be finite numbers');
     const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
     const next = { ...this.opts };
     if (patch.staleMs !== undefined) next.staleMs = clamp(patch.staleMs, 2_000, 120_000);
@@ -145,8 +146,11 @@ export class OccupancyEngine {
     if (patch.enterMin !== undefined) next.enterMin = Math.round(clamp(patch.enterMin, 1, 60));
     if (patch.mergeCm !== undefined) next.mergeCm = clamp(patch.mergeCm, 0, 200);
     // A window that needs more frames than it holds would never seat anyone.
-    next.enterMin = Math.min(next.enterMin, next.enterWindow);
+    if (next.enterMin > next.enterWindow) throw new Error('enterMin cannot exceed enterWindow');
     this.opts = next;
+    for (const track of this.seats.values()) {
+      if (track.window.length > next.enterWindow) track.window.splice(0, track.window.length - next.enterWindow);
+    }
     return { ...next };
   }
 
@@ -428,7 +432,7 @@ export class OccupancyEngine {
       if (!track) continue;
       const seen = observed.has(s.id);
       track.window.push(seen);
-      if (track.window.length > this.opts.enterWindow) track.window.shift();
+      if (track.window.length > this.opts.enterWindow) track.window.splice(0, track.window.length - this.opts.enterWindow);
       track.framesSeen += 1;
       if (seen) track.lastSeenAt = at;
       if (!track.occupied) {
@@ -485,4 +489,3 @@ export class OccupancyEngine {
     };
   }
 }
-

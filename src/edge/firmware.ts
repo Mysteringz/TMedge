@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, normalize, sep } from 'node:path';
+import { basename, dirname, join, normalize, resolve as resolvePath, sep } from 'node:path';
 
 export type BuildState = 'uploading' | 'building' | 'ready' | 'failed';
 
@@ -51,6 +51,11 @@ const DEFAULTS: FirmwareLimits = {
 
 export class FirmwareError extends Error {}
 
+// Uploaded PlatformIO configuration can run Python hooks or fetch arbitrary
+// build tools. The console builds our supported board with this trusted recipe.
+const RELEASE_INI = `[platformio]\nsrc_dir = src\ninclude_dir = include\n[env:tmflash]\nplatform = espressif32@6.9.0\nboard = heltec_wifi_lora_32_V3\nframework = arduino\nbuild_flags = -Wall -DTM_NO_NODE_CONFIG\n`;
+const MAX_UPLOADS = 8;
+
 /**
  * Where an uploaded path may land. A project is a tree of ordinary files; a
  * path that climbs out of it, or is absolute, is not a mistake worth
@@ -74,6 +79,7 @@ interface Upload {
   files: number;
   bytes: number;
   startedAt: number;
+  building: boolean;
 }
 
 export class FirmwareStore {
@@ -139,20 +145,30 @@ export class FirmwareStore {
   // --- upload ---------------------------------------------------------------
 
   startUpload(by: string): string {
+    this.sweep();
+    if (this.uploads.size >= MAX_UPLOADS) throw new FirmwareError('too many firmware uploads; discard or finish an existing upload');
     const id = `up-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const dir = join(this.dir, 'uploads', id);
     mkdirSync(dir, { recursive: true });
-    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: this.now() });
+    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: this.now(), building: false });
     return id;
   }
 
   addFile(uploadId: string, path: string, bytes: Buffer): void {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');
+    if (up.building) throw new FirmwareError('the upload is already building');
     if (up.files >= this.limits.maxFiles) throw new FirmwareError(`more than ${this.limits.maxFiles} files`);
     if (bytes.length > this.limits.maxFileBytes) throw new FirmwareError(`${path} is larger than ${this.limits.maxFileBytes} bytes`);
     if (up.bytes + bytes.length > this.limits.maxTotalBytes) throw new FirmwareError('upload is too large');
     const rel = safeRelativePath(path);
+    // Only build inputs are needed; reject build hooks, library manifests and
+    // local provisioning files even if a browser includes them in its folder.
+    const projectPath = rel.replace(/^[^/]+\/(?=(?:src|include)\/|platformio\.ini$)/, '');
+    if (projectPath !== 'platformio.ini' && !/^(src|include)\/[\w./-]+\.(h|hpp|c|cpp|cc)$/.test(projectPath)) {
+      throw new FirmwareError('only platformio.ini and C/C++ source/header files may be uploaded');
+    }
+    if (/(^|\/)(node_config\.h|tm_test_ca\.h)$/.test(projectPath)) throw new FirmwareError('local provisioning files are not release sources');
     const full = join(up.dir, rel);
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, bytes);
@@ -192,6 +208,7 @@ export class FirmwareStore {
   async build(uploadId: string, by: string): Promise<FirmwareBuild> {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');
+    if (up.building) throw new FirmwareError('the upload is already building');
     const pio = this.opts.pio ?? FirmwareStore.findPio();
     if (!pio) throw new FirmwareError('PlatformIO is not installed on this edge: firmware cannot be built here');
     const root = this.projectRoot(up.dir);
@@ -199,6 +216,8 @@ export class FirmwareStore {
     if (!ini.includes('[env:tmflash]')) {
       throw new FirmwareError('the project has no [env:tmflash] environment (the release build with no baked-in secrets)');
     }
+    writeFileSync(join(root, 'platformio.ini'), RELEASE_INI);
+    up.building = true;
 
     const log: string[] = [];
     const keep = (line: string) => {
@@ -206,47 +225,55 @@ export class FirmwareStore {
       if (log.length > 400) log.splice(0, log.length - 400);
     };
     this.opts.log?.(`firmware: building upload ${uploadId} (${up.files} files) from ${root}`);
-    const status = await this.run(pio, ['run', '-e', 'tmflash', '-d', root], keep);
-    if (status !== 0) {
-      const err = new FirmwareError(`build failed (pio exit ${status})`);
-      (err as FirmwareError & { log?: string[] }).log = log;
-      throw err;
-    }
-    const binPath = join(root, '.pio', 'build', 'tmflash', 'firmware.bin');
-    if (!existsSync(binPath)) throw new FirmwareError('the build produced no firmware.bin');
-    const bytes = readFileSync(binPath);
-    const sha256 = createHash('sha256').update(bytes).digest('hex');
-    const id = sha256.slice(0, 16);
+    try {
+      const status = await this.run(pio, ['run', '-e', 'tmflash', '-d', root], root, keep);
+      if (status !== 0) {
+        const err = new FirmwareError(`build failed (pio exit ${status})`);
+        (err as FirmwareError & { log?: string[] }).log = log;
+        throw err;
+      }
+      const binPath = join(root, '.pio', 'build', 'tmflash', 'firmware.bin');
+      if (!existsSync(binPath)) throw new FirmwareError('the build produced no firmware.bin');
+      if (statSync(binPath).size < 1 || statSync(binPath).size > 2 * 1024 * 1024) {
+        throw new FirmwareError('firmware image must be 1 byte to 2 MiB');
+      }
+      const bytes = readFileSync(binPath);
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const id = sha256.slice(0, 16);
 
-    const dest = join(this.dir, 'builds', id);
-    mkdirSync(dest, { recursive: true });
-    writeFileSync(join(dest, 'firmware.bin'), bytes);
-    const build: FirmwareBuild = {
-      id,
-      sha256,
-      size: bytes.length,
-      version: this.versionOf(root),
-      state: 'ready',
-      uploadedBy: by || up.by,
-      uploadedAt: up.startedAt,
-      builtAt: this.now(),
-      files: up.files,
-      sourceBytes: up.bytes,
-      log: log.slice(-60),
-    };
-    writeFileSync(join(dest, 'build.json'), JSON.stringify(build, null, 2));
-    this.builds.set(id, build);
-    // The sources have done their job; the image and its log are what matter.
-    rmSync(up.dir, { recursive: true, force: true });
-    this.uploads.delete(uploadId);
-    this.opts.log?.(`firmware: built ${build.version} ${id} (${bytes.length} bytes)`);
-    return build;
+      const dest = join(this.dir, 'builds', id);
+      mkdirSync(dest, { recursive: true });
+      writeFileSync(join(dest, 'firmware.bin'), bytes);
+      const build: FirmwareBuild = {
+        id,
+        sha256,
+        size: bytes.length,
+        version: this.versionOf(root),
+        state: 'ready',
+        uploadedBy: by || up.by,
+        uploadedAt: up.startedAt,
+        builtAt: this.now(),
+        files: up.files,
+        sourceBytes: up.bytes,
+        log: log.slice(-60),
+      };
+      writeFileSync(join(dest, 'build.json'), JSON.stringify(build, null, 2));
+      this.builds.set(id, build);
+      // The sources have done their job; the image and its log are what matter.
+      rmSync(up.dir, { recursive: true, force: true });
+      this.uploads.delete(uploadId);
+      this.opts.log?.(`firmware: built ${build.version} ${id} (${bytes.length} bytes)`);
+      return build;
+    } finally {
+      up.building = false;
+    }
   }
 
   /** Throw away an upload that was never built. */
   discard(uploadId: string): void {
     const up = this.uploads.get(uploadId);
     if (!up) return;
+    if (up.building) throw new FirmwareError('the upload is already building');
     rmSync(up.dir, { recursive: true, force: true });
     this.uploads.delete(uploadId);
   }
@@ -254,14 +281,54 @@ export class FirmwareStore {
   /** Uploads left behind by an abandoned browser tab. */
   sweep(olderThanMs = 3600_000): void {
     for (const up of this.uploads.values()) {
-      if (this.now() - up.startedAt > olderThanMs) this.discard(up.id);
+      if (!up.building && this.now() - up.startedAt > olderThanMs) this.discard(up.id);
     }
   }
 
-  private run(exe: string, args: string[], onLine: (line: string) => void): Promise<number> {
+  private run(exe: string, args: string[], root: string, onLine: (line: string) => void): Promise<number> {
     return new Promise((resolve, reject) => {
-      const child = spawn(exe, args, {
-        env: { ...process.env, PLATFORMIO_NO_ANSI: 'true', NO_COLOR: '1', PYTHONUNBUFFERED: '1' },
+      // Compile untrusted source in an empty filesystem. In particular, neither
+      // absolute #include nor assembler .incbin may reach service credentials.
+      // SDKs must be populated by an administrator before building: this child
+      // has no network or access to the rest of the service's data directory.
+      const core = process.env.PLATFORMIO_CORE_DIR ?? join(process.env.HOME ?? '/root', '.platformio');
+      const sandbox = ['/usr/bin/bwrap', '/bin/bwrap'].find(existsSync);
+      if (!sandbox || process.platform !== 'linux') {
+        reject(new FirmwareError('isolated firmware builds require Linux bubblewrap; install it and preinstall the tmflash SDK'));
+        return;
+      }
+      const isolated = ['--die-with-parent', '--new-session', '--unshare-all'];
+      for (const path of ['/usr', '/bin', '/lib', '/lib64']) {
+        if (existsSync(path)) isolated.push('--ro-bind', path, path);
+      }
+      isolated.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/etc');
+      for (const path of ['/etc/ld.so.cache', '/etc/ssl']) {
+        if (existsSync(path)) isolated.push('--ro-bind', path, path);
+      }
+      isolated.push('--dir', '/tmp/home', '--dir', '/tmp/pio');
+      for (const part of ['packages', 'platforms']) {
+        const path = join(core, part);
+        if (existsSync(path)) isolated.push('--ro-bind', path, `/tmp/pio/${part}`);
+      }
+      // PlatformIO's Python virtualenv may live outside the SDK cache. Bind
+      // only that installation, never its parent /opt or the user's home.
+      const install = dirname(dirname(resolvePath(exe)));
+      if (!['/', '/usr', '/bin'].includes(install)) {
+        if (basename(dirname(exe)) !== 'bin' || ['tmp', 'home', 'opt'].includes(basename(install))) {
+          reject(new FirmwareError('PIO_PATH must point to bin/pio inside a dedicated compiler installation'));
+          return;
+        }
+        isolated.push('--ro-bind', install, install);
+      }
+      isolated.push('--bind', resolvePath(root), resolvePath(root), '--chdir', resolvePath(root), '--', exe, ...args);
+      const child = spawn(sandbox, isolated, {
+        // Never give the compiler TM_KEY, session secrets or service tokens.
+        env: Object.fromEntries([
+          ...['PATH', 'LANG'].flatMap((k) =>
+            process.env[k] ? [[k, process.env[k] as string]] : []),
+          ['HOME', '/tmp/home'], ['PLATFORMIO_CORE_DIR', '/tmp/pio'], ['TMPDIR', '/tmp'],
+          ['PLATFORMIO_NO_ANSI', 'true'], ['NO_COLOR', '1'], ['PYTHONUNBUFFERED', '1'],
+        ]),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       const timer = setTimeout(() => child.kill('SIGKILL'), this.limits.buildTimeoutMs);
@@ -270,7 +337,9 @@ export class FirmwareStore {
         buffered += chunk.toString('utf8');
         const lines = buffered.split(/\r?\n/);
         buffered = lines.pop() ?? '';
-        for (const l of lines) if (l.trim()) onLine(l);
+        for (const l of lines) if (l.trim()) onLine(l.slice(-4096));
+        // A compiler diagnostic need not contain a newline. Keep its tail.
+        buffered = buffered.slice(-4096);
       };
       child.stdout.on('data', feed);
       child.stderr.on('data', feed);

@@ -4,8 +4,12 @@
  * - Passwords: scrypt with a per-user salt.
  * - Sessions: a stateless signed cookie (email + expiry, HMAC-SHA256), so the
  *   web tier can run as several instances behind a load balancer with no
- *   shared session store. Revocation is by rotating SESSION_SECRET.
+ *   shared session store. Logout revocations persist when configured; rotate
+ *   SESSION_SECRET to revoke sessions across every instance.
  * - Sign-up is limited to university email domains.
+ *
+ * Students may also sign in with Google (google.ts); such an account has
+ * no password, and is found again by Google's `sub`.
  *
  * This is the local stand-in for HKU single sign-on. In production, swap
  * `UserStore` + the login form for an OIDC login against the university's
@@ -15,7 +19,7 @@
  * launch.
  */
 import { createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -24,27 +28,63 @@ const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number) =>
 export interface User {
   email: string;
   name: string;
+  /** Both empty for an account made with Google: it has no password to check. */
   salt: string;
   hash: string;
   createdAt: number;
+  /** Google's `sub` for this person, once they have signed in with Google. */
+  google?: string;
 }
 
 export class AuthError extends Error {}
+export class AuthBusyError extends AuthError {}
+
+let activeHashes = 0;
+export async function passwordHash(password: string, salt: Buffer): Promise<Buffer> {
+  // Scrypt is deliberately costly. A distributed login flood must not queue
+  // unlimited work or consume the whole process's memory in parallel.
+  if (activeHashes >= 8) throw new AuthBusyError('Sign-in is busy. Try again shortly.');
+  activeHashes++;
+  try { return await scrypt(password, salt, 32); } finally { activeHashes--; }
+}
+
+import { withPrivateFileLock, writePrivateJson, FileBusyError } from '../shared/private-file.js';
 
 export class UserStore {
   private users = new Map<string, User>();
+  private seen = '';
 
-  constructor(private readonly path: string, private readonly allowedDomains: string[]) {
+  constructor(private readonly path: string, private readonly allowedDomains: string[]) { this.refresh(); }
+
+  private refresh(): void {
+    const fresh = new Map<string, User>();
+    let stamp = '';
     try {
-      const list = JSON.parse(readFileSync(path, 'utf8')) as User[];
-      for (const u of list) this.users.set(u.email, u);
-    } catch {
-      /* no users yet */
+      const stat = statSync(this.path, { bigint: true });
+      if (stat.size > 2_000_000n) throw new Error('user store too large');
+      stamp = `${stat.ino}:${stat.mtimeNs}:${stat.size}`;
+      if (stamp === this.seen) return;
+      const list = JSON.parse(readFileSync(this.path, 'utf8')) as User[];
+      if (!Array.isArray(list)) throw new Error('invalid user store');
+      const subjects = new Set<string>();
+      for (const u of list) {
+        if (!validUser(u) || fresh.has(u.email) || (u.google && subjects.has(u.google))) {
+          throw new Error('invalid or duplicate user in user store');
+        }
+        fresh.set(u.email, u);
+        if (u.google) subjects.add(u.google);
+      }
+    } catch (err) {
+      // Only a missing file is an empty store. Corruption or unreadable data
+      // must never be silently replaced by the next registration.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
+    this.users = fresh;
+    this.seen = stamp;
   }
 
   get size(): number {
-    return this.users.size;
+    this.refresh(); return this.users.size;
   }
 
   normalise(email: string): string {
@@ -57,45 +97,102 @@ export class UserStore {
   }
 
   async create(emailRaw: string, name: string, password: string): Promise<User> {
+    if (typeof emailRaw !== 'string' || typeof name !== 'string' || typeof password !== 'string') throw new AuthError('Enter text for your email, name and password.');
     const email = this.normalise(emailRaw);
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new AuthError('Enter a valid email address.');
+    if (!validEmail(email)) throw new AuthError('Enter a valid email address.');
     if (!this.domainAllowed(email)) throw new AuthError(`Use your university email (${this.allowedDomains.map((d) => '@' + d).join(' or ')}).`);
+    if (password.length > 1024) throw new AuthError('Use at most 1024 characters for your password.');
     if (password.length < 10) throw new AuthError('Use at least 10 characters for your password.');
+    this.refresh();
     if (this.users.has(email)) throw new AuthError('An account with that email already exists. Sign in instead.');
     const salt = randomBytes(16);
-    const hash = await scrypt(password, salt, 32);
+    const hash = await passwordHash(password, salt);
     const user: User = { email, name: name.trim().slice(0, 60) || email.split('@')[0] || email, salt: salt.toString('hex'), hash: hash.toString('hex'), createdAt: Date.now() };
-    this.users.set(email, user);
-    this.save();
-    return user;
+    // scrypt yields: a simultaneous signup or Google callback may have
+    // claimed the address while it ran. Recheck before committing.
+    try {
+      return withPrivateFileLock(this.path, () => {
+        this.seen = ''; this.refresh();
+        if (this.users.has(email)) throw new AuthError('An account with that email already exists. Sign in instead.');
+        this.save(new Map(this.users).set(email, user)); return user;
+      });
+    } catch (err) { if (err instanceof FileBusyError) throw new AuthBusyError(err.message); throw err; }
   }
 
   async verify(emailRaw: string, password: string): Promise<User | null> {
+    if (typeof emailRaw !== 'string' || typeof password !== 'string' || emailRaw.length > 254 || password.length > 1024) return null;
+    try { this.refresh(); } catch { return null; }
     const user = this.users.get(this.normalise(emailRaw));
     // Hash even for unknown emails so response time does not reveal which exist.
-    const salt = user ? Buffer.from(user.salt, 'hex') : randomBytes(16);
-    const hash = await scrypt(password, salt, 32);
-    if (!user) return null;
+    const salt = user?.salt ? Buffer.from(user.salt, 'hex') : randomBytes(16);
+    const hash = await passwordHash(password, salt);
+    try { this.refresh(); } catch { return null; }
+    if (!user || user.google || !user.hash || this.users.get(user.email)?.hash !== user.hash) return null;   // a Google-only account has no password that could match
     return timingSafeEqual(hash, Buffer.from(user.hash, 'hex')) ? user : null;
   }
 
   get(email: string): User | undefined {
-    return this.users.get(email);
+    try { this.refresh(); return this.users.get(email); } catch { return undefined; }
   }
 
-  private save(): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.tmp`;
-    writeFileSync(tmp, JSON.stringify([...this.users.values()], null, 2), { mode: 0o600 });
-    renameSync(tmp, this.path);   // atomic: a crash mid-write never leaves a truncated user file
+  /**
+   * The account for someone Google has vouched for. The `sub` is who they
+   * are: a known one is that account even if their Gmail address changed
+   * since. A new `sub` gets a fresh password-less account when sign-up is
+   * open. Never auto-link by email: local sign-up does not verify ownership,
+   * and a third-party Google email may have changed owners since verification.
+   * No domain rule: any Google account may sign in.
+   */
+  google(id: { sub: string; email: string; name: string }, signupOpen: boolean): User {
+    try { return withPrivateFileLock(this.path, () => { this.seen = ''; this.refresh(); return this.googleUnlocked(id, signupOpen); }); }
+    catch (err) { if (err instanceof FileBusyError) throw new AuthBusyError(err.message); throw err; }
+  }
+  private googleUnlocked(id: { sub: string; email: string; name: string }, signupOpen: boolean): User {
+    for (const u of this.users.values()) if (u.google === id.sub) return u;
+    const email = this.normalise(id.email);
+    if (!validEmail(email) || !id.sub || id.sub.length > 255) throw new AuthError('Invalid Google identity.');
+    if (this.users.has(email)) throw new AuthError('That email already belongs to an account. Sign in with its original method.');
+    if (!signupOpen) throw new AuthError('Sign-up is closed.');
+    const user: User = {
+      email, name: id.name.trim().slice(0, 60) || email.split('@')[0] || email,
+      salt: '', hash: '', createdAt: Date.now(), google: id.sub,
+    };
+    this.save(new Map(this.users).set(email, user));
+    return user;
+  }
+
+  private save(users: Map<string, User>): void {
+    writePrivateJson(this.path, [...users.values()]);
+    this.users = users; this.seen = '';
   }
 }
 
+function validEmail(email: string): boolean {
+  return email.length <= 254 && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+}
+
+function validUser(v: unknown): v is User {
+  if (!v || typeof v !== 'object') return false;
+  const u = v as User;
+  return typeof u.email === 'string' && validEmail(u.email) && u.email === u.email.trim().toLowerCase() &&
+    typeof u.name === 'string' && u.name.length <= 60 && Number.isFinite(u.createdAt) && u.createdAt >= 0 &&
+    (u.google === undefined || (typeof u.google === 'string' && u.google.length > 0 && u.google.length <= 255)) &&
+    typeof u.salt === 'string' && typeof u.hash === 'string' &&
+    ((/^[0-9a-f]{32}$/.test(u.salt) && /^[0-9a-f]{64}$/.test(u.hash)) || (!!u.google && u.salt === '' && u.hash === ''));
+}
+
 export class Sessions {
-  constructor(private readonly secret: Buffer, private readonly ttlMs = 14 * 24 * 3600 * 1000) {}
+  private readonly revoked = new Map<string, number>();
+  private validAfter = -Infinity;
+  private revocationStamp: string | null = null;
+  constructor(private readonly secret: Buffer, private readonly ttlMs = 14 * 24 * 3600 * 1000, private readonly revocationsPath?: string, private readonly accountVersion?: (email: string) => string | null) {
+    this.reloadRevocations(Date.now());
+  }
 
   issue(email: string, now = Date.now()): string {
-    const body = Buffer.from(JSON.stringify({ e: email, x: now + this.ttlMs })).toString('base64url');
+    const version = this.accountVersion?.(email);
+    if (this.accountVersion && !version) throw new AuthError('Unknown account.');
+    const body = Buffer.from(JSON.stringify({ e: email, x: now + this.ttlMs, n: randomBytes(16).toString('base64url'), ...(this.accountVersion ? { v: version } : {}) })).toString('base64url');
     return `${body}.${this.mac(body)}`;
   }
 
@@ -109,21 +206,47 @@ export class Sessions {
     return this.detail(token, now)?.email ?? null;
   }
 
+  /** Stop replay of a logged-out cookie, persisting it when configured. */
+  revoke(token: string | undefined, now = Date.now()): void {
+    if (this.revocationsPath) {
+      withPrivateFileLock(this.revocationsPath, () => {
+        if (this.revocationStamp !== null) this.revocationStamp = '';
+        this.revokeUnlocked(token, now);
+      });
+    } else this.revokeUnlocked(token, now);
+  }
+  private revokeUnlocked(token: string | undefined, now: number): void {
+    const detail = this.detail(token, now);
+    if (!token || !detail) return;
+    for (const [key, expiry] of this.revoked) if (expiry <= now) this.revoked.delete(key);
+    // Bound memory without resurrecting earlier revoked cookies. Overflow
+    // invalidates all sessions issued by this process before this instant.
+    if (this.revoked.size >= 10_000) { this.validAfter = now; this.revoked.clear(); }
+    this.revoked.set(this.mac(token), detail.expiresAt);
+    this.saveRevocations();
+  }
+
   /**
    * The same check, but keeping the expiry: the web tier renews a cookie that
    * is past halfway so a daily user is never signed out mid-term, while an
    * abandoned one still dies on its own.
    */
   detail(token: string | undefined, now = Date.now()): { email: string; expiresAt: number } | null {
-    if (!token) return null;
-    const [body, mac] = token.split('.');
+    if (!token || token.length > 2048) return null;
+    // An unreadable revocation file must deny access, never undo a logout.
+    try { this.reloadRevocations(now); } catch { return null; }
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [body, mac] = parts;
     if (!body || !mac) return null;
     const want = Buffer.from(this.mac(body));
     const got = Buffer.from(mac);
     if (want.length !== got.length || !timingSafeEqual(want, got)) return null;
     try {
-      const { e, x } = JSON.parse(Buffer.from(body, 'base64url').toString()) as { e: string; x: number };
-      if (typeof e !== 'string' || typeof x !== 'number' || x <= now) return null;
+      const { e, x, v } = JSON.parse(Buffer.from(body, 'base64url').toString()) as { e: string; x: number; v?: string };
+      if (typeof e !== 'string' || typeof x !== 'number' || !Number.isFinite(x) || x <= now || x > now + this.ttlMs || e.length === 0 || e.length > 254 ||
+          x - this.ttlMs <= this.validAfter || this.revoked.has(this.mac(token))) return null;
+      if (this.accountVersion && (typeof v !== 'string' || v !== this.accountVersion(e))) return null;
       return { email: e, expiresAt: x };
     } catch {
       return null;
@@ -132,6 +255,35 @@ export class Sessions {
 
   private mac(body: string): string {
     return createHmac('sha256', this.secret).update(body).digest('base64url');
+  }
+
+  private reloadRevocations(now: number): void {
+    if (!this.revocationsPath) return;
+    let stamp: string;
+    try {
+      const st = statSync(this.revocationsPath, { bigint: true });
+      if (st.size > 2_000_000n) throw new Error('session revocation file is too large');
+      stamp = `${st.ino}:${st.mtimeNs}:${st.size}`;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && this.revocationStamp === null) return;
+      throw err;
+    }
+    if (stamp === this.revocationStamp) return;
+    const data = JSON.parse(readFileSync(this.revocationsPath, 'utf8')) as { validAfter?: unknown; revoked?: unknown };
+    if (!data || (data.validAfter !== null && (typeof data.validAfter !== 'number' || !Number.isFinite(data.validAfter))) ||
+        !Array.isArray(data.revoked) || data.revoked.length > 10_000 || data.revoked.some((entry: unknown) =>
+          !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(entry[0]) ||
+          typeof entry[1] !== 'number' || !Number.isFinite(entry[1]))) throw new Error('invalid session revocation file');
+    this.revoked.clear();
+    for (const [key, expiry] of data.revoked as [string, number][]) if (expiry > now) this.revoked.set(key, expiry);
+    this.validAfter = data.validAfter === null ? -Infinity : data.validAfter as number;
+    this.revocationStamp = stamp;
+  }
+
+  private saveRevocations(): void {
+    if (!this.revocationsPath) return;
+    writePrivateJson(this.revocationsPath, { validAfter: Number.isFinite(this.validAfter) ? this.validAfter : null, revoked: [...this.revoked] });
+    this.revocationStamp = '';
   }
 }
 
@@ -143,21 +295,29 @@ export class RateLimiter {
 
   allow(key: string, now = Date.now()): boolean {
     const h = this.hits.get(key);
-    if (!h || h.reset < now) {
+    if (!h || h.reset <= now) {
+      if (!h && this.hits.size >= 10_000) {
+        for (const [k, entry] of this.hits) if (entry.reset <= now) this.hits.delete(k);
+        // A spray of new addresses must not erase blocked addresses.
+        if (this.hits.size >= 10_000) return false;
+      }
       this.hits.set(key, { n: 1, reset: now + this.windowMs });
-      if (this.hits.size > 10_000) this.hits.clear();   // bound memory under a spray of addresses
       return true;
     }
+    if (h.n >= this.max) return false;
     h.n += 1;
-    return h.n <= this.max;
+    return true;
   }
 }
 
 export function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const part of (header ?? '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    const key = part.slice(0, i).trim();
+    if (Object.hasOwn(out, key)) continue;
+    try { out[key] = decodeURIComponent(part.slice(i + 1).trim()); } catch { /* malformed cookie is unauthenticated */ }
   }
   return out;
 }

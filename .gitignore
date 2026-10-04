@@ -4,6 +4,11 @@ public-web/app/
 public-console/js/
 data/
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*-keys.json
 *.log
 .DS_Store
 __pycache__/

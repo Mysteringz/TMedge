@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build and validate a runtime-only release. No archive member is trusted."""
 import hashlib
+import gzip
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,22 @@ ID = re.compile(r'^[0-9]{8}T[0-9]{6}Z-[a-zA-Z0-9-]+$')
 ROOT_FILES = {'package.json', 'package-lock.json', 'RELEASE.json', 'MANIFEST.json'}
 ROOT_DIRS = {'dist', 'public-web', 'public-console', 'public-algo', 'config'}
 MAX_BYTES = 256 * 1024 * 1024
+
+
+class BoundedArchive:
+    """Bound decompressed input and PAX header allocations before tarfile parses them."""
+    def __init__(self, stream):
+        self.stream = stream
+        self.bytes = 0
+
+    def read(self, size=-1):
+        if size < 0 or size > 1024 * 1024:
+            raise ValueError('oversized archive metadata read')
+        block = self.stream.read(size)
+        self.bytes += len(block)
+        if self.bytes > MAX_BYTES + 20000 * 4096:
+            raise ValueError('archive exceeds decompressed size limit')
+        return block
 
 
 def safe_name(name):
@@ -67,20 +84,24 @@ def verify(root):
 def extract(archive, destination):
     # Prevalidate every member before creating files; reject links, duplicates,
     # devices and traversal. Never use extractall on a privileged receiver.
-    with tarfile.open(archive, 'r:gz') as tar:
-        members = tar.getmembers()
+    if archive.stat().st_size > MAX_BYTES:
+        raise ValueError('archive exceeds upload size limit')
+    with gzip.open(archive, 'rb') as compressed, tarfile.open(fileobj=BoundedArchive(compressed), mode='r|') as tar:
         names = set()
         total = 0
-        for member in members:
+        for member in tar:
             safe_name(member.name)
-            if member.name in names or not (member.isfile() or member.isdir()):
+            if member.name in names or member.size < 0 or not (member.isfile() or member.isdir()):
                 raise ValueError('duplicate or non-regular archive member')
             names.add(member.name)
             total += member.size
             if total > MAX_BYTES or len(names) > 20000:
                 raise ValueError('release exceeds extraction limit')
-        destination.mkdir(mode=0o755)
-        for member in members:
+    destination.mkdir(mode=0o755)
+    # Reopen a bounded stream after the full validation pass; no member list
+    # or decompressed archive has to be held in memory.
+    with gzip.open(archive, 'rb') as compressed, tarfile.open(fileobj=BoundedArchive(compressed), mode='r|') as tar:
+        for member in tar:
             path = destination / member.name
             if member.isdir():
                 path.mkdir(parents=True, exist_ok=True, mode=0o755)

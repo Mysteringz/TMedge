@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RawFrameMessage } from '../shared/types.js';
 import type { FrameStore } from './frames.js';
@@ -10,6 +10,7 @@ export class TrainingSpool {
   recording = false;
   private lastError: string | null = null;
   private thermalIds = new Map<string, string>();
+  private budget = { at: 0, bytes: 0, files: 0 };
 
   constructor(private readonly dir: string, private readonly recordingFile: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -80,15 +81,34 @@ export class TrainingSpool {
     const name = join(this.dir, `${Date.now()}-${randomUUID()}.json`);
     const temporary = `${name}.tmp`;
     try {
-      writeFileSync(temporary, JSON.stringify(record), { mode: 0o600 });
+      const contents = JSON.stringify(record);
+      const bytes = Buffer.byteLength(contents);
+      if (Date.now() - this.budget.at > 10000) {
+        let size = 0, files = 0;
+        for (const file of readdirSync(this.dir)) {
+          if (!file.endsWith('.json') && !file.endsWith('.tmp')) continue;
+          try { size += statSync(join(this.dir, file)).size; files += 1; } catch { /* worker removed it */ }
+        }
+        this.budget = { at: Date.now(), bytes: size, files };
+      }
+      const disk = statfsSync(this.dir);
+      if (this.budget.bytes + bytes > 512 * 1024 * 1024 || this.budget.files >= 10000 ||
+          disk.bavail * disk.bsize < 128 * 1024 * 1024 + bytes) {
+        this.lastError = 'training outbox at capacity; new recordings paused until the worker drains it';
+        return false;
+      }
+      writeFileSync(temporary, contents, { mode: 0o600 });
       const fd = openSync(temporary, 'r');
       try { fsyncSync(fd); } finally { closeSync(fd); }
       renameSync(temporary, name);
       const directory = openSync(this.dir, 'r');
       try { fsyncSync(directory); } finally { closeSync(directory); }
       this.lastError = null;
+      this.budget.bytes += bytes;
+      this.budget.files += 1;
       return true;
     } catch {
+      try { rmSync(temporary, { force: true }); } catch { /* disk remains unavailable */ }
       this.lastError = 'training outbox could not be written; inspect disk and worker health';
       console.error('[training] outbox write failed');
       return false;

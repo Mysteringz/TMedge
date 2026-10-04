@@ -28,15 +28,24 @@ def jpeg_size(data):
             raise ValueError('invalid JPEG marker')
         while i < len(data) and data[i] == 255:
             i += 1
+        if i >= len(data):
+            raise ValueError('truncated JPEG marker')
         marker = data[i]
         i += 1
         if marker in (0xd8, 0xd9) or 0xd0 <= marker <= 0xd7:
             continue
+        if i + 2 > len(data):
+            raise ValueError('truncated JPEG segment')
         n = int.from_bytes(data[i:i+2], 'big')
         if n < 2 or i + n > len(data):
             raise ValueError('invalid JPEG segment')
         if marker in (0xc0, 0xc1, 0xc2):
-            return int.from_bytes(data[i+5:i+7], 'big'), int.from_bytes(data[i+3:i+5], 'big')
+            if n < 8:
+                raise ValueError('truncated JPEG frame header')
+            width, height = int.from_bytes(data[i+5:i+7], 'big'), int.from_bytes(data[i+3:i+5], 'big')
+            if not width or not height:
+                raise ValueError('invalid JPEG dimensions')
+            return width, height
         i += n
     raise ValueError('JPEG has no supported frame header')
 
@@ -58,6 +67,8 @@ def frame(id_, uid, modality, payload, reference, basis, metadata,
 def parse_file(path, legacy=False):
     raw = path.read_bytes()
     m = json.loads(raw)
+    if not isinstance(m, dict) or (m.get('observed') is not None and not isinstance(m['observed'], list)):
+        raise ValueError('invalid training record or observations')
     digest = hashlib.sha256(raw).hexdigest()
     # Payloads live in bytea once, rather than a second base64 copy in JSONB.
     meta = {'source_sha256': digest, 'source_record': {k: v for k, v in m.items() if k not in ('pixels', 'jpeg')},
@@ -94,6 +105,55 @@ INSERT_PAIR = '''INSERT INTO training.pairs (id,thermal_id,rgb_id,skew_ms,mirror
  VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING'''
 
 
+def store_batch(conn, parsed):
+    """Return verified source records; missing/conflicting pairs stay queued."""
+    rows = [r for frames, _, _ in parsed for r in frames]
+    if not rows:
+        return []
+    with conn.pipeline():
+        for row in rows:
+            conn.execute(INSERT_FRAME, row)
+    stored = conn.execute("SELECT id,payload_sha256,metadata->>'source_sha256',sensor_uid,modality "
+                          'FROM training.frames WHERE id=ANY(%s)', ([r[0] for r in rows],)).fetchall()
+    checks = {r[0]: r[1:] for r in stored}
+    valid = []
+    for record in parsed:
+        if all(checks.get(row[0]) == (row[12], row[16].obj['source_sha256'], row[1], row[2]) for row in record[0]):
+            valid.append(record)
+        else:
+            logging.error('database frame conflict; source retained: %s', record[2][0].name)
+    required = list({pair[1] for _, pair, _ in valid if pair})
+    thermal = {row[0]: row[1] for row in conn.execute(
+        "SELECT id,sensor_uid FROM training.frames WHERE id=ANY(%s) AND modality='thermal'", (required,)
+    ).fetchall()} if required else {}
+    ready = []
+    for record in valid:
+        frames, pair, files = record
+        # A referenced thermal frame may arrive in a later worker pass. Commit
+        # unrelated frames now and retain this entire source record for retry.
+        if pair and thermal.get(pair[1]) != frames[-1][1]:
+            logging.warning('paired thermal record unavailable or belongs to another sensor; source retained: %s', files[0].name)
+        else:
+            ready.append(record)
+    pairs = [pair for _, pair, _ in ready if pair]
+    if pairs:
+        with conn.pipeline():
+            for pair in pairs:
+                conn.execute(INSERT_PAIR, pair)
+        stored_pairs = conn.execute("SELECT id,thermal_id,rgb_id,skew_ms,mirror,metadata->>'source_sha256' "
+                                    'FROM training.pairs WHERE id=ANY(%s)', ([p[0] for p in pairs],)).fetchall()
+        pair_checks = {row[0]: row[1:] for row in stored_pairs}
+        verified = []
+        for record in ready:
+            pair = record[1]
+            if pair and pair_checks.get(pair[0]) != (pair[1], pair[2], pair[3], pair[4], pair[5].obj['source_sha256']):
+                logging.error('database pair conflict; source retained: %s', record[2][0].name)
+            else:
+                verified.append(record)
+        return verified
+    return ready
+
+
 def drain(conn, paths, legacy=False, delete=False):
     parsed = []
     for path in paths:
@@ -101,41 +161,38 @@ def drain(conn, paths, legacy=False, delete=False):
             parsed.append(parse_file(path, legacy))
         except Exception:
             logging.error('unreadable training record retained: %s', path.name)
-    rows = [r for frames, _, _ in parsed for r in frames]
-    if not rows:
+    if not parsed:
         return 0
     # Pipeline batches avoid a Singapore/Hong Kong round trip for each insert.
-    with conn.transaction():
-        with conn.pipeline():
-            for row in rows:
-                conn.execute(INSERT_FRAME, row)
-        pairs = [pair for _, pair, _ in parsed if pair]
-        if pairs:
-            required = {pair[1] for pair in pairs}
-            present = {r[0] for r in conn.execute('SELECT id FROM training.frames WHERE id=ANY(%s) AND modality=\'thermal\'',
-                                                 (list(required),)).fetchall()}
-            if required != present:
-                raise ValueError('paired thermal record has not arrived yet')
-            with conn.pipeline():
-                for pair in pairs:
-                    conn.execute(INSERT_PAIR, pair)
-        stored = conn.execute('SELECT id,payload_sha256,metadata->>\'source_sha256\' FROM training.frames WHERE id=ANY(%s)',
-                              ([r[0] for r in rows],)).fetchall()
-        checks = {r[0]: (r[1], r[2]) for r in stored}
-        for row in rows:
-            if checks.get(row[0]) != (row[12], row[16].obj['source_sha256']):
-                raise ValueError('database verification mismatch; source retained')
+    # Only a constraint/data error takes the slower isolated-record path.
+    # Connection/commit errors still propagate so no source is deleted when
+    # PostgreSQL has not acknowledged its transaction.
+    try:
+        with conn.transaction():
+            verified = store_batch(conn, parsed)
+    except (psycopg.IntegrityError, psycopg.DataError):
+        verified = []
+        for record in parsed:
+            try:
+                with conn.transaction():
+                    accepted = store_batch(conn, [record])
+                verified.extend(accepted)
+            except (psycopg.IntegrityError, psycopg.DataError):
+                logging.error('invalid database record retained: %s', record[2][0].name)
     # This runs only AFTER commit; a disconnect before acknowledgement leaves
     # the source in place and ON CONFLICT makes the retry safe.
     if delete:
-        for _, _, files in parsed:
+        for _, _, files in verified:
             for path in files:
                 path.unlink(missing_ok=True)
-    return len(parsed)
+    return len(verified)
 
 
 def status(conn, spool):
-    row = conn.execute('''SELECT count(*), count(*) FILTER (WHERE jsonb_array_length(coalesce(nullif(t.observed,'null'::jsonb),nullif(p.metadata->'source_record'->'observed','null'::jsonb),'[]'))>0),
+    row = conn.execute('''SELECT count(*), count(*) FILTER (WHERE CASE
+      WHEN jsonb_typeof(coalesce(nullif(t.observed,'null'::jsonb),nullif(p.metadata->'source_record'->'observed','null'::jsonb),'[]'))='array'
+      THEN jsonb_array_length(coalesce(nullif(t.observed,'null'::jsonb),nullif(p.metadata->'source_record'->'observed','null'::jsonb),'[]'))>0
+      ELSE false END),
       coalesce(sum(octet_length(t.payload)+octet_length(r.payload)),0),
       extract(epoch FROM min(r.reference_at))*1000, extract(epoch FROM max(r.reference_at))*1000
       FROM training.pairs p JOIN training.frames t ON t.id=p.thermal_id JOIN training.frames r ON r.id=p.rgb_id''').fetchone()
@@ -169,7 +226,15 @@ def main():
                         logging.info('legacy verified: %d/%d', imported, len(paths))
                 paths = sorted(p for p in args.spool.glob('*.json') if p.name != 'status.json')
                 # RAW records must reach the DB before RGB pairs referencing them.
-                paths.sort(key=lambda p: (json.loads(p.read_text()).get('kind') != 'thermal', p.name))
+                # A malformed record stays for inspection; it must not prevent
+                # every other valid record from reaching the database.
+                def priority(path):
+                    try:
+                        record = json.loads(path.read_text())
+                        return (not isinstance(record, dict) or record.get('kind') != 'thermal', path.name)
+                    except (ValueError, OSError):
+                        return (True, path.name)
+                paths.sort(key=priority)
                 for i in range(0, len(paths), 128):
                     imported += drain(conn, paths[i:i+128], delete=True)
                 status(conn, args.spool)

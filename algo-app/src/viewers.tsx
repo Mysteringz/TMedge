@@ -123,9 +123,11 @@ export function Plane({ data, colour, blobs, observed, labelled, mirror }: {
   mirror?: boolean;
 }) {
   if (!data) return <div className="empty">no data for this frame</div>;
+  const pixels = unpack(data.pixels);
+  if (!pixels) return <div className="empty">invalid thermal plane</div>;
   return (
     <div>
-      <GridView pixels={unpack(data.pixels)} colour={colour} blobs={blobs} observed={observed} labelled={labelled} mirror={mirror} />
+      <GridView pixels={pixels} colour={colour} blobs={blobs} observed={observed} labelled={labelled} mirror={mirror} />
       {data.min !== undefined && data.max !== undefined && (
         <div className="scale">{data.min.toFixed(2)} → {data.max.toFixed(2)}</div>
       )}

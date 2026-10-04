@@ -13,7 +13,7 @@
  * and outlives whoever set it. Everything is logged with its old value, which
  * is what makes a mistake recoverable rather than archaeological.
  */
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from '../edge/protocol.js';
@@ -51,6 +51,8 @@ export interface PendingChange {
   /** Set once the node's STATUS shows it took the command. */
   confirmedAt: number | null;
   cmdSeq: number | null;
+  /** Recovery commands remain pending until a subsequent STATUS confirms them. */
+  restoring?: boolean;
 }
 
 export class ParamBroker {
@@ -58,11 +60,30 @@ export class ParamBroker {
   private readonly audit: AuditEntry[] = [];
   private readonly logPath: string;
   private timer: NodeJS.Timeout | null = null;
+  private readonly pendingPath: string | null;
+  private readonly reverting = new Set<string>();
+  private readonly persisting = new Set<string>();
 
   constructor(private readonly rt: EdgeRuntime) {
-    const dir = join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo');
+    const dir = join(rt.cfg?.dataDir || process.env.DATA_DIR || join(ROOT, 'data'), 'algo');
     mkdirSync(dir, { recursive: true });
     this.logPath = join(dir, 'audit.jsonl');
+    this.pendingPath = rt.cfg?.dataDir ? join(dir, 'pending-params.json') : null;
+    if (this.pendingPath && existsSync(this.pendingPath)) {
+      if (statSync(this.pendingPath).size > 8 * 1024 * 1024) throw new Error('pending parameter journal exceeds its limit');
+      const saved: unknown = JSON.parse(readFileSync(this.pendingPath, 'utf8'));
+      if (!Array.isArray(saved) || saved.length > 50000) throw new Error('invalid pending parameter journal');
+      for (const c of saved as PendingChange[]) {
+        const limits = PARAM_LIMITS[c?.param as (typeof PARAM_NAMES)[number]];
+        if (!c || c.binding !== 'device' || !/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(c.uid) || !limits ||
+            !Number.isInteger(c.from) || c.from === null || c.from < limits.lo || c.from > limits.hi) {
+          throw new Error('invalid pending parameter journal entry');
+        }
+        // RAM edge settings restart at configured defaults. Device settings
+        // can survive, so restore their original value as soon as reachable.
+        this.pending.set(this.key(c.uid, c.param), { ...c, revertAt: Date.now() });
+      }
+    }
   }
 
   start(): void {
@@ -78,7 +99,16 @@ export class ParamBroker {
   }
 
   private key(uid: string, param: string): string {
-    return `${uid}\u0000${param}`;
+    return `${param.startsWith('occupancy.') ? '*' : uid}\u0000${param}`;
+  }
+
+  private savePending(): void {
+    if (!this.pendingPath) return;
+    const temporary = `${this.pendingPath}.tmp`;
+    writeFileSync(temporary, JSON.stringify([...this.pending.values()].filter((c) => c.binding === 'device')), { mode: 0o600, flush: true });
+    renameSync(temporary, this.pendingPath);
+    const directory = openSync(dirname(this.pendingPath), 'r');
+    try { fsyncSync(directory); } finally { closeSync(directory); }
   }
 
   private log(e: AuditEntry): void {
@@ -107,14 +137,25 @@ export class ParamBroker {
    * which is what made a successful write look like it had reverted.
    */
   private confirm(now: number): void {
-    for (const c of this.pending.values()) {
+    const restored: [string, PendingChange][] = [];
+    for (const [key, c] of this.pending) {
       if (c.confirmedAt !== null || c.binding !== 'device') continue;
       const node = this.rt.nodes().find((n) => n.uid === c.uid);
       const status = node?.status;
       if (!status) continue;
       const applied = (status.params as Record<string, number> | undefined)?.[c.param];
       const seen = c.cmdSeq === null || status.lastCmd >= c.cmdSeq;
-      if (seen && applied === c.to) c.confirmedAt = now;
+      if (seen && applied === c.to) {
+        if (c.restoring) { this.pending.delete(key); restored.push([key, c]); }
+        else c.confirmedAt = now;
+      }
+    }
+    if (restored.length) {
+      try { this.savePending(); } catch {
+        // Retain recovery until its removal is durable. Sampling live state
+        // must never turn an unavailable disk into an uncaught timer error.
+        for (const [key, c] of restored) this.pending.set(key, c);
+      }
     }
   }
 
@@ -173,6 +214,7 @@ export class ParamBroker {
     uid: string; nodeId: string; param: string; binding: ParamBinding; value: number; by: string;
   }): Promise<PendingChange> {
     const { uid, nodeId, param, binding, value, by } = opts;
+    if (this.persisting.has(uid)) throw new Error('wait for the parameter save to finish');
     const now = Date.now();
     let from: number | null = null;
 
@@ -186,15 +228,14 @@ export class ParamBroker {
         throw new Error(`the node only accepts ${binding.param} between ${limits.lo} and ${limits.hi}; it would ignore ${value}`);
       }
       from = this.deviceParams(uid)[binding.param] ?? null;
-      cmdSeq = await this.rt.ingest.sendCommand(uid, CMD_SET_PARAM, id, value);
+      if (from === null) throw new Error('wait for a STATUS with the current parameter before changing it');
     } else if (binding.kind === 'edge') {
       const limits = EDGE_PARAMS[binding.path];
       if (!limits) throw new Error(`${binding.path} is not a tunable edge parameter`);
-      if (value < limits.lo || value > limits.hi) {
+      if (!Number.isFinite(value) || value < limits.lo || value > limits.hi) {
         throw new Error(`${binding.path} must be between ${limits.lo} and ${limits.hi} ${limits.unit}`);
       }
       from = this.edgeParams()[binding.path] ?? null;
-      this.setEdge(binding.path, value);
     } else {
       throw new Error('that parameter is local to the debugger and needs no write');
     }
@@ -203,6 +244,7 @@ export class ParamBroker {
     // parameter should still revert to what the system had before anyone
     // started, not to the middle of an experiment.
     const key = this.key(uid, binding.kind === 'device' ? binding.param : binding.path);
+    if (this.reverting.has(key)) throw new Error('wait for the current parameter command to finish');
     const existing = this.pending.get(key);
     const change: PendingChange = {
       uid,
@@ -219,6 +261,29 @@ export class ParamBroker {
       cmdSeq,
     };
     this.pending.set(key, change);
+    this.reverting.add(key);
+    let recorded = false;
+    try {
+      // Save the recovery intent before issuing a command that may outlive us.
+      this.savePending();
+      recorded = true;
+      if (binding.kind === 'device') {
+        cmdSeq = await this.rt.ingest.sendCommand(uid, CMD_SET_PARAM, PARAM_NAMES.indexOf(binding.param as (typeof PARAM_NAMES)[number]), value);
+        change.cmdSeq = cmdSeq;
+      } else if (binding.kind === 'edge') this.setEdge(binding.path, value);
+    } catch (error) {
+      if (recorded && binding.kind === 'device') {
+        // Dispatch errors cannot prove a command never reached the device.
+        // Keep the durable baseline and attempt recovery rather than forget it.
+        change.revertAt = Date.now() + 5000;
+      } else {
+        if (existing) this.pending.set(key, existing); else this.pending.delete(key);
+        this.savePending();
+      }
+      throw error;
+    } finally {
+      this.reverting.delete(key);
+    }
     this.log({
       at: now, uid, nodeId, param: change.param, binding: change.binding,
       from: change.from, to: value, by, revertAt: change.revertAt, action: 'apply',
@@ -229,9 +294,11 @@ export class ParamBroker {
   /** Keep a change: it stops being on a timer, but is still only in RAM. */
   commit(uid: string, param: string, by: string): boolean {
     const key = this.key(uid, param);
+    if (this.reverting.has(key)) throw new Error('wait for the current parameter command to finish');
     const c = this.pending.get(key);
     if (!c) return false;
     this.pending.delete(key);
+    try { this.savePending(); } catch (error) { this.pending.set(key, c); throw error; }
     this.log({
       at: Date.now(), uid, nodeId: c.nodeId, param, binding: c.binding,
       from: c.from, to: c.to, by, revertAt: null, action: 'commit',
@@ -244,22 +311,37 @@ export class ParamBroker {
     const key = this.key(uid, param);
     const c = this.pending.get(key);
     if (!c) return false;
-    this.pending.delete(key);
+    if (this.reverting.has(key)) return false;
+    if (this.persisting.has(uid)) return false;
+    const previous = c.to;
+    this.reverting.add(key);
     if (c.from !== null) {
       try {
         if (c.binding === 'device') {
           const id = PARAM_NAMES.indexOf(c.param as (typeof PARAM_NAMES)[number]);
-          if (id >= 0) await this.rt.ingest.sendCommand(uid, CMD_SET_PARAM, id, c.from);
+          if (id < 0) throw new Error('invalid recovery parameter');
+          c.cmdSeq = await this.rt.ingest.sendCommand(uid, CMD_SET_PARAM, id, c.from);
+          c.restoring = true;
+          c.to = c.from;
+          c.confirmedAt = null;
+          c.revertAt = Date.now() + 5000;
         } else {
           this.setEdge(c.param, c.from);
         }
-      } catch {
-        /* a node that cannot be reached keeps the value; the log says what it should be */
+      } catch (error) {
+        c.revertAt = Date.now() + 5000;
+        this.reverting.delete(key);
+        this.savePending();
+        throw error;
       }
     }
+    this.reverting.delete(key);
+    if (c.binding !== 'device' && this.pending.get(key) === c) this.pending.delete(key);
+    this.savePending();
+    this.confirm(Date.now());
     this.log({
       at: Date.now(), uid, nodeId: c.nodeId, param, binding: c.binding,
-      from: c.to, to: c.from ?? c.to, by, revertAt: null, action: 'revert',
+      from: previous, to: c.from ?? previous, by, revertAt: null, action: 'revert',
     });
     return true;
   }
@@ -270,14 +352,26 @@ export class ParamBroker {
    * a side effect of turning a knob.
    */
   async persist(uid: string, by: string): Promise<void> {
-    await this.rt.ingest.sendCommand(uid, CMD_SAVE_PARAMS);
-    for (const [key, c] of this.pending) {
-      if (c.uid === uid && c.binding === 'device') this.pending.delete(key);
+    if (this.persisting.has(uid)) throw new Error('wait for the parameter save to finish');
+    if ([...this.pending].some(([key, c]) => c.uid === uid && (this.reverting.has(key) || c.restoring))) {
+      throw new Error('wait for the current parameter command and recovery to finish');
     }
-    this.log({
-      at: Date.now(), uid, nodeId: 'device', param: '*', binding: 'device',
-      from: null, to: 0, by, revertAt: null, action: 'persist',
-    });
+    this.persisting.add(uid);
+    try {
+      await this.rt.ingest.sendCommand(uid, CMD_SAVE_PARAMS);
+      const previous = [...this.pending].filter(([, c]) => c.uid === uid && c.binding === 'device');
+      for (const [key, c] of this.pending) {
+        if (c.uid === uid && c.binding === 'device') this.pending.delete(key);
+      }
+      try { this.savePending(); } catch (error) {
+        for (const [key, c] of previous) this.pending.set(key, c);
+        throw error;
+      }
+      this.log({
+        at: Date.now(), uid, nodeId: 'device', param: '*', binding: 'device',
+        from: null, to: 0, by, revertAt: null, action: 'persist',
+      });
+    } finally { this.persisting.delete(uid); }
   }
 
   private setEdge(path: string, value: number): void {
@@ -288,26 +382,9 @@ export class ParamBroker {
   private sweep(now: number): void {
     for (const [key, c] of [...this.pending]) {
       if (c.revertAt > now) continue;
-      this.pending.delete(key);
-      void this.revertExpired(c);
+      if (this.reverting.has(key)) continue;
+      void this.revert(c.uid, c.param, 'auto-revert').catch(() => { /* retained for the next retry */ });
     }
   }
 
-  private async revertExpired(c: PendingChange): Promise<void> {
-    if (c.from === null) return;
-    try {
-      if (c.binding === 'device') {
-        const id = PARAM_NAMES.indexOf(c.param as (typeof PARAM_NAMES)[number]);
-        if (id >= 0) await this.rt.ingest.sendCommand(c.uid, CMD_SET_PARAM, id, c.from);
-      } else {
-        this.setEdge(c.param, c.from);
-      }
-    } catch {
-      /* logged below either way: the operator needs to know it was meant to go back */
-    }
-    this.log({
-      at: Date.now(), uid: c.uid, nodeId: c.nodeId, param: c.param, binding: c.binding,
-      from: c.to, to: c.from, by: 'auto-revert', revertAt: null, action: 'revert',
-    });
-  }
 }

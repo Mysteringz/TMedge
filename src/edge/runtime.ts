@@ -72,17 +72,18 @@ export class EdgeRuntime extends EventEmitter {
     this.ingest = new Ingest({
       port: cfg.udpPort,
       host: cfg.udpHost,
-      verify: { keys: cfg.keys, allowUnsigned: cfg.allowUnsigned },
+      verify: { keys: cfg.keys, allowUnsigned: cfg.allowUnsigned, devices: cfg.devices },
       commandKey: cfg.keys[0] ?? null,
+      cursorPath: join(cfg.dataDir, 'replay.jsonl'),
       routeViaGateway: (address, buf) => this.gateways?.sendDownlink(address, buf) ?? false,
     });
     // Access gateways only if a token is configured: an unauthenticated
     // uplink port would let anyone on the tailnet inject datagrams (still
     // signed per node, but a flood is a flood).
-    this.gateways = cfg.gatewayPort > 0 && cfg.gatewayToken
+    this.gateways = cfg.gatewayPort > 0 && (cfg.gatewayToken || cfg.gatewayKeys)
       ? new GatewayServer({
-        port: cfg.gatewayPort, host: '0.0.0.0', token: cfg.gatewayToken, edgeId: cfg.edgeId,
-        onUplink: (datagram, source) => this.ingest.handle(datagram, source),
+        port: cfg.gatewayPort, host: '0.0.0.0', helloPath: join(cfg.dataDir, 'gateway-hellos.json'), allowRawTcp: cfg.gatewayAllowRawTcp ?? false, token: cfg.gatewayToken ?? Buffer.alloc(0), tokens: cfg.gatewayKeys ? id => cfg.gatewayKeys!.tokens(id) : undefined, edgeId: cfg.edgeId,
+        onUplink: (datagram, source) => this.ingest.handleDurable(datagram, source),
         onImageReady: (gatewayId, result) => this.rollouts.onImageReady(gatewayId, result),
         log: (m) => console.log(`[edge] ${m}`),
       })
@@ -98,6 +99,7 @@ export class EdgeRuntime extends EventEmitter {
       },
       nodes: () => this.nodes().filter((n) => n.registered).map((n) => ({
         uid: n.uid, label: n.label, floorId: n.floorId, address: n.address, transport: n.transport, online: n.online,
+        encryptionRequired: !!this.ingest.links.get(n.uid)?.secureId || !!cfg.devices?.keys(n.uid).length,
       })),
       sendImageToGateway: (id, meta, bytes) => this.gateways?.sendImage(id, meta, bytes) ?? false,
       sendOta: (uid, image) => this.ingest.sendOta(uid, image),
@@ -111,8 +113,9 @@ export class EdgeRuntime extends EventEmitter {
         port: cfg.nodePort,
         limits: cfg.nodeLimits,
         keys: cfg.keys,
+        devices: cfg.devices,
         isRegistered: (uid) => this.reg.nodes.has(uid),
-        ingest: (datagram, route) => this.ingest.handle(datagram, route),
+        ingest: (datagram, route) => this.ingest.handleDurable(datagram, route),
         dropRoute: (uid, sessionId) => void this.ingest.dropDirectRoute(uid, sessionId),
         image: (buildId) => this.firmware.bytes(buildId),
         otaApproved: (uid, buildId) => this.rollouts.wantsDownload(uid, buildId),

@@ -13,6 +13,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { WebSocket } from 'ws';
 import type { Request } from 'express';
 import { AlgoUsers, loadAlgoAuthConfig } from '../src/algo/auth.js';
 import { startAlgo } from '../src/algo/server.js';
@@ -60,7 +61,7 @@ async function boot() {
     body: JSON.stringify({ username: 'alice', password: 'correct horse battery' }),
   });
   const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
-  return { rt, consoleBase, algoBase, cookie };
+  return { rt, consoleBase, algoBase, cookie, usersPath };
 }
 
 test('signed out, the console inside the algo console is as closed as the rest of it', async () => {
@@ -91,7 +92,7 @@ test('signed in, the console page, its API and its live feed all work under /con
   assert.ok('nodes' in ((await state.json()) as object));
 
   const { token } = (await (await fetch(`${algoBase}/console-app/api/ws-token`, { headers })).json()) as { token: string };
-  const ws = new WebSocket(`${algoBase.replace('http', 'ws')}/console-app/ws?token=${encodeURIComponent(token)}`);
+  const ws = new WebSocket(`${algoBase.replace('http', 'ws')}/console-app/ws?token=${encodeURIComponent(token)}`, { headers: { cookie } });
   const seen: { type: string; uid?: string }[] = [];
   ws.addEventListener('message', (e) => seen.push(JSON.parse(String(e.data)) as { type: string; uid?: string }));
   await new Promise<void>((r) => ws.addEventListener('open', () => r(), { once: true }));
@@ -164,4 +165,51 @@ test('the old public address goes to the algo console over https', () => {
   assert.equal(to(req('console.hkumyseat.com')), 'https://algo.hkumyseat.com/console');
   assert.equal(to(req('localhost:8090')), 'http://localhost:8091/console');
   assert.equal(to(req('100.79.19.4:8090')), 'http://100.79.19.4:8091/console');
+});
+
+async function rejectedFeed(url: string, cookie = ''): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url, { headers: { cookie } });
+    ws.on('error', () => {});
+    ws.on('unexpected-response', (_request, response) => {
+      response.resume(); ws.terminate(); resolve(response.statusCode ?? 0);
+    });
+    ws.on('open', () => { ws.terminate(); reject(new Error('feed unexpectedly accepted')); });
+  });
+}
+
+test('algo and debug feeds require their live session, bind tokens to it and close on logout', async () => {
+  const { algoBase, cookie } = await boot();
+  const opened: WebSocket[] = [];
+  try {
+    for (const prefix of ['', '/console-app']) {
+      const { token } = await (await fetch(`${algoBase}${prefix}/api/ws-token`, { headers: { cookie } })).json() as { token: string };
+      const url = `${algoBase.replace('http', 'ws')}${prefix}/ws?token=${encodeURIComponent(token)}`;
+      assert.equal(await rejectedFeed(url), 401, 'a stolen token alone cannot authorize an upgrade');
+      const ws = new WebSocket(url, { headers: { cookie } });
+      ws.on('error', () => {});
+      opened.push(ws);
+      await new Promise<void>((resolve, reject) => { ws.once('message', () => resolve()); ws.once('error', reject); });
+    }
+    const closed = opened.map((ws) => new Promise<void>((resolve) => ws.once('close', () => resolve())));
+    assert.equal((await fetch(`${algoBase}/auth/logout`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}',
+    })).status, 200);
+    await Promise.all(closed);
+    assert.equal((await fetch(`${algoBase}/api/me`, { headers: { cookie } })).status, 401);
+  } finally { for (const ws of opened) ws.terminate(); }
+});
+
+test('a password reset ends existing debug streams without an edge restart', async () => {
+  const { algoBase, cookie, usersPath } = await boot();
+  const { token } = await (await fetch(`${algoBase}/console-app/api/ws-token`, { headers: { cookie } })).json() as { token: string };
+  const ws = new WebSocket(`${algoBase.replace('http', 'ws')}/console-app/ws?token=${encodeURIComponent(token)}`, { headers: { cookie } });
+  ws.on('error', () => {});
+  try {
+    await new Promise<void>((resolve, reject) => { ws.once('message', () => resolve()); ws.once('error', reject); });
+    const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()));
+    await new AlgoUsers(usersPath).add('alice', 'a different correct password');
+    await closed;
+    assert.equal((await fetch(`${algoBase}/api/me`, { headers: { cookie } })).status, 401);
+  } finally { ws.terminate(); }
 });

@@ -45,6 +45,8 @@ export interface FloorViewerProps {
 export default function FloorViewer(props: FloorViewerProps) {
   const host = useRef<HTMLDivElement>(null);
   const el = useRef<ViewerElement | null>(null);
+  const onPick = useRef(props.onPick);
+  onPick.current = props.onPick;
   const [zoom, setZoom] = useState(0.5);
 
   useEffect(() => {
@@ -58,11 +60,10 @@ export default function FloorViewer(props: FloorViewerProps) {
     }
     const node = el.current;
     host.current?.appendChild(node);
-    const onPicked = (e: Event) => props.onPick((e as CustomEvent<{ index: number }>).detail.index);
+    const onPicked = (e: Event) => onPick.current((e as CustomEvent<{ index: number }>).detail.index);
     node.addEventListener('table-picked', onPicked);
-    return () => node.removeEventListener('table-picked', onPicked);
-    // props.onPick is re-created each render; the listener reads it through the closure.
-  });
+    return () => { node.removeEventListener('table-picked', onPicked); node.remove(); };
+  }, []);
 
   // The camera also moves by wheel, by drag and by the two buttons above the
   // map, so the slider follows the camera rather than pretending to own it.

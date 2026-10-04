@@ -32,7 +32,7 @@
  * who has sat there since the start can still be absorbed. The model is saved
  * to disk so that warm-up happens once, not after every restart.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { GRID_SIZE } from './protocol.js';
 
@@ -117,7 +117,8 @@ export class StaticBackground {
 
   /** Feed one frame of temperatures (C, 768, row-major) seen at `at`. */
   add(temps: ArrayLike<number>, at: number): void {
-    if (this.stale) this.recompute(at);
+    if (!Number.isFinite(at) || temps.length !== GRID_SIZE || !Array.from(temps).every(Number.isFinite)) return;
+    if (this.stale || (this.buckets[0]?.start ?? Infinity) < at - this.opts.windowMs) this.recompute(at);
     const start = Math.floor(at / this.opts.bucketMs) * this.opts.bucketMs;
     if (this.current && this.current.start !== start) this.close(at);
     if (at - this.lastSampleAt < this.opts.sampleMs) return;
@@ -142,7 +143,7 @@ export class StaticBackground {
   }
 
   state(now: number): StaticBackgroundState {
-    if (this.stale) this.recompute(now);
+    if (this.stale || (this.buckets[0]?.start ?? Infinity) < now - this.opts.windowMs) this.recompute(now);
     const voting = this.voting(now);
     const first = voting[0]?.start ?? now;
     return {
@@ -154,7 +155,7 @@ export class StaticBackground {
   }
 
   private voting(now: number): Bucket[] {
-    return this.buckets.filter((b) => b.start >= now - this.opts.windowMs);
+    return this.buckets.filter((b) => b.start >= now - this.opts.windowMs && b.start <= now);
   }
 
   private close(now: number): void {
@@ -212,16 +213,22 @@ export class StaticBackground {
   private load(file: string): void {
     let doc: unknown;
     try {
+      if (statSync(file).size > 4 * 1024 * 1024) return;
       doc = JSON.parse(readFileSync(file, 'utf8'));
     } catch {
       return;   // no file yet, or unreadable: start warming up
     }
     const d = doc as { version?: unknown; bucketMs?: unknown; buckets?: unknown };
     // A different bucket length would mix votes of different weights.
-    if (d.version !== FILE_VERSION || d.bucketMs !== this.opts.bucketMs || !Array.isArray(d.buckets)) return;
+    if (!d || d.version !== FILE_VERSION || d.bucketMs !== this.opts.bucketMs || !Array.isArray(d.buckets) ||
+        d.buckets.length > Math.ceil(this.opts.windowMs / this.opts.bucketMs) + 1) return;
+    const starts = new Set<number>();
     for (const b of d.buckets as { start?: unknown; samples?: unknown; rel?: unknown }[]) {
-      if (typeof b.start !== 'number' || typeof b.samples !== 'number' || !Array.isArray(b.rel) || b.rel.length !== GRID_SIZE) continue;
+      if (!b || typeof b.start !== 'number' || !Number.isFinite(b.start) || b.start % this.opts.bucketMs !== 0 || starts.has(b.start) ||
+          typeof b.samples !== 'number' || !Number.isInteger(b.samples) || b.samples < this.opts.minSamplesPerBucket ||
+          b.samples > this.maxSamples || !Array.isArray(b.rel) || b.rel.length !== GRID_SIZE) continue;
       if (!(b.rel as unknown[]).every((v) => typeof v === 'number' && Number.isFinite(v))) continue;
+      starts.add(b.start);
       this.buckets.push({ start: b.start, samples: b.samples, rel: Float32Array.from(b.rel as number[]) });
     }
     this.buckets.sort((a, b) => a.start - b.start);

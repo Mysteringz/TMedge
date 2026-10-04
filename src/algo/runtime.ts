@@ -68,7 +68,10 @@ export class AlgoRuntime {
   constructor(private readonly rt: EdgeRuntime, private readonly broker: ParamBroker) {}
 
   private async detect(uid: string, frame: number, params: DetectorParams): Promise<FrameResult | null> {
-    const key = `${uid}:${frame}:${JSON.stringify(params)}`;
+    // Frame numbers start again after a sensor reboot. A cached verdict must
+    // belong to this received frame, rather than the old image with that id.
+    const receivedAt = this.frames.get(uid, frame)?.receivedAt;
+    const key = `${uid}:${frame}:${receivedAt}:${JSON.stringify(params)}`;
     const cached = this.runCache.get(key);
     if (cached !== undefined) return cached;
     const running = this.inFlight.get(key);

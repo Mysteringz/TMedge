@@ -29,6 +29,9 @@ export default function Spaces() {
     [venues, floorId],
   );
   const floor = entry?.floors.find((f) => f.id === floorId) ?? entry?.floors[0] ?? null;
+  const chosen = floor?.tables.find((t) => t.id === table);
+  const availableTable = chosen && floor && !isDark(floor) && chosen.status !== 'unknown' &&
+    (chosen.free ?? 0) >= Math.min(seats, chosen.capacity) ? table : null;
 
   useEffect(() => {
     document.title = `${entry?.venue.shortName ?? 'Spaces'} · HKUMySeat`;
@@ -70,7 +73,7 @@ export default function Spaces() {
               <LiveView
                 floor={floor}
                 seats={seats}
-                table={table}
+                table={availableTable}
                 onTable={setTable}
                 directions={directions}
                 onDirections={() => setDirections((d) => !d)}

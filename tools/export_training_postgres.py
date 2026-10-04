@@ -8,6 +8,7 @@ import argparse
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import psycopg
 
@@ -29,6 +30,8 @@ with psycopg.connect(os.environ['TRAINING_DATABASE_URL']) as conn:
           ORDER BY sample_at, sample_id''', (args.sensor, args.start, args.end))
         count = 0
         for id_, uid, at, number, skew, mirror, levels, t_min, step, observed, jpeg in cur:
+            if not isinstance(id_, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', id_):
+                raise ValueError('unsafe training sample identifier')
             name = args.out / (str(int(at.timestamp()*1000)) + '-' + id_)
             meta = dict(uid=uid, at=int(at.timestamp()*1000), frame=number, skewMs=skew,
                         mirror=mirror, pixels=base64.b64encode(levels).decode(),
