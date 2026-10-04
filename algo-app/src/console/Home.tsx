@@ -7,6 +7,7 @@ import { navigate } from './router.ts';
 const MODULES = [
   { n: '01', title: 'Algorithm Flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
   { n: '02', title: 'ML Training', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
+  { n: '03', title: 'Debug Console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands, admitting nodes, firmware rollouts.' },
 ];
 
 export function Home({ user }: { user: string }) {
@@ -16,8 +17,9 @@ export function Home({ user }: { user: string }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => (s + 1) % MODULES.length); }
-      else if (e.key === '1' || e.key === '2') setSel(Number(e.key) - 1);
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => (s + 1) % MODULES.length); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => (s + MODULES.length - 1) % MODULES.length); }
+      else if (/^[1-9]$/.test(e.key) && Number(e.key) <= MODULES.length) setSel(Number(e.key) - 1);
       // A focused module button handles Enter itself; this is for the page.
       else if (e.key === 'Enter' && document.activeElement === document.body) {
         navigate(MODULES[selRef.current]?.path ?? '/');

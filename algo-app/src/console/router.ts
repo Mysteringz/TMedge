@@ -1,15 +1,16 @@
 /**
- * Four screens do not need a router library: the path is the state, and the
+ * Five screens do not need a router library: the path is the state, and the
  * server serves the same shell for each of them (src/algo/server.ts).
  */
 import { useEffect, useState } from 'react';
 
-export type Screen = 'login' | 'home' | 'flow' | 'train';
+export type Screen = 'login' | 'home' | 'flow' | 'train' | 'console';
 
 export function screenOf(path: string): Screen {
   if (path.startsWith('/login')) return 'login';
   if (path.startsWith('/flow')) return 'flow';
   if (path.startsWith('/train')) return 'train';
+  if (path === '/console' || path.startsWith('/console/')) return 'console';
   return 'home';
 }
 

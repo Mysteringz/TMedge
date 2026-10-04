@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { loadEdgeConfig, EnvError } from './config.js';
 import { AlgoUsers, loadAlgoAuthConfig, type AlgoAuthConfig } from '../algo/auth.js';
 import { startAlgo } from '../algo/server.js';
-import { startConsole } from './console.js';
+import { consoleMovedTo, createConsole, startConsole } from './console.js';
 import { ConfigError, loadRegistry } from './registry.js';
 import { EdgeRuntime } from './runtime.js';
 
@@ -74,18 +74,24 @@ function main(): void {
     console.error(`[edge] direct node listener failed to start on ${cfg.nodeHost}:${cfg.nodePort}: ${(err as Error).message}`);
     process.exit(1);
   });
-  const server = startConsole(rt);
+  // One console core for both places it is served: the device endpoints on
+  // CONSOLE_PORT, the screens as module 03 of the algo console when that is
+  // on (and on CONSOLE_PORT behind Basic auth only when it is not).
+  const consoleCore = createConsole(rt);
+  const server = startConsole(rt, consoleCore, cfg.algoPort > 0 ? { uiMovedTo: consoleMovedTo(cfg.algoPort) } : {});
   server.on('listening', () => {
     const a = server.address();
     const where = typeof a === 'object' && a ? `${a.address}:${a.port}` : String(a);
-    console.log(`[edge] debug console http://${where}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);
+    console.log(cfg.algoPort > 0
+      ? `[edge] console port http://${where}: device endpoints only; the console itself is module 03 of the algo console (/console)`
+      : `[edge] debug console http://${where}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);
   });
 
   // The algo debugger: thermal imagery and live parameter writes, so it sits
   // beside the console on the edge and never on the student tier.
   if (cfg.algoPort > 0 && algoAuth) {
     const auth = algoAuth;
-    const { server: algoServer } = startAlgo(rt, cfg.algoPort, cfg.consoleHost, auth);
+    const { server: algoServer } = startAlgo(rt, cfg.algoPort, cfg.consoleHost, auth, consoleCore);
     algoServer.on('listening', () => {
       const a = algoServer.address();
       const where = typeof a === 'object' && a ? `${a.address}:${a.port}` : String(a);
