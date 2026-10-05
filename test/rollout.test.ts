@@ -13,13 +13,13 @@ import { Rollouts, type RolloutDeps, type RolloutNode } from '../src/edge/rollou
 
 const IMAGE = { bytes: Buffer.alloc(1024, 7), sha256: 'ab'.repeat(32), size: 1024, version: 'tmsense-1.2' };
 
-function harness(nodes: RolloutNode[]) {
+function harness(nodes: RolloutNode[], image = IMAGE) {
   let clock = 1_000_000;
   const sent: { uid: string; port: number }[] = [];
   const noteSent = (uid: string, port: number) => sent.push({ uid, port });
   const images: string[] = [];
   const rollouts = new Rollouts({
-    image: () => IMAGE,
+    image: () => image,
     nodes: () => nodes,
     sendImageToGateway: (id) => {
       images.push(id);
@@ -65,6 +65,16 @@ test('the pilot goes alone: nothing else is touched until it confirms', () => {
   h.report('n1', 'confirmed', 100);
   assert.equal(h.rollouts.current()?.stage, 'rest');
   assert.deepEqual(h.sent.map((s) => s.uid), ['n1', 'n2', 'n3'], 'the rest follow, up to the batch size');
+});
+
+test('encryption enrollment refuses accidental OTA downgrade before touching a node', () => {
+  for (const version of ['tmsense-1.6', 'unknown', 'custom', 'tmsense-1.2']) {
+    const h = harness([node('n1', { encryptionRequired: true })], { ...IMAGE, version });
+    assert.throws(() => h.rollouts.start('beef1234beef1234', { kind: 'all' }, 'tester'), /plaintext downgrade refused/);
+    assert.equal(h.sent.length, 0); assert.equal(h.images.length, 0);
+  }
+  const h = harness([node('n1', { encryptionRequired: true })], { ...IMAGE, version: 'tmsense-1.7' });
+  assert.equal(h.rollouts.start('beef1234beef1234', { kind: 'all' }, 'tester').stage, 'pilot');
 });
 
 test('the rest go a few at a time, not all at once', () => {
@@ -179,6 +189,28 @@ test('two rollouts cannot run at once', () => {
   assert.throws(() => h.rollouts.start('beef1234beef1234', { kind: 'all' }, 'tester'), /already running/);
 });
 
+test('an invalid target never falls through to updating every node', () => {
+  const h = harness([node('n1'), node('n2')]);
+  assert.throws(() => h.rollouts.start('beef1234beef1234', { kind: 'typo' } as never, 'tester'), /target/);
+  assert.throws(() => h.rollouts.select(null as never), /target/);
+  assert.equal(h.images.length, 0);
+});
+
+test('unrequested, mismatched and late OTA status cannot change a rollout decision', () => {
+  const h = harness([node('n1'), node('n2')]);
+  h.rollouts.start('beef1234beef1234', { kind: 'all' }, 'tester');
+  h.report('n2', 'confirmed', 100);
+  assert.equal(h.rollouts.current()?.nodes[1]?.state, 'queued');
+  h.ready('esanhouse');
+  h.rollouts.onOtaStatus('n1', { state: 'failed', percent: 0, error: 'busy', image: 'feedfeed' });
+  assert.equal(h.rollouts.current()?.nodes[0]?.state, 'sending');
+  h.report('n1', 'failed');
+  h.report('n1', 'confirmed', 100);
+  assert.equal(h.rollouts.current()?.stage, 'stopped');
+  assert.equal(h.rollouts.current()?.nodes[0]?.state, 'failed');
+  assert.equal(h.sent.length, 1);
+});
+
 test('uploaded paths that climb out of the project are refused', () => {
   assert.equal(safeRelativePath('TMsense/src/main.cpp'), join('TMsense', 'src', 'main.cpp'));
   assert.throws(() => safeRelativePath('../../etc/passwd'), FirmwareError);
@@ -200,8 +232,50 @@ test('a build with no platformio.ini at all is refused', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
   const store = new FirmwareStore(dir, { pio: '/bin/false' });
   const up = store.startUpload('tester');
-  store.addFile(up, 'notes.md', Buffer.from('# not a project'));
+  store.addFile(up, 'src/main.cpp', Buffer.from('// not a project'));
   await assert.rejects(store.build(up, 'tester'), /no platformio\.ini/);
+});
+
+test('firmware uploads reject executable build hooks, provisioning secrets and excess sessions', () => {
+  const store = new FirmwareStore(mkdtempSync(join(tmpdir(), 'tmfw-')), { pio: '/bin/false' });
+  const up = store.startUpload('tester');
+  for (const path of ['TMsense/extra.py', 'TMsense/lib/evil/library.json', 'TMsense/include/node_config.h', 'TMsense/include/tm_test_ca.h']) {
+    assert.throws(() => store.addFile(up, path, Buffer.from('x')), FirmwareError);
+  }
+  for (let i = 1; i < 8; i++) store.startUpload('tester');
+  assert.throws(() => store.startUpload('tester'), /too many/);
+});
+
+test('failed builds unlock their upload for correction and a retry', async () => {
+  const store = new FirmwareStore(mkdtempSync(join(tmpdir(), 'tmfw-')), { pio: '/bin/false' });
+  const up = store.startUpload('tester');
+  store.addFile(up, 'platformio.ini', Buffer.from('[env:tmflash]'));
+  await assert.rejects(store.build(up, 'tester'), /build failed|isolated firmware builds require/);
+  store.addFile(up, 'src/main.cpp', Buffer.from('// corrected'));
+  await assert.rejects(store.build(up, 'tester'), /build failed|isolated firmware builds require/);
+  store.discard(up);
+});
+
+test('the firmware compiler cannot read private files outside its source and SDKs', async () => {
+  if (process.platform !== 'linux') return;
+  const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
+  const install = join(dir, 'compiler');
+  mkdirSync(join(install, 'bin'), { recursive: true });
+  const privatePath = join(dir, 'private.h');
+  const secret = 'fixture-private-contents';
+  writeFileSync(privatePath, secret);
+  const runner = join(install, 'bin', 'pio');
+  writeFileSync(runner, '#!/bin/sh\nexec /usr/bin/g++ -c src/main.cpp -o /tmp/main.o\n', { mode: 0o700 });
+  const store = new FirmwareStore(join(dir, 'images'), { pio: runner });
+  const up = store.startUpload('tester');
+  store.addFile(up, 'platformio.ini', Buffer.from('[env:tmflash]'));
+  store.addFile(up, 'src/main.cpp', Buffer.from(`#include "${privatePath}"\n`));
+  await assert.rejects(store.build(up, 'tester'), (error: unknown) => {
+    const log = (error as FirmwareError & { log?: string[] }).log?.join('\n') ?? '';
+    assert.match(log, /No such file/);
+    assert.ok(!log.includes(secret));
+    return true;
+  });
 });
 
 test('builds survive a restart of the edge, and a missing image is not offered', () => {

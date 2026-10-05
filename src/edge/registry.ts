@@ -244,6 +244,12 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
     const w = `nodes[${ni}]`;
     const n = obj(nv, w);
     only(n, w, ['uid', 'label', 'floor', 'pose', 'owns', 'simulated', 'rgb', 'detector']);
+    for (const key of ['simulated', 'rgb']) {
+      if (n[key] !== undefined && typeof n[key] !== 'boolean') throw new ConfigError(`${w}.${key}: expected true/false`);
+    }
+    if (n.owns !== undefined && (!Array.isArray(n.owns) || !n.owns.every((x) => typeof x === 'string'))) {
+      throw new ConfigError(`${w}.owns: expected an array of table ids`);
+    }
     if (n.detector !== undefined && n.detector !== 'node' && n.detector !== 'edge') {
       // A typo here would silently leave the node on its own detector, which
       // is the one that forgets people who sit still.

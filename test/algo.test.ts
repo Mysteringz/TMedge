@@ -95,6 +95,7 @@ test('a frame is paired with what the sensor itself decided about it', () => {
 
 test('the preview is the firmware detector, not a second implementation', async (t) => {
   const host = new DetectorHost();
+  if (process.env.CI && host.unavailable) throw new Error(host.unavailable);
   if (host.unavailable) return t.skip(`no host detector here: ${host.unavailable}`);
 
   const frames: FramePair[] = [];
@@ -121,7 +122,9 @@ test('the preview is the firmware detector, not a second implementation', async 
 });
 
 test('a dual-cam node offers its camera beside the foreground mask, and a thermal-only node does not', async (t) => {
-  if (new DetectorHost().unavailable) return t.skip('no host detector here');
+  const unavailable = new DetectorHost().unavailable;
+  if (process.env.CI && unavailable) throw new Error(unavailable);
+  if (unavailable) return t.skip('no host detector here');
   for (const rgb of [true, false]) {
     // Only what run() reads: the node's flags, and no floor or health yet.
     const rt = {
@@ -142,9 +145,10 @@ test('a dual-cam node offers its camera beside the foreground mask, and a therma
 test('a live parameter change can always be taken back', async () => {
   const sent: { uid: string; opcode: number; arg0: number; value: number }[] = [];
   let deviceParams: Record<string, number> = { min_contrast: 60, min_peak: 120, raw_every: 0 };
+  let lastCommand = 0;
   let opts = { staleMs: 10_000, releaseMs: 20_000, seatRadiusCm: 80, enterWindow: 5, enterMin: 3, mergeCm: 50 };
   const rt = {
-    nodes: () => [{ uid: UID, status: { params: deviceParams } }],
+    nodes: () => [{ uid: UID, status: { params: deviceParams, lastCmd: lastCommand } }],
     engine: {
       options: () => opts,
       setOptions: (patch: Partial<typeof opts>) => { opts = { ...opts, ...patch }; return opts; },
@@ -154,6 +158,7 @@ test('a live parameter change can always be taken back', async () => {
         sent.push({ uid, opcode, arg0, value });
         // A real node applies it and says so in its next STATUS.
         if (opcode === 1 && arg0 === 0) deviceParams = { ...deviceParams, min_contrast: value };
+        return ++lastCommand;
       },
     },
   } as unknown as EdgeRuntime;
@@ -254,6 +259,7 @@ test('the trainer and the edge compute the same features', (t) => {
     });
     reference = JSON.parse(out) as number[][];
   } catch (err) {
+    if (process.env.CI) throw err;
     return t.skip(`the trainer could not run here (numpy/OpenCV?): ${(err as Error).message.slice(0, 80)}`);
   }
 

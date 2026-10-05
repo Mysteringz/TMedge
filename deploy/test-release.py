@@ -5,10 +5,17 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from release import extract, safe_name
+from release import BoundedArchive, extract, safe_name
 
 
 class ArchiveBoundary(unittest.TestCase):
+    def test_oversized_metadata_reads_are_bounded(self):
+        reader = BoundedArchive(io.BytesIO(b'x'))
+        with self.assertRaises(ValueError):
+            reader.read(2 * 1024 * 1024)
+        with self.assertRaises(ValueError):
+            reader.read()
+
     def test_disallowed_paths(self):
         for name in ('../x', '/etc/passwd', 'dist/../../x', '.env', 'node_modules/x', 'config/.env', 'deploy/run.sh'):
             with self.subTest(name=name), self.assertRaises(ValueError):

@@ -1,5 +1,10 @@
 # TMedge
 
+Security fixes, validation and deployment requirements are tracked in
+[the security specsheet](docs/SECURITY_BUG_SPEC.md). TMsense 1.7 encrypted
+telemetry and per-device/gateway/publisher credentials are documented in
+[the coordinated protocol and migration runbook](docs/ENCRYPTED_NODE_PROTOCOL.md).
+
 Turns reports from **TMnode** thermal sensors into live seat availability,
 and serves it to students.
 
@@ -152,9 +157,17 @@ what the edge signed is thrown away before it can boot. A freshly flashed
 image is on probation for three minutes — if it cannot join Wi-Fi, read its
 sensor and get a packet accepted, the node puts the old image back and reboots.
 
-Requirements: PlatformIO on the edge (`PIO_PATH` in `.env` if it is not in the
-usual place), and TMWAccess 1.1+ at each site. A node that talks to the edge
-directly downloads from the edge's own console port instead.
+Requirements: Linux with `bubblewrap`, PlatformIO on the edge (`PIO_PATH` in
+`.env` pointing to `bin/pio` inside its dedicated installation), and TMWAccess
+1.1+ at each site. Preinstall the espressif32@6.9.0 Heltec V3 Arduino SDK in
+`PLATFORMIO_CORE_DIR` before enabling builds. The compiler runs without network
+access and sees only system tools, that SDK, and the uploaded source. Uploaded
+PlatformIO hooks and local provisioning headers are excluded. Direct cloud
+nodes download through their authenticated HTTPS grant on port 443.
+
+Password signup is closed by default; set `SIGNUP_OPEN=1` only when intended.
+Password signup does not verify ownership of the email address, and Google
+login never automatically links an account based on that unverified claim.
 
 ## Tests
 

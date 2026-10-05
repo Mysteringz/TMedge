@@ -27,11 +27,8 @@ with psycopg.connect(os.environ['TRAINING_DATABASE_URL'], autocommit=True) as co
         poisoned = Path(temp) / 'poison.json'
         poisoned.write_text(json.dumps(dict(version=1, kind='thermal', id=rows[0][0], uid=m['uid'],
             frame=m['frame'], receivedAt=m['at'], pixels=m['pixels'], tMin=m['tMin'], step=m['step'])))
-        try:
-            worker.drain(conn, [poisoned], delete=True)
-            raise AssertionError('conflicting record should fail verification')
-        except ValueError:
-            assert poisoned.exists()
+        assert worker.drain(conn, [poisoned], delete=True) == 0
+        assert poisoned.exists()
         invalid = list(rows[0])
         invalid[0] = 'rollback-only-test'
         invalid[12] = '0' * 64

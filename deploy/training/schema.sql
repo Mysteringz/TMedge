@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS training.frames (
   metadata jsonb NOT NULL DEFAULT '{}',
   imported_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((modality = 'thermal' AND encoding = 'thermal_u8' AND width = 32 AND height = 24
-    AND octet_length(payload) = 768 AND t_min IS NOT NULL AND t_step >= 0)
+    AND octet_length(payload) = 768 AND t_min IS NOT NULL AND t_step IS NOT NULL AND t_step >= 0
+    AND t_min NOT IN ('NaN'::double precision,'Infinity'::double precision,'-Infinity'::double precision)
+    AND t_step NOT IN ('NaN'::double precision,'Infinity'::double precision,'-Infinity'::double precision))
     OR (modality = 'rgb' AND encoding = 'jpeg' AND t_min IS NULL AND t_step IS NULL
       AND octet_length(payload) > 4 AND substring(payload from 1 for 2) = decode('ffd8','hex')))
 );
@@ -35,6 +37,33 @@ CREATE TABLE IF NOT EXISTS training.pairs (
   metadata jsonb NOT NULL DEFAULT '{}',
   UNIQUE (thermal_id, rgb_id)
 );
+-- Composite foreign keys enforce modality even when rows are inserted outside
+-- the worker. The fixed default columns keep older INSERT column lists valid.
+-- ALTERs also upgrade an already provisioned database; existing malformed rows
+-- fail validation and require reviewed repair rather than being silently lost.
+CREATE UNIQUE INDEX IF NOT EXISTS frames_id_modality ON training.frames(id, modality);
+ALTER TABLE training.pairs ADD COLUMN IF NOT EXISTS thermal_modality text NOT NULL DEFAULT 'thermal';
+ALTER TABLE training.pairs ADD COLUMN IF NOT EXISTS rgb_modality text NOT NULL DEFAULT 'rgb';
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='training.pairs'::regclass AND conname='pairs_fixed_modalities') THEN
+    ALTER TABLE training.pairs ADD CONSTRAINT pairs_fixed_modalities
+      CHECK (thermal_modality='thermal' AND rgb_modality='rgb');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='training.pairs'::regclass AND conname='pairs_thermal_modality_fk') THEN
+    ALTER TABLE training.pairs ADD CONSTRAINT pairs_thermal_modality_fk
+      FOREIGN KEY (thermal_id, thermal_modality) REFERENCES training.frames(id, modality);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='training.pairs'::regclass AND conname='pairs_rgb_modality_fk') THEN
+    ALTER TABLE training.pairs ADD CONSTRAINT pairs_rgb_modality_fk
+      FOREIGN KEY (rgb_id, rgb_modality) REFERENCES training.frames(id, modality);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='training.frames'::regclass AND conname='frames_finite_thermal_calibration') THEN
+    ALTER TABLE training.frames ADD CONSTRAINT frames_finite_thermal_calibration CHECK
+      (modality <> 'thermal' OR (t_min IS NOT NULL AND t_step IS NOT NULL AND t_step >= 0
+        AND t_min NOT IN ('NaN'::double precision,'Infinity'::double precision,'-Infinity'::double precision)
+        AND t_step NOT IN ('NaN'::double precision,'Infinity'::double precision,'-Infinity'::double precision)));
+  END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS training.annotations (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   frame_id text NOT NULL REFERENCES training.frames(id),

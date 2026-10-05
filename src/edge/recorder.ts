@@ -19,6 +19,7 @@ import type { Raw, Report } from './protocol.js';
 class DailyLog {
   private stream: WriteStream | null = null;
   private day = '';
+  private retryAt = 0;
   bytesToday = 0;
 
   constructor(private readonly dir: string) {
@@ -27,7 +28,7 @@ class DailyLog {
 
   write(at: number, record: unknown): void {
     const day = new Date(at).toISOString().slice(0, 10);
-    if (day !== this.day) {
+    if (day !== this.day || (!this.stream && at >= this.retryAt)) {
       this.stream?.end();
       this.day = day;
       const file = join(this.dir, `${day}.jsonl`);
@@ -37,14 +38,27 @@ class DailyLog {
         this.bytesToday = 0;
       }
       this.stream = createWriteStream(file, { flags: 'a' });
+      const stream = this.stream;
+      stream.on('error', () => {
+        // Disk failure is a recording failure, not a reason to crash ingest.
+        if (this.stream === stream) this.stream = null;
+        this.retryAt = at + 5000;
+        console.error('[recorder] log write failed; inspect disk health');
+      });
     }
     const line = JSON.stringify(record) + '\n';
+    if (!this.stream || this.stream.destroyed || this.stream.writableLength + Buffer.byteLength(line) > 1024 * 1024) return;
     this.bytesToday += Buffer.byteLength(line);
     this.stream?.write(line);
   }
 
   close(): Promise<void> {
-    return new Promise((resolve) => (this.stream ? this.stream.end(resolve) : resolve()));
+    return new Promise((resolve) => {
+      const stream = this.stream;
+      if (!stream || stream.destroyed) return resolve();
+      stream.once('close', resolve);
+      stream.end(resolve);
+    });
   }
 }
 

@@ -112,9 +112,13 @@ export const api = {
 };
 
 /** base64 plane -> bytes, for the canvas viewers. */
-export function unpack(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+export function unpack(b64: string): Uint8Array | null {
+  if (typeof b64 !== 'string' || b64.length > 1024) return null;
+  try {
+    const bin = atob(b64);
+    if (bin.length !== 32 * 24) return null;
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch { return null; }
 }

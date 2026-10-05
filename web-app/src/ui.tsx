@@ -4,7 +4,7 @@
  * land is a layout people misclick.
  */
 import { Link, useNavigate } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Connection } from './data.ts';
 
 export function Chrome({ crumb, live, who, children }: {
@@ -14,6 +14,8 @@ export function Chrome({ crumb, live, who, children }: {
   children: ReactNode;
 }) {
   const navigate = useNavigate();
+  const [signingOut, setSigningOut] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
   const clock = new Date(live.updatedAt || Date.now());
   const hhmm = `${String(clock.getHours()).padStart(2, '0')}:${String(clock.getMinutes()).padStart(2, '0')}`;
   const state = live.connection === 'offline' ? 'offline' : live.connection === 'connecting' ? 'connecting' : 'live';
@@ -35,12 +37,21 @@ export function Chrome({ crumb, live, who, children }: {
             {live.connection === 'offline' ? 'Reconnecting…' : live.connection === 'connecting' ? 'Connecting…' : `Live · ${hhmm}`}
           </span>
           <span className="who text-muted">{who}</span>
+          {logoutError && <span role="alert">{logoutError}</span>}
           <button
             className="btn btn-secondary"
             type="button"
+            disabled={signingOut}
             onClick={() => {
+              setSigningOut(true);
+              setLogoutError('');
               void fetch('/logout', { method: 'POST', headers: { 'x-requested-with': 'fetch' } })
-                .then(() => navigate('/login/', { replace: true }));
+                .then((response) => {
+                  if (!response.ok) throw new Error('sign out failed');
+                  navigate('/login/', { replace: true });
+                })
+                .catch(() => setLogoutError('Could not sign out. Try again.'))
+                .finally(() => setSigningOut(false));
             }}
           >
             Sign out

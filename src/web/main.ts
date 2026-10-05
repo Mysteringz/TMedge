@@ -11,25 +11,32 @@
  * needs the edge's bearer token. No endpoint lets a browser change what
  * other people see.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { searchSeats } from '../shared/seats.js';
-import { AuthError, parseCookies, RateLimiter, Sessions, turnstileCheck, turnstileFromEnv, UserStore, type HumanCheck } from './auth.js';
+import { AuthBusyError, AuthError, parseCookies, RateLimiter, Sessions, turnstileCheck, turnstileFromEnv, UserStore, type HumanCheck } from './auth.js';
+import { GoogleError, googleFromEnv, GoogleLogin, type GoogleConfig } from './google.js';
+import { SnapshotPublishers } from './publishers.js';
 import { isSnapshot, SnapshotStore } from './store.js';
+import { safeNext } from './navigation.js';
+export { safeNext } from './navigation.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-web');
 const COOKIE = 'tm_session';
+/** One Google sign-in attempt in flight; see google.ts. */
+const GOOGLE_COOKIE = 'tm_google';
 
 export interface WebConfig {
   port: number;
   host: string;
   pushToken: string;
+  publishers?: SnapshotPublishers;
   sessionSecret: Buffer;
   usersPath: string;
   allowedDomains: string[];
@@ -48,25 +55,35 @@ export interface WebConfig {
    * ever goes to siteverify. `check` replaces the call to Cloudflare in tests.
    */
   turnstile?: { siteKey: string; secretKey: string; hostnames: string[]; check?: HumanCheck } | null;
+  /** "Continue with Google", or absent for none. */
+  google?: GoogleConfig | null;
 }
 
 export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
+  const publishers = env.WEB_EDGE_KEYS_FILE ? SnapshotPublishers.fromFile(env.WEB_EDGE_KEYS_FILE) : undefined;
   const pushToken = env.WEB_PUSH_TOKEN ?? '';
-  if (pushToken.length < 16) throw new Error('WEB_PUSH_TOKEN must be set (16+ chars): it is how edges authenticate their snapshots');
+  if (!publishers && pushToken.length < 16) throw new Error('WEB_PUSH_TOKEN must be set (16+ chars): it is how edges authenticate their snapshots');
   const secret = env.SESSION_SECRET ?? '';
   if (secret.length < 32) throw new Error('SESSION_SECRET must be set (32+ chars): it signs login sessions');
+  const port = Number(env.WEB_PORT || 8080);
+  const staleMs = Number(env.STALE_MS || 30_000);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('WEB_PORT must be an integer 1..65535');
+  if (!Number.isFinite(staleMs) || staleMs < 1000 || staleMs > 3600_000) throw new Error('STALE_MS must be 1000..3600000');
+  if (env.SIGNUP_OPEN && env.SIGNUP_OPEN !== '0' && env.SIGNUP_OPEN !== '1') throw new Error('SIGNUP_OPEN must be 0 or 1');
   return {
-    port: Number(env.WEB_PORT || 8080),
+    port,
     host: env.WEB_HOST || '0.0.0.0',
-    pushToken,
+    pushToken, publishers,
     sessionSecret: Buffer.from(secret),
     usersPath: env.USERS_FILE || join(env.DATA_DIR || 'data', 'users.json'),
     allowedDomains: (env.ALLOWED_EMAIL_DOMAINS ?? 'hku.hk,connect.hku.hk').split(',').map((d) => d.trim().toLowerCase()).filter(Boolean),
-    signupOpen: env.SIGNUP_OPEN !== '0',
+    // An unverified email suffix does not establish university membership.
+    signupOpen: env.SIGNUP_OPEN === '1',
     cookieSecure: env.COOKIE_SECURE === '1',
     trustProxy: !env.TRUST_PROXY || env.TRUST_PROXY === '0' ? false : env.TRUST_PROXY === '1' ? true : env.TRUST_PROXY,
-    staleMs: Number(env.STALE_MS || 30_000),
+    staleMs,
     turnstile: turnstileFromEnv(env),
+    google: googleFromEnv(env),
   };
 }
 
@@ -79,12 +96,13 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
  * `/vendor/v<stamp>/...`, which is a new URL on every build.
  */
 function assetVersion(): string {
-  const files = ['vendor/floor-viewer.js'];
+  const files = ['vendor/floor-viewer.js', 'vendor/three/three.module.js', 'vendor/three/GLTFLoader.js',
+    'vendor/three/OrbitControls.js', 'vendor/three/BufferGeometryUtils.js'];
   const h = createHash('sha256');
   for (const f of files) {
     try {
-      const st = statSync(join(PUBLIC, f));
-      h.update(`${f}:${st.size}:${st.mtimeMs}`);
+      h.update(`${f}:`);
+      h.update(readFileSync(join(PUBLIC, f)));
     } catch {
       h.update(`${f}:missing`);   // not built yet: still a stable stamp
     }
@@ -122,12 +140,6 @@ export function missingAppAssets(publicDir: string = PUBLIC): string[] {
  * absolute URL, or the "//host" form a browser also reads as one, would turn
  * our sign-in page into somebody else's redirector.
  */
-export function safeNext(raw: unknown): string {
-  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//')) return '/dashboard/';
-  if (raw.startsWith('/login') || raw.startsWith('/signup')) return '/dashboard/';
-  return raw;
-}
-
 /**
  * Students know themselves by HKU Portal UID, so the sign-in field takes one;
  * accounts are still keyed by email. A bare "u3587219" becomes
@@ -140,9 +152,21 @@ export function asEmail(raw: string, domains: string[]): string {
   return `${uid}@${domains.find((d) => d.startsWith('connect.')) ?? domains[0] ?? 'connect.hku.hk'}`;
 }
 
+function sameWebOrigin(origin: string, protocol: string | undefined, host: string | undefined): boolean {
+  try {
+    const url = new URL(origin);
+    return !!host && (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash &&
+      url.origin === new URL(`${protocol ?? 'http'}://${host}`).origin;
+  } catch { return false; }
+}
+
 export function createWebApp(cfg: WebConfig) {
   const users = new UserStore(cfg.usersPath, cfg.allowedDomains);
-  const sessions = new Sessions(cfg.sessionSecret);
+  const sessions = new Sessions(cfg.sessionSecret, undefined, join(dirname(cfg.usersPath), 'session-revocations.json'), email => {
+    const u = users.get(email);
+    return u ? createHmac('sha256', cfg.sessionSecret).update(JSON.stringify([u.email, u.hash, u.salt, u.google ?? '', u.createdAt])).digest('base64url') : null;
+  });
   const store = new SnapshotStore(cfg.staleMs);
   const loginLimiter = new RateLimiter(10, 5 * 60_000);
   const version = assetVersion();
@@ -152,7 +176,9 @@ export function createWebApp(cfg: WebConfig) {
   // The shell tells the app whether to draw the widget: an empty key means off.
   const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8')
     .replaceAll('{{v}}', version)
-    .replaceAll('{{turnstile}}', turnstile?.siteKey ?? '');
+    .replaceAll('{{turnstile}}', turnstile?.siteKey ?? '')
+    .replaceAll('{{google}}', cfg.google ? 'on' : '');
+  const google = cfg.google ? new GoogleLogin(cfg.google, cfg.sessionSecret) : null;
   // Turnstile is a script plus an iframe from Cloudflare. Allow exactly that
   // origin, and only when it is switched on.
   const cf = turnstile ? ' https://challenges.cloudflare.com' : '';
@@ -174,7 +200,10 @@ export function createWebApp(cfg: WebConfig) {
     next();
   });
 
-  const userOf = (req: IncomingMessage) => sessions.read(parseCookies(req.headers.cookie)[COOKIE]);
+  const userOf = (req: IncomingMessage) => {
+    const email = sessions.read(parseCookies(req.headers.cookie)[COOKIE]);
+    return email && users.get(email) ? email : null;
+  };
   const setSession = (req: Request, res: Response, email: string) => {
     // Secure whenever the student reached us over HTTPS (the public site), so
     // the cookie never travels in clear; plain http still works on the LAN.
@@ -196,7 +225,11 @@ export function createWebApp(cfg: WebConfig) {
   // endpoints additionally require a same-origin Origin header when one is sent.
   const sameOrigin = (req: Request, res: Response, next: NextFunction) => {
     const origin = req.get('origin');
-    if (origin && new URL(origin).host !== req.get('host')) return res.status(403).json({ error: 'cross-origin post refused' });
+    // Compare scheme as well as host; Origin: null and malformed URLs fail
+    // closed instead of throwing from request middleware.
+    if (req.get('sec-fetch-site') === 'cross-site' || (origin && !sameWebOrigin(origin, req.protocol, req.get('host')))) {
+      return res.status(403).json({ error: 'cross-origin post refused' });
+    }
     return next();
   };
   /**
@@ -234,10 +267,20 @@ export function createWebApp(cfg: WebConfig) {
     return sendApp(res);
   });
 
-  const body = [express.json({ limit: '8kb' }), express.urlencoded({ extended: false, limit: '8kb' })];
-  app.post('/login', body, sameOrigin, async (req: Request, res: Response) => {
+  const body = [express.json({ limit: '8kb' }), express.urlencoded({ extended: false, limit: '8kb', parameterLimit: 20 })];
+  // Express 4 does not forward rejected promises to its error middleware.
+  const asyncRoute = (handler: (req: Request, res: Response) => Promise<unknown>) =>
+    (req: Request, res: Response, next: NextFunction) => { void Promise.resolve().then(() => handler(req, res)).catch(next); };
+  const credentials = (v: unknown): v is Record<string, string> => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    const b = v as Record<string, unknown>;
+    return typeof b.email === 'string' && b.email.length <= 254 && typeof b.password === 'string' && b.password.length <= 1024 &&
+      (b.name === undefined || (typeof b.name === 'string' && b.name.length <= 200));
+  };
+  app.post('/login', body, sameOrigin, asyncRoute(async (req: Request, res: Response) => {
     noStore(res);
-    const { email: raw = '', password = '', next } = req.body as Record<string, string>;
+    if (!credentials(req.body)) return res.status(400).json({ error: 'Enter a valid email and password.' });
+    const { email: raw = '', password = '', next } = req.body;
     const email = asEmail(raw, cfg.allowedDomains);
     if (!loginLimiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
     if (!(await human(req, 'login'))) return res.status(403).json(notHuman);
@@ -245,11 +288,12 @@ export function createWebApp(cfg: WebConfig) {
     if (!user) return res.status(401).json({ error: 'That UID and PIN do not match.' });
     setSession(req, res, user.email);
     return res.json({ redirect: safeNext(next) });
-  });
-  app.post('/signup', body, sameOrigin, async (req: Request, res: Response) => {
+  }));
+  app.post('/signup', body, sameOrigin, asyncRoute(async (req: Request, res: Response) => {
     noStore(res);
     if (!cfg.signupOpen) return res.status(403).json({ error: 'Sign-up is closed.' });
-    const { email: raw = '', name = '', password = '', next } = req.body as Record<string, string>;
+    if (!credentials(req.body)) return res.status(400).json({ error: 'Enter a valid email, name and password.' });
+    const { email: raw = '', name = '', password = '', next } = req.body;
     const email = asEmail(raw, cfg.allowedDomains);
     if (!loginLimiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
     if (!(await human(req, 'signup'))) return res.status(403).json(notHuman);
@@ -258,11 +302,51 @@ export function createWebApp(cfg: WebConfig) {
       setSession(req, res, user.email);
       return res.json({ redirect: safeNext(next) });
     } catch (err) {
+      if (err instanceof AuthBusyError) throw err;
       if (err instanceof AuthError) return res.status(400).json({ error: err.message });
       throw err;
     }
+  }));
+  /**
+   * Google sign-in. No Turnstile here: the button is a plain link, nothing is
+   * posted, and Google runs its own checks on the person before we ever see
+   * them. The limiter still guards the callback, which costs a call to Google.
+   * The attempt cookie is scoped to /auth/google and SameSite=Lax, which a
+   * top-level redirect back from accounts.google.com still carries.
+   */
+  app.get('/auth/google', (req, res) => {
+    noStore(res);
+    if (!google) return res.status(404).json({ error: 'Google sign-in is not enabled' });
+    const { url, cookie } = google.begin(safeNext(req.query.next));
+    res.cookie(GOOGLE_COOKIE, cookie, { httpOnly: true, sameSite: 'lax', secure: cfg.cookieSecure || req.secure, maxAge: 10 * 60_000, path: '/auth/google' });
+    return res.redirect(url);
   });
+  app.get('/auth/google/callback', asyncRoute(async (req, res) => {
+    noStore(res);
+    if (!google) return res.status(404).json({ error: 'Google sign-in is not enabled' });
+    res.clearCookie(GOOGLE_COOKIE, { path: '/auth/google' });   // single use, whatever happens next
+    const refused = (code: string) => res.redirect(`/login/?error=${code}`);
+    if (!loginLimiter.allow(req.ip ?? 'unknown')) return refused('google_busy');
+    try {
+      const id = await google.finish(req.query, parseCookies(req.headers.cookie)[GOOGLE_COOKIE]);
+      const user = users.google(id, cfg.signupOpen);
+      setSession(req, res, user.email);
+      return res.redirect(safeNext(id.next));
+    } catch (err) {
+      if (err instanceof GoogleError) {
+        // Say why in the log; the student just gets "try again".
+        if (err.code !== 'cancelled') console.warn(`[web] google sign-in refused: ${err.reason}`);
+        return refused(err.code === 'cancelled' ? 'google_cancelled' : 'google');
+      }
+      if (err instanceof AuthError) return refused(err.message.startsWith('Sign-up') ? 'google_closed' : 'google_taken');
+      throw err;
+    }
+  }));
+
   app.post('/logout', body, sameOrigin, (_req: Request, res: Response) => {
+    const token = parseCookies(_req.headers.cookie)[COOKIE];
+    sessions.revoke(token);
+    for (const [ws, client] of clients) if (client.token === token) ws.terminate();
     res.clearCookie(COOKIE, { path: '/' });
     noStore(res);
     res.json({ redirect: '/login/' });
@@ -272,9 +356,11 @@ export function createWebApp(cfg: WebConfig) {
   app.post('/api/edge/snapshot', express.json({ limit: '2mb' }), (req, res) => {
     const got = Buffer.from((req.get('authorization') ?? '').replace(/^Bearer /, ''));
     const want = Buffer.from(cfg.pushToken);
-    if (got.length !== want.length || !timingSafeEqual(got, want)) return res.status(401).json({ error: 'bad edge token' });
+    const authenticated = cfg.publishers ? cfg.publishers.authenticate(req.body?.edgeId, got) : got.length === want.length && timingSafeEqual(got, want);
+    if (!authenticated) return res.status(401).json({ error: 'bad edge token' });
     if (!isSnapshot(req.body)) return res.status(400).json({ error: 'not an occupancy snapshot' });
-    store.put(req.body);
+    if (cfg.publishers && !cfg.publishers.authorizes(req.body)) return res.status(403).json({ error: 'edge is not authorized for these floors' });
+    if (!store.put(req.body)) return res.status(503).json({ error: 'snapshot store is full' });
     broadcast();
     return res.json({ ok: true });
   });
@@ -303,6 +389,8 @@ export function createWebApp(cfg: WebConfig) {
   // Every screen under /dashboard/ is routed in the browser, so each of them
   // must serve the shell: a student may open, reload or share any of them.
   app.get(['/dashboard', '/dashboard/', '/dashboard/*'], requireUser, (_req, res) => sendApp(res));
+  // Identity and occupancy must never be stored by a shared proxy.
+  app.use('/api', (_req, res, next) => { noStore(res); next(); });
   app.get('/api/me', requireUser, (req, res) => {
     const u = users.get(userOf(req) ?? '');
     res.json({ email: u?.email, name: u?.name });
@@ -331,6 +419,8 @@ export function createWebApp(cfg: WebConfig) {
     setHeaders: (res) => res.set('Cache-Control', 'public, max-age=31536000, immutable'),
   }));
 
+  app.get('/index.html', (_req, res) => { noStore(res); res.redirect('/'); });
+
   // Static assets (bundle, photographs, models, icons) are public; the data is not.
   app.use(express.static(PUBLIC, {
     index: false,
@@ -344,19 +434,39 @@ export function createWebApp(cfg: WebConfig) {
     },
   }));
 
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next(err);
+    if (err instanceof AuthBusyError) { noStore(res); return res.status(429).json({ error: err.message }); }
+    const status = (err as { status?: number })?.status;
+    const clientError = status === 400 || status === 413 || status === 415;
+    if (!clientError) console.error(`[web] request failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    noStore(res);
+    return res.status(clientError ? status : 500).json({ error: clientError ? 'Invalid request body.' : 'Request failed. Try again.' });
+  });
+
   const server = createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
-  const clients = new Set<WebSocket>();
+  const clients = new Map<WebSocket, { email: string; expiresAt: number; token: string; alive: boolean }>();
+  const refuseUpgrade = (socket: import('node:stream').Duplex, status: number, reason: string) => {
+    socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  };
   server.on('upgrade', (req, socket, head) => {
-    const email = userOf(req);
-    if (new URL(req.url ?? '/', 'http://x').pathname !== '/ws' || !email || !users.get(email)) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
+    let path: string;
+    try { path = new URL(req.url ?? '/', 'http://localhost').pathname; } catch { return refuseUpgrade(socket, 400, 'Bad Request'); }
+    const token = parseCookies(req.headers.cookie)[COOKIE];
+    const detail = sessions.detail(token);
+    if (path !== '/ws' || !detail || !users.get(detail.email)) return refuseUpgrade(socket, 401, 'Unauthorized');
+    // Mirror Express's request setup so its configured trusted-proxy protocol
+    // calculation applies to an HTTPS tunnel's upgrade requests too.
+    Object.setPrototypeOf(req, app.request);
+    const protocol = (req as Request).protocol;
+    if (req.headers.origin && !sameWebOrigin(req.headers.origin, protocol, req.headers.host)) return refuseUpgrade(socket, 403, 'Forbidden');
+    if (clients.size >= 1000 || [...clients.values()].filter((c) => c.email === detail.email).length >= 10) return refuseUpgrade(socket, 429, 'Too Many Requests');
     wss.handleUpgrade(req, socket, head, (ws) => {
-      clients.add(ws);
+      clients.set(ws, { ...detail, token: token!, alive: true });
       ws.on('close', () => clients.delete(ws));
+      ws.on('error', () => ws.terminate());
+      ws.on('pong', () => { const client = clients.get(ws); if (client) client.alive = true; });
       ws.send(JSON.stringify(store.view()));
     });
   });
@@ -368,11 +478,33 @@ export function createWebApp(cfg: WebConfig) {
     pending = setTimeout(() => {
       pending = null;
       const msg = JSON.stringify(store.view());
-      for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(msg);
+      for (const [ws, client] of clients) {
+        if (!sessions.read(client.token) || !users.get(client.email)) { ws.terminate(); continue; }
+        // A stalled reader must not queue an unlimited campus history in RAM.
+        if (ws.bufferedAmount > 2 * 1024 * 1024) { ws.terminate(); continue; }
+        if (ws.readyState === ws.OPEN) ws.send(msg);
+      }
     }, 100);
+    pending.unref();
   }
+  const heartbeat = setInterval(() => {
+    for (const [ws, client] of clients) {
+      if (!client.alive) { ws.terminate(); continue; }
+      client.alive = false;
+      ws.ping();
+    }
+  }, 30_000);
+  heartbeat.unref();
   // Staleness is time-based, so re-send even without a push.
-  setInterval(broadcast, 10_000).unref();
+  const freshness = setInterval(broadcast, 10_000);
+  freshness.unref();
+  server.on('close', () => {
+    clearInterval(freshness);
+    clearInterval(heartbeat);
+    if (pending) clearTimeout(pending);
+    for (const ws of clients.keys()) ws.terminate();
+    wss.close();
+  });
 
   return { app, server, store, users, sessions };
 }
@@ -395,6 +527,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   }
   const { server, users } = createWebApp(cfg);
   server.listen(cfg.port, cfg.host, () => {
-    console.log(`[web] http://${cfg.host}:${cfg.port}  users=${users.size}  sign-up ${cfg.signupOpen ? `open to ${cfg.allowedDomains.join(', ')}` : 'closed'}  turnstile ${cfg.turnstile ? 'on' : 'off'}`);
+    console.log(`[web] http://${cfg.host}:${cfg.port}  users=${users.size}  sign-up ${cfg.signupOpen ? `open to ${cfg.allowedDomains.join(', ')}` : 'closed'}  turnstile ${cfg.turnstile ? 'on' : 'off'}  google ${cfg.google ? 'on' : 'off'}`);
   });
 }

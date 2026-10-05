@@ -28,7 +28,18 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+        env:
+          POSTGRES_USER: tmedge_test
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: tmedge_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U tmedge_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -78,6 +89,17 @@ jobs:
       - name: Install
         working-directory: TMedge
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 strips capabilities from unconfined user namespaces.
+          # Permit them on this disposable CI runner so the mandatory bwrap
+          # filesystem/network isolation regression can actually execute.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          python3 -m venv /tmp/tmedge-ci-python
+          /tmp/tmedge-ci-python/bin/pip install numpy==2.2.6 opencv-python-headless==5.0.0.93
+          echo /tmp/tmedge-ci-python/bin >> "$GITHUB_PATH"
           npm ci --no-audit --no-fund
           npm --prefix web-app ci --no-audit --no-fund
           npm --prefix algo-app ci --no-audit --no-fund
@@ -106,6 +128,16 @@ jobs:
         run: |
           python3 deploy/test-release.py
           python3 deploy/test-receiver.py
+          python3 deploy/training/test-offline.py
+
+      - name: Real PostgreSQL schema migration and ingest regressions
+        working-directory: TMedge
+        env:
+          TEST_DATABASE_URL: postgresql://tmedge_test:disposable-ci-only@127.0.0.1:5432/tmedge_test
+        run: |
+          python3 -m venv /tmp/training-test-env
+          /tmp/training-test-env/bin/pip install 'psycopg[binary]==3.3.6'
+          /tmp/training-test-env/bin/python deploy/training/test-postgres.py
 
       # Proves the site (server, console and the Vite app) actually builds.
       - name: Build

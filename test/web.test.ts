@@ -3,20 +3,38 @@
  * when data goes stale.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { WebSocket } from 'ws';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
-import { Sessions, turnstileCheck } from '../src/web/auth.js';
-import { createWebApp, loadWebConfig, missingAppAssets } from '../src/web/main.js';
-import { SnapshotStore } from '../src/web/store.js';
+import { parseCookies, RateLimiter, Sessions, turnstileCheck, UserStore } from '../src/web/auth.js';
+import { createWebApp, loadWebConfig, missingAppAssets, safeNext } from '../src/web/main.js';
+import { isSnapshot, SnapshotStore } from '../src/web/store.js';
+import { SnapshotPublishers } from '../src/web/publishers.js';
 import { findGroup, searchSeats } from '../src/shared/seats.js';
 import type { OccupancySnapshot, TableState } from '../src/shared/types.js';
 import { makerspace } from './fixtures.js';
 
 const TOKEN = 'edge-token-for-tests-0123456789';
+
+test('web: publisher tokens cannot impersonate another edge or publish an unauthorized floor', async () => {
+  const web = createWebApp({ port: 0, host: '127.0.0.1', pushToken: TOKEN,
+    publishers: new SnapshotPublishers({ version: 1, edges: { 'edge-a': { token: '11'.repeat(32), floors: ['iw-maker-a'] }, 'edge-b': { token: '22'.repeat(32), floors: [] } } }),
+    sessionSecret: Buffer.alloc(40, 1), usersPath: join(mkdtempSync(join(tmpdir(), 'publishers-')), 'users.json'),
+    allowedDomains: [], signupOpen: false, cookieSecure: false, trustProxy: false, staleMs: 30000 });
+  await new Promise<void>(r => web.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  const push = (body: OccupancySnapshot, token: string) => fetch(`${base}/api/edge/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await push(snapshot('edge-a'), '11'.repeat(32))).status, 200);
+    assert.equal((await push(snapshot('edge-b'), '11'.repeat(32))).status, 401);
+    assert.equal((await push(snapshot('edge-b'), '22'.repeat(32))).status, 403);
+    assert.equal((await push(snapshot('edge-a'), TOKEN)).status, 401);
+  } finally { web.server.closeAllConnections(); await new Promise<void>(r => web.server.close(() => r())); }
+});
 
 async function start() {
   const web = createWebApp({
@@ -322,4 +340,212 @@ test('web: a shell whose app bundle is missing is reported, not served blank', (
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('web: malformed credentials, cookies, origins and JSON are refused without crashing', async () => {
+  const w = await start();
+  const post = (path: string, value: unknown, headers: Record<string, string> = {}) => fetch(w.base + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(value),
+  });
+  try {
+    for (const body of [[], null, { email: 3, password: 'long-password' }, { email: [], password: 'long-password' },
+      { email: 'a@connect.hku.hk', password: {} }, { email: 'a@connect.hku.hk', password: 'x'.repeat(1025) },
+      { email: 'a@connect.hku.hk', password: 'long-password', name: {} }]) {
+      for (const path of ['/login', '/signup']) assert.equal((await post(path, body)).status, 400);
+    }
+    const account = { email: 'a@connect.hku.hk', password: 'long-password' };
+    for (const origin of ['null', 'invalid-url', 'https://127.0.0.1:' + new URL(w.base).port]) {
+      assert.equal((await post('/signup', account, { origin })).status, 403);
+    }
+    const validOrigin = await post('/signup', account, { origin: w.base });
+    assert.equal(validOrigin.status, 200);
+    assert.equal((await fetch(`${w.base}/api/me`, { headers: { cookie: 'tm_session=%E0%A4%A' } })).status, 401);
+    assert.equal((await fetch(`${w.base}/signup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' })).status, 400);
+    assert.equal((await fetch(`${w.base}/healthz`)).status, 200);
+  } finally { await w.close(); }
+});
+
+test('web: async authentication failures produce an error response and leave the server running', async () => {
+  const w = await start();
+  try {
+    w.users.verify = async () => { throw new Error('simulated authentication failure'); };
+    const response = await fetch(`${w.base}/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'a@connect.hku.hk', password: 'long-password' }),
+    });
+    assert.equal(response.status, 500);
+    assert.ok(!(await response.text()).includes('simulated authentication failure'));
+    assert.equal((await fetch(`${w.base}/healthz`)).status, 200);
+  } finally { await w.close(); }
+});
+
+test('web: redirects reject browser backslashes, normalization escapes and authentication loops', () => {
+  for (const value of ['https://evil.example', '//evil.example', '/\\evil.example', '/\t/evil.example', '/%2e%2e//evil.example', '/dashboard/../login/', '/auth/google']) {
+    assert.equal(safeNext(value), '/dashboard/', value);
+  }
+  assert.equal(safeNext('/dashboard/spaces/iw-maker-a?seats=4#plan'), '/dashboard/spaces/iw-maker-a?seats=4#plan');
+  assert.equal(safeNext({ next: '/dashboard/' }), '/dashboard/');
+});
+
+test('web: malformed cookies are ignored and duplicate names cannot override an earlier cookie', () => {
+  const cookies = parseCookies('bad=%; tm_session=first; tm_session=second; __proto__=value; x=hello%20world');
+  assert.equal(Object.getPrototypeOf(cookies), null);
+  assert.equal(cookies.bad, undefined);
+  assert.equal(cookies.tm_session, 'first');
+  assert.equal(cookies.__proto__, 'value');
+  assert.equal(cookies.x, 'hello world');
+});
+
+test('web: unverified account registration is opt-in and numeric configuration fails closed', () => {
+  const base = { WEB_PUSH_TOKEN: TOKEN, SESSION_SECRET: 's'.repeat(40) };
+  assert.equal(loadWebConfig(base).signupOpen, false);
+  assert.equal(loadWebConfig({ ...base, SIGNUP_OPEN: '1' }).signupOpen, true);
+  for (const WEB_PORT of ['NaN', '-1', '65536', '1.5']) assert.throws(() => loadWebConfig({ ...base, WEB_PORT }), /WEB_PORT/);
+  for (const STALE_MS of ['NaN', '-1', 'Infinity', '0']) assert.throws(() => loadWebConfig({ ...base, STALE_MS }), /STALE_MS/);
+  assert.throws(() => loadWebConfig({ ...base, SIGNUP_OPEN: 'yes' }), /SIGNUP_OPEN/);
+});
+
+test('web: an address spray cannot erase existing login limits', () => {
+  const limiter = new RateLimiter(1, 1000);
+  assert.equal(limiter.allow('blocked', 0), true);
+  assert.equal(limiter.allow('blocked', 0), false);
+  for (let i = 0; i < 10_100; i++) limiter.allow('ip-' + i, 0);
+  assert.equal(limiter.allow('blocked', 1), false);
+  assert.equal(limiter.allow('fresh', 1000), true, 'expired entries can make space');
+});
+
+test('web: concurrent registrations cannot overwrite an account and corrupted files are never treated as empty', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tmusers-'));
+  const path = join(dir, 'users.json');
+  try {
+    const users = new UserStore(path, ['connect.hku.hk']);
+    const attempts = await Promise.allSettled([
+      users.create('same@connect.hku.hk', 'First', 'first-password'),
+      users.create('same@connect.hku.hk', 'Second', 'second-password'),
+    ]);
+    assert.equal(attempts.filter((v) => v.status === 'fulfilled').length, 1);
+    assert.equal(users.size, 1);
+    assert.equal((JSON.parse(readFileSync(path, 'utf8')) as unknown[]).length, 1);
+    assert.equal(new UserStore(path, []).size, 1);
+    for (const bad of ['{', '{}', '[{"email":"a@connect.hku.hk","hash":"invalid"}]']) {
+      writeFileSync(path, bad);
+      assert.throws(() => new UserStore(path, []));
+      assert.equal(readFileSync(path, 'utf8'), bad);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('web: snapshot validation rejects missing fields, impossible counts and private debug data', async () => {
+  assert.equal(isSnapshot(snapshot()), true);
+  const changes: ((s: Record<string, unknown>) => void)[] = [
+    (s) => { s.floors = [{ id: 'broken', tables: [], zones: [] }]; },
+    (s) => { s.rawFrames = [{ pixels: [1, 2, 3] }]; },
+    (s) => { (s.floors as Record<string, unknown>[])[0]!.building = 3; },
+    (s) => { delete (s.floors as Record<string, unknown>[])[0]!.totals; },
+    (s) => { const f = (s.floors as Record<string, unknown>[])[0]!; (f.tables as Record<string, unknown>[])[0]!.seats = null; },
+    (s) => { const f = (s.floors as Record<string, unknown>[])[0]!; (f.totals as Record<string, unknown>).free = 1; },
+    (s) => { const f = (s.floors as Record<string, unknown>[])[0]!; f.tables = [...f.tables as unknown[], (f.tables as unknown[])[0]]; },
+  ];
+  const w = await start();
+  try {
+    for (const change of changes) {
+      const broken = structuredClone(snapshot()) as unknown as Record<string, unknown>;
+      change(broken);
+      assert.equal(isSnapshot(broken), false);
+      assert.equal((await fetch(`${w.base}/api/edge/snapshot`, {
+        method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(broken),
+      })).status, 400);
+    }
+    assert.equal(w.store.view().floors.length, 0);
+    assert.equal((await fetch(`${w.base}/healthz`)).status, 200);
+  } finally { await w.close(); }
+});
+
+test('web: a migrated floor is only counted once and edge identity storage is bounded', () => {
+  const store = new SnapshotStore();
+  assert.equal(store.put(snapshot('old'), 1000), true);
+  assert.equal(store.put(snapshot('new'), 2000), true);
+  const floors = store.view(3000).floors;
+  assert.equal(floors.length, 1);
+  assert.equal(floors[0]?.edgeId, 'new');
+  for (let i = 2; i < 256; i++) assert.equal(store.put(snapshot('edge-' + i), 3000), true);
+  assert.equal(store.put(snapshot('overflow'), 4000), false);
+  assert.equal(store.put(snapshot('new'), 4000), true, 'existing edges still update');
+});
+
+test('web: logout revokes a copied cookie and session revocation survives restart', async () => {
+  const w = await start();
+  try {
+    const cookie = await signup(w.base, 'logout@connect.hku.hk');
+    assert.equal((await fetch(`${w.base}/api/me`, { headers: { cookie } })).status, 200);
+    assert.equal((await fetch(`${w.base}/logout`, { method: 'POST', headers: { cookie } })).status, 200);
+    assert.equal((await fetch(`${w.base}/api/me`, { headers: { cookie } })).status, 401);
+  } finally { await w.close(); }
+  const dir = mkdtempSync(join(tmpdir(), 'tmsessions-'));
+  try {
+    const path = join(dir, 'revoked.json');
+    const key = Buffer.from('k'.repeat(40));
+    const first = new Sessions(key, 60_000, path);
+    const other = new Sessions(key, 60_000, path);
+    const token = first.issue('a@example.com');
+    first.revoke(token);
+    assert.equal(other.read(token), null, 'another instance reloads the revocation');
+    assert.equal(new Sessions(key, 60_000, path).read(token), null, 'restart does not resurrect logout');
+    assert.ok(first.read(first.issue('a@example.com')), 'new sessions are distinct even in the same millisecond');
+    writeFileSync(path, 'broken');
+    assert.equal(first.read(first.issue('a@example.com')), null, 'corrupt revocation data fails closed');
+    assert.throws(() => new Sessions(key, 60_000, path));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+async function refusedSocket(base: string, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws', { headers });
+    ws.on('error', () => {});
+    ws.on('unexpected-response', (_request, response) => {
+      const status = response.statusCode ?? 0;
+      response.resume();
+      ws.terminate();
+      resolve(status);
+    });
+    ws.on('open', () => { ws.terminate(); reject(new Error('expected rejected upgrade')); });
+  });
+}
+
+test('web: WebSocket upgrades validate cookies and browser origins; logout and protocol errors close feeds safely', async () => {
+  const w = await start();
+  let ws: WebSocket | null = null;
+  try {
+    assert.equal(await refusedSocket(w.base, { cookie: 'tm_session=%' }), 401);
+    const cookie = await signup(w.base, 'socket@connect.hku.hk');
+    assert.equal(await refusedSocket(w.base, { cookie, origin: 'https://evil.example' }), 403);
+    assert.equal(await refusedSocket(w.base, { cookie, origin: 'null' }), 403);
+    ws = new WebSocket(w.base.replace(/^http/, 'ws') + '/ws', { headers: { cookie, origin: w.base } });
+    ws.on('error', () => {});
+    await new Promise<void>((resolve, reject) => { ws!.once('message', () => resolve()); ws!.once('error', reject); });
+    const closed = new Promise<void>((resolve) => ws!.once('close', () => resolve()));
+    await fetch(`${w.base}/logout`, { method: 'POST', headers: { cookie } });
+    await closed;
+    assert.equal(await refusedSocket(w.base, { cookie, origin: w.base }), 401);
+    const second = await signup(w.base, 'socket2@connect.hku.hk');
+    ws = new WebSocket(w.base.replace(/^http/, 'ws') + '/ws', { headers: { cookie: second, origin: w.base } });
+    ws.on('error', () => {});
+    await new Promise<void>((resolve, reject) => { ws!.once('message', () => resolve()); ws!.once('error', reject); });
+    const invalidClosed = new Promise<void>((resolve) => ws!.once('close', () => resolve()));
+    ws.send('x'.repeat(2048));
+    await invalidClosed;
+    assert.equal((await fetch(`${w.base}/healthz`)).status, 200);
+  } finally { ws?.terminate(); await w.close(); }
+});
+
+test('web: personalized API responses and raw shell redirects are never cached', async () => {
+  const w = await start();
+  try {
+    const cookie = await signup(w.base, 'cache@connect.hku.hk');
+    for (const path of ['/api/me', '/api/occupancy', '/api/search?seats=1', '/index.html']) {
+      const response = await fetch(w.base + path, { headers: { cookie }, redirect: 'manual' });
+      assert.equal(response.headers.get('cache-control'), 'no-store', path);
+      assert.match(response.headers.get('vary') ?? '', /(?:^|,\s*)Cookie(?:,|$)/, path);
+    }
+  } finally { await w.close(); }
 });

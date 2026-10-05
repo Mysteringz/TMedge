@@ -4,6 +4,7 @@
  * which parses bytes produced by the firmware's own serializer.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { DeviceKeys, SecureError, deriveKey, secureHeader, decryptPayload } from './secure.js';
 
 export const MAGIC = Buffer.from('TM', 'latin1');
 export const VERSION = 1;
@@ -81,6 +82,8 @@ export interface Header {
   seq: number;
   uptimeMs: number;
   signed: boolean;
+  /** Nonsecret enrollment id; present only after authenticated decryption. */
+  secureId?: number;
 }
 
 export interface Detection {
@@ -160,6 +163,7 @@ export interface VerifyOptions {
   /** Accepted keys: the current one first, then any still being rotated out. */
   keys: Buffer[];
   allowUnsigned: boolean;
+  devices?: DeviceKeys;
 }
 
 /**
@@ -167,30 +171,32 @@ export interface VerifyOptions {
  * short enough to count and display.
  */
 export function parsePacket(buf: Buffer, verify: VerifyOptions): Packet {
-  if (buf.length < HEADER_SIZE + TAG_SIZE) throw new ProtocolError('short datagram');
-  if (buf[0] !== MAGIC[0] || buf[1] !== MAGIC[1]) throw new ProtocolError('bad magic');
-  if (buf[2] !== VERSION) throw new ProtocolError(`unsupported version ${buf[2]}`);
-  const payloadLen = buf.readUInt16LE(20);
-  if (buf.length !== HEADER_SIZE + payloadLen + TAG_SIZE) throw new ProtocolError('length mismatch');
-
-  const signedPart = buf.subarray(0, HEADER_SIZE + payloadLen);
-  const got = buf.subarray(HEADER_SIZE + payloadLen);
-  const signed = got.some((b) => b !== 0);
-  if (signed) {
-    if (!verify.keys.some((k) => timingSafeEqual(tag(k, signedPart), got))) throw new ProtocolError('bad signature');
-  } else if (!verify.allowUnsigned) {
-    throw new ProtocolError('unsigned');
+  let header: Header, p: Buffer;
+  if (buf[2] === 2) {
+    try {
+      const h = secureHeader(buf);
+      const device = verify.devices?.find(h.uid, h.keyId);
+      if (!device) throw new SecureError('encrypted device key unavailable');
+      if (![TYPE_REPORT, TYPE_RAW, TYPE_STATUS, TYPE_OTA_STATUS].includes(h.type)) throw new SecureError('unexpected encrypted uplink type');
+      p = decryptPayload(buf, deriveKey(device.master, h.uid, h.keyId, 'uplink', h.epoch)).payload;
+      header = { type: h.type, uid: h.uid, boot: h.boot, seq: h.seq, uptimeMs: h.uptimeMs, signed: true, secureId: h.keyId };
+    } catch (err) { throw new ProtocolError(err instanceof SecureError ? err.message : 'invalid encrypted packet'); }
+  } else {
+    if (buf.length < HEADER_SIZE + TAG_SIZE) throw new ProtocolError('short datagram');
+    if (buf[0] !== MAGIC[0] || buf[1] !== MAGIC[1]) throw new ProtocolError('bad magic');
+    if (buf[2] !== VERSION) throw new ProtocolError(`unsupported version ${buf[2]}`);
+    const uid = uidToString(buf.subarray(4, 10));
+    if (verify.devices && !verify.devices.allowsLegacy(uid)) throw new ProtocolError('plaintext device traffic refused');
+    const payloadLen = buf.readUInt16LE(20);
+    if (buf.length !== HEADER_SIZE + payloadLen + TAG_SIZE) throw new ProtocolError('length mismatch');
+    const signedPart = buf.subarray(0, HEADER_SIZE + payloadLen), got = buf.subarray(HEADER_SIZE + payloadLen);
+    const signed = got.some(b => b !== 0);
+    if (signed) {
+      if (!verify.keys.some(k => timingSafeEqual(tag(k, signedPart), got))) throw new ProtocolError('bad signature');
+    } else if (!verify.allowUnsigned) throw new ProtocolError('unsigned');
+    header = { type: buf[3] ?? 0, uid, boot: buf.readUInt16LE(10), seq: buf.readUInt32LE(12), uptimeMs: buf.readUInt32LE(16), signed };
+    p = buf.subarray(HEADER_SIZE, HEADER_SIZE + payloadLen);
   }
-
-  const header: Header = {
-    type: buf[3] ?? 0,
-    uid: uidToString(buf.subarray(4, 10)),
-    boot: buf.readUInt16LE(10),
-    seq: buf.readUInt32LE(12),
-    uptimeMs: buf.readUInt32LE(16),
-    signed,
-  };
-  const p = buf.subarray(HEADER_SIZE, HEADER_SIZE + payloadLen);
 
   switch (header.type) {
     case TYPE_REPORT: {

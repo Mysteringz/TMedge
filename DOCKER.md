@@ -159,3 +159,6 @@ TMWAccess ─TCP 5210──►│  │ :8090 console                    ▲     
 - Secrets come only from `.env`. It is git-ignored and `.dockerignore`d, so it
   is never baked into the image.
 - The containers run as non-root. The config mount is read-only.
+- The standard container does not include an OTA compiler. Console builds
+  require the Linux host's isolated PlatformIO installation and bubblewrap;
+  do not enable privileged container access to bypass this boundary.

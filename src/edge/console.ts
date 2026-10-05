@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { sendLatest } from '../shared/fanout.js';
+import { requestUrl, sameOrigin } from '../shared/http.js';
 import { FirmwareStore } from './firmware.js';
 import { Provisioning } from './provisioning.js';
 import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from './protocol.js';
@@ -57,7 +58,9 @@ export interface ConsoleCore {
    * carries a valid token (from the ui router's /api/ws-token). False means
    * not ours or not allowed; the caller answers.
    */
-  upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string): boolean;
+  upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
+  /** Close feeds authenticated by a session that has just logged out. */
+  closeSessions(binding: string): void;
 }
 
 /** Who did it, for provisioning, firmware and rollout records. */
@@ -281,8 +284,11 @@ export function createConsole(rt: EdgeRuntime): ConsoleCore {
   }));
 
   ui.post('/api/firmware/uploads', mutating, (_req, res) => {
-    rt.firmware.sweep();
-    res.json({ uploadId: rt.firmware.startUpload(who(res)) });
+    try {
+      res.json({ uploadId: rt.firmware.startUpload(who(res)) });
+    } catch (err) {
+      res.status(429).json({ error: (err as Error).message });
+    }
   });
 
   ui.post('/api/firmware/uploads/:id/files', mutating, express.raw({ type: '*/*', limit: '8mb' }), (req, res) => {
@@ -305,6 +311,7 @@ export function createConsole(rt: EdgeRuntime): ConsoleCore {
     void rt.firmware.build(uploadId, who(res))
       .then(() => { building = null; })
       .catch((err: unknown) => {
+        rt.firmware.discard(uploadId);
         const log = (err as { log?: string[] }).log ?? [];
         building = { uploadId, startedAt: building?.startedAt ?? Date.now(), log, error: (err as Error).message };
         setTimeout(() => { if (building?.error) building = null; }, 5 * 60_000).unref();
@@ -337,21 +344,27 @@ export function createConsole(rt: EdgeRuntime): ConsoleCore {
 
   ui.get('/api/ws-token', (_req, res) => {
     const exp = Date.now() + 60_000;
-    res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(String(exp)).digest('hex')}` });
+    const binding = String(res.locals.wsBinding ?? '');
+    res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(`${exp}:${binding}`).digest('hex')}` });
   });
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
   const subs = new Map<WebSocket, Set<string>>();
+  const accesses = new Map<WebSocket, { binding: string; valid(): boolean }>();
 
-  const upgrade: ConsoleCore['upgrade'] = (req, socket, head, path) => {
-    const url = new URL(req.url ?? '/', 'http://x');
+  const upgrade: ConsoleCore['upgrade'] = (req, socket, head, path, access = { binding: '', valid: () => true }) => {
+    const url = requestUrl(req.url);
+    if (!url || !sameOrigin(req) || subs.size >= 64 || !access.valid()) return false;
     const [exp, mac] = (url.searchParams.get('token') ?? '').split('.');
     const ok = url.pathname === path && exp && mac && Number(exp) > Date.now() &&
-      safeEqual(mac, createHmac('sha256', wsSecret).update(exp).digest('hex'));
+      safeEqual(mac, createHmac('sha256', wsSecret).update(`${exp}:${access.binding}`).digest('hex'));
     if (!ok) return false;
     wss.handleUpgrade(req, socket, head, (ws) => {
       subs.set(ws, new Set());
+      accesses.set(ws, access);
+      ws.on('error', () => ws.terminate());
       ws.on('message', (data) => {
+        if (!access.valid()) { ws.terminate(); return; }
         try {
           const msg = JSON.parse(String(data)) as { type?: string; uids?: unknown };
           if (msg.type === 'subscribe' && Array.isArray(msg.uids)) {
@@ -366,7 +379,7 @@ export function createConsole(rt: EdgeRuntime): ConsoleCore {
           /* ignore malformed client messages */
         }
       });
-      ws.on('close', () => subs.delete(ws));
+      ws.on('close', () => { subs.delete(ws); accesses.delete(ws); });
       ws.send(JSON.stringify({ type: 'state', ...state(rt) }));
     });
     return true;
@@ -375,14 +388,19 @@ export function createConsole(rt: EdgeRuntime): ConsoleCore {
   const broadcast = (msg: unknown, filter?: (ws: WebSocket) => boolean) => {
     const s = JSON.stringify(msg);
     // A browser that is behind is skipped, not queued for (sendLatest).
-    for (const ws of subs.keys()) if (!filter || filter(ws)) sendLatest(ws, s);
+    for (const ws of subs.keys()) {
+      if (!accesses.get(ws)?.valid()) { ws.terminate(); continue; }
+      if (!filter || filter(ws)) sendLatest(ws, s);
+    }
   };
   rt.on('report', (uid, dets, at) => broadcast({ type: 'report', uid, at, dets }));
   rt.on('raw', (raw) => broadcast({ type: 'raw', ...raw }, (ws) => subs.get(ws)?.has(raw.uid) ?? false));
   rt.on('rgb', (uid, jpeg, at) => broadcast({ type: 'rgb', uid, at, jpeg: jpeg.toString('base64') }, (ws) => subs.get(ws)?.has(uid) ?? false));
   setInterval(() => broadcast({ type: 'state', ...state(rt) }), 1000).unref();
 
-  return { machine, ui, upgrade };
+  return { machine, ui, upgrade, closeSessions: (binding) => {
+    for (const [ws, access] of accesses) if (access.binding === binding) ws.terminate();
+  } };
 }
 
 export interface ConsoleOptions {

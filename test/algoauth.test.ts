@@ -99,6 +99,7 @@ test('the right account signs in and opens the API; wrong or unknown ones do not
 
   const out = await post(base, '/auth/logout', {}, { cookie });
   assert.match(out.headers.get('set-cookie') ?? '', /tm_algo=;/);
+  assert.equal((await fetch(`${base}/api/catalogue`, { headers: { cookie } })).status, 401, 'a copied logout cookie cannot be replayed');
 });
 
 test('a removed account is signed out on its next request, not when its cookie expires', async () => {
@@ -110,6 +111,15 @@ test('a removed account is signed out on its next request, not when its cookie e
   await new Promise((r) => setTimeout(r, 20));
   new AlgoUsers(users.path).remove('alice');
   assert.equal((await fetch(`${base}/api/catalogue`, { headers: { cookie } })).status, 401);
+});
+
+test('resetting an engineer password invalidates earlier sessions', async () => {
+  const { base, users } = await boot();
+  const cookie = cookieOf(await post(base, '/auth/login', { username: 'alice', password: 'correct horse battery' }));
+  await new AlgoUsers(users.path).add('alice', 'new correct horse battery');
+  assert.equal((await fetch(`${base}/api/catalogue`, { headers: { cookie } })).status, 401);
+  assert.equal((await post(base, '/auth/login', { username: 'alice', password: 'correct horse battery' })).status, 401);
+  assert.equal((await post(base, '/auth/login', { username: 'alice', password: 'new correct horse battery' })).status, 200);
 });
 
 test('a student session is not an engineer session, even with the same SESSION_SECRET', async () => {
@@ -184,6 +194,8 @@ test('after sign-in you go to a page on this site, never somewhere else', () => 
   assert.equal(safeAlgoNext('https://evil.example'), '/');
   assert.equal(safeAlgoNext('/login'), '/');
   assert.equal(safeAlgoNext(undefined), '/');
+  assert.equal(safeAlgoNext('/%2e%2e//evil.example'), '/');
+  assert.equal(safeAlgoNext('/flow/../auth/login'), '/');
 });
 
 test('accounts need a sensible name and a long password, and are stored hashed', async () => {

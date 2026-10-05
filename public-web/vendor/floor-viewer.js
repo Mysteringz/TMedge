@@ -19,18 +19,43 @@
   let libP = null;
   function lib() {
     if (!libP) libP = Promise.all([
-      import('/vendor/three/three.module.js'),
-      import('/vendor/three/OrbitControls.js'),
-      import('/vendor/three/GLTFLoader.js')
+      import('./three/three.module.js'),
+      import('./three/OrbitControls.js'),
+      import('./three/GLTFLoader.js')
     ]).then(([T, oc, gl]) => ({ THREE: T, OrbitControls: oc.OrbitControls, GLTFLoader: gl.GLTFLoader }));
     return libP;
   }
   const cache = new Map();
   function loadGLB(GLTFLoader, src) {
     if (!cache.has(src)) {
-      cache.set(src, new Promise((res, rej) => new GLTFLoader().load(src, (g) => res(g.scene), undefined, rej)));
+      cache.set(src, new Promise((res, rej) => new GLTFLoader().load(src, (g) => res(g.scene), undefined, rej))
+        .catch((err) => { cache.delete(src); throw err; }));
     }
-    return cache.get(src).then((s) => s.clone(true));
+    return cache.get(src).then((s) => {
+      const clone = s.clone(true);
+      clone.traverse((o) => {
+        if (o.isMesh && o.material) {
+          o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone();
+        }
+      });
+      return clone;
+    });
+  }
+  function disposeObject(object, ownedGeometry = true) {
+    if (!object) return;
+    const geometries = new Set(), materials = new Set(), textures = new Set();
+    object.traverse((o) => {
+      if (ownedGeometry && o.geometry) geometries.add(o.geometry);
+      for (const m of Array.isArray(o.material) ? o.material : o.material ? [o.material] : []) {
+        materials.add(m);
+        // Marker canvas textures are owned here; a model's textures and
+        // geometry still belong to the shared GLB cache.
+        if (ownedGeometry && m.map) textures.add(m.map);
+      }
+    });
+    for (const t of textures) t.dispose();
+    for (const g of geometries) g.dispose();
+    for (const m of materials) m.dispose();
   }
   const nums = (s) => (s || '').split(',').filter(Boolean).map(Number);
   const norm = (s) => (s || '').replace(/[^a-z0-9]+/gi, ' ').trim().toLowerCase();
@@ -77,7 +102,13 @@
       this._teardown = setTimeout(() => {
         this._teardown = null;
         this._stopped = true;
+        this._ready = false;
+        this._token = Symbol();
+        cancelAnimationFrame(this._animation);
         if (this._ro) this._ro.disconnect();
+        if (this._three) this._three.controls.dispose();
+        for (const k of ['_model', '_marks', '_path']) { disposeObject(this[k], k !== '_model'); this[k] = null; }
+        this._room = null;
         if (this._renderer) this._renderer.dispose();
       }, 0);
     }
@@ -141,7 +172,7 @@
         controls.update();
         this.keepInside();
         renderer.render(scene, camera);
-        requestAnimationFrame(tick);
+        this._animation = requestAnimationFrame(tick);
       };
       tick();
       this.refresh();
@@ -165,13 +196,13 @@
       if (!src) return;
       const token = (this._token = Symbol());
       for (const k of ['_model', '_marks', '_path']) {
-        if (this[k]) { scene.remove(this[k]); this[k] = null; }
+        if (this[k]) { scene.remove(this[k]); disposeObject(this[k], k !== '_model'); this[k] = null; }
       }
       this._room = null;
       let model;
       try { model = await loadGLB(this._L.GLTFLoader, src); }
       catch { this._msg.textContent = 'Could not load floor model'; return; }
-      if (token !== this._token || this._stopped) return;
+      if (token !== this._token || this._stopped) { disposeObject(model, false); return; }
       this._msg.remove();
 
       model.traverse((o) => {
@@ -194,7 +225,7 @@
         roomNode.traverse((o) => {
           if (!o.isMesh || !o.material) return;
           const mats = (Array.isArray(o.material) ? o.material : [o.material]).map((m) => {
-            const c = m.clone();
+            const c = m; // loadGLB already gave this view its own material
             if (c.color) c.color.setHex(0xe8ece9);
             if (c.emissive) c.emissive.setHex(0x000000);
             c.transparent = true; c.opacity = 0.95;
@@ -369,8 +400,8 @@
     layoutMarkers() {
       const { THREE } = this._L;
       const { scene } = this._three;
-      if (this._marks) { scene.remove(this._marks); this._marks = null; }
-      if (this._path) { scene.remove(this._path); this._path = null; }
+      if (this._marks) { scene.remove(this._marks); disposeObject(this._marks); this._marks = null; }
+      if (this._path) { scene.remove(this._path); disposeObject(this._path); this._path = null; }
       this._focus = null;
       this._pickables = [];
 

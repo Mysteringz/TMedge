@@ -39,7 +39,7 @@ function save(key: string, value: number): void {
 
 /** A size the user can drag, remembered across visits. */
 export function usePaneSize(key: string, initial: number, limits: PaneLimits) {
-  const [size, setSize] = useState(() => load(key, initial));
+  const [size, setSize] = useState(() => Math.min(limits.max, Math.max(limits.min, load(key, initial))));
   const clamp = useCallback((v: number) => Math.min(limits.max, Math.max(limits.min, v)), [limits.min, limits.max]);
 
   const reset = useCallback(() => {
