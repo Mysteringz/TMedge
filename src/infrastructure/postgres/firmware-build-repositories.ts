@@ -3,10 +3,7 @@ import type { DataSource } from 'typeorm';
 import type { Actor } from '../../modules/shared/application/contracts.js';
 import type { FirmwareBuildJobRecord, FirmwareBuildJobRepository } from '../../modules/firmware/repositories/firmware-build-job-repository.js';
 import type { FirmwareArtifact, FirmwareArtifactContentStorage, FirmwareArtifactRepository } from '../../modules/firmware/repositories/firmware-repository.js';
-
-const MAX_LOG_LINES = 400;
-const MAX_LOG_LINE_CHARS = 4096;
-const MAX_LOG_BYTES = 128 * 1024;
+import { boundedFirmwareBuildLog } from '../../modules/firmware/domain/firmware-build-log.js';
 
 interface ArtifactRow { id: string; sha256: string; size: string | number; version: string }
 interface JobRow {
@@ -137,9 +134,7 @@ function jobValues(job: FirmwareBuildJobRecord): unknown[] {
 }
 
 function normalizeJob(job: FirmwareBuildJobRecord): FirmwareBuildJobRecord {
-  const log = job.log.slice(-MAX_LOG_LINES).map((line) => line.slice(-MAX_LOG_LINE_CHARS));
-  while (log.length > 0 && Buffer.byteLength(JSON.stringify(log)) > MAX_LOG_BYTES) log.shift();
-  return { ...job, log };
+  return { ...job, log: boundedFirmwareBuildLog(job.log) };
 }
 
 function validateArtifact(artifact: FirmwareArtifact): void {

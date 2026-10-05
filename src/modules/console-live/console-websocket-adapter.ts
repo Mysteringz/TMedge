@@ -28,7 +28,7 @@ export class ConsoleWebSocketAdapter {
     this.handleUpgrade(request, socket, head);
   };
   private readonly onReport = (uid: string, detections: ConsoleDetection[], at: number): void => {
-    this.broadcast({ type: 'report', uid, at, detections });
+    this.broadcast({ type: 'report', uid, at, dets: detections });
   };
   private readonly onRaw = (frame: RawFrameMessage): void => {
     this.broadcast({ type: 'raw', ...frame }, (client) => this.subscriptions.get(client)?.has(frame.uid) ?? false);

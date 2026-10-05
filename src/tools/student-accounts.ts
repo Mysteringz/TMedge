@@ -9,18 +9,19 @@ import { StudentAccountImportExport } from '../modules/student-auth/application/
 import { ApplicationError } from '../modules/shared/application/contracts.js';
 
 interface CliOptions {
-  command: 'import' | 'export' | 'activity' | 'prune';
+  command: 'import' | 'export' | 'activity' | 'summary' | 'prune';
   path?: string;
   apply: boolean;
   limit: number;
   days: number;
+  userId?: string;
 }
 
-const USAGE = 'Usage: student-accounts import <path> [--apply] | export <new-path> | activity [--limit 1..1000] | prune [--days N] [--apply]';
+const USAGE = 'Usage: student-accounts import <path> [--apply] | export <new-path> | activity [--limit 1..1000] [--user-id UUID] | summary [--limit 1..1000] | prune [--days N] [--apply]';
 
 function parseOptions(args: string[]): CliOptions {
   const command = args.shift();
-  if (command !== 'import' && command !== 'export' && command !== 'activity' && command !== 'prune') throw usage();
+  if (command !== 'import' && command !== 'export' && command !== 'activity' && command !== 'summary' && command !== 'prune') throw usage();
   const options: CliOptions = { command, apply: false, limit: 100, days: 90 };
   if (command === 'import' || command === 'export') {
     const path = args.shift();
@@ -35,7 +36,12 @@ function parseFlags(args: string[], options: CliOptions): void {
   while (args.length) {
     const flag = args.shift();
     if (flag === '--apply' && (options.command === 'import' || options.command === 'prune')) options.apply = true;
-    else if (flag === '--limit' && options.command === 'activity') options.limit = positiveInteger(args.shift(), 1000);
+    else if (flag === '--limit' && (options.command === 'activity' || options.command === 'summary')) options.limit = positiveInteger(args.shift(), 1000);
+    else if (flag === '--user-id' && options.command === 'activity') {
+      const userId = args.shift();
+      if (!userId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) throw usage();
+      options.userId = userId;
+    }
     else if (flag === '--days' && options.command === 'prune') options.days = positiveInteger(args.shift(), 36500);
     else throw usage();
   }
@@ -61,7 +67,8 @@ async function run(options: CliOptions, source: DataSource): Promise<unknown> {
     return transfer.import(value, { dryRun: !options.apply });
   }
   if (options.command === 'export') return exportFile(options.path, transfer);
-  if (options.command === 'activity') return { events: await activity.list(options.limit) };
+  if (options.command === 'activity') return { events: await activity.list(options.limit, options.userId) };
+  if (options.command === 'summary') return { students: await activity.summary(options.limit) };
   const before = Date.now() - options.days * 24 * 3600 * 1000;
   return { dryRun: !options.apply, days: options.days,
     count: options.apply ? await activity.prune(before) : await activity.countBefore(before) };

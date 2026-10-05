@@ -16,6 +16,8 @@ import type { StudentActivityLog } from '../modules/student-auth/application/stu
 import { studentHttpErrorHandler } from '../infrastructure/web/student-http-errors.js';
 import { loadPostgresConnectionConfig, type PostgresConnectionConfig } from '../infrastructure/postgres/config.js';
 import { openStudentPostgresStorage } from '../infrastructure/web/student-postgres-storage.js';
+import { StudentUsageActivity } from '../modules/student-auth/application/student-usage-activity.js';
+import { createStudentUsageRouter } from '../modules/student-auth/routes/student-usage-router.js';
 
 export { asEmail } from '../modules/student-auth/routes/student-auth-router.js';
 
@@ -85,6 +87,7 @@ export function createWebApp(cfg: WebConfig, options: {
     activity: options.activity,
   };
   const requireStudent = createRequireStudent(authDependencies);
+  const usage = new StudentUsageActivity(() => store.view(), options.activity);
   const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8').replaceAll('{{v}}', assetVersion());
   const app = createExpressApp(cfg);
   app.use((_req, res, next) => {
@@ -107,7 +110,8 @@ export function createWebApp(cfg: WebConfig, options: {
   app.get('/', (req, res) => redirectBySession(req, res, sessions, noStore));
   app.get(['/login', '/login/', '/signup', '/signup/'], (req, res) => sendAuthPage(req, res, sessions, cfg.signupOpen, noStore, appPage));
   app.use(createStudentAuthRouter(authDependencies));
-  app.use(createOccupancyRouter({ store, pushToken: cfg.pushToken, requireStudent, onSnapshot: () => sockets.broadcast() }));
+  app.use(createOccupancyRouter({ store, pushToken: cfg.pushToken, requireStudent, usage, onSnapshot: () => sockets.broadcast() }));
+  app.use(createStudentUsageRouter({ requireStudent, usage }));
   app.use(createStudentPageRouter({ requireStudent, noStore, appPage }));
   app.use(createStaticAssetRouter());
   app.use(studentHttpErrorHandler(options.activity));

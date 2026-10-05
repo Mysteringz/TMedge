@@ -34,6 +34,7 @@ import { PostgresOccupancyHistoryRepository } from '../src/infrastructure/postgr
 import type { OccupancyHistoryRecord } from '../src/modules/occupancy-history/repositories/occupancy-history-repository.js';
 import { createEdgeApplication } from '../src/edge/composition-root.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
+import { assertPostgresBuildLogBoundary } from './postgres-build-log-regression.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -90,6 +91,7 @@ test('registration schema and provisioning repository enforce persistence invari
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
     assert.equal(appliedMigrations, 6, 'foundation, registration, build, rollout, command, and occupancy migrations all run');
+    await assertPostgresBuildLogBoundary(runtime);
     assert.equal(
       (await migrator.query("SELECT to_regclass('public.tmedge_foundation_probe') AS table_name"))[0].table_name,
       'tmedge_foundation_probe',
@@ -936,7 +938,8 @@ async function exercisePostgresEdgeCutover(
     databaseStopped = true;
     await waitForAcceptedPacketDuringOutage(base, live, uid);
     const rejectedWhileDown = await decideNode(base, outagePending.id, 'approve');
-    assert.equal(rejectedWhileDown.status, 409, 'durable approval is rejected while PostgreSQL is unavailable');
+    assert.equal(rejectedWhileDown.status, 503, 'durable approval reports PostgreSQL unavailability');
+    assert.deepEqual(await rejectedWhileDown.json(), { error: 'provisioning storage is unavailable' });
     assert.equal(live.child.exitCode, null, 'the edge process remains running during database outage');
     const liveUids = await readLiveNodeUids(base);
     assert.ok(liveUids.includes(uid), 'the last committed identity remains active during outage');
@@ -965,7 +968,7 @@ async function exercisePostgresEdgeCutover(
       }
     }
     for (const edge of [failed, live, restarted]) {
-      if (edge && edge.child.exitCode === null) {
+      if (edge && !hasExited(edge.child)) {
         try { await stopChild(edge.child); }
         catch (error) { cleanupFailure ??= error; }
       }
@@ -1114,15 +1117,19 @@ async function launchPostgresEdge(
 async function waitForOutput(edge: EdgeProcess, pattern: RegExp, timeoutMs: number): Promise<string> {
   const started = Date.now();
   while (!pattern.test(edge.state.output)) {
-    if (edge.child.exitCode !== null) throw new Error(`edge exited before readiness: ${edge.state.output}`);
+    if (hasExited(edge.child)) throw new Error(`edge exited before readiness: ${edge.state.output}`);
     if (Date.now() - started > timeoutMs) throw new Error(`edge did not become ready: ${edge.state.output}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   return edge.state.output;
 }
 
+function hasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
 async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (hasExited(child)) return;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('edge process did not exit')), timeoutMs);
     child.once('exit', () => { clearTimeout(timer); resolve(); });
@@ -1130,10 +1137,16 @@ async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (hasExited(child)) return;
   child.kill('SIGTERM');
   await waitForExit(child, 15_000);
-  assert.equal(child.exitCode, 0, 'edge exits cleanly after SIGTERM');
+  if (process.platform === 'win32') {
+    // Windows force-kills child processes for SIGTERM; this checks stop/recovery,
+    // while exerciseDurableEdgeLifecycle checks graceful in-process shutdown.
+    assert.equal(child.signalCode, 'SIGTERM', 'edge terminates after the Windows stop request');
+  } else {
+    assert.equal(child.exitCode, 0, 'edge exits cleanly after SIGTERM');
+  }
 }
 
 async function freeTcpPort(): Promise<number> {

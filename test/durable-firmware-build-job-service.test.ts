@@ -28,7 +28,8 @@ test('a build is durably accepted before its worker starts', async () => {
     assert.equal(await service.start('upload-1', actor), true);
     await service.whenIdle();
     assert.deepEqual(events, ['accepted', 'running', 'worker', 'artifact', 'succeeded', 'activate']);
-    assert.equal((await service.status() as { lifecycle: string }).lifecycle, 'succeeded');
+    assert.equal(await service.status(), null);
+    assert.equal((await service.operationalStatus()).latestLifecycle, 'succeeded');
   } finally {
     await service.dispose();
   }
@@ -120,7 +121,8 @@ test('a transient progress write failure does not poison progress persistence fo
 
     assert.equal(await service.start('upload-2', actor), true);
     await service.whenIdle();
-    assert.equal((await service.status() as { lifecycle: string }).lifecycle, 'succeeded');
+    assert.equal(await service.status(), null);
+    assert.equal((await service.operationalStatus()).latestLifecycle, 'succeeded');
   } finally {
     await service.dispose();
   }

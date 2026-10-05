@@ -24,7 +24,7 @@ export interface FirmwareBuildWorkerOptions {
 
 /** Streams a source archive to the isolated worker and forwards bounded log events. */
 export class FirmwareBuildWorkerClient implements FirmwareBuildWorker {
-  private readonly requests = new Set<ClientRequest>();
+  private readonly requests = new Map<ClientRequest, (error: Error) => void>();
   private readonly url: URL;
   private readonly timeoutMs: number;
   private readonly endpointConfigured: boolean;
@@ -50,14 +50,21 @@ export class FirmwareBuildWorkerClient implements FirmwareBuildWorker {
       maxFileBytes: this.options.maxFileBytes ?? 8 * 1024 * 1024,
       maxTotalBytes: this.options.maxTotalBytes ?? 64 * 1024 * 1024,
     });
-    if (this.disposed) throw new Error('firmware build worker client is closed');
+    if (this.disposed) {
+      archive.stream.destroy();
+      throw new Error('firmware build worker client is closed');
+    }
     return this.postArchive(archive.stream, archive.contentLength, reportProgress);
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
     const active = [...this.requests];
-    await Promise.all(active.map((request) => closeRequest(request)));
+    await Promise.all(active.map(async ([request, finish]) => {
+      const closed = waitForRequestClose(request);
+      finish(new Error('firmware build worker is shutting down'));
+      await closed;
+    }));
   }
 
   private postArchive(archive: Readable, contentLength: number, reportProgress: (line: string) => void): Promise<WorkerBuildResult> {
@@ -67,26 +74,34 @@ export class FirmwareBuildWorkerClient implements FirmwareBuildWorker {
         method: 'POST',
         headers: { 'content-type': 'application/x-tar', accept: 'application/x-ndjson', 'content-length': String(contentLength) },
       });
-      this.requests.add(request);
       let settled = false;
       let response: IncomingMessage | null = null;
       let buffer = '';
       let result: WorkerBuildResult | null = null;
       const log: string[] = [];
-      const timeout = setTimeout(() => request.destroy(new Error('firmware build worker timed out')), this.timeoutMs);
-      timeout.unref();
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         this.requests.delete(request);
+        archive.unpipe(request);
+        archive.destroy();
         response?.destroy();
+        request.destroy();
         if (error) reject(error);
         else if (result) resolve(result);
         else reject(new Error('firmware build worker returned no result'));
       };
+      const timeout = setTimeout(() => finish(new Error('firmware build worker timed out')), this.timeoutMs);
+      timeout.unref();
+      this.requests.set(request, finish);
       request.once('response', (incoming) => {
         response = incoming;
+        incoming.once('error', (error) => finish(error));
+        incoming.once('aborted', () => finish(new Error('firmware worker response was aborted')));
+        incoming.once('close', () => {
+          if (!incoming.complete) finish(new Error('firmware worker response closed before completion'));
+        });
         if (incoming.statusCode !== 200) {
           const details: Buffer[] = [];
           incoming.on('data', (chunk: Buffer) => details.push(chunk));
@@ -94,19 +109,26 @@ export class FirmwareBuildWorkerClient implements FirmwareBuildWorker {
           return;
         }
         incoming.on('data', (chunk: Buffer) => {
+          if (settled) return;
           buffer += chunk.toString('utf8');
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
-          for (const line of lines) consumeEvent(line, log, reportProgress, (value) => { result = value; }, finish);
+          for (const line of lines) {
+            if (settled) break;
+            consumeEvent(line, log, reportProgress, (value) => { result = value; }, finish);
+          }
         });
         incoming.once('end', () => {
+          if (settled) return;
           if (buffer.trim()) consumeEvent(buffer, log, reportProgress, (value) => { result = value; }, finish);
           finish();
         });
       });
       request.once('error', (error) => finish(error));
-      request.once('close', () => this.requests.delete(request));
-      archive.once('error', (error) => request.destroy(error));
+      request.once('close', () => {
+        if (!response) finish(new Error('firmware worker request closed before a response'));
+      });
+      archive.once('error', (error) => finish(error));
       archive.pipe(request);
     });
   }
@@ -136,8 +158,8 @@ function consumeEvent(
   }
 }
 
-function closeRequest(request: ClientRequest): Promise<void> {
-  if (request.destroyed) return Promise.resolve();
+function waitForRequestClose(request: ClientRequest): Promise<void> {
+  if (request.closed) return Promise.resolve();
   return new Promise((resolve) => {
     const timeout = setTimeout(resolve, 2000);
     timeout.unref();
@@ -145,6 +167,5 @@ function closeRequest(request: ClientRequest): Promise<void> {
       clearTimeout(timeout);
       resolve();
     });
-    request.destroy(new Error('firmware build worker is shutting down'));
   });
 }

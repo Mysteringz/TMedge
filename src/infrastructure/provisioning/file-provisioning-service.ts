@@ -1,4 +1,5 @@
 import { Provisioning, type JoinRequest } from '../../edge/provisioning.js';
+import { ApplicationError } from '../../modules/shared/application/contracts.js';
 import type { JoinRequestResult, JoinRequestView, ProvisionedNodeView, ProvisioningService } from '../../modules/provisioning/application/provisioning-service.js';
 
 /** Adapts the current JSON-backed provisioning workflow to its async port. */
@@ -29,8 +30,13 @@ export class FileProvisioningService implements ProvisioningService {
   }
 
   async approve(id: string, actor: string): Promise<ProvisionedNodeView> {
-    const node = this.provisioning.approve(id, actor);
-    return { uid: node.uid, label: node.label, floorId: null, pose: null, owns: [], rgb: false };
+    try {
+      const node = this.provisioning.approve(id, actor);
+      return { uid: node.uid, label: node.label, floorId: null, pose: null, owns: [], rgb: false };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      throw new ApplicationError('unavailable', 'provisioning storage is unavailable');
+    }
   }
 
   async deny(id: string, actor: string): Promise<JoinRequestView> {

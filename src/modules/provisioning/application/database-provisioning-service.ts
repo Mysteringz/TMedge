@@ -81,25 +81,33 @@ export class DatabaseProvisioningService implements ProvisioningService {
       if (concurrentRequest && concurrentRequest.expiresAt > this.now()) {
         return { status: 'pending', request: toView(concurrentRequest) };
       }
-      throw error;
+      throw provisioningError(error);
     }
   }
 
   async statusOf(uid: string): Promise<'registered' | 'pending' | 'unknown'> {
-    const normalized = uid.toLowerCase();
-    if (await this.repository.findNode(normalized)) return 'registered';
-    const request = await this.repository.findRequestByNodeUid(normalized);
-    if (!request) return 'unknown';
-    if (request.expiresAt <= this.now()) {
-      await this.repository.transaction((tx) => expirePending(tx, this.now()));
-      return 'unknown';
+    try {
+      const normalized = uid.toLowerCase();
+      if (await this.repository.findNode(normalized)) return 'registered';
+      const request = await this.repository.findRequestByNodeUid(normalized);
+      if (!request) return 'unknown';
+      if (request.expiresAt <= this.now()) {
+        await this.repository.transaction((tx) => expirePending(tx, this.now()));
+        return 'unknown';
+      }
+      return 'pending';
+    } catch (error) {
+      throw provisioningError(error);
     }
-    return 'pending';
   }
 
   async requests(): Promise<JoinRequestView[]> {
-    await this.repository.transaction((tx) => expirePending(tx, this.now()));
-    return (await this.repository.listPendingRequests()).map(toView);
+    try {
+      await this.repository.transaction((tx) => expirePending(tx, this.now()));
+      return (await this.repository.listPendingRequests()).map(toView);
+    } catch (error) {
+      throw provisioningError(error);
+    }
   }
 
   async approve(id: string, actor: string): Promise<ProvisionedNodeView> {
@@ -138,14 +146,14 @@ export class DatabaseProvisioningService implements ProvisioningService {
     } catch (error) {
       if (error instanceof ApplicationError) throw error;
       const reconciled = targetUid ? await this.repository.reconcile(id, targetUid).catch(() => null) : null;
-      if (!reconciled || reconciled.status !== 'approved') throw error;
+      if (!reconciled || reconciled.status !== 'approved') throw provisioningError(error);
       node = reconciled.node;
     }
     try {
       this.activate(node);
     } catch (error) {
       const reconciled = await this.repository.reconcile(id, node.uid).catch(() => null);
-      if (!reconciled || reconciled.status !== 'approved' || reconciled.node.label !== node.label) throw error;
+      if (!reconciled || reconciled.status !== 'approved' || reconciled.node.label !== node.label) throw provisioningError(error);
       try {
         this.activate(reconciled.node);
       } catch {
@@ -180,7 +188,7 @@ export class DatabaseProvisioningService implements ProvisioningService {
     } catch (error) {
       if (error instanceof ApplicationError) throw error;
       const reconciled = await this.repository.findRequest(id).catch(() => null);
-      if (reconciled?.status !== 'denied') throw error;
+      if (reconciled?.status !== 'denied') throw provisioningError(error);
       result = toView(reconciled);
     }
     return result;
@@ -200,6 +208,12 @@ export class DatabaseProvisioningService implements ProvisioningService {
     };
     this.registry.nodes.set(definition.uid, definition);
   }
+}
+
+function provisioningError(error: unknown): ApplicationError {
+  return error instanceof ApplicationError
+    ? error
+    : new ApplicationError('unavailable', 'provisioning storage is unavailable');
 }
 
 async function expirePending(tx: ProvisioningTransaction, at: number): Promise<void> {

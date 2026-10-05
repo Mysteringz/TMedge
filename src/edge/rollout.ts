@@ -117,7 +117,8 @@ export class Rollouts {
   /** Gateways that have taken delivery of the image being rolled out. */
   private readonly gatewaysReady = new Map<string, { port: number; at: number }>();
   private readonly gatewaysAsked = new Map<string, number>();
-  private readonly launching = new Set<string>();
+  private readonly launching = new Set<NodeUpdate>();
+  private readonly awaitingDispatch = new Set<NodeUpdate>();
   private beforeDispatch: (() => Promise<void>) | undefined;
 
   constructor(private readonly deps: RolloutDeps, timings: Partial<RolloutTimings> = {}) {
@@ -131,6 +132,11 @@ export class Rollouts {
   }
 
   current(): RolloutView | null { return this.active; }
+
+  /** Nodes whose OTA has not been dispatched yet; capture before an action may roll back. */
+  pendingDispatchUids(): readonly string[] {
+    return this.active?.nodes.filter((node) => this.awaitingDispatch.has(node)).map((node) => node.uid) ?? [];
+  }
 
   /**
    * Whether `uid` may fetch `buildId` right now: an active rollout of that
@@ -153,6 +159,7 @@ export class Rollouts {
     this.gatewaysReady.clear();
     this.gatewaysAsked.clear();
     this.launching.clear();
+    this.awaitingDispatch.clear();
   }
 
   /** Which nodes a target picks, in the order they would be updated. */
@@ -207,7 +214,9 @@ export class Rollouts {
   /** Stop a rollout; nodes already flashing finish on their own. */
   cancel(by: string): void {
     if (!this.active || this.active.stage === 'done' || this.active.stage === 'stopped') return;
-    for (const n of this.active.nodes) if (n.state === 'queued') this.set(n, 'skipped', 'cancelled');
+    for (const n of this.active.nodes) {
+      if (n.state === 'queued' || this.awaitingDispatch.has(n)) this.set(n, 'skipped', 'cancelled');
+    }
     this.active.stage = 'stopped';
     this.active.note = `cancelled by ${by}`;
     this.finish();
@@ -319,23 +328,22 @@ export class Rollouts {
   // --- internals ------------------------------------------------------------
 
   private begin(node: NodeUpdate): void {
-    if (this.launching.has(node.uid)) return;
-    this.launching.add(node.uid);
-    const task = this.beginOnce(node);
-    if (this.beforeDispatch) void task.finally(() => this.launching.delete(node.uid));
-    else this.launching.delete(node.uid);
+    const rollout = this.active;
+    if (!rollout || !this.canDispatch(rollout, node, 'queued') || this.launching.has(node)) return;
+    this.launching.add(node);
+    const task = this.beginOnce(rollout, node);
+    if (this.beforeDispatch) void task.finally(() => this.launching.delete(node));
+    else this.launching.delete(node);
   }
 
-  private async beginOnce(node: NodeUpdate): Promise<void> {
-    const r = this.active;
-    if (!r) return;
+  private async beginOnce(r: RolloutView, node: NodeUpdate): Promise<void> {
     const image = this.deps.image(r.buildId);
     if (!image) {
       this.set(node, 'failed', 'the image is gone from this edge');
       return;
     }
     if (node.transport === 'direct') {
-      await this.request(node, 443, image);
+      await this.request(r, node, { port: 443, ...image });
       return;
     }
     // A node behind a gateway downloads from that gateway, so the image has
@@ -349,39 +357,56 @@ export class Rollouts {
           try {
             if (this.beforeDispatch) await this.beforeDispatch();
           } catch {
-            this.gatewaysAsked.delete(node.gatewayId);
+            if (this.canDispatch(r, node, 'queued')) this.gatewaysAsked.delete(node.gatewayId);
             return;
           }
+          if (!this.canDispatch(r, node, 'queued')) return;
           const sent = this.deps.sendImageToGateway(node.gatewayId, { id: r.buildId, size: image.size, sha256: image.sha256 }, image.bytes);
-          if (!sent) this.set(node, 'failed', `gateway ${node.gatewayId} is not connected`);
+          if (!sent && this.canDispatch(r, node, 'queued')) this.set(node, 'failed', `gateway ${node.gatewayId} is not connected`);
         } else if (this.now() - asked > this.timings.imageMs) {
           this.set(node, 'failed', `gateway ${node.gatewayId} never took the image`);
         }
         return;   // try again on the next tick
       }
-      await this.request(node, ready.port, image);
+      await this.request(r, node, { port: ready.port, ...image });
       return;
     }
-    await this.request(node, this.deps.directPort, image);
+    await this.request(r, node, { port: this.deps.directPort, ...image });
   }
 
-  private async request(node: NodeUpdate, port: number, image: { sha256: string; size: number }): Promise<void> {
-    const r = this.active;
-    if (!r) return;
+  private async request(r: RolloutView, node: NodeUpdate, image: { port: number; sha256: string; size: number }): Promise<void> {
+    if (!this.canDispatch(r, node, 'queued')) return;
     this.set(node, 'sending');
     node.startedAt = this.now();
+    this.awaitingDispatch.add(node);
     try {
       if (this.beforeDispatch) await this.beforeDispatch();
     } catch {
-      node.state = 'queued';
-      node.startedAt = null;
+      if (this.canDispatch(r, node, 'sending')) {
+        node.state = 'queued';
+        node.startedAt = null;
+      }
       return;
+    } finally {
+      this.awaitingDispatch.delete(node);
     }
-    await this.deps.sendOta(node.uid, { port, size: image.size, sha256: image.sha256, path: `/fw/${r.buildId}.bin` })
-      .catch((err: unknown) => {
+    if (!this.canDispatch(r, node, 'sending')) return;
+    try {
+      await this.deps.sendOta(node.uid, { port: image.port, size: image.size, sha256: image.sha256, path: `/fw/${r.buildId}.bin` });
+    } catch (err: unknown) {
+      if (this.isCurrentNode(r, node) && !TERMINAL.includes(node.state)) {
         this.set(node, 'failed', err instanceof Error ? err.message : String(err));
         this.tick();
-      });
+      }
+    }
+  }
+
+  private canDispatch(rollout: RolloutView, node: NodeUpdate, state: NodeUpdateState): boolean {
+    return this.isCurrentNode(rollout, node) && node.state === state;
+  }
+
+  private isCurrentNode(rollout: RolloutView, node: NodeUpdate): boolean {
+    return this.active === rollout && rollout.stage !== 'done' && rollout.stage !== 'stopped' && rollout.nodes.includes(node);
   }
 
   private set(node: NodeUpdate, state: NodeUpdateState, error?: string, percent?: number): void {

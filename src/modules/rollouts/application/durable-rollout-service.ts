@@ -6,6 +6,12 @@ import type { RolloutView } from '../../../edge/rollout.js';
 import { Rollouts } from '../../../edge/rollout.js';
 import { operationalLog } from '../../../shared/logging/operational-logger.js';
 
+interface RolloutSnapshot {
+  current: RolloutView | null;
+  history: RolloutView[];
+  pendingDispatchUids: readonly string[];
+}
+
 /** Serializes operator actions and commits the snapshot before rollout dispatch. */
 export class DurableRolloutService implements RolloutService {
   private initialized = false;
@@ -130,15 +136,24 @@ export class DurableRolloutService implements RolloutService {
     return next;
   }
 
-  private viewSnapshot(): { current: RolloutView | null; history: RolloutView[] } {
+  private viewSnapshot(): RolloutSnapshot {
     const current = this.state.current();
     return {
       current: current ? cloneView(current) : null,
       history: this.state.history().map(cloneView).reverse(),
+      pendingDispatchUids: this.state.pendingDispatchUids(),
     };
   }
 
-  private restore(snapshot: { current: RolloutView | null; history: RolloutView[] }): void {
+  private restore(snapshot: RolloutSnapshot): void {
+    // The dispatch gate invalidates old continuations after restoration. Only
+    // requests known not to have left the edge can safely be queued again.
+    for (const node of snapshot.current?.nodes ?? []) {
+      if (node.state === 'sending' && snapshot.pendingDispatchUids.includes(node.uid)) {
+        node.state = 'queued';
+        node.startedAt = null;
+      }
+    }
     this.state.restore(snapshot.current, snapshot.history);
   }
 

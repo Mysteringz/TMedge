@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { StudentActivityAction, StudentActivityEvent, StudentActivityOutcome, StudentActivityRepository } from '../repositories/student-activity-repository.js';
 import { operationalLog } from '../../../shared/logging/operational-logger.js';
+import type { StudentActivityDetails } from '../../../shared/student-activity.js';
+import { sanitizeStudentActivityDetails } from '../domain/student-activity-details.js';
 
 const DAY_MS = 86_400_000;
 type PendingWrite = { event: StudentActivityEvent } | { pruneBefore: number };
 
-/** Bounded best-effort security activity; account/session success never depends on this sink. */
+/** Bounded best-effort auth and usage activity; student actions never depend on this sink. */
 export class StudentActivityLog {
   private readonly pending: PendingWrite[] = [];
   private draining: Promise<void> | null = null;
@@ -32,9 +34,10 @@ export class StudentActivityLog {
     this.timer.unref();
   }
 
-  record(action: StudentActivityAction, outcome: StudentActivityOutcome, userId: string | null, requestId: string): boolean {
+  record(action: StudentActivityAction, outcome: StudentActivityOutcome, userId: string | null, requestId: string, details?: StudentActivityDetails): boolean {
     return this.enqueue({ event: {
       id: randomUUID(), userId, action, outcome, requestId, occurredAt: this.now(),
+      ...(details ? { details: sanitizeStudentActivityDetails(details) } : {}),
     } });
   }
 

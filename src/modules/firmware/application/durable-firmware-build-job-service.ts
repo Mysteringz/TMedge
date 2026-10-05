@@ -1,12 +1,12 @@
 import type { Actor } from '../../shared/application/contracts.js';
+import { ApplicationError } from '../../shared/application/contracts.js';
 import type { FirmwareBuildExecutor } from './firmware-build-executor.js';
 import type { FirmwareBuildJobService } from './firmware-build-job-service.js';
 import type { FirmwareBuildJobRecord, FirmwareBuildJobRepository } from '../repositories/firmware-build-job-repository.js';
 import type { FirmwareArtifactRepository } from '../repositories/firmware-repository.js';
 import { operationalLog } from '../../../shared/logging/operational-logger.js';
+import { boundedFirmwareBuildLog } from '../domain/firmware-build-log.js';
 
-const MAX_LOG_LINES = 400;
-const MAX_LOG_LINE_CHARS = 4096;
 const PROGRESS_PERSIST_INTERVAL_MS = 1000;
 
 export interface DurableFirmwareBuildJobOptions {
@@ -46,42 +46,65 @@ export class DurableFirmwareBuildJobService implements FirmwareBuildJobService {
   }
 
   async start(uploadId: string, actor: Actor): Promise<boolean> {
-    if (this.disposed) throw new Error('firmware build service is stopping');
+    this.requireAvailable();
     if (this.activeId !== null) return false;
     const startedAt = this.now();
     const id = `build-${startedAt.toString(36)}-${++this.sequence}`;
     const accepted: FirmwareBuildJobRecord = {
       id, uploadId, actor, lifecycle: 'accepted', startedAt, finishedAt: null, artifact: null, log: [], error: null,
     };
+    // Reserve synchronously: other requests can arrive while acceptance is committing.
+    this.activeId = id;
+    this.progressWrite = Promise.resolve();
+    this.hasPendingProgress = false;
+    try {
+      await this.accept(accepted);
+    } catch (error) {
+      this.activeId = null;
+      throw error;
+    }
+    this.requireAvailable();
+    const running = await this.markRunning(accepted);
+    this.requireAvailable();
+    this.execution = this.execute(running);
+    return true;
+  }
+
+  private async accept(accepted: FirmwareBuildJobRecord): Promise<void> {
     try {
       await this.options.repository.create(accepted);
     } catch (error) {
       // A dropped commit acknowledgement is reconciled by the stable job ID.
-      const committed = await this.options.repository.get(id).catch(() => null);
+      const committed = await this.options.repository.get(accepted.id).catch(() => null);
       if (!committed || !sameIntent(committed, accepted)) throw error;
     }
     this.latest = accepted;
-    operationalLog('firmware_build.intent_committed', { component: 'firmware-build', operationId: id, actorId: actor.id, lifecycle: 'accepted' });
-    this.activeId = id;
+    operationalLog('firmware_build.intent_committed', { component: 'firmware-build', operationId: accepted.id, actorId: accepted.actor.id, lifecycle: 'accepted' });
+  }
+
+  private requireAvailable(): void {
+    if (this.disposed) throw new ApplicationError('unavailable', 'firmware build service is stopping');
+  }
+
+  private async markRunning(accepted: FirmwareBuildJobRecord): Promise<FirmwareBuildJobRecord> {
     const running = { ...accepted, lifecycle: 'running' as const };
     try {
       await this.options.repository.save(running);
       this.latest = running;
     } catch (error) {
-      const committed = await this.options.repository.get(id).catch(() => null);
+      const committed = await this.options.repository.get(accepted.id).catch(() => null);
       if (committed?.lifecycle === 'running' && sameIntent(committed, accepted)) this.latest = committed;
       else {
         // Keep the slot reserved. A later explicit process recovery will mark this row interrupted.
         throw error;
       }
     }
-    this.execution = this.execute(running);
-    return true;
+    return running;
   }
 
   async status(): Promise<unknown> {
     const record = this.latest ?? (await this.options.repository.list())[0] ?? null;
-    if (!record) return null;
+    if (!record || record.lifecycle === 'succeeded') return null;
     return {
       id: record.id,
       startedAt: record.startedAt,
@@ -128,7 +151,7 @@ export class DurableFirmwareBuildJobService implements FirmwareBuildJobService {
       await this.options.artifacts.save(result.artifact);
       const succeeded: FirmwareBuildJobRecord = {
         ...this.current(started.id), lifecycle: 'succeeded', finishedAt: this.now(),
-        artifact: result.artifact, log: boundedLog([...this.current(started.id).log, ...result.log]), error: null,
+        artifact: result.artifact, log: boundedFirmwareBuildLog([...this.current(started.id).log, ...result.log]), error: null,
       };
       terminalSuccessWriteUncertain = true;
       await this.saveAndReconcile(succeeded);
@@ -147,7 +170,7 @@ export class DurableFirmwareBuildJobService implements FirmwareBuildJobService {
       const current = this.current(started.id);
       const failed: FirmwareBuildJobRecord = {
         ...current, lifecycle: 'failed', finishedAt: this.now(),
-        log: boundedLog([...current.log, ...errorLog(error)]), error: errorText(error),
+        log: boundedFirmwareBuildLog([...current.log, ...errorLog(error)]), error: errorText(error),
       };
       try {
         await this.saveAndReconcile(failed);
@@ -165,12 +188,14 @@ export class DurableFirmwareBuildJobService implements FirmwareBuildJobService {
   private recordProgress(id: string, line: string): void {
     if (this.activeId !== id || this.disposed) return;
     const base = this.current(id);
-    this.latest = { ...base, log: boundedLog([...base.log, line.slice(0, MAX_LOG_LINE_CHARS)]) };
+    this.latest = { ...base, log: boundedFirmwareBuildLog([...base.log, line]) };
     this.hasPendingProgress = true;
     if (this.progressTimer) return;
     this.progressTimer = setTimeout(() => {
       this.progressTimer = null;
-      void this.flushProgress();
+      void this.flushProgress().catch(() => {
+        operationalLog('firmware_build.progress_failed', { component: 'firmware-build', operationId: id, outcome: 'failed' });
+      });
     }, PROGRESS_PERSIST_INTERVAL_MS);
     this.progressTimer.unref();
   }
@@ -201,10 +226,6 @@ export class DurableFirmwareBuildJobService implements FirmwareBuildJobService {
       if (!committed || !sameRecord(committed, record)) throw error;
     }
   }
-}
-
-function boundedLog(lines: readonly string[]): string[] {
-  return lines.slice(-MAX_LOG_LINES).map((line) => line.slice(0, MAX_LOG_LINE_CHARS));
 }
 
 function sameIntent(a: FirmwareBuildJobRecord, b: FirmwareBuildJobRecord): boolean {

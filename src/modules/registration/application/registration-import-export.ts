@@ -71,6 +71,16 @@ export class RegistrationImportExport {
       else if (sameNode(current, node)) unchanged += 1;
       else diagnostics.push({ code: 'database_conflict', uid: node.uid, message: `UID ${node.uid} already exists with different registration data` });
     }
+    if (diagnostics.length === 0) {
+      const merged = new Map(byUid);
+      for (const node of validated) if (!merged.has(node.uid)) merged.set(node.uid, node);
+      try {
+        buildRegistry(siteJson, { nodes: [...merged.values()].map(toJsonNode) });
+      } catch (error) {
+        if (!(error instanceof ConfigError)) throw error;
+        diagnostics.push({ code: 'database_conflict', message: error.message });
+      }
+    }
     const total = parsed?.length ?? 0;
     return { valid: diagnostics.length === 0, total, diagnostics, insertable, unchanged };
   }

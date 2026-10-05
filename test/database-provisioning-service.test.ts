@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildRegistry } from '../src/edge/registry.js';
 import { DatabaseProvisioningService } from '../src/modules/provisioning/application/database-provisioning-service.js';
+import { ApplicationError } from '../src/modules/shared/application/contracts.js';
 import type {
   NodeRegistration, ProvisioningRepository, ProvisioningRequestRecord, ProvisioningResolution, ProvisioningTransaction,
 } from '../src/modules/provisioning/repositories/provisioning-repository.js';
@@ -136,6 +137,40 @@ test('a database outage rejects approval without activating the identity', async
   const request = await service.request({ uid: UID }, '127.0.0.1');
   assert.equal(request.status, 'pending');
   repository.unavailable = true;
-  await assert.rejects(service.approve(request.request.id, 'console'), /database unavailable/);
+  await assert.rejects(service.approve(request.request.id, 'console'), (error: unknown) => {
+    assert.ok(error instanceof ApplicationError);
+    assert.equal(error.kind, 'unavailable');
+    assert.equal(error.message, 'provisioning storage is unavailable');
+    return true;
+  });
   assert.equal(registry.nodes.has(UID), false, 'the live registry stays on its last committed view');
+});
+
+test('database provisioning preserves validation, missing-request, and resolved-request conflict categories', async () => {
+  const { service } = setup();
+  const hasKind = (kind: ApplicationError['kind']) => (error: unknown): boolean => {
+    assert.ok(error instanceof ApplicationError);
+    assert.equal(error.kind, kind);
+    return true;
+  };
+  await assert.rejects(service.request({ uid: 'invalid' }, 'localhost'), hasKind('validation'));
+  await assert.rejects(service.approve('missing', 'console'), hasKind('not-found'));
+  await assert.rejects(service.deny('missing', 'console'), hasKind('not-found'));
+  const pending = await service.request({ uid: UID }, 'localhost');
+  assert.equal(pending.status, 'pending');
+  await service.deny(pending.request.id, 'console');
+  await assert.rejects(service.approve(pending.request.id, 'console'), hasKind('conflict'));
+});
+
+test('request and denial with lost commit acknowledgement still reconcile their durable results', async () => {
+  const { repository, service } = setup();
+  repository.failAfterCommit = true;
+  const pending = await service.request({ uid: UID }, 'localhost');
+  assert.equal(pending.status, 'pending');
+  assert.equal(repository.requestsById.get(pending.request.id)?.status, 'pending');
+  repository.failAfterCommit = true;
+  const denied = await service.deny(pending.request.id, 'console');
+  assert.equal(denied.uid, UID);
+  assert.equal(repository.requestsById.get(pending.request.id)?.status, 'denied');
+  assert.deepEqual(repository.audits.map((event) => event.action), ['request.created', 'request.denied']);
 });

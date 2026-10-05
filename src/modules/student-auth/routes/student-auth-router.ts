@@ -45,7 +45,9 @@ export function createStudentAuthRouter(dependencies: StudentAuthRouterDependenc
 export function createRequireStudent(dependencies: StudentAuthRouterDependencies): RequestHandler {
   return asyncHandler(async (req, res, next) => {
     const detail = dependencies.sessions.detail(parseCookies(req.headers.cookie)[COOKIE]);
-    if (detail && await dependencies.accounts.get(detail.email)) {
+    const user = detail ? await dependencies.accounts.get(detail.email) : undefined;
+    if (detail && user) {
+      res.locals.studentUserId = user.id;
       if (detail.expiresAt - Date.now() < dependencies.sessions.ttl / 2) setSession(req, res, detail.email, dependencies);
       return next();
     }
@@ -140,7 +142,7 @@ function setSession(req: Request, res: Response, email: string, deps: StudentAut
   });
 }
 
-function sameOrigin(req: Request, res: Response, next: NextFunction): void {
+export function sameOrigin(req: Request, res: Response, next: NextFunction): void {
   const origin = req.get('origin');
   let allowed = true;
   try { allowed = !origin || new URL(origin).host === req.get('host'); } catch { allowed = false; }

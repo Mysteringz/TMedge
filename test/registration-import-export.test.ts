@@ -103,6 +103,45 @@ test('repeat import reports changed existing data as a conflict and preserves th
   assert.equal(repository.writes, 1);
 });
 
+test('preview and import reject a fresh UID claiming an existing owner table without writes', async () => {
+  const repository = new MemoryRegistryRepository();
+  const service = new RegistrationImportExport(repository);
+  const committed = nodesJson();
+  assert.equal((await service.import(siteJson(), committed)).valid, true);
+  const incoming = { nodes: [structuredClone(committed.nodes[0]!)] };
+  incoming.nodes[0]!.uid = 'aa:00:00:00:00:99';
+  assert.doesNotThrow(() => buildRegistry(siteJson(), incoming), 'incoming JSON is valid in isolation');
+
+  const before = structuredClone([...repository.nodes.values()]);
+  const preview = await service.preview(siteJson(), incoming);
+  assert.equal(preview.valid, false);
+  assert.ok(preview.diagnostics.some((item) => item.code === 'database_conflict' && /already owned/.test(item.message)));
+  const dryRun = await service.import(siteJson(), incoming, { dryRun: true });
+  const apply = await service.import(siteJson(), incoming);
+  assert.equal(dryRun.inserted, 0);
+  assert.equal(apply.valid, false);
+  assert.equal(apply.inserted, 0);
+  assert.equal(repository.writes, 1, 'only initial committed registrations are written');
+  assert.deepEqual([...repository.nodes.values()], before);
+});
+
+test('merged validation deduplicates an unchanged UID while allowing a fresh unplaced node', async () => {
+  const repository = new MemoryRegistryRepository();
+  const service = new RegistrationImportExport(repository);
+  const committed = nodesJson();
+  await service.import(siteJson(), committed);
+  const incoming = { nodes: [structuredClone(committed.nodes[0]!), { uid: 'aa:00:00:00:00:99', label: 'New unplaced' }] };
+  const preview = await service.preview(siteJson(), incoming);
+  assert.equal(preview.valid, true);
+  assert.equal(preview.unchanged, 1);
+  assert.equal(preview.insertable, 1);
+  assert.deepEqual(preview.diagnostics, []);
+  const result = await service.import(siteJson(), incoming);
+  assert.equal(result.inserted, 1);
+  assert.equal(result.unchanged, 1);
+  assert.equal((await service.loadRegistry(siteJson())).nodes.size, committed.nodes.length + 1);
+});
+
 function registrySummary(registry: Registry): unknown {
   return {
     site: registry.site,
