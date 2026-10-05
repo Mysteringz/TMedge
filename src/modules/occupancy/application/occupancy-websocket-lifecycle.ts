@@ -13,6 +13,7 @@ export class OccupancyWebSocketLifecycle {
   private readonly interval: NodeJS.Timeout;
   private pending: NodeJS.Timeout | null = null;
   private disposed = false;
+  private readonly upgrades = new Set<import('node:stream').Duplex>();
 
   constructor(
     private readonly httpServer: Server,
@@ -42,24 +43,41 @@ export class OccupancyWebSocketLifecycle {
     clearInterval(this.interval);
     if (this.pending) clearTimeout(this.pending);
     this.httpServer.off('upgrade', this.onUpgrade);
+    for (const socket of this.upgrades) socket.destroy();
+    this.upgrades.clear();
     for (const client of this.clients) client.close(1001, 'server stopping');
     this.clients.clear();
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
   private readonly onUpgrade = (request: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): void => {
-    const email = this.sessions.read(parseCookies(request.headers.cookie)[COOKIE]);
-    if (new URL(request.url ?? '/', 'http://x').pathname !== '/ws' || !email || !this.accounts.get(email)) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    this.server.handleUpgrade(request, socket, head, (client) => {
-      this.clients.add(client);
-      client.on('close', () => this.clients.delete(client));
-      client.send(JSON.stringify(this.store.view()));
-    });
+    if (this.disposed || this.upgrades.size >= 100) { socket.destroy(); return; }
+    socket.on('error', () => socket.destroy());
+    this.upgrades.add(socket);
+    void this.authorizeUpgrade(request, socket, head);
   };
+
+  private async authorizeUpgrade(request: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {
+    const timer = setTimeout(() => socket.destroy(), 5000);
+    try {
+      const email = this.sessions.read(parseCookies(request.headers.cookie)[COOKIE]);
+      if (new URL(request.url ?? '/', 'http://x').pathname !== '/ws' || !email || !await this.accounts.get(email)) {
+        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () => socket.destroy());
+        return;
+      }
+      if (this.disposed || socket.destroyed) return;
+      this.server.handleUpgrade(request, socket, head, (client) => {
+        this.clients.add(client);
+        client.on('close', () => this.clients.delete(client));
+        client.send(JSON.stringify(this.store.view()));
+      });
+    } catch {
+      if (!socket.destroyed) socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n', () => socket.destroy());
+    } finally {
+      clearTimeout(timer);
+      this.upgrades.delete(socket);
+    }
+  }
 
   private sendCurrentView(): void {
     const message = JSON.stringify(this.store.view());

@@ -1,9 +1,9 @@
 import type { User } from '../domain/user.js';
 
-/** File-backed account operations used by the student authentication feature. */
+/** Account operations; the PostgreSQL adapter performs asynchronous reads. */
 export interface IStudentAccountRepository {
-  readonly size: number;
-  get(email: string): User | undefined;
+  count(): number | Promise<number>;
+  get(email: string): User | undefined | Promise<User | undefined>;
   create(email: string, name: string, password: string): Promise<User>;
   verify(email: string, password: string): Promise<User | null>;
 }

@@ -1,0 +1,24 @@
+# Persistent local development database; integration tests use postgres-test instead.
+name: tmedge-students-local
+services:
+  postgres-local:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PGDATABASE:-tmedge_local}
+      POSTGRES_USER: tmedge_local_admin
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD:?Set PG_ADMIN_PASSWORD in .env}
+      PG_MIGRATION_PASSWORD: ${PG_MIGRATION_PASSWORD:?Set PG_MIGRATION_PASSWORD in .env}
+      PG_RUNTIME_PASSWORD: ${PG_RUNTIME_PASSWORD:?Set PG_RUNTIME_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${PGPORT:-55433}:5432"
+    volumes:
+      - student-postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-local/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tmedge_local_admin -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+volumes:
+  student-postgres-data:

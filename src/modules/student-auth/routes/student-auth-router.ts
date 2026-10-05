@@ -1,6 +1,10 @@
 import express, { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import type { IStudentAccountRepository } from '../repositories/student-account-repository.js';
 import { AuthError, parseCookies, RateLimiter, Sessions } from '../application/student-session-service.js';
+import { asyncHandler } from '../../../infrastructure/http/errors.js';
+import type { StudentActivityLog } from '../application/student-activity-log.js';
+import type { StudentActivityAction, StudentActivityOutcome } from '../repositories/student-activity-repository.js';
 
 const COOKIE = 'tm_session';
 
@@ -11,6 +15,7 @@ export interface StudentAuthRouterDependencies {
   signupOpen: boolean;
   cookieSecure: boolean;
   noStore(res: Response): void;
+  activity?: StudentActivityLog;
 }
 
 /** Creates the existing student session and account HTTP endpoints. */
@@ -21,30 +26,33 @@ export function createStudentAuthRouter(dependencies: StudentAuthRouterDependenc
   const requireUser = createRequireStudent(dependencies);
   router.post('/login', body, sameOrigin, createLoginHandler(dependencies, limiter));
   router.post('/signup', body, sameOrigin, createSignupHandler(dependencies, limiter));
-  router.post('/logout', body, sameOrigin, (_req: Request, res: Response) => {
+  router.post('/logout', body, sameOrigin, asyncHandler(async (req: Request, res: Response) => {
     res.clearCookie(COOKIE, { path: '/' });
     dependencies.noStore(res);
+    const email = userOf(req, dependencies.sessions);
+    const user = email ? await findActivityUser(dependencies, email) : undefined;
+    recordActivity(dependencies, 'logout', 'succeeded', user?.id);
     res.json({ redirect: '/login/' });
-  });
-  router.get('/api/me', requireUser, (req, res) => {
-    const user = dependencies.accounts.get(userOf(req, dependencies.sessions) ?? '');
+  }));
+  router.get('/api/me', requireUser, asyncHandler(async (req, res) => {
+    const user = await dependencies.accounts.get(userOf(req, dependencies.sessions) ?? '');
     res.json({ email: user?.email, name: user?.name });
-  });
+  }));
   return router;
 }
 
 /** Builds the shared browser/API session guard while preserving cookie renewal. */
 export function createRequireStudent(dependencies: StudentAuthRouterDependencies): RequestHandler {
-  return (req, res, next) => {
+  return asyncHandler(async (req, res, next) => {
     const detail = dependencies.sessions.detail(parseCookies(req.headers.cookie)[COOKIE]);
-    if (detail && dependencies.accounts.get(detail.email)) {
+    if (detail && await dependencies.accounts.get(detail.email)) {
       if (detail.expiresAt - Date.now() < dependencies.sessions.ttl / 2) setSession(req, res, detail.email, dependencies);
       return next();
     }
     if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'sign in first' });
     dependencies.noStore(res);
     return res.redirect(`/login/?next=${encodeURIComponent(req.originalUrl)}`);
-  };
+  });
 }
 
 /** Resolves a session cookie to its account email. */
@@ -53,32 +61,76 @@ export function userOf(req: Request, sessions: Sessions): string | null {
 }
 
 function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLimiter): RequestHandler {
-  return async (req, res) => {
+  return asyncHandler(async (req, res) => {
     deps.noStore(res);
-    const { email: raw = '', password = '', next } = req.body as Record<string, string>;
-    if (!limiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
+    if (!limiter.allow(req.ip ?? 'unknown')) {
+      recordActivity(deps, 'login', 'rate-limited');
+      return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
+    }
+    const input = authInput(req.body);
+    if (!input) {
+      recordActivity(deps, 'login', 'failed');
+      return res.status(400).json({ error: 'email and password must be strings' });
+    }
+    const { email: raw, password, next } = input;
     const user = await deps.accounts.verify(asEmail(raw, deps.allowedDomains), password);
-    if (!user) return res.status(401).json({ error: 'That UID and PIN do not match.' });
+    if (!user) {
+      const known = await findActivityUser(deps, asEmail(raw, deps.allowedDomains));
+      recordActivity(deps, 'login', 'failed', known?.id);
+      return res.status(401).json({ error: 'That UID and PIN do not match.' });
+    }
+    recordActivity(deps, 'login', 'succeeded', user.id);
     setSession(req, res, user.email, deps);
     return res.json({ redirect: safeNext(next) });
-  };
+  });
 }
 
 function createSignupHandler(deps: StudentAuthRouterDependencies, limiter: RateLimiter): RequestHandler {
-  return async (req, res) => {
+  return asyncHandler(async (req, res) => {
     deps.noStore(res);
     if (!deps.signupOpen) return res.status(403).json({ error: 'Sign-up is closed.' });
-    const { email: raw = '', name = '', password = '', next } = req.body as Record<string, string>;
-    if (!limiter.allow(req.ip ?? 'unknown')) return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
+    if (!limiter.allow(req.ip ?? 'unknown')) {
+      recordActivity(deps, 'signup', 'rate-limited');
+      return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
+    }
+    const input = authInput(req.body);
+    if (!input) {
+      recordActivity(deps, 'signup', 'failed');
+      return res.status(400).json({ error: 'email, password and name must be strings' });
+    }
+    const { email: raw, name, password, next } = input;
     try {
       const user = await deps.accounts.create(asEmail(raw, deps.allowedDomains), name, password);
+      recordActivity(deps, 'signup', 'succeeded', user.id);
       setSession(req, res, user.email, deps);
       return res.json({ redirect: safeNext(next) });
     } catch (error) {
-      if (error instanceof AuthError) return res.status(400).json({ error: error.message });
+      if (error instanceof AuthError) {
+        recordActivity(deps, 'signup', 'failed');
+        return res.status(400).json({ error: error.message });
+      }
       throw error;
     }
-  };
+  });
+}
+
+function recordActivity(deps: StudentAuthRouterDependencies, action: StudentActivityAction, outcome: StudentActivityOutcome, userId?: string): void {
+  deps.activity?.record(action, outcome, userId ?? null, randomUUID());
+}
+
+async function findActivityUser(deps: StudentAuthRouterDependencies, email: string) {
+  try { return await deps.accounts.get(email); } catch { return undefined; }
+}
+
+function authInput(body: unknown): { email: string; password: string; name: string; next: unknown } | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const fields = body as Record<string, unknown>;
+  if ((fields.email !== undefined && typeof fields.email !== 'string') ||
+      (fields.password !== undefined && typeof fields.password !== 'string') ||
+      (fields.name !== undefined && typeof fields.name !== 'string')) return null;
+  return { email: typeof fields.email === 'string' ? fields.email : '',
+    password: typeof fields.password === 'string' ? fields.password : '',
+    name: typeof fields.name === 'string' ? fields.name : '', next: fields.next };
 }
 
 function setSession(req: Request, res: Response, email: string, deps: StudentAuthRouterDependencies): void {
@@ -90,7 +142,9 @@ function setSession(req: Request, res: Response, email: string, deps: StudentAut
 
 function sameOrigin(req: Request, res: Response, next: NextFunction): void {
   const origin = req.get('origin');
-  if (origin && new URL(origin).host !== req.get('host')) {
+  let allowed = true;
+  try { allowed = !origin || new URL(origin).host === req.get('host'); } catch { allowed = false; }
+  if (!allowed) {
     res.status(403).json({ error: 'cross-origin post refused' });
     return;
   }

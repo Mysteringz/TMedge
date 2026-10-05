@@ -1,12 +1,11 @@
-import { randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { promisify } from 'node:util';
+import { createStudentUser, normalizeStudentEmail, validateStudentSignup, verifyStudentPassword } from '../../modules/student-auth/application/student-credentials.js';
+import { validateStudentAccountImport } from '../../modules/student-auth/application/student-account-import-export.js';
+import { ApplicationError } from '../../modules/shared/application/contracts.js';
 import { AuthError } from '../../modules/student-auth/application/student-session-service.js';
 import type { IStudentAccountRepository } from '../../modules/student-auth/repositories/student-account-repository.js';
 import type { User } from '../../modules/student-auth/domain/user.js';
-
-const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
 
 /** Stores student accounts in the existing atomic users.json format. */
 export class JsonStudentAccountRepository implements IStudentAccountRepository {
@@ -14,10 +13,13 @@ export class JsonStudentAccountRepository implements IStudentAccountRepository {
 
   constructor(private readonly path: string, private readonly allowedDomains: readonly string[]) {
     try {
-      const list = JSON.parse(readFileSync(path, 'utf8')) as User[];
+      const list = validateStudentAccountImport(JSON.parse(readFileSync(path, 'utf8')));
       for (const user of list) this.users.set(user.email, user);
-    } catch {
-      // A missing file means this is a new installation.
+    } catch (error) {
+      // Only a missing file is a new installation; damaged accounts must never be overwritten.
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
+        throw new ApplicationError('unavailable', 'Student account file is unreadable or invalid.');
+      }
     }
   }
 
@@ -25,31 +27,24 @@ export class JsonStudentAccountRepository implements IStudentAccountRepository {
     return this.users.size;
   }
 
+  count(): number {
+    return this.users.size;
+  }
+
   get(email: string): User | undefined {
-    return this.users.get(email);
+    return this.users.get(this.normalise(email));
   }
 
   normalise(email: string): string {
-    return email.trim().toLowerCase();
-  }
-
-  private domainAllowed(email: string): boolean {
-    const domain = email.split('@')[1] ?? '';
-    return this.allowedDomains.length === 0 || this.allowedDomains.includes(domain);
+    return normalizeStudentEmail(email);
   }
 
   async create(emailRaw: string, name: string, password: string): Promise<User> {
     const email = this.normalise(emailRaw);
-    this.validateAccount(email, password);
-    const salt = randomBytes(16);
-    const hash = await scrypt(password, salt, 32);
-    const user: User = {
-      email,
-      name: name.trim().slice(0, 60) || email.split('@')[0] || email,
-      salt: salt.toString('hex'),
-      hash: hash.toString('hex'),
-      createdAt: Date.now(),
-    };
+    validateStudentSignup(email, password, this.allowedDomains);
+    this.rejectDuplicate(email);
+    const user = await createStudentUser(email, name, password);
+    this.rejectDuplicate(email);
     this.users.set(email, user);
     try {
       this.save();
@@ -62,16 +57,10 @@ export class JsonStudentAccountRepository implements IStudentAccountRepository {
 
   async verify(emailRaw: string, password: string): Promise<User | null> {
     const user = this.users.get(this.normalise(emailRaw));
-    const salt = user ? Buffer.from(user.salt, 'hex') : randomBytes(16);
-    const hash = await scrypt(password, salt, 32);
-    if (!user) return null;
-    return timingSafeEqual(hash, Buffer.from(user.hash, 'hex')) ? user : null;
+    return await verifyStudentPassword(user, password) ? user ?? null : null;
   }
 
-  private validateAccount(email: string, password: string): void {
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new AuthError('Enter a valid email address.');
-    if (!this.domainAllowed(email)) throw new AuthError(`Use your university email (${this.allowedDomains.map((d) => '@' + d).join(' or ')}).`);
-    if (password.length < 10) throw new AuthError('Use at least 10 characters for your password.');
+  private rejectDuplicate(email: string): void {
     if (this.users.has(email)) throw new AuthError('An account with that email already exists. Sign in instead.');
   }
 

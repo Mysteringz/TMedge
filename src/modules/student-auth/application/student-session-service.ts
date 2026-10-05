@@ -64,7 +64,9 @@ export function parseCookies(header: string | undefined): Record<string, string>
   const cookies: Record<string, string> = {};
   for (const part of (header ?? '').split(';')) {
     const index = part.indexOf('=');
-    if (index > 0) cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+    if (index > 0) {
+      try { cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim()); } catch { /* Ignore malformed untrusted cookies. */ }
+    }
   }
   return cookies;
 }

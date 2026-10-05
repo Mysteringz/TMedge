@@ -25,6 +25,8 @@ changing what the system knows about anyone.
 
 ## Run it
 
+For PostgreSQL student accounts and signup/login/logout activity, follow [student account setup](docs/student-accounts.md). It includes persistent local PostgreSQL, safe `users.json` import and recovery commands. Named admin accounts are deferred to a later MVP.
+
 Keep deployment credentials in the git-ignored `.env` file. Account details
 below are examples; use your own approved university account and password.
 
