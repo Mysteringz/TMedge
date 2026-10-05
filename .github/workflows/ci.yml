@@ -91,6 +91,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 strips capabilities from unconfined user namespaces.
+          # Permit them on this disposable CI runner so the mandatory bwrap
+          # filesystem/network isolation regression can actually execute.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          python3 -m venv /tmp/tmedge-ci-python
+          /tmp/tmedge-ci-python/bin/pip install numpy==2.2.6 opencv-python-headless==5.0.0.93
+          echo /tmp/tmedge-ci-python/bin >> "$GITHUB_PATH"
           npm ci --no-audit --no-fund
           npm --prefix web-app ci --no-audit --no-fund
           npm --prefix algo-app ci --no-audit --no-fund
@@ -119,7 +128,7 @@ jobs:
         run: |
           python3 deploy/test-release.py
           python3 deploy/test-receiver.py
-          python3 deploy/training/test-offline.py WorkerTests
+          python3 deploy/training/test-offline.py
 
       - name: Real PostgreSQL schema migration and ingest regressions
         working-directory: TMedge

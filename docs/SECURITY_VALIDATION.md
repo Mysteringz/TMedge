@@ -93,3 +93,26 @@ before enrollment, and a version label alone cannot prove trusted firmware.
 Only after the pilot proves the new image, sensor and accepted REPORTs should
 the remaining fleet be touched. No claim of complete vulnerability elimination
 or hardware validation follows from source tests alone.
+
+
+## Hosted PR follow-up — 2026-10-05
+
+Published [TMedge #42](https://github.com/Mysteringz/TMedge/pull/42),
+[TMsense #8](https://github.com/Mysteringz/TMsense/pull/8) and
+[TMWAccess #8](https://github.com/Mysteringz/TMWAccess/pull/8). The original
+GitHub authentication blocker above describes the local preparation on October 4.
+
+The first edge hosted run passed its container build but failed the strict
+private-include test because Ubuntu's AppArmor user-namespace restriction
+prevented bubblewrap from starting. CI now enables namespace capabilities on
+its disposable runner and retains the private-file rejection assertion. This
+is CI environment setup; production prerequisites remain a separate release gate.
+See the [Ubuntu release notes](https://discourse.ubuntu.com/t/ubuntu-24-04-lts-noble-numbat-release-notes/39890)
+for this runner policy. The trainer's pinned NumPy/OpenCV dependencies are also
+installed, all eight offline training regressions run, and missing detector or
+trainer dependencies now fail CI instead of silently skipping those checks.
+
+The gateway route tests now inject forged address candidates into the real
+admission callback while retaining real UDP and authenticated edge traffic.
+This avoids requiring extra 127/8 interface aliases on macOS. The final Linux
+rerun passes all 24 tests; the paired CI pin includes this portability fix.
