@@ -442,7 +442,7 @@ export function startAlgo(
   });
 
   // Home, /flow, /train: every screen is routed in the browser.
-  app.get('*', (req, res) => {
+  app.get('/{*splat}', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'no such endpoint' });
     return sendShell(res);
   });

@@ -261,7 +261,7 @@ function createStudentPageRouter(dependencies: {
   router.get('/search', (req, res) => res.redirect(301, `/dashboard/${req.url.slice('/search'.length)}`));
   router.get('/spaces', (_req, res) => res.redirect(301, '/dashboard/spaces/'));
   router.get('/spaces/:floorId', (req, res) => res.redirect(301, `/dashboard/spaces/${encodeURIComponent(req.params.floorId)}`));
-  router.get(['/dashboard', '/dashboard/', '/dashboard/*'], dependencies.requireStudent, (_req, res) => {
+  router.get(['/dashboard', '/dashboard/', '/dashboard/{*splat}'], dependencies.requireStudent, (_req, res) => {
     dependencies.noStore(res);
     res.status(200).type('html').send(dependencies.appPage);  });
   return router;

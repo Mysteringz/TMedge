@@ -15,3 +15,14 @@ export function sameOrigin(req: IncomingMessage): boolean {
     return (url.protocol === 'https:' || url.protocol === 'http:') && url.host === req.headers.host;
   } catch { return false; }
 }
+
+/**
+ * One route parameter as a string. Express 5 types a parameter as
+ * `string | string[]` (a named wildcard matches many segments); every route
+ * here takes single segments, so anything else reads as empty -- the route
+ * then answers "not found" rather than coercing a list into an id.
+ */
+export function routeParam(params: Record<string, string | string[] | undefined>, name: string): string {
+  const v = params[name];
+  return typeof v === 'string' ? v : '';
+}
