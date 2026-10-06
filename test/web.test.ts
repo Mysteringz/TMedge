@@ -557,3 +557,10 @@ test('web: personalized API responses and raw shell redirects are never cached',
     }
   } finally { await w.close(); }
 });
+
+test('with WEB_PORT unset or empty, the web tier listens on 8080, where the edge, compose and production expect it', () => {
+  const env = { WEB_PUSH_TOKEN: 'x'.repeat(20), SESSION_SECRET: 'y'.repeat(40) };
+  assert.equal(loadWebConfig(env).port, 8080);
+  assert.equal(loadWebConfig({ ...env, WEB_PORT: '' }).port, 8080);
+  assert.equal(loadWebConfig({ ...env, WEB_PORT: '9090' }).port, 9090);
+});
