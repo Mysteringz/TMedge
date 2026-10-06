@@ -182,6 +182,7 @@ describe('session manager (HANDOVER §6.4)', () => {
     const deps: GatewayDeps = {
       now: () => now,
       portFree: async () => true,
+      hostKeys: { isPinned: () => true, pin: () => undefined, scan: async () => [] },
       authenticate: async (o) => {
         calls.auth++;
         calls.vpnUsers.push(o.vpnUser);
@@ -200,6 +201,7 @@ describe('session manager (HANDOVER §6.4)', () => {
           get alive() { return alive; },
           open: async () => { calls.sshOpen++; if (opts.sshFails) throw new SshFailed('bad_password', 'no'); alive = true; },
           run: async () => ({ code: 0, stdout: Buffer.alloc(0), stderr: '' }),
+          shellCommand: () => ({ bin: '/bin/true', args: [], home: '/tmp', target: 'x@y' }),
           close: async () => { alive = false; calls.sshClosed++; },
         };
         return link;

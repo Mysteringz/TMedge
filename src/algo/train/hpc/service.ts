@@ -15,7 +15,7 @@ import { renderSbatch } from '../sbatch.js';
 import { validateSpec } from '../spec.js';
 import { ACTIVE, type HpcProfile, type JobStore, type ProfileStore, type TrainJob } from '../store.js';
 import { RateLimiter } from '../../../web/auth.js';
-import { loadFingerprint, matches } from './fingerprint.js';
+import { loadFingerprint, makeFingerprint, matches, saveFingerprint } from './fingerprint.js';
 import { Gateway, GatewayBusy, LockedOut, REAL_DEPS, type GatewayDeps, type Session } from './gateway.js';
 import { AuthFailed } from './openconnect.js';
 import { Ops, type Op } from './ops.js';
@@ -104,20 +104,28 @@ export class HpcService {
     await this.gateway?.stop();
   }
 
-  /** Null when jobs can be sent; otherwise what is missing, for the UI. */
+  /**
+   * Null when jobs can be sent; otherwise what is missing, for the UI. The
+   * host key and the shared password are not on this list: both are set up
+   * by the first person to sign in (they confirm the key; their successful
+   * login records the password's fingerprint), or by the admin tools.
+   */
   unavailable(): string | null {
     const a = this.cfg.planA;
-    if (!a) return 'Submission to HPC2021 is not switched on (backend "none" in config/hpc.json).';
+    if (!a) return 'Sending to the cluster is not switched on (backend "none" in config/hpc.json).';
     if (!this.tools.openconnect) return 'openconnect is not installed on this server.';
     if (!this.tools.ocproxy) return 'ocproxy is not installed on this server.';
     if (!this.tools.ssh) return 'ssh is not installed on this server.';
-    if (!existsSync(this.knownHosts) || !readFileSync(this.knownHosts, 'utf8').split('\n').some((l) => l.split(/[\s,]/).includes(a.submitHost))) {
-      return `${a.submitHost}'s SSH host key is not pinned yet: an admin runs npm run hpc-hostkeys on the server once, with their own HKU login.`;
-    }
-    if (a.sshAuth === 'shared-password' && !loadFingerprint(this.fingerprintFile)) {
-      return `The password for ${a.sshUser}@${a.submitHost} has not been set up: an admin runs npm run hpc-password on the server.`;
-    }
     return null;
+  }
+
+  /** What the first sign-in will be asked to set up, for the UI. */
+  firstUse(): { hostKey: boolean; password: boolean } {
+    const a = this.cfg.planA;
+    return {
+      hostKey: !!a && !(existsSync(this.knownHosts) && readFileSync(this.knownHosts, 'utf8').split('\n').some((l) => (l.trim().split(/\s+/)[0] ?? '').split(',').includes(a.submitHost))),
+      password: !!a && a.sshAuth === 'shared-password' && !loadFingerprint(this.fingerprintFile),
+    };
   }
 
   /** Who and where SSH logs in as, for the sign-in form. */
@@ -128,18 +136,46 @@ export class HpcService {
 
   /**
    * Before any login: in shared-password mode the typed password must match
-   * its fingerprint. A wrong one ends here, having reached nothing.
+   * its fingerprint, and a wrong one ends here, having reached nothing.
+   * Returns true when there is no fingerprint to check against yet, or the
+   * person said the password changed: then the cluster is the judge, once,
+   * and a successful login records the new fingerprint.
    */
-  private async checkServerPassword(user: string, creds: Credentials): Promise<void> {
+  private async checkServerPassword(user: string, creds: Credentials, changed: boolean): Promise<boolean> {
     const a = this.cfg.planA!;
-    if (a.sshAuth !== 'shared-password') return;
-    const fp = loadFingerprint(this.fingerprintFile);
-    if (!fp) throw new GatewayBusy(this.unavailable() ?? 'The shared password is not set up.');
+    if (a.sshAuth !== 'shared-password') return false;
     if (creds.sshPasswordGiven() === null) throw new ServerPasswordWrong(`Type the password for ${a.sshUser}@${a.submitHost}.`);
+    const fp = loadFingerprint(this.fingerprintFile);
+    if (!fp || changed) {
+      if (!this.wrongPassword.allow(`unchecked:${user}`)) throw new ServerPasswordWrong('Too many unverified cluster passwords; wait 15 minutes.');
+      return true;
+    }
     if (!(await matches(creds.sshPasswordGiven()!, fp))) {
       if (!this.wrongPassword.allow(user)) throw new ServerPasswordWrong('Too many wrong cluster passwords; wait 15 minutes.');
-      throw new ServerPasswordWrong(`That is not the password for ${a.sshUser}@${a.submitHost}. It was checked here; nothing was sent to HKU or the cluster.`);
+      throw new ServerPasswordWrong(`That is not the password for ${a.sshUser}@${a.submitHost}. It was checked here; nothing was sent to HKU or the cluster. If it was changed, tick "the cluster password has changed".`);
     }
+    return false;
+  }
+
+  /** Host keys waiting on the person's answer, by operation. */
+  private hostKeyAnswers = new Map<string, (accept: boolean) => void>();
+
+  private askHostKey(op: Op, host: string, keys: { type: string; fingerprint: string }[]): Promise<boolean> {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => { this.hostKeyAnswers.delete(op.id); resolve(false); }, 2 * 60_000);
+      this.hostKeyAnswers.set(op.id, (accept) => { clearTimeout(t); this.hostKeyAnswers.delete(op.id); resolve(accept); });
+      op.emit('host_key', { host, keys: keys.map((k) => ({ type: k.type, fingerprint: k.fingerprint })) });
+    });
+  }
+
+  /** The person's answer to "trust this host key?"; false if nothing was asked of them. */
+  answerHostKey(user: string, opId: string, accept: boolean): boolean {
+    const op = this.ops.get(user, opId);
+    const answer = op ? this.hostKeyAnswers.get(op.id) : undefined;
+    if (!answer) return false;
+    this.store.audit({ user, action: 'host_key', result: accept ? 'trusted' : 'refused' });
+    answer(accept);
+    return true;
   }
 
   domains(): string[] { return this.cfg.planA?.vpnDomains ?? []; }
@@ -148,7 +184,7 @@ export class HpcService {
   vpnUser(p: HpcProfile): string { return `${p.hkuUid}@${p.vpnDomain}`; }
 
   /** The session to use: the live one, or a new login with `creds`, which are wiped either way. */
-  private async session(op: Op, creds: Credentials | null): Promise<Session> {
+  private async session(op: Op, creds: Credentials | null, passwordChanged = false): Promise<Session> {
     const g = this.gateway!;
     try {
       const live = g.live(op.user);
@@ -156,8 +192,18 @@ export class HpcService {
       if (!creds) throw new GatewayBusy('Your HKU session has ended; sign in again.');
       const profile = this.profiles.get(op.user);
       if (!profile) throw new GatewayBusy('Set your HKU UID first.');
-      await this.checkServerPassword(op.user, creds);
-      return await g.open(op.user, profile.hkuUid, this.vpnUser(profile), creds, (step) => op.emit(step));
+      const record = await this.checkServerPassword(op.user, creds, passwordChanged);
+      const s = await g.open(op.user, profile.hkuUid, this.vpnUser(profile), creds, {
+        onStep: (step) => op.emit(step),
+        confirmHostKey: (host, keys) => this.askHostKey(op, host, keys),
+      });
+      if (record) {
+        // The cluster just accepted it: this is its fingerprint from now on.
+        saveFingerprint(this.fingerprintFile, await makeFingerprint(creds.sshPasswordGiven()!));
+        this.store.audit({ user: op.user, action: 'cluster_password', result: 'fingerprint recorded after a successful login' });
+        op.emit('password_recorded');
+      }
+      return s;
     } finally {
       // The login is over, one way or the other: nothing below needs a secret.
       creds?.wipe();
@@ -192,10 +238,20 @@ export class HpcService {
     return out;
   }
 
-  /** Submit a saved draft. The job is already SUBMITTING (routes.ts did that synchronously). */
-  async submit(op: Op, job: TrainJob, creds: Credentials | null): Promise<void> {
+  /** Just a session: for the terminal, or to get the first-use questions out of the way. */
+  async connect(op: Op, creds: Credentials, passwordChanged: boolean): Promise<void> {
     try {
-      const s = await this.session(op, creds);
+      const s = await this.session(op, creds, passwordChanged);
+      op.finish('done', { status: 'CONNECTED', uid: s.uid });
+    } catch (err) {
+      op.finish('error', userMessage(err));
+    }
+  }
+
+  /** Submit a saved draft. The job is already SUBMITTING (routes.ts did that synchronously). */
+  async submit(op: Op, job: TrainJob, creds: Credentials | null, passwordChanged = false): Promise<void> {
+    try {
+      const s = await this.session(op, creds, passwordChanged);
       await this.gateway!.use(op.user, async () => {
         const v = validateSpec(job.spec, this.cfg, job.code.py);
         if (!v.ok) throw new slurm.SlurmError(`the job spec no longer passes: ${v.problems.map((p) => `${p.field}: ${p.message}`).join('; ')}`);
@@ -226,9 +282,9 @@ export class HpcService {
     }
   }
 
-  async refresh(op: Op, job: TrainJob, creds: Credentials | null): Promise<void> {
+  async refresh(op: Op, job: TrainJob, creds: Credentials | null, passwordChanged = false): Promise<void> {
     try {
-      const s = await this.session(op, creds);
+      const s = await this.session(op, creds, passwordChanged);
       const [updated] = await this.gateway!.use(op.user, () => this.refreshJobs(s, [job]));
       op.finish('done', { status: updated?.status ?? job.status });
     } catch (err) {
@@ -236,9 +292,9 @@ export class HpcService {
     }
   }
 
-  async cancel(op: Op, job: TrainJob, creds: Credentials | null): Promise<void> {
+  async cancel(op: Op, job: TrainJob, creds: Credentials | null, passwordChanged = false): Promise<void> {
     try {
-      const s = await this.session(op, creds);
+      const s = await this.session(op, creds, passwordChanged);
       const [updated] = await this.gateway!.use(op.user, async () => {
         await slurm.cancel(s.ssh!, job.slurmJobId!);
         this.store.audit({ user: op.user, action: 'cancel', jobId: job.id, result: `ok slurm ${job.slurmJobId}` });

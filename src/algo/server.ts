@@ -210,6 +210,7 @@ export function startAlgo(
     root: trainRoot(process.env.DATA_DIR || join(ROOT, 'data')),
     configPath: process.env.HPC_CONFIG || join(ROOT, 'config', 'hpc.json'),
     mutating,
+    bindingOf: (req) => auth.sessionToken(req),
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
@@ -435,6 +436,7 @@ export function startAlgo(
   auth.onLogout((binding) => {
     for (const [ws, client] of clients) if (client.binding === binding) ws.terminate();
     consoleCore?.closeSessions(binding);
+    train.sockets?.closeFor(binding);
   });
 
   server.on('upgrade', (req: IncomingMessage, socket, head) => {
@@ -451,6 +453,13 @@ export function startAlgo(
       return;
     }
     const binding = auth.sessionToken(req);
+    // Module 02's shell on the cluster: its own one-time ticket, bound to this sign-in.
+    if (url.pathname === '/train-term') {
+      if (train.sockets?.upgrade(req, socket, head, url, auth.userOf(req)!, binding)) return;
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     // The console's live feed. Its token comes from /console-app/api/ws-token,
     // which only a signed-in engineer can reach.
     if (url.pathname === '/console-app/ws') {

@@ -204,3 +204,42 @@ If HKU says no to relaying credentials, switch to `"backend": "none"`.
       count toward the HKU lockout.
     - **Guessing:** because the check answers at once, wrong guesses are
       limited to 5 per person per 15 minutes.
+
+## 2026-10-06 (evening): a shell on the cluster, and setup from the dashboard
+
+24. **The CONSOLE has an "ssh" mode: a real shell on the cluster**, as the
+    person's own session (the team asked to type Linux commands there).
+    - **How it connects:** xterm.js in the page, and a WebSocket
+      (`/train-term`, one-time ticket bound to the console sign-in) to an
+      `ssh -tt` over the person's existing ControlMaster connection. A few
+      lines of Python give it a real pty, so resizing and full-screen
+      programs work.
+    - **Encryption:** the stream is encrypted end to end between page and
+      edge (ECDH + HKDF + AES-GCM per direction, strictly counted frames;
+      `src/shared/hpcterm.ts`). A `passwd` typed there is as private as the
+      PIN. Nothing typed or printed is logged; the audit log records only
+      open and close.
+    - **Limits:** it keeps the HKU session busy, closes after 30 minutes
+      without a keystroke, and allows at most 2 per person and 8 in all.
+25. **First use no longer needs the EC2 shell.**
+    - **Host key:** when nothing is pinned for the cluster, the first sign-in
+      fetches its host keys through the person's tunnel. It shows the
+      fingerprints, and pins only what they trust; nothing logs in until they
+      answer. A key that differs from a pinned one is still refused, never
+      offered.
+    - **Password:** when no password fingerprint exists, the cluster judges
+      the first sign-in's password, once, and a successful login records its
+      fingerprint.
+    - **After a `passwd`:** ticking "the cluster password has changed" does
+      the same, once, and replaces the fingerprint. Unchecked attempts are
+      limited to 5 per person per 15 minutes.
+    - **The CLI tools remain:** `hpc-hostkeys` and `hpc-password` still work
+      for an admin who prefers the box.
+26. **Under the console's CSP** (no 'unsafe-inline'), xterm.js and
+    CodeMirror create `<style>` elements and set `style` attributes.
+    - **The shims:** `train/csp.ts` gives script-created `<style>` elements
+      the page's nonce, and turns script-set style attributes into CSSOM
+      writes, which CSP allows.
+    - **Why that is safe:** both are reachable only by script, and script is
+      already limited to `'self'`, so markup injected into the page still
+      cannot style anything.

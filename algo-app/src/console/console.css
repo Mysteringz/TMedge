@@ -309,6 +309,26 @@
 .cx-modal-actions { display: flex; justify-content: space-between; gap: 12px; }
 .cx-modal-actions .btn-primary { min-width: 200px; justify-content: space-between; }
 
+/* — module 02: the CONSOLE's ssh mode (a shell on the cluster) — */
+.cx-console .cx-tabs .seg-opt { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.cx-log-hint { padding: 6px 14px 8px; border-top: 1px solid var(--color-divider); font: 400 11px var(--mono); color: var(--color-neutral-600); }
+.cx-log-hint b { color: var(--color-accent); font-weight: 400; }
+/* No padding on the host: the console's border-box sizing would make xterm's
+   fit count it as rows and clip the last one. xterm subtracts its own padding. */
+.cx-term { height: 440px; background: #1a1c2a; }
+.cx-term .xterm { height: 100%; padding: 8px 4px 4px 10px; }
+.cx-term .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--color-neutral-700) transparent; }
+.cx-term .xterm-viewport { background: #1a1c2a !important; }
+.cx-term.is-closed { opacity: .75; }
+.cx-term-gate {
+  height: 440px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 14px; padding: 24px 28px;
+  background: repeating-linear-gradient(to bottom, color-mix(in srgb, var(--color-text) 2.5%, transparent) 0 1px, transparent 1px 4px), #1a1c2a;
+}
+.cx-term-gate p { max-width: 520px; color: var(--color-neutral-400); font-size: 14px; margin: 0 !important; }
+.cx .cx-fp td { padding: 6px 5.6px; font-size: 12px; }
+.cx .cx-fp td.cx-mono { color: var(--color-accent-200); overflow-wrap: anywhere; }
+.cx-modal-first { color: var(--color-accent-300); }
+
 /* — toast — */
 .cx-toast {
   position: fixed; left: 28px; bottom: 24px; z-index: 10; display: flex; align-items: center; gap: 10px;
@@ -344,6 +364,7 @@
   .cx-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cx-jobs th:nth-child(3), .cx-jobs td:nth-child(3) { display: none; }
   .cx-modal-uid { grid-template-columns: 1fr; }
+  .cx-term, .cx-term-gate { height: 360px; }
   .cx-modal-actions .btn-primary { min-width: 0; }
   .cx-file > .cx-dim { display: none; }
   .cx-editor { height: 360px; }

@@ -18,9 +18,10 @@
 import { createServer } from 'node:net';
 import { AUTH_MESSAGES, AuthFailed, authenticate, connectTunnel, type AuthOptions, type AuthResult, type ConnectOptions, type Tunnel } from './openconnect.js';
 import type { Credentials } from './sealed.js';
+import { HOSTKEYS, type HostKey, type ScanOptions } from './hostkeys.js';
 import { SshFailed, SshLink, type SshLike, type SshOptions } from './ssh.js';
 
-export type Step = 'vpn_auth' | 'vpn_connect' | 'vpn_up' | 'ssh_auth' | 'ssh_up';
+export type Step = 'vpn_auth' | 'vpn_connect' | 'vpn_up' | 'host_key_scan' | 'ssh_auth' | 'ssh_up';
 
 export class LockedOut extends Error {
   constructor(readonly retryAfterMs: number) {
@@ -35,6 +36,13 @@ export interface GatewayDeps {
   ssh(o: SshOptions): SshLike;
   portFree(port: number): Promise<boolean>;
   now(): number;
+  hostKeys: { isPinned(file: string, host: string): boolean; pin(file: string, host: string, keys: HostKey[]): void; scan(o: ScanOptions): Promise<HostKey[]> };
+}
+
+/** How a login reports progress, and asks the person to trust a host key nobody has pinned yet. */
+export interface OpenOptions {
+  onStep?: (s: Step) => void;
+  confirmHostKey?: (host: string, keys: HostKey[]) => Promise<boolean>;
 }
 
 export interface GatewayConfig {
@@ -77,7 +85,7 @@ function portFree(port: number): Promise<boolean> {
 }
 
 export const REAL_DEPS: GatewayDeps = {
-  authenticate, connectTunnel, ssh: (o) => new SshLink(o), portFree, now: Date.now,
+  authenticate, connectTunnel, ssh: (o) => new SshLink(o), portFree, now: Date.now, hostKeys: HOSTKEYS,
 };
 
 export class Gateway {
@@ -143,7 +151,8 @@ export class Gateway {
    * Logs `user` in to HKU as `uid`: VPN (PIN, then code), tunnel, SSH (PIN).
    * One attempt. Throws LockedOut, GatewayBusy, AuthFailed or SshFailed.
    */
-  async open(user: string, uid: string, vpnUser: string, creds: Credentials, onStep: (s: Step) => void = () => undefined): Promise<Session> {
+  async open(user: string, uid: string, vpnUser: string, creds: Credentials, opts: OpenOptions = {}): Promise<Session> {
+    const onStep = opts.onStep ?? (() => undefined);
     const wait = this.lockedFor(user, uid);
     if (wait > 0) throw new LockedOut(wait);
     const existing = this.sessions.get(user);
@@ -172,9 +181,22 @@ export class Gateway {
       auth = null;
       void session.tunnel.closed.then(() => { if (this.sessions.get(user) === session) void this.close(user); });
       onStep('vpn_up');
+      const sshUser = this.cfg.sshUser ?? uid;
+      // Nothing pinned for this host at all: show the person what it presents
+      // and pin only what they trust. A pinned key that differs is never
+      // offered here -- ssh refuses it below.
+      if (!this.deps.hostKeys.isPinned(this.cfg.knownHosts, this.cfg.submitHost)) {
+        onStep('host_key_scan');
+        const keys = await this.deps.hostKeys.scan({ ssh: this.cfg.tools.ssh, host: this.cfg.submitHost, user: sshUser, socksPort: session.port, runDir: this.cfg.runDir });
+        if (keys.length === 0) throw new SshFailed('unreachable', 'The VPN is up but the cluster did not answer on SSH.');
+        if (!opts.confirmHostKey || !(await opts.confirmHostKey(this.cfg.submitHost, keys))) {
+          throw new SshFailed('host_key', `The cluster's host key was not trusted, so nothing was pinned and no login happened.`);
+        }
+        this.deps.hostKeys.pin(this.cfg.knownHosts, this.cfg.submitHost, keys);
+      }
       onStep('ssh_auth');
       session.ssh = this.deps.ssh({
-        bin: this.cfg.tools.ssh, host: this.cfg.submitHost, user: this.cfg.sshUser ?? uid, socksPort: session.port,
+        bin: this.cfg.tools.ssh, host: this.cfg.submitHost, user: sshUser, socksPort: session.port,
         knownHosts: this.cfg.knownHosts, runDir: this.cfg.runDir,
       });
       try {

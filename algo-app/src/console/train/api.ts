@@ -1,5 +1,6 @@
 /** Module 02's server: /api/train (src/algo/train/routes.ts, hpc/routes.ts). */
 import type { SealTicket } from '../../../../src/shared/hpcseal.js';
+import type { TermTicket } from '../../../../src/shared/hpcterm.js';
 
 export interface JobSpec {
   name: string;
@@ -65,9 +66,13 @@ export interface HpcState {
   session: { state: 'none' | 'opening' | 'up'; uid: string | null; expiresInSeconds: number | null };
   lockedForSeconds: number;
   running: string | null;
+  /** What the next sign-in will set up: confirm the cluster's host key, record the shared password's fingerprint. */
+  firstUse: { hostKey: boolean; password: boolean };
 }
 
 export type HpcAction = 'submit' | 'refresh' | 'cancel';
+/** The sealed-credential actions: the job ones, and "just sign in" (for the shell). */
+export type SignInAction = HpcAction | 'connect';
 
 /** The answer to starting an action: an operation to follow, or why not. */
 export interface ActResult { status: number; opId?: string; error?: string; needs?: 'credentials'; retryAfterSeconds?: number }
@@ -158,6 +163,15 @@ export const train = {
     const out = (await r.json().catch(() => ({}))) as Omit<ActResult, 'status'>;
     return { status: r.status, ...out };
   },
+  /** Sign in without a job: 200 {already} with a live session, 202 {opId}, or 428. */
+  connect: async (body: unknown = {}): Promise<ActResult & { already?: boolean }> => {
+    const r = await fetch('/api/train/hpc/connect', { method: 'POST', headers: write, body: JSON.stringify(body) });
+    if (r.status === 401) signIn();
+    return { status: r.status, ...((await r.json().catch(() => ({}))) as Omit<ActResult, 'status'>) };
+  },
+  answerHostKey: (opId: string, accept: boolean) =>
+    fetch(`/api/train/ops/${q(opId)}/hostkey`, { method: 'POST', headers: write, body: JSON.stringify({ accept }) }).then(json<{ ok: boolean }>),
+  termTicket: () => fetch('/api/train/hpc/term', { method: 'POST', headers: write }).then(json<TermTicket>),
   log: async (id: string, stream: 'out' | 'err'): Promise<{ status: number; text?: string; error?: string }> => {
     const r = await fetch(`/api/train/jobs/${q(id)}/log?stream=${stream}`);
     if (r.status === 401) signIn();
@@ -167,7 +181,8 @@ export const train = {
   /** Follows an operation's Server-Sent Events until "done" or "error". */
   follow: (opId: string, onEvent: (e: OpEvent) => void) => new Promise<OpEvent>((resolve) => {
     const es = new EventSource(`/api/train/ops/${q(opId)}/events`);
-    const types = ['vpn_auth', 'vpn_connect', 'vpn_up', 'ssh_auth', 'ssh_up', 'session_reused', 'uploading', 'submitting', 'submitted', 'done', 'error'];
+    const types = ['vpn_auth', 'vpn_connect', 'vpn_up', 'host_key_scan', 'host_key', 'ssh_auth', 'ssh_up', 'password_recorded',
+      'session_reused', 'uploading', 'submitting', 'submitted', 'done', 'error'];
     let last: OpEvent = { type: 'error', data: { message: 'lost the connection to the console' } };
     for (const type of types) {
       es.addEventListener(type, (m) => {

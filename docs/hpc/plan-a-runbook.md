@@ -20,7 +20,24 @@ and of which only a fingerprint is kept. The design is in
 The console says which piece is missing ("NOT READY" next to *hku*, with the
 reason under the editor), so check there first.
 
-## Setting the cluster password's fingerprint (once, and whenever it changes)
+## First use: nothing to do on the box
+
+The first person to sign in sets things up from the dashboard
+(**02 ML Training → CONSOLE → ssh**, or **SEND JOB TO TRAIN**):
+
+1. They sign in with their UID, Portal PIN, a fresh code and the `ing` password.
+2. Once their tunnel is up, the dashboard shows the cluster's host-key
+   fingerprints. Compare one with `ssh-keygen -lF 10.21.36.12` on a machine
+   that already logs in there, then **TRUST & CONTINUE**.
+3. The cluster checks the `ing` password itself; if it is accepted, its
+   fingerprint is kept, so every later sign-in is checked here first.
+
+After a `passwd` on the cluster (the CONSOLE's ssh mode is a real shell),
+the next sign-in ticks **The cluster password has changed**.
+
+The two tools below do the same from the box, for an admin who prefers it.
+
+## Setting the cluster password's fingerprint from the box (optional)
 
 No network, no HKU login: only the `ing` password, typed twice and never shown.
 
@@ -34,7 +51,7 @@ When the password is changed on the cluster, run this again straight away:
 until then sign-ins with the new password are refused here, and ones with
 the old password are refused by the cluster.
 
-## Pinning the cluster's host keys (once, by an admin, with their own HKU login)
+## Pinning the cluster's host keys from the box (optional; needs your own HKU login)
 
 ```sh
 ssh -i TMcloudkey.pem ec2-user@ec2-13-251-45-51.ap-southeast-1.compute.amazonaws.com

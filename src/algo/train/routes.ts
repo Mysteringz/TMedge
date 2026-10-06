@@ -10,6 +10,8 @@
  * HKU credentials) are in hpc/routes.ts.
  */
 import { randomUUID } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { readFileSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import express, { type NextFunction, type Request, type RequestHandler, type Response, type Router } from 'express';
@@ -22,6 +24,7 @@ import { EDITABLE, JobStore, MAX_JOBS_PER_USER, ProfileStore, StoreError, type C
 import type { GatewayDeps } from './hpc/gateway.js';
 import { mountHpc } from './hpc/routes.js';
 import { HpcService } from './hpc/service.js';
+import { Terminals } from './hpc/terminal.js';
 import { MAX_PY_BYTES, MAX_ZIP_ENTRIES, UploadError, Uploads, type Upload } from './uploads.js';
 
 /** The editor shows one file at a time; a megabyte of Python is plenty. */
@@ -35,6 +38,14 @@ export interface TrainOptions {
   mutating: RequestHandler;
   /** Tests replace openconnect and ssh with fakes. */
   gatewayDeps?: GatewayDeps;
+  /** The console sign-in a request belongs to, so a terminal is bound to it. */
+  bindingOf?: (req: { headers: { cookie?: string } }) => string;
+}
+
+/** What module 02 adds to the algo server's WebSocket upgrades. */
+export interface TrainSockets {
+  upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, url: URL, user: string, binding: string): boolean;
+  closeFor(binding: string): void;
 }
 
 const codeOf = (u: Upload): CodeInfo => ({
@@ -59,7 +70,7 @@ function readCode(dir: string, py: readonly string[], path: unknown): { text: st
   return { text: readFileSync(file, 'utf8') };
 }
 
-export function createTrain(opts: TrainOptions): { router: Router; error: string | null; stop(): void } {
+export function createTrain(opts: TrainOptions): { router: Router; error: string | null; stop(): void; sockets: TrainSockets | null } {
   const router = express.Router();
   let cfg: HpcConfig | null = null;
   let error: string | null = null;
@@ -73,7 +84,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
   // rest of the algo console starts, and this answers 503 with the reason.
   if (!cfg) {
     router.use((_req, res) => res.status(503).json({ error }));
-    return { router, error, stop: () => undefined };
+    return { router, error, stop: () => undefined, sockets: null };
   }
   const config = cfg;
   const store = new JobStore(opts.root);
@@ -239,12 +250,32 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
 
   mountHpc(router, { service, store, config, mutating: opts.mutating, limit: limit(hpcLimiter), userOf });
 
+  // The shell on the cluster (CONSOLE, "ssh" mode): a one-time ticket here,
+  // then a WebSocket upgrade on /train-term that server.ts hands over.
+  const terminals = service.gateway ? new Terminals(service.gateway, (user, action, result) => store.audit({ user, action, result })) : null;
+  router.post('/hpc/term', opts.mutating, limit(hpcLimiter), (req, res) => {
+    const user = userOf(res);
+    if (!terminals || !service.gateway?.live(user)) return res.status(428).json({ error: 'Sign in to HKU to open a terminal.', needs: 'credentials' });
+    try {
+      return res.json(terminals.issue(user, opts.bindingOf?.(req) ?? ''));
+    } catch (err) {
+      return res.status(429).json({ error: (err as Error).message });
+    }
+  });
+
   router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (err instanceof StoreError) return res.status(503).json({ error: err.message });
     return next(err);
   });
 
-  return { router, error, stop: () => { clearInterval(sweeper); void service.stop(); } };
+  return {
+    router, error,
+    stop: () => { clearInterval(sweeper); terminals?.closeAll(); void service.stop(); },
+    sockets: terminals ? {
+      upgrade: (req, socket, head, url, user, binding) => terminals.upgrade(req, socket, head, url, user, binding),
+      closeFor: (binding) => terminals.closeFor(binding),
+    } : null,
+  };
 }
 
 /** Where module 02 keeps its files, beside the console's other state. */

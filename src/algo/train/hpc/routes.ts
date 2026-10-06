@@ -11,7 +11,7 @@
 import type { Request, RequestHandler, Response, Router } from 'express';
 import type { HpcConfig } from '../config.js';
 import { validateSpec } from '../spec.js';
-import { ACTIVE, EDITABLE, HKU_UID, type JobStore, type TrainJob } from '../store.js';
+import { ACTIVE, EDITABLE, HKU_UID, type JobStore } from '../store.js';
 import { LockedOut } from './gateway.js';
 import { SealError, type Credentials } from './sealed.js';
 import type { HpcService } from './service.js';
@@ -35,6 +35,7 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
       available: service.unavailable() === null, reason: service.unavailable(),
       profile, domains: service.domains(), idleTtlSeconds: service.idleTtlSeconds(), ssh: service.sshTarget(),
       session: service.gateway?.info(user) ?? { state: 'none', uid: null, expiresInSeconds: null },
+      firstUse: service.firstUse(),
       lockedForSeconds: profile && service.gateway ? Math.ceil(service.gateway.lockedFor(user, profile.hkuUid) / 1000) : 0,
       running: service.ops.running(user)?.id ?? null,
     });
@@ -49,6 +50,24 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     }
   });
 
+  /** A session with no job attached: for the terminal, or the first-use questions. */
+  router.post('/hpc/connect', d.mutating, d.limit, (req, res) => {
+    const user = d.userOf(res);
+    if (service.gateway?.live(user)) return res.json({ already: true });
+    const ready = prepare(req, res, 'connect', null);
+    if (!ready) return;
+    const op = service.ops.create(user, null, 'connect');
+    void service.connect(op, ready.creds!, ready.passwordChanged);
+    return res.status(202).json({ opId: op.id });
+  });
+
+  /** "Trust this host key?" -- answered by the person whose sign-in asked. */
+  router.post('/ops/:id/hostkey', d.mutating, (req, res) => {
+    const accept = (req.body as { accept?: unknown } | undefined)?.accept === true;
+    if (!service.answerHostKey(d.userOf(res), String(req.params.id), accept)) return res.status(404).json({ error: 'nothing is waiting for that answer' });
+    return res.json({ ok: true });
+  });
+
   router.delete('/hpc/session', d.mutating, async (_req, res) => {
     await service.gateway?.close(d.userOf(res));
     res.json({ ok: true });
@@ -59,13 +78,13 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
    * the means to open one, and no other operation of theirs in flight.
    * Returns the credentials (or null when a session is live) or answers.
    */
-  const prepare = (req: Request, res: Response, action: string, job: TrainJob): { creds: Credentials | null } | null => {
+  const prepare = (req: Request, res: Response, action: string, jobId: string | null): { creds: Credentials | null; passwordChanged: boolean } | null => {
     const user = d.userOf(res);
     const why = service.unavailable();
     if (why) { res.status(503).json({ error: why }); return null; }
     if (service.ops.running(user)) { res.status(409).json({ error: 'Another HKU action of yours is still running.' }); return null; }
-    if (service.gateway!.live(user)) return { creds: null };
-    const body = (req.body ?? {}) as { sealed?: unknown; profile?: { hkuUid?: unknown; vpnDomain?: unknown } };
+    if (service.gateway!.live(user)) return { creds: null, passwordChanged: false };
+    const body = (req.body ?? {}) as { sealed?: unknown; profile?: { hkuUid?: unknown; vpnDomain?: unknown }; passwordChanged?: unknown };
     if (body.profile !== undefined) {
       const uid = body.profile.hkuUid;
       const domain = body.profile.vpnDomain;
@@ -78,7 +97,7 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const wait = service.gateway!.lockedFor(user, profile.hkuUid);
     if (wait > 0) { res.status(423).json({ error: new LockedOut(wait).message, retryAfterSeconds: Math.ceil(wait / 1000) }); return null; }
     try {
-      return { creds: service.inbox.open(user, body.sealed, action, job.id) };
+      return { creds: service.inbox.open(user, body.sealed, action, jobId), passwordChanged: body.passwordChanged === true };
     } catch (err) {
       res.status(400).json({ error: err instanceof SealError ? err.message : 'the sign-in could not be read' });
       return null;
@@ -92,12 +111,12 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     if (!EDITABLE.includes(job.status)) return res.status(409).json({ error: `a ${job.status} job has been sent already` });
     const v = validateSpec(job.spec, d.config, job.code.py);
     if (!v.ok) return res.status(409).json({ error: 'the saved spec no longer passes; edit and save the draft', problems: v.problems });
-    const ready = prepare(req, res, 'submit', job);
+    const ready = prepare(req, res, 'submit', job.id);
     if (!ready) return;
     // SUBMITTING now, synchronously: a second click cannot send it twice.
     store.update({ ...job, status: 'SUBMITTING', message: null, updatedAt: Date.now() });
     const op = service.ops.create(user, job.id, 'submit');
-    void service.submit(op, job, ready.creds);
+    void service.submit(op, job, ready.creds, ready.passwordChanged);
     return res.status(202).json({ opId: op.id });
   });
 
@@ -106,10 +125,10 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const job = store.get(user, String(req.params.id));
     if (!job) return res.status(404).json({ error: 'no such job' });
     if (job.slurmJobId === null) return res.status(409).json({ error: 'this job has not been sent to HPC2021' });
-    const ready = prepare(req, res, 'refresh', job);
+    const ready = prepare(req, res, 'refresh', job.id);
     if (!ready) return;
     const op = service.ops.create(user, job.id, 'refresh');
-    void service.refresh(op, job, ready.creds);
+    void service.refresh(op, job, ready.creds, ready.passwordChanged);
     return res.status(202).json({ opId: op.id });
   });
 
@@ -118,10 +137,10 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const job = store.get(user, String(req.params.id));
     if (!job) return res.status(404).json({ error: 'no such job' });
     if (job.slurmJobId === null || !ACTIVE.includes(job.status)) return res.status(409).json({ error: `a ${job.status} job cannot be cancelled` });
-    const ready = prepare(req, res, 'cancel', job);
+    const ready = prepare(req, res, 'cancel', job.id);
     if (!ready) return;
     const op = service.ops.create(user, job.id, 'cancel');
-    void service.cancel(op, job, ready.creds);
+    void service.cancel(op, job, ready.creds, ready.passwordChanged);
     return res.status(202).json({ opId: op.id });
   });
 

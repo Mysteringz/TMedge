@@ -16,7 +16,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { FilePy, FloppyDisk, PaperPlaneRight, Plus, UploadSimple, XMark } from './icons.tsx';
 import { Toast, useToast } from './parts.tsx';
 import { CodeEditor } from './train/CodeEditor.tsx';
-import { train, TrainError, type HpcAction, type HpcState, type Job, type JobSpec, type JobSummary, type OpEvent, type Problem, type TrainConfig } from './train/api.ts';
+import { train, TrainError, type HpcState, type Job, type JobSpec, type JobSummary, type OpEvent, type Problem, type SignInAction, type TrainConfig } from './train/api.ts';
+import { HostKeyPrompt } from './train/HostKey.tsx';
+import { ClusterTerminal } from './train/Terminal.tsx';
+import { installCspShims } from './train/csp.ts';
+
+// Before CodeMirror or xterm.js draw anything (train/csp.ts).
+installCspShims();
 import { SignIn } from './train/SignIn.tsx';
 
 const DEFAULT_SCRIPT = `# algo.hkumyseat.com — training job for the HKU cluster (SLURM)
@@ -70,6 +76,9 @@ const STEPS: Record<string, { at?: number; tone: Tone; say(d: Record<string, unk
   vpn_auth: { at: 0.1, tone: 'info', say: () => '[vpn]    signing in to HKUVPN as you (one attempt)' },
   vpn_connect: { at: 0.25, tone: 'info', say: () => '[vpn]    accepted · opening your own tunnel' },
   vpn_up: { at: 0.4, tone: 'info', say: () => '[vpn]    tunnel up' },
+  host_key_scan: { at: 0.45, tone: 'info', say: () => "[ssh]    first connection: fetching the cluster's host key" },
+  host_key: { tone: 'accent', say: () => '[ssh]    confirm the host key to continue (nothing logs in until you do)' },
+  password_recorded: { tone: 'info', say: () => '[ssh]    the cluster accepted the password · its fingerprint is kept to check typos next time' },
   ssh_auth: { at: 0.5, tone: 'info', say: () => '[ssh]    signing in to the cluster' },
   ssh_up: { at: 0.6, tone: 'info', say: () => '[ssh]    signed in · your PIN and code are wiped from the server' },
   session_reused: { at: 0.6, tone: 'info', say: () => '[hku]    using your open session · no code needed' },
@@ -191,8 +200,13 @@ export function Train() {
   const [viewText, setViewText] = useState('');
   const [tab, setTab] = useState<'code' | 'sbatch' | 'log'>('code');
   const [hpc, setHpc] = useState<HpcState | null>(null);
-  const [signIn, setSignIn] = useState<{ action: HpcAction; jobId: string; jobName: string; then?: 'log' } | null>(null);
-  const [acting, setActing] = useState<HpcAction | null>(null);
+  const [signIn, setSignIn] = useState<{ action: SignInAction; jobId: string | null; jobName: string | null; then?: 'log' | 'shell' } | null>(null);
+  const [acting, setActing] = useState<SignInAction | null>(null);
+  const [hostKeyAsk, setHostKeyAsk] = useState<{ opId: string; host: string; keys: { type: string; fingerprint: string }[] } | null>(null);
+  /** The CONSOLE shows the dashboard's own log, or a shell on the cluster. */
+  const [consoleMode, setConsoleMode] = useState<'log' | 'ssh'>('log');
+  /** Bumped to (re)mount the terminal; 0 = none wanted. */
+  const [termKey, setTermKey] = useState(0);
   const [logText, setLogText] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ sbatch: string | null; problems: Problem[] }>({ sbatch: null, problems: [] });
   const [dirty, setDirty] = useState(false);
@@ -412,14 +426,19 @@ export function Train() {
    * Starts an HKU action and follows it. A 428 means "sign in first": the
    * sign-in form opens, and it calls this again with sealed credentials.
    */
-  const runOp = async (action: HpcAction, id: string, name: string, body?: unknown, then?: 'log'): Promise<OpEvent | null> => {
+  const runOp = async (action: SignInAction, id: string | null, name: string | null, body?: unknown, then?: 'log' | 'shell'): Promise<OpEvent | null> => {
     setActing(action);
     try {
-      const r = await train.act(id, action, body);
+      const r = action === 'connect' ? await train.connect(body) : await train.act(id!, action, body);
+      if ('already' in r && r.already) return { type: 'done', data: {} };
       if (r.status === 428) { setSignIn({ action, jobId: id, jobName: name, then }); return null; }
       if (r.status !== 202 || !r.opId) { say(`! ${r.error ?? `HTTP ${r.status}`}`, 'err'); return null; }
+      const opId = r.opId;
       if (action === 'submit') setProgress(0.02);
-      return await train.follow(r.opId, (e) => {
+      return await train.follow(opId, (e) => {
+        if (e.type === 'host_key') {
+          setHostKeyAsk({ opId, host: String(e.data.host), keys: (e.data.keys as { type: string; fingerprint: string }[]) ?? [] });
+        }
         const step = STEPS[e.type];
         if (!step) return;
         say(step.say(e.data), step.tone);
@@ -428,8 +447,18 @@ export function Train() {
       });
     } finally {
       setActing(null);
-      await Promise.all([loadHpc(), reloadJob(id)]);
+      setHostKeyAsk(null);
+      await Promise.all([loadHpc(), id ? reloadJob(id) : Promise.resolve()]);
     }
+  };
+
+  /** The CONSOLE's ssh mode: a shell now if signed in, or the sign-in first. */
+  const openShell = async () => {
+    setConsoleMode('ssh');
+    if (hpc?.session.state === 'up') { setTermKey((k) => k + 1); return; }
+    say(`$ ssh ${target}`, 'cmd');
+    const last = await runOp('connect', null, null, undefined, 'shell');
+    if (last?.type === 'done') setTermKey((k) => k + 1);
   };
 
   const send = async () => {
@@ -501,6 +530,8 @@ export function Train() {
   const srun = preview.sbatch?.split('\n').find((l) => l.startsWith('srun '));
   const filled = Math.round(progress * 20);
   const ready = hpc?.available ?? cfg.hpc.available;
+  const target = hpc?.ssh ? `${hpc.ssh.user ?? hpc.profile?.hkuUid ?? 'you'}@${hpc.ssh.host}` : 'the cluster';
+  const signedIn = hpc?.session.state === 'up';
   const canSend = ready && !busy && !acting;
   const sent = !!job && !EDITABLE.has(job.status);
   const elapsed = job?.elapsedSeconds ?? (job?.startedAt ? Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000) : null);
@@ -560,18 +591,45 @@ export function Train() {
             </div>
           </div>
 
-          <div className="card elev-sm cx-panel">
+          <div className={`card elev-sm cx-panel cx-console ${consoleMode === 'ssh' ? 'is-ssh' : ''}`}>
             <div className="cx-bar">
-              <span className="cx-label" style={{ marginRight: 'auto' }}>CONSOLE</span>
-              <div className="cx-progress" aria-hidden="true">
-                {Array.from({ length: 20 }, (_, i) => <span key={i} className={i < filled ? 'on' : ''} />)}
+              <span className="cx-label">CONSOLE</span>
+              <div className="seg cx-tabs" role="tablist" aria-label="Console">
+                <label className="seg-opt"><input type="radio" name="console" checked={consoleMode === 'log'} onChange={() => setConsoleMode('log')} />log</label>
+                <label className="seg-opt" title={`A shell on ${target}, through your own HKU session`}>
+                  <input type="radio" name="console" checked={consoleMode === 'ssh'} onChange={() => void openShell()} />ssh {target}
+                </label>
               </div>
-              <span className="cx-pct">{Math.round(progress * 100)}%</span>
+              <span style={{ marginLeft: 'auto' }} />
+              {consoleMode === 'log' && <>
+                <div className="cx-progress" aria-hidden="true">
+                  {Array.from({ length: 20 }, (_, i) => <span key={i} className={i < filled ? 'on' : ''} />)}
+                </div>
+                <span className="cx-pct">{Math.round(progress * 100)}%</span>
+              </>}
+              {consoleMode === 'ssh' && signedIn && termKey > 0 && (
+                <button className="btn btn-ghost cx-btn-px" onClick={() => setTermKey((k) => k + 1)} title="Close this shell and open a new one">NEW SHELL</button>
+              )}
             </div>
-            <div className="cx-log" ref={logEl} role="log" aria-live="polite">
+            <div className="cx-log" ref={logEl} role="log" aria-live="polite" hidden={consoleMode !== 'log'}>
               {log.map((l, i) => <div key={i} className={`l-${l.tone}`}>{l.t}</div>)}
               <span className="cx-accent cx-blink">█</span>
             </div>
+            {consoleMode === 'log' && <div className="cx-log-hint">read-only log · switch to <b>ssh</b> to type commands on {target}</div>}
+            {consoleMode === 'ssh' && (signedIn && termKey > 0
+              ? <ClusterTerminal key={termKey} target={target} ticket={() => train.termTicket()}
+                  onClosed={(why) => { say(`[ssh]    shell closed: ${why}`, 'muted'); void loadHpc(); }} />
+              : (
+                <div className="cx-term-gate">
+                  <div className="cx-kicker" style={{ margin: 0 }}>&gt; SSH {target.toUpperCase()}</div>
+                  <p>{!ready ? (hpc?.reason ?? cfg.hpc.reason) : signedIn
+                    ? 'You are signed in to HKU. Open a shell on the cluster as your session.'
+                    : 'A shell on the cluster, through your own HKUVPN login. Sign in with your UID, Portal PIN, a fresh code and the cluster password.'}</p>
+                  <button className="btn btn-primary cx-btn-px" disabled={!ready || !!acting} onClick={() => void openShell()}>
+                    {acting === 'connect' ? 'SIGNING IN…' : signedIn ? 'OPEN SHELL' : 'SIGN IN & OPEN SHELL'}
+                  </button>
+                </div>
+              ))}
           </div>
           {!ready && <p id="cx-hpc-why" className="cx-hint cx-why">{hpc?.reason ?? cfg.hpc.reason}</p>}
         </section>
@@ -744,8 +802,20 @@ export function Train() {
           onSealed={(body) => {
             const s = signIn;
             setSignIn(null);
-            void runOp(s.action, s.jobId, s.jobName, body).then((last) => { if (s.then === 'log' && last?.type === 'done') void showLog(); });
+            void runOp(s.action, s.jobId, s.jobName, body).then((last) => {
+              if (last?.type !== 'done') return;
+              if (s.then === 'log') void showLog();
+              if (s.then === 'shell') { setConsoleMode('ssh'); setTermKey((k) => k + 1); }
+            });
           }} />
+      )}
+      {hostKeyAsk && (
+        <HostKeyPrompt host={hostKeyAsk.host} keys={hostKeyAsk.keys} onAnswer={(accept) => {
+          const ask = hostKeyAsk;
+          setHostKeyAsk(null);
+          say(accept ? `[ssh]    host key trusted and pinned for ${ask.host}` : '[ssh]    host key not trusted · nothing pinned, nobody logged in', accept ? 'info' : 'accent');
+          void train.answerHostKey(ask.opId, accept).catch(() => undefined);
+        }} />
       )}
     </main>
   );

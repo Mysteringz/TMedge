@@ -59,6 +59,8 @@ export interface RunOptions { stdin?: Readable; timeoutMs?: number; maxBytes?: n
 export interface SshLike {
   open(password: Buffer, timeoutMs?: number): Promise<void>;
   run(command: string, opts?: RunOptions): Promise<RunResult>;
+  /** An interactive login shell over the open connection (terminal.ts). */
+  shellCommand(): { bin: string; args: string[]; home: string; target: string };
   close(): Promise<void>;
   readonly alive: boolean;
 }
@@ -199,6 +201,19 @@ export class SshLink implements SshLike {
         resolve({ code: code ?? -1, stdout: Buffer.concat(out).subarray(0, max), stderr: err });
       });
     });
+  }
+
+  /**
+   * ssh with a remote pty over the master connection: BatchMode, so it can
+   * never ask anyone for a password, and no escape character, so "~." typed
+   * in the shell is just text.
+   */
+  shellCommand(): { bin: string; args: string[]; home: string; target: string } {
+    return {
+      bin: this.o.bin,
+      args: [...this.common, '-o', 'ControlMaster=no', '-o', 'BatchMode=yes', '-tt', '-e', 'none', this.o.host],
+      home: this.o.runDir, target: `${this.o.user}@${this.o.host}`,
+    };
   }
 
   async close(): Promise<void> {

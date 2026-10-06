@@ -9,19 +9,19 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { packCredentials, sealCredentials, type Sealed } from '../../../../src/shared/hpcseal.js';
 import { ArrowRight, XMark } from '../icons.tsx';
-import { train, type HpcAction, type HpcState } from './api.ts';
+import { train, type HpcState, type SignInAction } from './api.ts';
 
 export interface SignInProps {
   hpc: HpcState;
-  action: HpcAction;
-  jobId: string;
-  jobName: string;
+  action: SignInAction;
+  jobId: string | null;
+  jobName: string | null;
   onCancel(): void;
-  /** Called with the sealed credentials and the (non-secret) profile. */
-  onSealed(body: { sealed: Sealed; profile: { hkuUid: string; vpnDomain: string } }): void;
+  /** Called with the sealed credentials and the (non-secret) rest. */
+  onSealed(body: { sealed: Sealed; profile: { hkuUid: string; vpnDomain: string }; passwordChanged: boolean }): void;
 }
 
-const VERB: Record<HpcAction, string> = { submit: 'SIGN IN & SEND', refresh: 'SIGN IN & REFRESH', cancel: 'SIGN IN & CANCEL' };
+const VERB: Record<SignInAction, string> = { submit: 'SIGN IN & SEND', refresh: 'SIGN IN & REFRESH', cancel: 'SIGN IN & CANCEL', connect: 'SIGN IN' };
 
 export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: SignInProps) {
   const [uid, setUid] = useState(hpc.profile?.hkuUid ?? '');
@@ -30,6 +30,7 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
   const [otp, setOtp] = useState('');
   const [separate, setSeparate] = useState(false);
   const [hpcPw, setHpcPw] = useState('');
+  const [changed, setChanged] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const first = useRef<HTMLInputElement>(null);
@@ -62,7 +63,7 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
       setPin(''); setOtp(''); setHpcPw('');
       const plain = packCredentials(p, o, w);
       p.fill(0); o.fill(0); w.fill(0);
-      onSealed({ sealed: await sealCredentials(ticket, action, jobId, plain), profile: { hkuUid: uid, vpnDomain: domain } });
+      onSealed({ sealed: await sealCredentials(ticket, action, jobId, plain), profile: { hkuUid: uid, vpnDomain: domain }, passwordChanged: shared && changed });
     } catch (err) {
       setBusy(false);
       setError((err as Error).message);
@@ -79,7 +80,17 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
           <span id="hku-title" className="cx-kicker" style={{ margin: 0 }}>&gt; HKU SIGN-IN</span>
           <button type="button" className="btn btn-ghost cx-icon" onClick={onCancel} aria-label="Close"><XMark /></button>
         </div>
-        <p className="cx-modal-lede">Sign in to HKUVPN as yourself to {action === 'submit' ? 'send' : action} <b>{jobName}</b> on <b>{target}</b>.</p>
+        <p className="cx-modal-lede">
+          {action === 'connect'
+            ? <>Sign in to HKUVPN as yourself to open a shell on <b>{target}</b>.</>
+            : <>Sign in to HKUVPN as yourself to {action === 'submit' ? 'send' : action} <b>{jobName}</b> on <b>{target}</b>.</>}
+        </p>
+        {(hpc.firstUse.hostKey || (shared && hpc.firstUse.password)) && (
+          <p className="cx-hint cx-modal-first">
+            First sign-in to this cluster:{hpc.firstUse.hostKey ? ' you will be shown its host key to confirm before anything logs in.' : ''}
+            {shared && hpc.firstUse.password ? ` The cluster checks the ${hpc.ssh?.user ?? ''} password itself this once, and its fingerprint is kept for next time.` : ''}
+          </p>
+        )}
         <div className="cx-modal-uid">
           <div className="field">
             <label htmlFor="hku-uid">HKU UID</label>
@@ -106,10 +117,17 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
             placeholder="from Microsoft Authenticator or SMS" onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} />
         </div>
         {shared ? (
-          <div className="field">
-            <label htmlFor="hku-hpcpw">Password for {target}</label>
-            <input id="hku-hpcpw" className="input" type="password" value={hpcPw} autoComplete="off" onChange={(e) => setHpcPw(e.target.value)} />
-          </div>
+          <>
+            <div className="field">
+              <label htmlFor="hku-hpcpw">Password for {target}</label>
+              <input id="hku-hpcpw" className="input" type="password" value={hpcPw} autoComplete="off" onChange={(e) => setHpcPw(e.target.value)} />
+            </div>
+            {!hpc.firstUse.password && (
+              <label className="cx-check" title="After a passwd on the cluster: it checks this password itself, once, and its fingerprint is replaced">
+                <input type="checkbox" checked={changed} onChange={(e) => setChanged(e.target.checked)} /> The cluster password has changed
+              </label>
+            )}
+          </>
         ) : (
           <>
             <label className="cx-check">

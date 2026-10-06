@@ -102,7 +102,9 @@ has hidden Linux failures before.
   password exists on the box only as a fingerprint, never in git. Each
   credential is sealed in the browser, opened on the edge into a Buffer (never a
   string), fed to openconnect on stdin and to ssh through askpass (never
-  argv or env), and wiped when the login ends. Never log openconnect's
+  argv or env), and wiped when the login ends. The CONSOLE's ssh shell is
+  encrypted end to end too (src/shared/hpcterm.ts); never log or stringify
+  what passes through it. Never log openconnect's
   stderr (it prints cookies). Never retry a login. test/hpcstack.test.ts
   hunts for the PIN in files, logs, /proc and the heap; keep it passing.
   docs/hpc/HANDOVER.md rules 1-6 apply to every change there.
