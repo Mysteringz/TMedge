@@ -57,15 +57,15 @@ export function renderSbatch(spec: JobSpec, opts: RenderOptions = {}): string {
     'set -euo pipefail',
     '',
     'cd "$SLURM_SUBMIT_DIR/code"',
-    '# module and conda read unset variables; strict mode resumes after them.',
-    'set +u',
-    'module purge',
-    ...spec.modules.map((m) => `module load ${shQuote(m)}`),
   );
-  if (spec.condaEnv) {
-    lines.push('source "$(conda info --base)/etc/profile.d/conda.sh"', `conda activate ${shQuote(spec.condaEnv)}`);
+  // Only when asked for: a single-node cluster may have no `module` at all,
+  // and under set -e a missing command fails the job.
+  if (spec.modules.length > 0 || spec.condaEnv) {
+    lines.push('# module and conda read unset variables; strict mode resumes after them.', 'set +u');
+    if (spec.modules.length > 0) lines.push('module purge', ...spec.modules.map((m) => `module load ${shQuote(m)}`));
+    if (spec.condaEnv) lines.push('source "$(conda info --base)/etc/profile.d/conda.sh"', `conda activate ${shQuote(spec.condaEnv)}`);
+    lines.push('set -u');
   }
-  lines.push('set -u');
   for (const [k, v] of Object.entries(spec.env)) lines.push(`export ${k}=${shQuote(v)}`);
   lines.push(['srun python', shQuote(spec.entrypoint), ...spec.args.map(shQuote)].join(' '), '');
   return lines.join('\n');

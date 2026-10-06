@@ -10,8 +10,4 @@
 set -euo pipefail
 
 cd "$SLURM_SUBMIT_DIR/code"
-# module and conda read unset variables; strict mode resumes after them.
-set +u
-module purge
-set -u
 srun python train.py

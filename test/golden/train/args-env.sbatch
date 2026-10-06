@@ -10,10 +10,6 @@
 set -euo pipefail
 
 cd "$SLURM_SUBMIT_DIR/code"
-# module and conda read unset variables; strict mode resumes after them.
-set +u
-module purge
-set -u
 export OMP_NUM_THREADS=4
 export WANDB_MODE=offline
 export NOTE='a "quoted" $HOME'

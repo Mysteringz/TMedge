@@ -757,7 +757,7 @@ export function Train() {
                   spellCheck={false} onChange={(e) => edit({ time: e.target.value })} />
               </Field>
             </div>
-            <div className="field">
+            {cfg.modules.length > 0 && <div className="field">
               <label id="f-mods">Modules</label>
               <div className="cx-chips" role="group" aria-labelledby="f-mods">
                 {cfg.modules.map((m) => (
@@ -768,7 +768,7 @@ export function Train() {
                   </label>
                 ))}
               </div>
-            </div>
+            </div>}
             <div className="cx-fields">
               <Field label="Conda env" id="f-conda" bad={bad.has('condaEnv')}>
                 <input id="f-conda" className={`input ${bad.has('condaEnv') ? 'is-bad' : ''}`} value={form.conda} placeholder="(none)"

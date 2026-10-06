@@ -1,6 +1,6 @@
 {
-  "verified": false,
-  "source": "Placeholders until M0: replace partitions with `sinfo -s` and modules with `module avail` on the cluster (ing@10.21.36.12), then set verified to true (docs/hpc/m0-checklist.md S7).",
+  "verified": true,
+  "source": "From `sinfo -s` / `sinfo -o \"%P %l %G\"` on ing@10.21.36.12 (iw-g2), 2026-10-06: one partition, debug, 30 days, gpu:4. No modules listed: add them here if the cluster has Lmod.",
   "backend": "vpn-ssh",
   "planA": {
     "vpnHost": "vpn2fa.hku.hk",
@@ -17,12 +17,10 @@
     "tools": {}
   },
   "partitions": [
-    { "name": "intel", "maxTime": "1-00:00:00", "gpu": false },
-    { "name": "amd", "maxTime": "1-00:00:00", "gpu": false },
-    { "name": "gpu", "maxTime": "1-00:00:00", "gpu": true, "maxGpus": 2 }
+    { "name": "debug", "maxTime": "30-00:00:00", "gpu": true, "maxGpus": 4 }
   ],
-  "defaultPartition": "intel",
-  "modules": ["python", "cuda", "anaconda3"],
+  "defaultPartition": "debug",
+  "modules": [],
   "maxUploadMb": 95,
   "maxUnpackedMb": 1024,
   "quotaMb": 2048

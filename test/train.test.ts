@@ -62,7 +62,7 @@ describe('HPC config', () => {
     assert.equal(shipped.planA?.sshUser, 'ing');
     assert.equal(shipped.planA?.sshAuth, 'shared-password', 'the shared password is typed each time, never configured');
     assert.equal(shipped.planA?.vpnServerCert, null, 'the real VPN is checked against the system CAs, not a pin');
-    assert.equal(shipped.verified, false, 'placeholders must not pose as what sinfo said');
+    assert.deepEqual(shipped.partitions.map((x) => [x.name, x.maxTime, x.gpu, x.maxGpus]), [['debug', '30-00:00:00', true, 4]], 'what sinfo said on the cluster');
     assert.ok(shipped.maxUploadMb < 100, 'Cloudflare Tunnel refuses request bodies over 100 MB');
   });
 
@@ -263,7 +263,7 @@ describe('injection: user strings reach the program byte for byte (T4-7)', () =>
         p += 2 + argc;
       }
       const expected = [
-        ['module', 'purge'], ...v.spec.modules.map((m) => ['module', 'load', m]),
+        ...(v.spec.modules.length ? [['module', 'purge'], ...v.spec.modules.map((m) => ['module', 'load', m])] : []),
         ...(v.spec.condaEnv ? [['conda', 'activate', v.spec.condaEnv]] : []),
         ['srun', 'python', v.spec.entrypoint, ...v.spec.args],
       ];
