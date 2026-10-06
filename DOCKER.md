@@ -52,7 +52,8 @@ docker compose ps                   # both should read "healthy" within ~20 s
 | URL | What |
 |---|---|
 | `http://<BIND_ADDR>:8080` | Student site |
-| `http://<BIND_ADDR>:8090` | Debug console (any user name, password `ADMIN_PASSWORD`) |
+| `http://<BIND_ADDR>:8091` | Algo console: sign in, then 01 debugger, 03 debug console. Accounts: `docker compose run --rm edge algo-user add <name>` |
+| `http://<BIND_ADDR>:8090` | Console port: device endpoints (rig RGB, firmware, TMflash); a browser is sent to `:8091/console` |
 | UDP `<BIND_ADDR>:5200` | TMnodes sending directly |
 | TCP `<BIND_ADDR>:5210` | TMWAccess gateways (raw TCP or WebSocket `/tmgw`) |
 | TCP `<BIND_ADDR>:5211` | Direct TMsense nodes, WebSocket `/tmnode` (only with `NODE_PORT=5211` in `.env`; see `docs/DIRECT_NODE_PROTOCOL.md`) |
@@ -119,7 +120,7 @@ from the first argument:
 | `tmedge web` | Student site and API (`dist/src/web/main.js`) |
 | `tmedge sim [args]` | Simulator (`dist/src/tools/simulator.js`) |
 | `tmedge user …` | Account management |
-| `tmedge health` | Healthcheck: web `/healthz` is 200, or the console answers (401 counts as up) |
+| `tmedge health` | Healthcheck: web `/healthz` is 200, or the console port answers (401 counts as up) |
 
 The worker uses `Dockerfile.firmware-worker`, runs as UID 10001, and receives
 only a streamed source archive. It has no backend environment variables,

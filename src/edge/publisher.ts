@@ -39,9 +39,12 @@ export class Publisher {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${this.token}` },
         body,
         signal: AbortSignal.timeout(5000),
+        redirect: 'error',
       })
         .then(async (res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text()).slice(0, 120)}`);
+          // Do not buffer an unbounded error body or expose its contents in the console.
+          if (!res.ok) { await res.body?.cancel(); throw new Error(`HTTP ${res.status}`); }
+          await res.body?.cancel();
           const recovered = !st.ok;
           st.ok = true;
           st.lastOkAt = Date.now();

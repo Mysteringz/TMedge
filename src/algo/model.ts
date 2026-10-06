@@ -49,7 +49,11 @@ export interface MlDetection {
 export function isModel(v: unknown): v is LocatorModel {
   const m = v as LocatorModel;
   return !!m && m.version === 1 && Array.isArray(m.weights) && Array.isArray(m.features)
-    && m.weights.length === m.features.length && typeof m.threshold === 'number';
+    && m.weights.length === FEATURES.length && m.features.length === FEATURES.length
+    && m.features.every((feature, i) => feature === FEATURES[i])
+    && m.weights.every((weight) => typeof weight === 'number' && Number.isFinite(weight))
+    && Number.isFinite(m.threshold) && m.threshold > 0 && m.threshold <= 1
+    && Number.isInteger(m.minArea) && m.minArea >= 1 && m.minArea <= GRID_W * GRID_H;
 }
 
 /**

@@ -10,6 +10,7 @@ import { StudentAccountImportExport, validateStudentAccountImport } from '../src
 import { PostgresStudentAccountRepository } from '../src/infrastructure/postgres/student-account-repository.js';
 import { ApplicationError } from '../src/modules/shared/application/contracts.js';
 import { createPostgresDataSource } from '../src/infrastructure/postgres/data-source.js';
+import { AuthError, Sessions, studentSessionVersion } from '../src/modules/student-auth/application/student-session-service.js';
 
 test('JSON new accounts retain UUIDs, legacy scrypt credentials, and concurrent duplicate protection', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'student-storage-'));
@@ -31,6 +32,41 @@ test('JSON new accounts retain UUIDs, legacy scrypt credentials, and concurrent 
     const records = JSON.parse(readFileSync(path, 'utf8')) as Array<{ email: string; id?: string }>;
     assert.equal(records.find((user) => user.email === legacy.email)?.id, undefined);
     assert.equal(await accounts.verify('new@example.edu', 'incorrect password'), null);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Google accounts use stable subject identity and never auto-link by email', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'student-google-'));
+  try {
+    const accounts = new JsonStudentAccountRepository(join(directory, 'users.json'), ['example.edu']);
+    const first = accounts.google({ sub: 'google-subject-1', email: 'person@example.net', name: 'Person' }, true);
+    const returned = accounts.google({ sub: 'google-subject-1', email: 'changed@example.net', name: 'Changed' }, false);
+    assert.equal(returned.id, first.id);
+    assert.equal(returned.email, first.email);
+    assert.equal(returned.google, 'google-subject-1');
+    const passwordAccount = await accounts.create('owned@example.edu', 'Owned', 'strong password');
+    assert.ok(passwordAccount.id);
+    assert.throws(() => accounts.google({ sub: 'google-subject-2', email: passwordAccount.email, name: 'Other' }, true), AuthError);
+    assert.throws(() => accounts.google({ sub: 'google-subject-3', email: 'closed@example.net', name: 'Closed' }, false), AuthError);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('student sessions bind to account credentials and persist logout revocation', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'student-session-'));
+  try {
+    const path = join(directory, 'revocations.json');
+    const secret = Buffer.alloc(32, 7);
+    const user = { id: randomUUID(), email: 'student@example.edu', name: 'Student', salt: 'a'.repeat(32), hash: 'b'.repeat(64), createdAt: Date.now() };
+    const sessions = new Sessions(secret, undefined, path);
+    const cookie = sessions.issue(user.email, Date.now(), studentSessionVersion(user));
+    assert.equal(sessions.detail(cookie)?.version, studentSessionVersion(user));
+    assert.notEqual(sessions.detail(cookie)?.version, studentSessionVersion({ ...user, hash: 'c'.repeat(64) }));
+    sessions.revoke(cookie);
+    assert.equal(new Sessions(secret, undefined, path).read(cookie), null);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

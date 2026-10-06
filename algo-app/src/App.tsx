@@ -117,13 +117,21 @@ export default function App() {
   // fetched each time the socket is opened.
   useEffect(() => {
     let closed = false;
+    let socket: WebSocket | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const open = async () => {
+      if (closed) return;
       try {
         const { token } = await api.wsToken();
-        const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${token}`);
+        if (closed) return;
+        const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+        socket = sock;
         ws.current = sock;
         sock.onmessage = (ev) => {
-          const msg = JSON.parse(String(ev.data)) as RunResult & { type: string; pipeline?: Pipeline; live?: boolean; pending?: PendingChange[] };
+          if (closed || socket !== sock) return;
+          let msg: RunResult & { type: string; pipeline?: Pipeline; live?: boolean; pending?: PendingChange[] };
+          try { msg = JSON.parse(String(ev.data)) as typeof msg; } catch { setNotice('The console received an unreadable live message.'); return; }
+          if (!msg || typeof msg.type !== 'string') return;
           if (msg.type === 'frame') {
             // A live frame must not overwrite the one being looked at.
             setScrub((s) => { if (s === null) { setRun(msg); if (msg.pending) setPending(msg.pending); } return s; });
@@ -133,14 +141,21 @@ export default function App() {
             if (msg.pending) setPending(msg.pending);
           }
         };
-        sock.onclose = () => { if (!closed) setTimeout(() => void open(), 2000); };
+        sock.onclose = () => { if (!closed && socket === sock) retryTimer = setTimeout(() => void open(), 2000); };
       } catch {
-        if (!closed) setTimeout(() => void open(), 3000);
+        if (!closed) retryTimer = setTimeout(() => void open(), 3000);
       }
     };
     void open();
-    return () => { closed = true; ws.current?.close(); };
+    return () => {
+      closed = true;
+      clearTimeout(retryTimer);
+      socket?.close();
+      if (ws.current === socket) ws.current = null;
+    };
   }, []);
+
+  useEffect(() => () => { if (scrubTimer.current) clearTimeout(scrubTimer.current); runSeq.current++; }, []);
 
   // The ring shifts under us as frames arrive, so an index into a list fetched
   // at mount stops meaning what it did. Refresh it while live; never mid-drag,
@@ -247,6 +262,7 @@ export default function App() {
       const seq = ++runSeq.current;
       try {
         await api.mode('step', frame);
+        if (seq !== runSeq.current) return;
         const result = await api.run(frame);
         if (seq === runSeq.current) {
           setRun(result);
@@ -294,7 +310,7 @@ export default function App() {
           <select value={pipeline?.uid ?? ''} onChange={(e) => {
             if (!pipeline) return;
             void push({ ...pipeline, uid: e.target.value });
-            void api.frames(e.target.value).then((f) => setFrames(f.frames));
+            void api.frames(e.target.value).then((f) => setFrames(f.frames)).catch((e: Error) => setNotice(e.message));
           }}>
             {sources.map((s) => (
               <option key={s.uid} value={s.uid}>
@@ -310,11 +326,11 @@ export default function App() {
           )}
         </div>
         <div className="modes">
-          <button className={`btn ${live ? 'on' : ''}`} onClick={() => { void api.mode('live'); setLive(true); }}>● Live</button>
-          <button className={`btn ${live ? '' : 'on'}`} onClick={() => { void api.mode('pause', run?.frameId); setLive(false); }}>Pause</button>
+          <button className={`btn ${live ? 'on' : ''}`} onClick={() => void api.mode('live').then(() => setLive(true)).catch((e: Error) => setNotice(e.message))}>● Live</button>
+          <button className={`btn ${live ? '' : 'on'}`} onClick={() => void api.mode('pause', run?.frameId).then(() => setLive(false)).catch((e: Error) => setNotice(e.message))}>Pause</button>
           <button className="btn" onClick={() => step(-1)}>◀ Prev</button>
           <button className="btn" onClick={() => step(1)}>Next ▶</button>
-          <button className="btn" onClick={() => void api.resetPipeline().then((r) => setPipeline(r.pipeline))}>Reset graph</button>
+          <button className="btn" onClick={() => void api.resetPipeline().then((r) => setPipeline(r.pipeline)).catch((e: Error) => setNotice(e.message))}>Reset graph</button>
           <button className="btn" onClick={() => {
             const name = prompt('Save this pipeline as:');
             if (name) void api.savePipeline(name).catch((e: Error) => setNotice(e.message));
@@ -441,8 +457,8 @@ export default function App() {
                         was {held.from ?? '—'}
                         {held.binding === 'device' && held.confirmedAt !== null && ' · the sensor confirmed it'}
                         {' '}· goes back in {Math.max(0, Math.round((held.revertAt - Date.now()) / 60000))} min
-                        <button className="link" onClick={() => void api.commit(held.param, pipeline?.uid).then(async () => setPending((await api.params()).pending))}>keep</button>
-                        <button className="link" onClick={() => void api.revert(held.param, pipeline?.uid).then(async () => { setPending((await api.params()).pending); setRun(await api.run()); })}>undo now</button>
+                        <button className="link" onClick={() => void api.commit(held.param, pipeline?.uid).then(async () => setPending((await api.params()).pending)).catch((e: Error) => setNotice(e.message))}>keep</button>
+                        <button className="link" onClick={() => void api.revert(held.param, pipeline?.uid).then(async () => { setPending((await api.params()).pending); setRun(await api.run()); }).catch((e: Error) => setNotice(e.message))}>undo now</button>
                       </div>
                     )}
                     {p.help && <div className="help">{p.help}</div>}
@@ -452,7 +468,7 @@ export default function App() {
 
               {spec.domain === 'device' && (
                 <div className="danger">
-                  <button className="btn" onClick={() => void api.resetBackground(pipeline?.uid)}>Relearn background</button>
+                  <button className="btn" onClick={() => void api.resetBackground(pipeline?.uid).catch((e: Error) => setNotice(e.message))}>Relearn background</button>
                   <button className="btn btn-warn" onClick={() => {
                     if (confirm('Write the sensor’s current parameters to its flash? This survives a reboot and is not on a timer.')) {
                       void api.persist(pipeline?.uid).catch((e: Error) => setNotice(e.message));
@@ -593,17 +609,22 @@ function Timeline({ frames, live, at, onScrub, onLive }: {
  */
 function TrainingData() {
   const [s, setS] = useState<Awaited<ReturnType<typeof api.pairs>> | null>(null);
-  const refresh = useCallback(() => { void api.pairs().then(setS).catch(() => undefined); }, []);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const refresh = useCallback(() => {
+    void api.pairs().then((next) => { setS(next); setError(''); }).catch((e: Error) => setError(e.message));
+  }, []);
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 10_000);
     return () => clearInterval(t);
   }, [refresh]);
-  if (!s) return null;
+  if (!s) return error ? <p className="notice">{error}</p> : null;
   const mb = (s.bytes / 1048576).toFixed(0);
   return (
     <div className="lib-group training">
       <div className="lib-title">Training data</div>
+      {error && <p className="notice" role="alert">{error}</p>}
       {s.rgbNodes.length === 0
         ? <p className="hint">No node here has an RGB camera, so there is nothing to learn from.</p>
         : (
@@ -613,7 +634,14 @@ function TrainingData() {
               <div><span>with people</span><b>{s.withPeople}</b></div>
               <div><span>on disk</span><b>{mb} MB</b></div>
             </div>
-            <button className={`btn ${s.recording ? 'on' : ''}`} onClick={() => void api.record(!s.recording).then(refresh)}>
+            <button className={`btn ${s.recording ? 'on' : ''}`} disabled={busy} onClick={() => {
+              setBusy(true);
+              setError('');
+              void api.record(!s.recording).then((result) => {
+                setS((current) => current ? { ...current, recording: result.recording, samples: result.samples } : current);
+                refresh();
+              }).catch((e: Error) => setError(e.message)).finally(() => setBusy(false));
+            }}>
               {s.recording ? '● Recording' : 'Start recording'}
             </button>
             {s.lastSkipped && <p className="hint">last skip: {s.lastSkipped}</p>}
@@ -649,6 +677,7 @@ function Viewer({ envelope, o, d, live }: {
   switch (envelope.type) {
     case 'thermal_input': {
       const f = o.frame as { pixels: string; min: number; max: number; mean: number } | undefined;
+      if (f && !unpack(f.pixels)) return <div className="empty">invalid thermal frame</div>;
       return f ? (
         <div className="views">
           <figure><GridView pixels={unpack(f.pixels)} mirror={mirror} /><figcaption>raw thermal{mirrorNote}</figcaption></figure>

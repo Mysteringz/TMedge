@@ -71,6 +71,8 @@ export interface RolloutNode {
    */
   transport: 'udp' | 'gateway' | 'direct' | null;
   online: boolean;
+  /** Enrolled devices must never be intentionally flashed back to plaintext firmware. */
+  encryptionRequired?: boolean;
 }
 
 export interface RolloutDeps {
@@ -164,6 +166,12 @@ export class Rollouts {
 
   /** Which nodes a target picks, in the order they would be updated. */
   select(target: RolloutTarget): RolloutNode[] {
+    if (!target || typeof target !== 'object' ||
+        (target.kind !== 'all' && target.kind !== 'node' && target.kind !== 'floor') ||
+        (target.kind === 'node' && (typeof target.uid !== 'string' || !target.uid)) ||
+        (target.kind === 'floor' && (typeof target.floorId !== 'string' || !target.floorId))) {
+      throw new RolloutError('target must be all, a node uid, or a floorId');
+    }
     const all = this.deps.nodes();
     const pick = target.kind === 'node'
       ? all.filter((n) => n.uid === target.uid)
@@ -173,6 +181,7 @@ export class Rollouts {
   }
 
   start(buildId: string, target: RolloutTarget, by: string, deferDispatch = false): RolloutView {
+    if (typeof buildId !== 'string' || !/^[0-9a-f]{16}$/.test(buildId)) throw new RolloutError('invalid build id');
     if (this.active && this.active.stage !== 'done' && this.active.stage !== 'stopped') {
       throw new RolloutError('an update is already running');
     }
@@ -180,6 +189,11 @@ export class Rollouts {
     if (!image) throw new RolloutError(`build ${buildId} has no image`);
     const chosen = this.select(target);
     if (chosen.length === 0) throw new RolloutError('no node matches that target, or none is online');
+    const version = /^tmsense-(\d+)\.(\d+)(?:\.\d+)?$/.exec(image.version);
+    const supportsEncryption = !!version && (Number(version[1]) > 1 || (Number(version[1]) === 1 && Number(version[2]) >= 7));
+    if (!supportsEncryption && chosen.some(n => n.encryptionRequired)) {
+      throw new RolloutError('encrypted nodes require reviewed tmsense-1.7 or newer firmware; plaintext downgrade refused');
+    }
 
     this.gatewaysReady.clear();
     this.gatewaysAsked.clear();
@@ -224,7 +238,7 @@ export class Rollouts {
 
   /** A gateway has the image (or could not take it). */
   onImageReady(gatewayId: string, result: { id: string; ok: boolean; error?: string; port: number }): void {
-    if (!this.active || result.id !== this.active.buildId) return;
+    if (!this.active || this.active.stage === 'done' || this.active.stage === 'stopped' || result.id !== this.active.buildId) return;
     if (result.ok) {
       this.gatewaysReady.set(gatewayId, { port: result.port, at: this.now() });
       this.deps.log?.(`rollout: gateway ${gatewayId} has the image on port ${result.port}`);
@@ -240,10 +254,11 @@ export class Rollouts {
   /** Progress straight from the node. */
   onOtaStatus(uid: string, status: { state: string; percent: number; error: string; image: string }): void {
     const node = this.active?.nodes.find((n) => n.uid === uid);
-    if (!this.active || !node) return;
+    if (!this.active || !node || this.active.stage === 'done' || this.active.stage === 'stopped' ||
+        node.startedAt === null || TERMINAL.includes(node.state)) return;
     // The node reports the image it is talking about; ignore anything stale.
     const expect = this.active.buildId.slice(0, 8);
-    if (status.image !== expect && status.state !== 'failed') return;
+    if (status.image !== expect) return;
     switch (status.state) {
       case 'downloading':
         this.set(node, 'downloading', undefined, status.percent);

@@ -1,6 +1,9 @@
 # Never send secrets, local data or build output into the image build.
 .env
 .env.*
+*.pem
+*.key
+*-keys.json
 !.env.example
 data/
 node_modules/

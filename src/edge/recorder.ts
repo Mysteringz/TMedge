@@ -33,8 +33,7 @@ export class DailyLog {
   private droppedRecords = 0;
   private writeErrors = 0;
   private lastSuccessfulWriteAt: number | null = null;
-  private lastError: string | null = null;
-  bytesToday = 0;
+  private lastError: string | null = null;  bytesToday = 0;
 
   constructor(
     private readonly dir: string,
@@ -170,8 +169,7 @@ export class DailyLog {
     this.droppedRecords += this.queue.length;
     this.queue.length = 0;
     this.queuedBytes = 0;
-    this.pump();
-  }
+    this.pump();  }
 }
 
 const r2 = (value: number): number => Math.round(value * 100) / 100;

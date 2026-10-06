@@ -19,7 +19,6 @@ import type {
 import { FirmwareArtifactContentStore } from './firmware-artifact-content-store.js';
 import { FirmwareBuildMetadataStore, type FirmwareBuildMetadataStorage } from './firmware-build-metadata-store.js';
 import { cleanupFirmwareData, emptyFirmwareCleanupReport } from './firmware-retention-cleanup.js';
-
 export type BuildState = 'uploading' | 'building' | 'ready' | 'failed';
 
 export interface FirmwareBuild {
@@ -56,6 +55,11 @@ const DEFAULTS: FirmwareLimits = {
 
 export class FirmwareError extends Error {}
 
+// Uploaded PlatformIO configuration can run Python hooks or fetch arbitrary
+// build tools. The console builds our supported board with this trusted recipe.
+const RELEASE_INI = `[platformio]\nsrc_dir = src\ninclude_dir = include\n[env:tmflash]\nplatform = espressif32@6.9.0\nboard = heltec_wifi_lora_32_V3\nframework = arduino\nbuild_flags = -Wall -DTM_NO_NODE_CONFIG\n`;
+const MAX_UPLOADS = 8;
+
 /**
  * Where an uploaded path may land. A project is a tree of ordinary files; a
  * path that climbs out of it, or is absolute, is not a mistake worth
@@ -80,6 +84,7 @@ interface Upload {
   bytes: number;
   startedAt: number;
   lastActivityAt: number;
+  building?: boolean;
 }
 
 export class FirmwareStore implements FirmwareArtifactFiles {
@@ -100,6 +105,8 @@ export class FirmwareStore implements FirmwareArtifactFiles {
       artifactContent?: FirmwareArtifactContentStorage;
       metadata?: FirmwareBuildMetadataStorage;
       persistMetadata?: boolean;
+      /** Ignored compatibility input; builds no longer spawn a local compiler. */
+      pio?: string;
     } = {},
   ) {
     this.limits = { ...DEFAULTS, ...opts.limits };
@@ -139,21 +146,37 @@ export class FirmwareStore implements FirmwareArtifactFiles {
   // --- upload ---------------------------------------------------------------
 
   startUpload(by: string): string {
+    this.sweep();
+    if (this.uploads.size >= MAX_UPLOADS) throw new FirmwareError('too many firmware uploads; discard or finish an existing upload');
     const id = `up-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const dir = join(this.dir, 'uploads', id);
     mkdirSync(dir, { recursive: true });
     const now = this.now();
-    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: now, lastActivityAt: now });
-    return id;
+    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: now, lastActivityAt: now });    return id;
+  }
+
+  private sweep(): void {
+    const cutoff = this.now() - 60 * 60_000;
+    for (const upload of this.uploads.values()) {
+      if (!upload.building && upload.lastActivityAt < cutoff) this.discard(upload.id);
+    }
   }
 
   addFile(uploadId: string, path: string, bytes: Buffer): void {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');
+    if (up.building) throw new FirmwareError('the upload is already building');
     if (up.files >= this.limits.maxFiles) throw new FirmwareError(`more than ${this.limits.maxFiles} files`);
     if (bytes.length > this.limits.maxFileBytes) throw new FirmwareError(`${path} is larger than ${this.limits.maxFileBytes} bytes`);
     if (up.bytes + bytes.length > this.limits.maxTotalBytes) throw new FirmwareError('upload is too large');
     const rel = safeRelativePath(path);
+    // Only build inputs are needed; reject build hooks, library manifests and
+    // local provisioning files even if a browser includes them in its folder.
+    const projectPath = rel.replace(/^[^/]+\/(?=(?:src|include)\/|platformio\.ini$)/, '');
+    if (projectPath !== 'platformio.ini' && !/^(src|include)\/[\w./-]+\.(h|hpp|c|cpp|cc)$/.test(projectPath)) {
+      throw new FirmwareError('only platformio.ini and C/C++ source/header files may be uploaded');
+    }
+    if (/(^|\/)(node_config\.h|tm_test_ca\.h)$/.test(projectPath)) throw new FirmwareError('local provisioning files are not release sources');
     const full = join(up.dir, rel);
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, bytes);
@@ -161,6 +184,11 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     up.bytes += bytes.length;
     up.lastActivityAt = this.now();
     utimesSync(up.dir, new Date(up.lastActivityAt), new Date(up.lastActivityAt));
+  }
+
+  /** Inline compilation was removed; compilation is owned by the isolated worker service. */
+  async build(_uploadId: string, _by: string): Promise<FirmwareBuild> {
+    throw new FirmwareError('isolated firmware builds require the configured build worker');
   }
 
   /**
@@ -236,8 +264,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     rmSync(up.dir, { recursive: true, force: true });
     this.uploads.delete(uploadId);
     this.opts.log?.(`firmware: built ${build.version} ${id} (${bytes.length} bytes)`);
-    return build;
-  }
+    return build;  }
 
   /** Makes a locally verified image visible only after its durable metadata commit. */
   activateBuild(id: string): void {
@@ -270,6 +297,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
   discard(uploadId: string): void {
     const up = this.uploads.get(uploadId);
     if (!up) return;
+    if (up.building) throw new FirmwareError('the upload is already building');
     rmSync(up.dir, { recursive: true, force: true });
     this.uploads.delete(uploadId);
   }
@@ -285,8 +313,7 @@ export class FirmwareStore implements FirmwareArtifactFiles {
 
   /** Returns the latest cleanup outcome for the admin status view. */
   retentionReport(): FirmwareCleanupReport {
-    return { ...this.lastCleanup };
-  }
+    return { ...this.lastCleanup };  }
 
   /** Total bytes of stored images, for the console's housekeeping line. */
   diskBytes(): number {

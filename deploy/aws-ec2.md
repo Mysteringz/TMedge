@@ -23,7 +23,7 @@ it.
 | `tmedge-edge` | UDP ingest, occupancy, debug console | 5200/udp, 5210/tcp, 8090 |
 | `tmedge-web` | student site | 8080 |
 | `tmedge-sim` | 19 virtual nodes for the pilot floors | — |
-| `cloudflared` | the tunnel: hkumyseat.com, gw.hkumyseat.com, console.hkumyseat.com | — |
+| `cloudflared` | the tunnel: hkumyseat.com, gw.hkumyseat.com, algo.hkumyseat.com, console.hkumyseat.com (now only redirects to algo.hkumyseat.com/console) | — |
 | `tailscaled` | how the Pi rig and the gateway's fallback route reach us | — |
 | `tmedge-prune.timer` | deletes recordings older than 30 days | — |
 

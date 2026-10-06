@@ -53,13 +53,15 @@ function parseAccount(value: unknown, index: number): User {
   return {
     ...(raw.id === undefined ? {} : { id: String(raw.id).toLowerCase() }), email, name: String(raw.name),
     salt: String(raw.salt).toLowerCase(), hash: String(raw.hash).toLowerCase(), createdAt: Number(raw.createdAt),
+    ...(typeof raw.google === 'string' ? { google: raw.google } : {}),
   };
 }
 
 function validateAccountFields(raw: Record<string, unknown>, index: number): void {
   const stringsValid = typeof raw.email === 'string' && typeof raw.name === 'string' && raw.name.trim().length > 0
-    && typeof raw.salt === 'string' && /^[a-f0-9]{32}$/i.test(raw.salt)
-    && typeof raw.hash === 'string' && /^[a-f0-9]{64}$/i.test(raw.hash);
+    && typeof raw.salt === 'string' && ( /^[a-f0-9]{32}$/i.test(raw.salt) || (raw.google && raw.salt === ''))
+    && typeof raw.hash === 'string' && ( /^[a-f0-9]{64}$/i.test(raw.hash) || (raw.google && raw.hash === ''))
+    && (raw.google === undefined || (typeof raw.google === 'string' && raw.google.length > 0 && raw.google.length <= 255));
   const timestampValid = typeof raw.createdAt === 'number' && Number.isSafeInteger(raw.createdAt)
     && raw.createdAt >= 0 && raw.createdAt <= 8_640_000_000_000_000;
   const idValid = raw.id === undefined || (typeof raw.id === 'string'

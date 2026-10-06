@@ -186,6 +186,10 @@ export interface NodeHealth {
   raws: number;
   rejected: number;
   lastPeople: number | null;
+  /** Where people are found: on the node, or here from its RAW frames. */
+  detector: 'node' | 'edge';
+  /** The edge's long-horizon background, for a node with detector "edge". */
+  edgeBackground: { ready: boolean; buckets: number; hours: number; windowHours: number } | null;
   backgroundReady: boolean;
   globalShift: boolean;
   sceneMin: number | null;

@@ -4,9 +4,14 @@
 Makes the rig look like any other TMnode to TMedge:
   * reads the ESP32's thermal frames from USB serial (the original v1 serial
     format: FE 01 FE 01, 8-bit image mapped 10..35 C),
-  * runs TMnode's own detector on them (libtmdetector.so, built from
-    TMsense/src/tm_detector.cpp unchanged),
-  * sends signed protocol-v1 REPORT / RAW / STATUS datagrams to the edge,
+  * sends each frame to the edge as a signed protocol-v1 RAW datagram carrying
+    the sensor's own bytes, unrequantised, so the edge can detect people
+    against its day-long background (nodes.json "detector": "edge"),
+  * sends a REPORT per frame as a heartbeat and a STATUS every 10 s,
+  * optionally (DETECT_ON_BOARD=1) also runs TMnode's own detector here
+    (libtmdetector.so, built from TMsense/src/tm_detector.cpp unchanged) and
+    puts its detections in that REPORT -- the old behaviour, for a node the
+    edge still counts on board,
 and, because this is a verification rig, also pushes a signed RGB JPEG to the
 edge's console (and nowhere else) a couple of times a second.
 
@@ -32,7 +37,12 @@ EDGE = (ENV.get('EDGE_HOST', '100.84.194.47'), int(ENV.get('EDGE_UDP_PORT', '520
 EDGE_HTTP = ENV.get('EDGE_HTTP', f'http://{EDGE[0]}:8090')
 SERIAL_PORT = ENV.get('SERIAL_PORT', '/dev/ttyUSB0')
 RGB_FPS = float(ENV.get('RGB_FPS', '2'))
-FW = b'tm-rig-1.0.0'
+# Off by default: the on-board background forgets people who sit still for an
+# hour or two, which is why the edge now detects for this rig. With it off the
+# REPORT carries no detections and no background-ready flag, so if the edge is
+# ever switched back to "node" the desk reads unknown, never empty.
+DETECT_ON_BOARD = ENV.get('DETECT_ON_BOARD', '0') == '1'
+FW = b'tm-rig-1.1.0'
 
 def log(*a):
     print(time.strftime('%H:%M:%S'), *a, flush=True)
@@ -63,22 +73,30 @@ def send(ptype, payload):
     except OSError as e:
         log('udp send failed:', e)
 
-# --- detector ----------------------------------------------------------------------
-lib = ctypes.CDLL(os.path.join(HERE, 'libtmdetector.so'))
-lib.tmd_init.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_int, ctypes.c_int,
-                         ctypes.c_int, ctypes.c_int, ctypes.c_float]
-lib.tmd_step.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int,
-                         ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float)]
-lib.tmd_step.restype = ctypes.c_int
-lib.tmd_seed.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]
+# --- detector (only with DETECT_ON_BOARD=1) -------------------------------------------
 PARAMS = dict(min_contrast=0.6, min_peak=1.2, noise_k=4.0, min_area=1, max_area=60, bg_tau=90, bg_frames=20, split_sep=1.9)
-lib.tmd_init(*PARAMS.values())
+lib = None
+if DETECT_ON_BOARD:
+    lib = ctypes.CDLL(os.path.join(HERE, 'libtmdetector.so'))
+    lib.tmd_init.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_int, ctypes.c_int,
+                             ctypes.c_int, ctypes.c_int, ctypes.c_float]
+    lib.tmd_step.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int,
+                             ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float)]
+    lib.tmd_step.restype = ctypes.c_int
+    lib.tmd_seed.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)]
+    lib.tmd_init(*PARAMS.values())
 out = (ctypes.c_float * (6 * 24))()
 flags = ctypes.c_int()
 bg_mean = ctypes.c_float()
 
 # --- thermal: the ESP32's v1 serial frames ---------------------------------------------
 HEADER = b'\xFE\x01\xFE\x01'
+# The ESP32 maps 10..35 C onto 0..255. RAW carries (tMin, step) and the byte, so
+# sending tMin = 10.00 C and step = 0.0980 C forwards the sensor's bytes as they
+# are: nothing is requantised on the way. (The true step is 25/255 = 0.09804;
+# 0.0980 is the nearest the wire's 1e-4 C unit allows, 0.01 C off at the top.)
+RAW_TMIN_CENTI = 1000
+RAW_STEP_Q = 980
 
 def read_packet(ser):
     window = b''
@@ -103,6 +121,18 @@ def repair(t):
     t[0, :8] = t[1, :8]
     return t
 
+# The rig's frames arrive with the image wrapped sideways: the sensor's
+# rightmost 6 columns come first on each row (found in testing: a 6-column
+# strip at one edge that continues the far edge). Rotating each row puts them
+# back, and everything
+# downstream -- detector, REPORT, RAW -- then sees one continuous picture.
+# (The algo dashboard shows this rig mirrored, so there the strip appeared on
+# the right and moves to the left.)
+COL_WRAP = 6
+
+def unwrap(t):
+    return np.roll(t, -COL_WRAP, axis=1)
+
 stats = {'frames': 0, 'fps': 0.0, 'serial_err': 0, 'rgb_sent': 0, 'rgb_err': 0, 'last_frame': 0.0}
 
 # Empty-room background (relative to the scene median), built offline from the
@@ -116,17 +146,19 @@ seed_frames = []
 
 def maybe_seed(t):
     """After a few frames, place the empty background at today's scene level and seed the detector."""
-    if not os.path.exists(EMPTY_BG) or len(seed_frames) > 5:
+    if lib is None or not os.path.exists(EMPTY_BG) or len(seed_frames) > 5:
         return
     seed_frames.append(t.copy())
     if len(seed_frames) < 5:
         return
     now = np.median(np.stack(seed_frames), axis=0)
-    empty = np.load(EMPTY_BG).astype(np.float32)
+    # The empty-room maps were built from the lab's archive, which has the
+    # same wrap, so they need the same rotation to line up with the frame.
+    empty = unwrap(np.load(EMPTY_BG)).astype(np.float32)
     d = now - empty
     level = float(np.median(d[d <= np.percentile(d, 60)]))   # match on the cooler 60%: people only ever add heat
     bg = np.ascontiguousarray(empty + level, dtype=np.float32)
-    sig = np.ascontiguousarray(np.load(EMPTY_SIGMA), dtype=np.float32)
+    sig = np.ascontiguousarray(unwrap(np.load(EMPTY_SIGMA)), dtype=np.float32)
     lib.tmd_seed(bg.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), sig.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
     seed_frames.append(None)   # done
     log(f'background seeded from the empty-room map (level {level:+.2f} C)')
@@ -142,10 +174,13 @@ def thermal_loop():
                 data = read_packet(ser)
                 if data is None:
                     continue
-                t = (10.0 + np.frombuffer(data[:768], dtype=np.uint8).astype(np.float32) / 255.0 * 25.0).reshape(24, 32)
-                t = np.ascontiguousarray(repair(t), dtype=np.float32)
-                maybe_seed(t)
-                n = lib.tmd_step(t.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), out, 24, ctypes.byref(flags), ctypes.byref(bg_mean))
+                # Repair first: the corrupt pixels are the first bytes as received.
+                px = np.ascontiguousarray(unwrap(repair(np.frombuffer(data[:768], dtype=np.uint8).reshape(24, 32).copy())))
+                t = np.ascontiguousarray(10.0 + px.astype(np.float32) / 255.0 * 25.0, dtype=np.float32)
+                n = 0
+                if lib is not None:
+                    maybe_seed(t)
+                    n = lib.tmd_step(t.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), out, 24, ctypes.byref(flags), ctypes.byref(bg_mean))
                 now = time.monotonic()
                 if stats['last_frame']:
                     inst = 1.0 / max(now - stats['last_frame'], 1e-3)
@@ -159,10 +194,7 @@ def thermal_loop():
                     q = lambda v, lim=255: max(0, min(lim, int(round(v))))
                     body += struct.pack('<BBBBBH', q(x * 8), q(y * 8), q(area), q(con / 0.05), q(peak / 0.25), q(heat * 10, 65535))
                 send(1, body)
-                lo = np.floor(t.min() * 100) / 100
-                step_q = max(1, min(65535, int(np.ceil((t.max() - lo) / 255 * 10000))))
-                px = np.clip(np.round((t - lo) / (step_q / 10000)), 0, 255).astype(np.uint8)
-                send(2, struct.pack('<IhH', frame_no, int(round(lo * 100)), step_q) + px.tobytes())
+                send(2, struct.pack('<IhH', frame_no, RAW_TMIN_CENTI, RAW_STEP_Q) + px.tobytes())
                 if now - last_status > 10:
                     last_status = now
                     ip = bytes(4)   # the rig has no single IP worth reporting; the edge sees its tailnet address
@@ -214,6 +246,7 @@ def rgb_loop():
         time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
 if __name__ == '__main__':
-    log(f'tm rig bridge: uid {UID_STR} boot {BOOT} -> {EDGE[0]}:{EDGE[1]} (udp), {EDGE_HTTP} (rgb)')
+    log(f'tm rig bridge: uid {UID_STR} boot {BOOT} -> {EDGE[0]}:{EDGE[1]} (udp), {EDGE_HTTP} (rgb), '
+        f'detection {"on board" if DETECT_ON_BOARD else "at the edge (raw frames only)"}')
     threading.Thread(target=rgb_loop, daemon=True).start()
     thermal_loop()

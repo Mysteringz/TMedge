@@ -3,18 +3,20 @@
  * over fetch and honours ?next=, so a student sent here from a page they
  * asked for lands back on it rather than the dashboard.
  */
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { GoogleButton, googleError } from '../GoogleButton.tsx';
+import { Turnstile, turnstileOn, type TurnstileHandle } from '../Turnstile.tsx';
 
-/** Only a path on this site: never an absolute URL someone put in a link. */
-export function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/dashboard/';
-  return raw;
-}
+import { safeNext } from '../../../src/web/navigation.js';
+export { safeNext } from '../../../src/web/navigation.js';
 
 export default function Login() {
-  const [error, setError] = useState<string | null>(null);
+  // A Google sign-in the server refused comes back here as ?error=.
+  const [error, setError] = useState<string | null>(() => googleError(new URLSearchParams(location.search).get('error')));
   const [busy, setBusy] = useState(false);
+  const [human, setHuman] = useState<string | null>(null);
+  const check = useRef<TurnstileHandle>(null);
   const next = safeNext(new URLSearchParams(location.search).get('next'));
 
   useEffect(() => {
@@ -30,16 +32,18 @@ export default function Login() {
       const res = await fetch('/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: form.get('email'), password: form.get('password'), next }),
+        body: JSON.stringify({ email: form.get('email'), password: form.get('password'), next, 'cf-turnstile-response': human }),
       });
       const body = (await res.json()) as { redirect?: string; error?: string };
       if (!res.ok) {
         setError(body.error ?? 'That UID and PIN do not match.');
+        check.current?.reset();   // the token was spent on this attempt
         return;
       }
       location.href = safeNext(body.redirect ?? next);
     } catch {
       setError('Could not reach the server. Try again.');
+      check.current?.reset();
     } finally {
       setBusy(false);
     }
@@ -74,24 +78,26 @@ export default function Login() {
 
       <div className="auth-panel">
         <h2>Student sign in</h2>
-        <p className="sub text-muted">Use your HKU Portal credentials to see live seat availability.</p>
+        <p className="sub text-muted">Use your HKUMySeat account to see live seat availability.</p>
         {error && <p className="form-error" role="alert">{error}</p>}
         <form onSubmit={submit}>
           <div className="fields">
             <div className="field">
-              <label className="field-label" htmlFor="uid">HKU Portal UID</label>
-              <input className="input" id="uid" name="email" type="text" placeholder="u3xxxxxxx" autoComplete="username" required autoFocus />
+              <label className="field-label" htmlFor="uid">HKU email or UID</label>
+              <input className="input" id="uid" name="email" maxLength={254} type="text" placeholder="u3xxxxxxx" autoComplete="username" required autoFocus />
             </div>
             <div className="field">
               <label className="field-label" htmlFor="pin">PIN</label>
-              <input className="input" id="pin" name="password" type="password" placeholder="••••••••" autoComplete="current-password" required />
+              <input className="input" id="pin" name="password" maxLength={1024} type="password" placeholder="••••••••" autoComplete="current-password" required />
             </div>
           </div>
-          <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+          <Turnstile ref={check} action="login" onToken={setHuman} />
+          <button className="btn btn-primary" type="submit" disabled={busy || (turnstileOn && !human)}>{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>
+        <GoogleButton next={next} />
         <div className="auth-links">
           <Link to={`/signup/?next=${encodeURIComponent(next)}`}>Create an account</Link>
-          <span className="text-muted">HKU credentials only</span>
+          <span className="text-muted">HKU UID or Google account</span>
         </div>
         <div className="auth-spacer" />
         <hr className="hr" />

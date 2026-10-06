@@ -1,0 +1,234 @@
+/* The console's 8-bit look: Nocturne (dark blue-grey ground, Inter, outlined
+   buttons) with the accent ramp turned orange, Silkscreen for anything that
+   should read as a machine, JetBrains Mono for data.
+
+   Everything is scoped under .cx. The algo debugger (module 01) has its own
+   .btn, .bar, .dot and friends in styles.css, and it sits inside this shell;
+   an unscoped Nocturne would restyle every button in it. */
+
+.cx {
+  --color-bg: #161826;
+  --color-surface: #232532;
+  --color-text: #e9e9ed;
+  --color-divider: color-mix(in srgb, #e9e9ed 16%, transparent);
+  --color-neutral-100: #f3f5fe; --color-neutral-200: #e4e7f5; --color-neutral-300: #cfd3e5;
+  --color-neutral-400: #b2b6ca; --color-neutral-500: #9397ab; --color-neutral-600: #75798c;
+  --color-neutral-700: #595d6c; --color-neutral-800: #3f424d; --color-neutral-900: #292b31;
+  --color-accent: #f28c38;
+  --color-accent-100: #fff4ec; --color-accent-200: #ffe3cf; --color-accent-300: #ffc9a3;
+  --color-accent-400: #ffa865; --color-accent-500: #f28c38; --color-accent-600: #c96f24;
+  --color-accent-700: #985220; --color-accent-800: #653819; --color-accent-900: #3a2413;
+  --online: #7fd18b;
+  --radius-sm: 4px; --radius-md: 8px; --radius-lg: 14px;
+  --shadow-sm: 0 0 0 1px #3f424d;
+  --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, .55);
+  --font-body: "Inter", system-ui, sans-serif;
+  --pixel: "Silkscreen", ui-monospace, monospace;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+
+  color: var(--color-text);
+  font: 400 15px/1.55 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+.cx *, .cx *::before, .cx *::after { box-sizing: border-box; }
+.cx :focus { outline: none; }
+.cx :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.cx ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+.cx h1, .cx h2, .cx h3 { font-weight: 500; margin: 0; }
+.cx p { margin: 0 0 10px; }
+.cx code, .cx kbd { font-family: var(--mono); font-size: .92em; color: var(--color-neutral-200); }
+.cx kbd { padding: 0 2px; }
+.cx-accent, .cx-dot { color: var(--color-accent); }
+.cx-muted { color: var(--color-neutral-500); }
+
+.cx-page {
+  position: relative; min-height: 100vh; overflow-x: hidden;
+  background:
+    radial-gradient(ellipse 70% 50% at 85% -10%, color-mix(in srgb, #f28c38 9%, transparent), transparent 70%),
+    var(--color-bg);
+}
+.cx-grid {
+  position: fixed; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-text) 3.5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-text) 3.5%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: linear-gradient(to bottom, black, transparent 90%);
+}
+.cx-scan {
+  position: fixed; inset: 0; pointer-events: none; z-index: 20;
+  background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, .16) 0 1px, transparent 1px 3px);
+  mix-blend-mode: multiply;
+}
+@keyframes cx-blink { 50% { opacity: 0; } }
+.cx-blink { animation: cx-blink 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .cx-blink { animation: none; } }
+
+/* — Nocturne components, scoped — */
+.cx .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  cursor: pointer; font: 500 14px/1.2 var(--font-body); color: var(--color-text);
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-md);
+  padding: 6px 10px;
+}
+.cx .btn svg { display: block; flex: none; }
+.cx .btn:disabled { opacity: .45; cursor: not-allowed; }
+.cx .btn-primary { color: var(--color-accent); border-color: var(--color-accent); }
+.cx .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.cx .btn-primary:active:not(:disabled) { background: color-mix(in srgb, var(--color-accent) 22%, transparent); }
+.cx .btn-secondary { border-color: var(--color-divider); }
+.cx .btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.cx .btn-ghost { color: var(--color-accent); }
+.cx .btn-ghost:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.cx .field > label {
+  display: block; margin-bottom: 5px; font: 400 11px/1.4 var(--pixel); letter-spacing: .06em;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
+}
+.cx .input {
+  width: 100%; min-height: 42px; padding: 6px 10px; font: 400 14px var(--mono);
+  color: var(--color-text); caret-color: var(--color-accent); background: var(--color-surface);
+  border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+}
+.cx .input:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.cx .input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
+.cx .card { display: flex; flex-direction: column; gap: 6px; padding: 20px; border-radius: var(--radius-md); background: var(--color-surface); }
+.cx .elev-sm { box-shadow: var(--shadow-sm); }
+.cx .tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .02em; padding: 3px 10px; border-radius: 6px; }
+.cx .tag-neutral { background: var(--color-neutral-800); color: var(--color-neutral-100); }
+
+/* — brand + top bar — */
+.cx-mark { display: inline-grid; gap: 1px; flex: none; }
+.cx-word { font: 400 15px var(--pixel); letter-spacing: .02em; }
+.cx-nav { position: relative; z-index: 2; display: flex; align-items: center; gap: 20px; padding: 16px 28px; }
+.cx-home {
+  display: flex; align-items: center; gap: 12px; margin-right: auto; min-width: 0;
+  background: none; border: 0; padding: 0; color: inherit; cursor: pointer;
+}
+.cx-crumb { display: flex; align-items: center; gap: 12px; font: 400 12px var(--pixel); color: var(--color-neutral-500); white-space: nowrap; }
+.cx-who { font-family: var(--mono); white-space: nowrap; }
+.cx-online { width: 6px; height: 6px; background: var(--online); }
+.cx-out { font-size: 13px; white-space: nowrap; }
+/* The home donut can pass behind the bar's transparent button. */
+.cx .cx-out { background: color-mix(in srgb, var(--color-bg) 82%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.cx .cx-out:hover { background: color-mix(in srgb, var(--color-text) 7%, var(--color-bg)); }
+
+/* — login — */
+.cx-login { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-wrap: wrap; }
+.cx-login-left {
+  flex: 1 1 480px; display: flex; flex-direction: column; justify-content: space-between; gap: 48px;
+  padding: 40px clamp(24px, 6vw, 88px);
+}
+.cx-row { display: flex; align-items: center; gap: 12px; }
+.cx-team { font: 400 13px var(--pixel); color: var(--color-neutral-400); }
+.cx-login-body { max-width: 520px; }
+.cx-kicker { font: 400 12px var(--pixel); letter-spacing: .08em; color: var(--color-accent); margin-bottom: 18px; }
+.cx-title { font: 400 clamp(64px, 10vw, 132px)/.9 var(--pixel) !important; letter-spacing: -.02em; margin: 0 0 22px !important; }
+.cx-lede { font-size: 17px; line-height: 1.5; color: var(--color-neutral-300); max-width: 400px; text-wrap: pretty; margin: 0 0 36px !important; }
+.cx-form { display: flex; flex-direction: column; gap: 14px; max-width: 360px; }
+.cx-pw { position: relative; }
+.cx-pw .input { padding-right: 44px; }
+.cx-eye { position: absolute; right: 4px; top: 4px; height: 34px; width: 34px; padding: 0; color: var(--color-neutral-400) !important; font-size: 16px; }
+.cx-turnstile { min-height: 65px; }
+.cx-error { font: 400 12px var(--mono); color: var(--color-accent-300); }
+.cx-submit {
+  min-height: 44px; margin-top: 6px; justify-content: space-between !important; padding-inline: 16px !important;
+  font: 400 13px var(--pixel) !important; letter-spacing: .06em;
+}
+.cx-meta { display: flex; flex-wrap: wrap; gap: 20px; font: 400 11px var(--mono); color: var(--color-neutral-600); }
+.cx-login-right { flex: 1 1 420px; display: flex; align-items: center; justify-content: center; padding: 40px; min-height: 420px; }
+.cx-board { width: min(100%, 520px); display: grid; grid-template-columns: repeat(14, 1fr); gap: 4px; }
+.cx-board > div { aspect-ratio: 1; }
+
+/* — home — */
+.cx-home-main {
+  position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 40px;
+  padding: clamp(24px, 5vw, 64px) clamp(24px, 6vw, 88px) 64px; min-height: calc(100vh - 80px);
+}
+.cx-home-left { flex: 1 1 420px; max-width: 560px; min-width: 0; }
+.cx-home-left .cx-kicker { margin-bottom: 16px; }
+.cx-welcome { font-size: clamp(34px, 4.4vw, 52px) !important; line-height: 1.05; letter-spacing: -.025em; margin: 0 0 12px !important; overflow-wrap: anywhere; }
+.cx-help { color: var(--color-neutral-400); margin: 0 0 36px !important; font-size: 15px; }
+.cx-modules { display: flex; flex-direction: column; gap: 12px; }
+.cx-module {
+  display: grid; grid-template-columns: 20px 44px 1fr 24px; align-items: center; gap: 14px; text-align: left;
+  padding: 20px 20px 20px 12px; border-radius: var(--radius-md); color: inherit; cursor: pointer; font: inherit;
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent); border: 1px solid var(--color-divider);
+  /* The donut turns behind these; blur it so the text on top stays text. */
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  transition: background .15s, border-color .15s;
+}
+.cx-module.is-on { background: color-mix(in srgb, #f28c38 8%, var(--color-surface)); border-color: var(--color-accent); }
+.cx-caret { font-family: var(--pixel); color: var(--color-accent); opacity: 0; }
+.cx-module.is-on .cx-caret { opacity: 1; }
+.cx-n { font: 400 22px var(--pixel); color: var(--color-neutral-600); }
+.cx-mod-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cx-mod-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 19px; font-weight: 500; }
+.cx-path { font: 400 11px var(--mono); color: var(--color-neutral-500); }
+.cx-mod-desc { font-size: 13px; color: var(--color-neutral-400); text-wrap: pretty; }
+.cx-arrow { font-size: 18px; color: var(--color-neutral-600); display: flex; }
+.cx-module.is-on .cx-arrow { color: var(--color-accent); }
+.cx-donut-stage {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+  /* Strongest behind the empty right of the screen, faint under the modules. */
+  mask-image: linear-gradient(to right, rgba(0, 0, 0, .16) 0%, rgba(0, 0, 0, .2) 42%, black 78%);
+}
+/* 64 x 30 characters, about 38.4em x 30em in a monospace face at line-height
+   1. The font size is whichever makes it at least 1.6 tabs wide *and* 1.5
+   tabs tall, so on any screen shape only part of the ring fits. */
+.cx-donut {
+  position: absolute; left: 66%; top: 52%; transform: translate(-50%, -50%);
+  margin: 0; white-space: pre;
+  font: 400 max(4.2vw, 5vh) / 1 var(--mono);
+  color: var(--color-accent);
+  text-shadow: 0 0 .35em color-mix(in srgb, #f28c38 55%, transparent);
+}
+
+/* — ML training (coming soon) — */
+.cx-train { position: relative; z-index: 1; padding: 8px 28px 48px; display: flex; flex-direction: column; gap: 20px; max-width: 700px; }
+.cx-train-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.cx-train-head .cx-kicker { margin-bottom: 8px; }
+.cx-h2 { font-size: 30px !important; letter-spacing: -.015em; }
+.cx-job { display: flex; align-items: center; gap: 10px; font: 400 12px var(--mono); color: var(--color-neutral-500); }
+.cx-soon { gap: 14px !important; }
+.cx-soon p { color: var(--color-neutral-300); margin: 0 !important; }
+.cx-soon p.cx-muted { color: var(--color-neutral-500); font-size: 13px; }
+.cx-soon-bar { display: flex; gap: 2px; }
+.cx-soon-bar span { width: 8px; height: 10px; background: var(--color-neutral-800); }
+.cx-soon-bar span.on { background: var(--color-accent); }
+.cx-soon-title { font: 400 22px var(--pixel) !important; }
+.cx-px { font: 400 12px var(--pixel) !important; letter-spacing: .06em; min-height: 40px; padding-inline: 14px !important; }
+
+/* — toast — */
+.cx-toast {
+  position: fixed; left: 28px; bottom: 24px; z-index: 10; display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; background: var(--color-surface); box-shadow: var(--shadow-md); border-radius: var(--radius-md);
+  font: 400 12px var(--mono); max-width: calc(100vw - 56px);
+}
+.cx-sq { width: 8px; height: 8px; background: var(--color-accent); flex: none; }
+
+/* — module 01: the debugger under the console's bar — */
+.cx-flow { display: flex; flex-direction: column; height: 100vh; background: var(--bg); }
+.cx-flow-bar { background: #161826; border-bottom: 1px solid var(--line); }
+.cx-flow-bar .cx-nav { padding: 8px 14px; }
+/* App.tsx's .app is 100vh on its own; here it shares the screen with the bar. */
+.cx-frame { flex: 1; min-height: 0; width: 100%; border: 0; display: block; background: #0f1115; }
+.cx-flow > .app { flex: 1; min-height: 0; height: auto; }
+
+/* — phones — */
+@media (max-width: 560px) {
+  .cx-nav { gap: 10px; padding: 12px 16px; }
+  .cx .cx-who { display: none; }
+  .cx-word { font-size: 13px; }
+  .cx-crumb { display: none; }
+  .cx-login-left { padding: 28px 16px; gap: 36px; flex-basis: 100%; }
+  .cx-login-right { padding: 16px 16px 40px; min-height: 0; flex-basis: 100%; }
+  .cx-home-main { padding: 24px 16px 48px; gap: 28px; }
+  .cx-home-left { flex-basis: 100%; }
+  .cx-module { grid-template-columns: 12px 32px 1fr 18px; gap: 10px; padding: 16px 14px 16px 8px; }
+  .cx-n { font-size: 18px; }
+  .cx-mod-title { font-size: 17px; }
+  .cx-donut { left: 50%; top: 62%; }
+  .cx-donut-stage { mask-image: linear-gradient(to bottom, rgba(0, 0, 0, .14), rgba(0, 0, 0, .18) 55%, black 92%); }
+  .cx-train { padding: 8px 16px 40px; }
+  .cx-toast { left: 16px; max-width: calc(100vw - 32px); }
+}

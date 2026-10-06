@@ -69,6 +69,7 @@ export class DetectorHost {
   private checked = false;
   private buildError: string | null = null;
   private disposed = false;
+  private activeRuns = 0;
   private readonly children = new Set<ChildProcess>();
 
   constructor(private readonly options: { binary?: string; spawnProcess?: typeof spawn } = {}) {
@@ -77,7 +78,6 @@ export class DetectorHost {
       this.checked = true;
     }
   }
-
   /** Why the preview is unavailable, or null when it works. */
   get unavailable(): string | null {
     this.ensure();
@@ -97,7 +97,8 @@ export class DetectorHost {
     const out = join(outDir, 'detector_host');
     // Rebuild when either source is newer than the binary: the point of this
     // is to track the firmware, so a stale binary would defeat it.
-    const newest = Math.max(statSync(src).mtimeMs, statSync(algo).mtimeMs);
+    const newest = Math.max(...[src, algo, join(TMSENSE, 'include/tm_detector.h'), join(TMSENSE, 'include/tm_config.h')]
+      .filter(existsSync).map((path) => statSync(path).mtimeMs));
     if (existsSync(out) && statSync(out).mtimeMs >= newest) {
       this.binary = out;
       return;
@@ -127,6 +128,8 @@ export class DetectorHost {
     const binary = this.binary;
     if (!binary) return Promise.reject(new Error(this.unavailable ?? 'no detector'));
     if (frames.length === 0) return Promise.resolve([]);
+    if (this.activeRuns >= 2) return Promise.reject(new Error('detector preview is busy; retry after the current run'));
+    if (frames.length > 360) return Promise.reject(new Error('detector history exceeds the frame limit'));
 
     const args = [
       ...(planes ? ['--planes'] : []),
@@ -139,16 +142,17 @@ export class DetectorHost {
       for (let p = 0; p < 768; p++) input.writeFloatLE(f.temps[p] ?? 0, (i * 768 + p) * 4);
     });
 
+    this.activeRuns += 1;
     return new Promise<FrameResult[]>((resolve, reject) => {
       const child = (this.options.spawnProcess ?? spawn)(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
       this.children.add(child);
       const chunks: Buffer[] = [];
       let err = '';
+      let bytes = 0;
       const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
       child.stdout.on('data', (c: Buffer) => chunks.push(c));
       child.stderr.on('data', (c: Buffer) => { err += c.toString(); });
-      child.on('error', (e) => { clearTimeout(timer); this.children.delete(child); reject(e); });
-      child.on('close', (code) => {
+      child.on('error', (e) => { clearTimeout(timer); this.children.delete(child); reject(e); });      child.on('close', (code) => {
         clearTimeout(timer);
         this.children.delete(child);
         if (this.disposed) return reject(new Error('detector run cancelled during shutdown'));
@@ -160,7 +164,7 @@ export class DetectorHost {
         }
       });
       child.stdin.end(input);
-    });
+    }).finally(() => { this.activeRuns -= 1; });
   }
 
   async dispose(): Promise<void> {

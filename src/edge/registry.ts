@@ -83,7 +83,17 @@ export interface NodeDef {
    * it only in the admin console.
    */
   rgb: boolean;
+  /**
+   * Who finds the people. "node" (default): the node's own REPORT
+   * detections. "edge": the node's REPORT detections are ignored and the edge
+   * detects on its RAW frames against a background that only learns heat
+   * present nearly all day (edgedetect.ts), so someone sitting still for
+   * hours is not faded out. An edge node must send RAW every frame.
+   */
+  detector?: NodeDetector;
 }
+
+export type NodeDetector = 'node' | 'edge';
 
 export interface Registry {
   site: { id: string; name: string };
@@ -233,7 +243,19 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   nroot.nodes.forEach((nv, ni) => {
     const w = `nodes[${ni}]`;
     const n = obj(nv, w);
-    only(n, w, ['uid', 'label', 'floor', 'pose', 'owns', 'simulated', 'rgb']);
+    only(n, w, ['uid', 'label', 'floor', 'pose', 'owns', 'simulated', 'rgb', 'detector']);
+    for (const key of ['simulated', 'rgb']) {
+      if (n[key] !== undefined && typeof n[key] !== 'boolean') throw new ConfigError(`${w}.${key}: expected true/false`);
+    }
+    if (n.owns !== undefined && (!Array.isArray(n.owns) || !n.owns.every((x) => typeof x === 'string'))) {
+      throw new ConfigError(`${w}.owns: expected an array of table ids`);
+    }
+    if (n.detector !== undefined && n.detector !== 'node' && n.detector !== 'edge') {
+      // A typo here would silently leave the node on its own detector, which
+      // is the one that forgets people who sit still.
+      throw new ConfigError(`${w}.detector: expected "node" or "edge", got ${JSON.stringify(n.detector)}`);
+    }
+    const detector: NodeDetector = n.detector === 'edge' ? 'edge' : 'node';
     const uid = str(n, 'uid', w).toLowerCase();
     if (!UID_RE.test(uid)) throw new ConfigError(`${w}.uid: expected a MAC like 30:ed:a0:cb:f5:f8, got "${uid}"`);
     if (nodes.has(uid)) throw new ConfigError(`${w}: duplicate uid ${uid}`);
@@ -263,6 +285,7 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
         owns: [],
         simulated: n.simulated === true,
         rgb: false,
+        detector,
       });
       return;
     }
@@ -304,6 +327,7 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
       owns,
       simulated: n.simulated === true,
       rgb: n.rgb === true,
+      detector,
     });
   });
 

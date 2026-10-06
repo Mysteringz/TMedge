@@ -13,6 +13,7 @@ import { loadPostgresConfig } from '../src/infrastructure/postgres/config.js';
 import { closePostgres, openPostgres } from '../src/infrastructure/postgres/data-source.js';
 import { CreateStudentAccountsActivity1791331200000 } from '../src/infrastructure/postgres/migrations/1791331200000-CreateStudentAccountsActivity.js';
 import { ExtendStudentUsageActivity1791417600000 } from '../src/infrastructure/postgres/migrations/1791417600000-ExtendStudentUsageActivity.js';
+import { AddGoogleStudentIdentity1791504000000 } from '../src/infrastructure/postgres/migrations/1791504000000-AddGoogleStudentIdentity.js';
 import { PostgresStudentAccountRepository } from '../src/infrastructure/postgres/student-account-repository.js';
 import { PostgresStudentActivityRepository } from '../src/infrastructure/postgres/student-activity-repository.js';
 import { StudentAccountImportExport } from '../src/modules/student-auth/application/student-account-import-export.js';
@@ -30,7 +31,7 @@ test('student PostgreSQL migration, accounts, transfer, activity and outages', {
   const legacyMigrator = new DataSource({ type: 'postgres', ...config.migrator, migrationsTransactionMode: 'all',
     migrations: [CreateStudentAccountsActivity1791331200000], migrationsTableName: 'student_test_migrations', logging: false });
   const migrator = new DataSource({ type: 'postgres', ...config.migrator, migrationsTransactionMode: 'all',
-    migrations: [CreateStudentAccountsActivity1791331200000, ExtendStudentUsageActivity1791417600000],
+    migrations: [CreateStudentAccountsActivity1791331200000, ExtendStudentUsageActivity1791417600000, AddGoogleStudentIdentity1791504000000],
     migrationsTableName: 'student_test_migrations', logging: false });
   const runtime = await openPostgres(config.runtime);
   let migrated = 0;
@@ -46,13 +47,14 @@ test('student PostgreSQL migration, accounts, transfer, activity and outages', {
     assert.equal((await legacyMigrator.runMigrations()).length, 1);
     migrated += 1;
     const legacy = await seedLegacyActivity(migrator);
-    assert.equal((await migrator.runMigrations()).length, 1);
-    migrated += 1;
+    assert.equal((await migrator.runMigrations()).length, 2);
+    migrated += 2;
     await assertLegacyPreserved(migrator, legacy);
     const role = quoteIdentifier(config.runtime.username);
     await migrator.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON public.student_users, public.student_activity_events TO ${role}`);
     await migrator.query(`GRANT SELECT ON public.student_activity_summary TO ${role}`);
     await assertAccounts(runtime);
+    const google = await assertGoogleIdentity(runtime);
     await assertTransfer(runtime);
     await assertConstraints(migrator);
     await assertUsageConstraints(migrator);
@@ -63,6 +65,10 @@ test('student PostgreSQL migration, accounts, transfer, activity and outages', {
     await runtime.destroy();
     await assert.rejects(new PostgresStudentAccountRepository(runtime).get('new@example.edu'),
       (error: ApplicationError) => error.kind === 'unavailable');
+    await assert.rejects(migrator.undoLastMigration(), /cannot roll back Google identity/);
+    await migrator.query('DELETE FROM public.student_users WHERE id = $1', [google.id]);
+    await migrator.undoLastMigration();
+    migrated -= 1;
     await migrator.undoLastMigration();
     migrated -= 1;
     await assertUsageRollback(migrator, legacy);
@@ -101,6 +107,20 @@ async function assertAccounts(source: DataSource): Promise<void> {
     accounts.create('concurrent@example.edu', 'Concurrent', 'strong password'),
   ]);
   assert.equal(concurrent.filter((result) => result.status === 'fulfilled').length, 1);
+}
+
+async function assertGoogleIdentity(source: DataSource): Promise<{ id: string }> {
+  const accounts = new PostgresStudentAccountRepository(source);
+  const created = await accounts.google({ sub: 'google-sub-1', email: 'first@example.net', name: 'Google Student' }, true);
+  assert.equal(created.email, 'first@example.net');
+  assert.equal(created.google, 'google-sub-1');
+  const stable = await accounts.google({ sub: 'google-sub-1', email: 'changed@example.net', name: 'Changed Name' }, false);
+  assert.equal(stable.id, created.id, 'the verified subject is the stable identity even if email changes');
+  assert.equal(stable.email, created.email, 'profile changes do not silently relink or rename accounts');
+  await assert.rejects(accounts.google({ sub: 'google-sub-2', email: created.email, name: 'Another Person' }, true), AuthError,
+    'email collision cannot auto-link Google to a password account');
+  await assert.rejects(accounts.google({ sub: 'google-sub-new', email: 'new@example.net', name: 'New Student' }, false), AuthError);
+  return { id: created.id! };
 }
 
 async function assertTransfer(source: DataSource): Promise<void> {

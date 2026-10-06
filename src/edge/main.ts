@@ -2,8 +2,7 @@
 import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadEdgeConfig, EnvError } from './config.js';
-import { createEdgeApplication } from './composition-root.js';
-import { ConfigError, loadRegistry } from './registry.js';
+import { createEdgeApplication } from './composition-root.js';import { ConfigError, loadRegistry } from './registry.js';
 import { RegistrationImportExport } from '../modules/registration/application/registration-import-export.js';
 import { DatabaseProvisioningService } from '../modules/provisioning/application/database-provisioning-service.js';
 import { PostgresRegistryRepository } from '../infrastructure/postgres/registry-repository.js';
@@ -33,8 +32,7 @@ async function main(): Promise<void> {
     closePersistence: source ? () => closePostgres(source) : undefined,
   });
   const rejectBudgetTimer = installRuntimeLogs(edge.runtime);
-  let shuttingDown = false;
-  const shutdown = async () => {
+  let shuttingDown = false;  const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(rejectBudgetTimer);

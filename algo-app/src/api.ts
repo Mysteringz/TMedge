@@ -53,6 +53,9 @@ export interface SourceNode {
 const write = { 'content-type': 'application/json', 'x-tm-algo': '1' };
 
 async function json<T>(r: Response): Promise<T> {
+  // The session ended under us (expired, signed out in another tab, account
+  // removed): go and sign in, then come back to this page.
+  if (r.status === 401) location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
   if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`);
   return (await r.json()) as T;
 }
@@ -69,6 +72,11 @@ export const api = {
   putPipeline: (p: Pipeline) => fetch('/api/pipeline', { method: 'PUT', headers: write, body: JSON.stringify(p) })
     .then(json<{ ok: boolean; pipeline: Pipeline }>),
   savePipeline: (name: string) => fetch('/api/pipeline/save', { method: 'POST', headers: write, body: JSON.stringify({ name }) }).then(json),
+  /**
+   * The other half of "save": the server has the graph, the picker that lists
+   * `saved` and calls this is not built yet, so a saved pipeline is currently
+   * write-only. Kept because it works and is what the picker will call.
+   */
   loadPipeline: (name: string) => fetch('/api/pipeline/load', { method: 'POST', headers: write, body: JSON.stringify({ name }) })
     .then(json<{ pipeline: Pipeline }>),
   resetPipeline: () => fetch('/api/pipeline/reset', { method: 'POST', headers: write }).then(json<{ pipeline: Pipeline }>),
@@ -104,9 +112,13 @@ export const api = {
 };
 
 /** base64 plane -> bytes, for the canvas viewers. */
-export function unpack(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+export function unpack(b64: string): Uint8Array | null {
+  if (typeof b64 !== 'string' || b64.length > 1024) return null;
+  try {
+    const bin = atob(b64);
+    if (bin.length !== 32 * 24) return null;
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch { return null; }
 }

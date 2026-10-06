@@ -3,13 +3,17 @@
  * card on a plain field rather than the photographic split -- so nobody has
  * to read the heading to know the site changed screens.
  */
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { GoogleButton } from '../GoogleButton.tsx';
+import { Turnstile, turnstileOn, type TurnstileHandle } from '../Turnstile.tsx';
 import { safeNext } from './Login.tsx';
 
 export default function Signup() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [human, setHuman] = useState<string | null>(null);
+  const check = useRef<TurnstileHandle>(null);
   const next = safeNext(new URLSearchParams(location.search).get('next'));
 
   useEffect(() => {
@@ -31,16 +35,19 @@ export default function Signup() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           email: form.get('email'), name: form.get('name'), password: form.get('password'), next,
+          'cf-turnstile-response': human,
         }),
       });
       const body = (await res.json()) as { redirect?: string; error?: string };
       if (!res.ok) {
         setError(body.error ?? 'That account could not be created.');
+        check.current?.reset();   // the token was spent on this attempt
         return;
       }
       location.href = safeNext(body.redirect ?? next);
     } catch {
       setError('Could not reach the server. Try again.');
+      check.current?.reset();
     } finally {
       setBusy(false);
     }
@@ -57,7 +64,7 @@ export default function Signup() {
         </div>
         <h1>Create an account</h1>
         <p className="sub text-muted">
-          Your HKU Portal UID is your account. It takes a moment and then you can see every free seat on the pilot floors.
+          Create an HKUMySeat account with your HKU email or UID and a new password. Use a password that you do not use for HKU Portal.
         </p>
         {error && <p className="form-error" role="alert">{error}</p>}
         <form onSubmit={submit}>
@@ -67,22 +74,24 @@ export default function Signup() {
               <input className="input" id="name" name="name" type="text" placeholder="Chan Tai Man" autoComplete="name" maxLength={60} />
             </div>
             <div className="field">
-              <label className="field-label" htmlFor="uid">HKU Portal UID</label>
-              <input className="input" id="uid" name="email" type="text" placeholder="u3xxxxxxx" autoComplete="username" required />
+              <label className="field-label" htmlFor="uid">HKU email or UID</label>
+              <input className="input" id="uid" name="email" maxLength={254} type="text" placeholder="u3xxxxxxx" autoComplete="username" required />
             </div>
             <div className="two-up">
               <div className="field">
                 <label className="field-label" htmlFor="pin">PIN (10+ characters)</label>
-                <input className="input" id="pin" name="password" type="password" placeholder="••••••••" autoComplete="new-password" minLength={10} required />
+                <input className="input" id="pin" name="password" type="password" maxLength={1024} placeholder="••••••••" autoComplete="new-password" minLength={10} required />
               </div>
               <div className="field">
                 <label className="field-label" htmlFor="confirm">Confirm PIN</label>
-                <input className="input" id="confirm" name="confirm" type="password" placeholder="••••••••" autoComplete="new-password" minLength={10} required />
+                <input className="input" id="confirm" name="confirm" type="password" maxLength={1024} placeholder="••••••••" autoComplete="new-password" minLength={10} required />
               </div>
             </div>
           </div>
-          <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create account'}</button>
+          <Turnstile ref={check} action="signup" onToken={setHuman} />
+          <button className="btn btn-primary" type="submit" disabled={busy || (turnstileOn && !human)}>{busy ? 'Creating…' : 'Create account'}</button>
         </form>
+        <GoogleButton next={next} />
         <hr className="hr" />
         <div className="signup-foot">
           <span className="text-muted">Already have an account?</span>

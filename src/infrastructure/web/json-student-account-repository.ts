@@ -6,6 +6,7 @@ import { ApplicationError } from '../../modules/shared/application/contracts.js'
 import { AuthError } from '../../modules/student-auth/application/student-session-service.js';
 import type { IStudentAccountRepository } from '../../modules/student-auth/repositories/student-account-repository.js';
 import type { User } from '../../modules/student-auth/domain/user.js';
+import { randomUUID } from 'node:crypto';
 
 /** Stores student accounts in the existing atomic users.json format. */
 export class JsonStudentAccountRepository implements IStudentAccountRepository {
@@ -29,6 +30,19 @@ export class JsonStudentAccountRepository implements IStudentAccountRepository {
 
   count(): number {
     return this.users.size;
+  }
+
+  google(identity: { sub: string; email: string; name: string }, signupOpen: boolean): User {
+    if (!identity.sub || identity.sub.length > 255) throw new AuthError('Invalid Google identity.');
+    const bySubject = [...this.users.values()].find((user) => user.google === identity.sub);
+    if (bySubject) return bySubject;
+    const email = normalizeStudentEmail(identity.email);
+    if (this.users.has(email)) throw new AuthError('That email already belongs to another account. Sign in with its existing method.');
+    if (!signupOpen) throw new AuthError('Sign-up is closed.');
+    const user: User = { id: randomUUID(), email, name: identity.name.trim() || email, salt: '', hash: '', createdAt: Date.now(), google: identity.sub };
+    this.users.set(email, user);
+    try { this.save(); } catch (error) { this.users.delete(email); throw error; }
+    return user;
   }
 
   get(email: string): User | undefined {

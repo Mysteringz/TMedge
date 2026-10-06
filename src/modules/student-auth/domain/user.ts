@@ -7,4 +7,6 @@ export interface User {
   salt: string;
   hash: string;
   createdAt: number;
+  /** Stable OIDC subject; email is profile data and may change over time. */
+  google?: string;
 }

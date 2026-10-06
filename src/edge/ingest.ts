@@ -11,6 +11,9 @@
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import { isIP } from 'node:net';
+import { ReplayStore } from './replay.js';
+import { encryptPacket, encryptPayload, deriveKey, TYPE_ACK } from './secure.js';
+import { randomBytes } from 'node:crypto';
 import {
   buildCommand,
   buildOta,
@@ -29,6 +32,9 @@ export const DOWNLINK_PORT = 5201;
 const WINDOW_MS = 60_000;
 const MAX_NODES = 5000;
 const MAX_UNKNOWN_SOURCES = 200;
+const MAX_DURABLE_PACKETS = 4096;
+const MAX_DURABLE_BYTES = 4 * 1024 * 1024;
+interface PreparedPacket { packet: Packet; route: Route; receivedAt: number }
 
 /**
  * How a node's downlink gets back to it. Chosen from the transport its last
@@ -49,6 +55,7 @@ export interface DirectSession {
   sessionId: string;
   /** The key this session authenticated with: its packets verify, and its downlinks are signed, with this one. */
   key: Buffer;
+  secureId?: number;
   /** Queue one downlink datagram on the socket; false if the session cannot take it. */
   send(datagram: Buffer): boolean;
   /** Issue the HTTPS download grant that must precede a signed OTA request. */
@@ -59,6 +66,8 @@ export interface DirectSession {
    * reject, or null.
    */
   admit(packet: Packet, at: number): string | null;
+  /** A durable write can finish after this session closes. */
+  isOpen?(): boolean;
 }
 
 export type IngestResult =
@@ -76,6 +85,7 @@ export interface NodeLink {
   boot: number;
   seq: number;
   signed: boolean;
+  secureId?: number;
   reports: number;
   raws: number;
   statuses: number;
@@ -101,6 +111,10 @@ export interface IngestOptions {
   /** Key used to sign commands. Commands are refused if absent. */
   commandKey: Buffer | null;
   now?: () => number;
+  /** Runtime uses a durable cursor journal; tests may keep state in memory. */
+  cursorPath?: string;
+  /** Test hook for a delayed/failed asynchronous journal fsync. */
+  journalSync?: (fd: number) => Promise<void>;
   /**
    * Delivers a command to a node heard through an access gateway (address
    * "gw:..."). Returns false if that gateway is not connected.
@@ -131,12 +145,22 @@ export class Ingest extends EventEmitter {
   private bound = false;
   private closed = false;
   private stopPromise: Promise<void> | null = null;
+  private readonly replay: ReplayStore | null;
+  private readonly durableTails = new Map<string, Promise<void>>();
+  private readonly pendingNewNodes = new Set<string>();
+  private durablePackets = 0;
+  private durableBytes = 0;
+  private closing = false;
 
   constructor(private readonly opts: IngestOptions) {
     super();
     this.now = opts.now ?? Date.now;
+    this.replay = opts.cursorPath ? new ReplayStore(opts.cursorPath, { sync: opts.journalSync }) : null;
+    this.lastCommandSeq = this.replay?.commandSeq ?? 0;
     this.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    this.socket.on('message', (msg, rinfo) => this.handle(msg, rinfo.address));
+    this.socket.on('message', (msg, rinfo) => {
+      void this.handleDurable(msg, rinfo.address).catch((error) => this.emit('error', error));
+    });
     this.socket.on('error', (err) => this.emit('error', err));
     this.socket.on('listening', () => {
       this.bound = true;
@@ -172,13 +196,14 @@ export class Ingest extends EventEmitter {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     this.closed = true;
-    this.stopPromise = new Promise<void>((resolve) => {
-      try {
-        this.socket.close(() => resolve());
-      } catch {
-        resolve();
-      }
-    });
+    this.closing = true;
+    this.stopPromise = (async () => {
+      await new Promise<void>((resolve) => {
+        try { this.socket.close(() => resolve()); } catch { resolve(); }
+      });
+      // Stop admitting new transport data, then finish the already queued writes.
+      await Promise.allSettled([...this.durableTails.values()]);
+    })();
     return this.stopPromise;
   }
 
@@ -191,6 +216,60 @@ export class Ingest extends EventEmitter {
    * `source` is a plain address for UDP ("gw:..." for a gateway), or a Route.
    */
   handle(msg: Buffer, source: string | Route): IngestResult {
+    const prepared = this.prepare(msg, source);
+    if ('ok' in prepared) return prepared;
+    const refused = this.admitPacket(prepared);
+    if (refused) return refused;
+    const { packet, route } = prepared;
+    try {
+      this.replay?.accept(packet.uid, { boot: packet.boot, seq: packet.seq });
+      if (packet.kind === 'status' && packet.lastCmd > this.lastCommandSeq) {
+        this.replay?.command(packet.lastCmd);
+        this.lastCommandSeq = packet.lastCmd;
+      }
+    } catch { return this.reject(route.address, packet.uid, 'replay journal unavailable'); }
+    return this.commitPacket(prepared);
+  }
+
+  /** Production admission: group fsync off the event loop, then route/emit/ACK. */
+  handleDurable(msg: Buffer, source: string | Route): Promise<IngestResult> {
+    if (!this.replay) return Promise.resolve(this.handle(msg, source));
+    const prepared = this.prepare(msg, source);
+    if ('ok' in prepared) return Promise.resolve(prepared);
+    const { packet, route } = prepared;
+    if (this.durablePackets >= MAX_DURABLE_PACKETS || this.durableBytes + msg.length > MAX_DURABLE_BYTES) {
+      return Promise.resolve(this.reject(route.address, packet.uid, 'durable ingest queue full'));
+    }
+    this.durablePackets += 1;
+    this.durableBytes += msg.length;
+    // A later packet from this UID cannot check its replay cursor before its
+    // predecessor commits. Different UIDs may share the same durable batch.
+    const previous = this.durableTails.get(packet.uid) ?? Promise.resolve();
+    const done = previous.then(async (): Promise<IngestResult> => {
+      const refused = this.admitPacket(prepared);
+      if (refused) return refused;
+      if (!this.links.has(packet.uid) && !this.replay!.cursors.has(packet.uid)) this.pendingNewNodes.add(packet.uid);
+      try {
+        const commandSeq = packet.kind === 'status' ? packet.lastCmd : undefined;
+        // Reserve observed command high water before a person can issue the
+        // next command during this packet's asynchronous fsync.
+        if (commandSeq !== undefined) this.lastCommandSeq = Math.max(this.lastCommandSeq, commandSeq);
+        await this.replay!.acceptAsync(packet.uid, { boot: packet.boot, seq: packet.seq }, commandSeq);
+      } catch { return this.reject(route.address, packet.uid, 'replay journal unavailable'); }
+      finally { this.pendingNewNodes.delete(packet.uid); }
+      return this.commitPacket(prepared);
+    });
+    const result = done.finally(() => {
+      this.durablePackets -= 1;
+      this.durableBytes -= msg.length;
+      if (this.durableTails.get(packet.uid) === tail) this.durableTails.delete(packet.uid);
+    });
+    const tail = result.then(() => undefined, () => undefined);
+    this.durableTails.set(packet.uid, tail);
+    return result;
+  }
+
+  private prepare(msg: Buffer, source: string | Route): PreparedPacket | Extract<IngestResult, { ok: false }> {
     const route: Route = typeof source === 'string'
       ? (source.startsWith('gw:') ? { kind: 'gateway', address: source } : { kind: 'udp', address: source })
       : source;
@@ -198,6 +277,10 @@ export class Ingest extends EventEmitter {
     const now = this.now();
     this.packetTimes.push(now);
     this.bytesInWindow.push({ t: now, n: msg.length });
+    this.trim(now, undefined, false);
+    // Bound diagnostic samples even if all traffic is unauthenticated.
+    if (this.packetTimes.length > 10000) this.packetTimes.shift();
+    if (this.bytesInWindow.length > 10000) this.bytesInWindow.shift();
 
     const uidOf = () => msg.length >= 10 && msg[0] === 0x54 && msg[1] === 0x4d
       ? [...msg.subarray(4, 10)].map((b) => b.toString(16).padStart(2, '0')).join(':')
@@ -208,24 +291,36 @@ export class Ingest extends EventEmitter {
       // verify with that key, whatever else the edge would accept, and
       // ALLOW_UNSIGNED never applies to it.
       packet = parsePacket(msg, route.kind === 'direct'
-        ? { keys: [route.session.key], allowUnsigned: false }
+        ? { keys: [route.session.key], allowUnsigned: false, devices: this.opts.verify.devices }
         : this.opts.verify);
     } catch (err) {
       return this.reject(address, uidOf(), err instanceof ProtocolError ? err.message : String(err));
     }
+    if (route.kind === 'direct' && packet.secureId !== route.session.secureId) return this.reject(address, packet.uid, 'key does not match the session');
     if (route.kind === 'direct' && packet.uid !== route.session.uid) {
       return this.reject(address, packet.uid, 'uid does not match the session');
     }
 
-    let link = this.links.get(packet.uid);
-    if (link) {
-      if (packet.boot < link.boot || (packet.boot === link.boot && packet.seq <= link.seq)) {
-        link.rejected += 1;
-        return this.reject(address, packet.uid, packet.boot < link.boot
+    if (this.closing) return this.reject(address, packet.uid, 'ingest is shutting down');
+    return { packet, route, receivedAt: now };
+  }
+
+  private admitPacket({ packet, route, receivedAt: now }: PreparedPacket): Extract<IngestResult, { ok: false }> | null {
+    const address = route.address;
+    const link = this.links.get(packet.uid);
+    const saved = this.replay?.cursors.get(packet.uid);
+    // A durable packet can be refused at commit after its direct session
+    // closes. Its cursor still protects replays through an older live route.
+    const cursor = saved && (!link || saved.boot > link.boot || (saved.boot === link.boot && saved.seq > link.seq))
+      ? saved : link;
+    if (cursor) {
+      if (packet.boot < cursor.boot || (packet.boot === cursor.boot && packet.seq <= cursor.seq)) {
+        if (link) link.rejected += 1;
+        return this.reject(address, packet.uid, packet.boot < cursor.boot
           ? 'boot counter went backwards (replay, or node flash erased)'
           : 'replayed or duplicate sequence');
       }
-    } else if (this.links.size >= MAX_NODES) {
+    } else if (this.links.size + this.pendingNewNodes.size >= MAX_NODES || (this.replay?.cursors.size ?? 0) + this.pendingNewNodes.size >= MAX_NODES) {
       return this.reject(address, packet.uid, 'node table full');
     }
     if (route.kind === 'direct') {
@@ -235,6 +330,17 @@ export class Ingest extends EventEmitter {
         return this.reject(address, packet.uid, refused);
       }
     }
+    return null;
+  }
+
+  private commitPacket({ packet, route, receivedAt: now }: PreparedPacket): IngestResult {
+    const address = route.address;
+    // A closed/replaced direct session earns no route, occupancy or ACK even
+    // if the journal happened to finish writing its cursor in the meantime.
+    if (route.kind === 'direct' && route.session.isOpen?.() === false) {
+      return this.reject(address, packet.uid, 'session closed');
+    }
+    let link = this.links.get(packet.uid);
     if (link) {
       if (packet.boot === link.boot && packet.seq > link.seq + 1) {
         link.gapEvents.push({ t: now, n: packet.seq - link.seq - 1 });
@@ -268,12 +374,15 @@ export class Ingest extends EventEmitter {
     link.boot = packet.boot;
     link.seq = packet.seq;
     link.signed = packet.signed;
+    link.secureId = packet.secureId;
     link.recvTimes.push(now);
+    if (link.recvTimes.length > 10000) link.recvTimes.shift();
 
     switch (packet.kind) {
       case 'report':
         link.reports += 1;
         link.reportTimes.push(now);
+        if (link.reportTimes.length > 10000) link.reportTimes.shift();
         this.emit('report', packet, address, now);
         break;
       case 'ota':
@@ -287,6 +396,15 @@ export class Ingest extends EventEmitter {
         link.statuses += 1;
         this.emit('status', packet, address, now);
         break;
+    }
+    if (packet.secureId && route.kind !== 'direct' && (packet.kind === 'report' || packet.kind === 'status')) {
+      const device = this.opts.verify.devices?.find(packet.uid, packet.secureId);
+      if (device) {
+        const epoch = randomBytes(16);
+        const ack = encryptPayload({ type: TYPE_ACK, uid: packet.uid, boot: packet.boot, seq: packet.seq, uptimeMs: 0, keyId: device.id },
+          Buffer.from([packet.type]), deriveKey(device.master, packet.uid, device.id, 'ack', epoch), epoch);
+        void this.deliver(packet.uid, route, ack).catch(() => undefined);
+      }
     }
     this.trim(now, link);
     return { ok: true, packet, route };
@@ -309,13 +427,18 @@ export class Ingest extends EventEmitter {
     // Unix seconds, but strictly increasing even for two commands in the same
     // second: the node ignores anything not newer than the last one it applied.
     const seq = Math.max(Math.floor(this.now() / 1000), this.lastCommandSeq + 1);
+    if (seq > 0xffffffff) throw new Error('command sequence exhausted');
+    this.replay?.command(seq);
     this.lastCommandSeq = seq;
     return seq;
   }
 
   /** Forget a node's replay cursor: for a node whose flash was erased on purpose. */
   resetCursor(uid: string): boolean {
-    return this.links.delete(uid);
+    if (this.durablePackets) throw new Error('durable packet writes are pending; retry cursor reset');
+    if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(uid)) throw new Error('invalid node uid');
+    const saved = this.replay?.reset(uid) ?? false;
+    return this.links.delete(uid) || saved;
   }
 
   /** Reports per second over the window. */
@@ -353,12 +476,12 @@ export class Ingest extends EventEmitter {
    * echoes the last command it applied in its STATUS, and "sent" and
    * "applied" are different claims.
    */
-  sendCommand(uid: string, opcode: number, arg0 = 0, value = 0): Promise<number> {
+  async sendCommand(uid: string, opcode: number, arg0 = 0, value = 0): Promise<number> {
     const target = this.downlinkTarget(uid, 'receive commands');
     if (target instanceof Error) return Promise.reject(target);
     const seq = this.allocateCommandSeq();
     const cmd: Command = { seq, opcode, arg0, value };
-    return this.deliver(uid, target.route, buildCommand(uid, cmd, target.key)).then(() => seq);
+    return this.deliver(uid, target.route, this.protectDownlink(uid, buildCommand(uid, cmd, target.key))).then(() => seq);
   }
 
   /**
@@ -366,12 +489,22 @@ export class Ingest extends EventEmitter {
    * direct session signs with the key it authenticated with, so a node still
    * on TM_KEY_PREVIOUS during a rotation gets commands it can verify.
    */
+  private protectDownlink(uid: string, legacy: Buffer): Buffer {
+    const link = this.links.get(uid);
+    if (!link?.secureId) return legacy;
+    const device = this.opts.verify.devices?.find(uid, link.secureId);
+    if (!device) throw new Error('device key expired or revoked; downlink refused');
+    return encryptPacket(legacy, device);
+  }
+
   private downlinkTarget(uid: string, what: string): { route: Route; key: Buffer } | Error {
     const link = this.links.get(uid);
     if (!link) return new Error(`node ${uid} has not been heard from; no address to send to`);
     const route = link.route;
     if (!route) return new Error(`node ${uid}'s direct session has closed; it cannot ${what} until it reconnects`);
+    if (link.secureId && !this.opts.verify.devices?.find(uid, link.secureId)) return new Error('device key expired or revoked');
     if (route.kind === 'direct') return { route, key: route.session.key };
+    if (link.secureId) return { route, key: Buffer.alloc(32) };
     if (!this.opts.commandKey) return new Error(`no TM_KEY: nothing can be signed for ${uid}`);
     if (route.kind === 'udp') {
       // A node heard through a local proxy (e.g. a userspace Tailscale client)
@@ -409,11 +542,11 @@ export class Ingest extends EventEmitter {
    * replay-protected path as a command, and the node downloads from whatever
    * address the packet arrives from -- its own gateway.
    */
-  sendOta(uid: string, image: { port: number; size: number; sha256: string; path: string }): Promise<void> {
+  async sendOta(uid: string, image: { port: number; size: number; sha256: string; path: string }): Promise<void> {
     const target = this.downlinkTarget(uid, 'be updated');
     if (target instanceof Error) return Promise.reject(target);
     const seq = this.allocateCommandSeq();
-    const buf = buildOta(uid, { seq, ...image }, target.key);
+    const buf = this.protectDownlink(uid, buildOta(uid, { seq, ...image }, target.key));
     if (target.route.kind === 'direct') {
       // A direct node downloads over HTTPS from its provisioned cloud host,
       // on 443 only, and only with a grant bound to this very sequence and
@@ -430,10 +563,12 @@ export class Ingest extends EventEmitter {
     return this.deliver(uid, target.route, buf);
   }
 
-  private reject(address: string, uid: string | null, reason: string): IngestResult {
+  private reject(address: string, uid: string | null, reason: string): Extract<IngestResult, { ok: false }> {
     const now = this.now();
     this.rejectTimes.push(now);
-    this.rejectReasons.set(reason, (this.rejectReasons.get(reason) ?? 0) + 1);
+    if (this.rejectTimes.length > 10000) this.rejectTimes.shift();
+    const reasonKey = this.rejectReasons.has(reason) || this.rejectReasons.size < 128 ? reason : 'other';
+    this.rejectReasons.set(reasonKey, (this.rejectReasons.get(reasonKey) ?? 0) + 1);
     const key = `${address}|${uid ?? '-'}`;
     const src = this.rejectedSources.get(key);
     if (src) {
@@ -452,7 +587,7 @@ export class Ingest extends EventEmitter {
    * trimmed per packet -- trimming every node on every packet is quadratic in
    * the fleet size -- and all of them when statistics are read.
    */
-  private trim(now: number, only?: NodeLink): void {
+  private trim(now: number, only?: NodeLink, all = true): void {
     const cut = now - WINDOW_MS;
     const dropOld = (a: number[]) => {
       let i = 0;
@@ -464,7 +599,7 @@ export class Ingest extends EventEmitter {
     let i = 0;
     while (i < this.bytesInWindow.length && (this.bytesInWindow[i]?.t ?? 0) < cut) i++;
     if (i > 0) this.bytesInWindow.splice(0, i);
-    for (const link of only ? [only] : this.links.values()) {
+    for (const link of only ? [only] : all ? this.links.values() : []) {
       dropOld(link.reportTimes);
       dropOld(link.recvTimes);
       while (link.gapEvents.length > 0 && (link.gapEvents[0]?.t ?? 0) < cut) link.gapEvents.shift();

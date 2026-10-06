@@ -8,6 +8,8 @@ import { footprint } from '../shared/geometry.js';
 import type { ConsoleDetection, EdgeHealth, NodeHealth, OccupancySnapshot, RawFrameMessage } from '../shared/types.js';
 import type { EdgeConfig } from './config.js';
 import { DwellMap } from './dwell.js';
+import { EdgeDetector } from './edgedetect.js';
+import { join } from 'node:path';
 import { HostMonitor } from './health.js';
 import type { Ingest } from './ingest.js';
 import type { OccupancyEngine } from './occupancy.js';
@@ -22,6 +24,7 @@ import type { Publisher } from './publisher.js';
 import type { BoundedOccupancyHistorySink } from '../modules/occupancy-history/application/bounded-occupancy-history-sink.js';
 import type { DurableCommandOutcomes } from '../modules/nodes/application/durable-command-outcomes.js';
 import type { RolloutService } from '../modules/rollouts/application/rollout-service.js';
+import { StaticBackground } from './staticbg.js';
 
 export const EDGE_VERSION = '1.0.0';
 
@@ -31,6 +34,8 @@ interface NodeInfo {
   status: Status | null;
   statusAt: number | null;
   lastRaw: RawFrameMessage | null;
+  /** An edge-detected node's own REPORT: kept for its ambient reading, never counted. */
+  nodeReport: Report | null;
 }
 
 export declare interface EdgeRuntime {
@@ -38,6 +43,10 @@ export declare interface EdgeRuntime {
   on(event: 'raw', l: (msg: RawFrameMessage) => void): this;
   on(event: 'snapshot', l: (s: OccupancySnapshot) => void): this;
   on(event: 'rgb', l: (uid: string, jpeg: Buffer, at: number) => void): this;
+  off(event: 'report', l: (uid: string, dets: ConsoleDetection[], at: number) => void): this;
+  off(event: 'raw', l: (msg: RawFrameMessage) => void): this;
+  off(event: 'snapshot', l: (s: OccupancySnapshot) => void): this;
+  off(event: 'rgb', l: (uid: string, jpeg: Buffer, at: number) => void): this;
 }
 
 /** Dependencies supplied by the edge composition root. */
@@ -67,6 +76,8 @@ export class EdgeRuntime extends EventEmitter {
   /** Nodes that reach this edge directly over WSS (NODE_PORT); null when off. */
   readonly direct: NodeServer | null;
   private readonly info = new Map<string, NodeInfo>();
+  /** Per node with detector "edge", created on its first RAW. */
+  readonly edgeDetectors = new Map<string, EdgeDetector>();
   private publishTimer: NodeJS.Timeout | null = null;
   private rolloutTimer: NodeJS.Timeout | null = null;
   private stopPromise: Promise<void> | null = null;
@@ -84,7 +95,7 @@ export class EdgeRuntime extends EventEmitter {
     return this.started;
   }
 
-  constructor(readonly cfg: EdgeConfig, readonly reg: Registry, services: EdgeRuntimeServices) {
+  constructor(readonly cfg: EdgeConfig, readonly reg: Registry, services: EdgeRuntimeServices = {} as EdgeRuntimeServices) {
     super();
     this.engine = services.engine;
     this.recorder = services.recorder;
@@ -186,13 +197,39 @@ export class EdgeRuntime extends EventEmitter {
   private infoFor(uid: string): NodeInfo {
     let i = this.info.get(uid);
     if (!i) {
-      i = { lastReport: null, lastReportAt: null, status: null, statusAt: null, lastRaw: null };
+      i = { lastReport: null, lastReportAt: null, status: null, statusAt: null, lastRaw: null, nodeReport: null };
       this.info.set(uid, i);
     }
     return i;
   }
 
+  /** True when this edge, not the node, finds the node's people. */
+  private detectsHere(uid: string): boolean {
+    return this.reg.nodes.get(uid)?.detector === 'edge';
+  }
+
+  private edgeDetector(uid: string): EdgeDetector {
+    let d = this.edgeDetectors.get(uid);
+    if (!d) {
+      const file = join(this.cfg.dataDir, 'background', `${uid.replace(/:/g, '')}.json`);
+      d = new EdgeDetector(new StaticBackground(file));
+      this.edgeDetectors.set(uid, d);
+    }
+    return d;
+  }
+
   private onReport(p: Report, at: number): void {
+    if (this.detectsHere(p.uid)) {
+      // The node's verdict comes from the background that forgets people who
+      // sit still; its RAW frame is what gets counted (onRaw). The REPORT
+      // still arrives -- it keeps the frame rate and liveness honest.
+      this.infoFor(p.uid).nodeReport = p;
+      return;
+    }
+    this.acceptReport(p, at);
+  }
+
+  private acceptReport(p: Report, at: number): void {
     const i = this.infoFor(p.uid);
     i.lastReport = p;
     i.lastReportAt = at;
@@ -209,9 +246,14 @@ export class EdgeRuntime extends EventEmitter {
 
   private onRaw(p: Raw, at: number): void {
     const msg: RawFrameMessage = { uid: p.uid, frame: p.frame, tMin: p.tMin, step: p.step, pixels: Array.from(p.pixels), receivedAt: at };
-    this.infoFor(p.uid).lastRaw = msg;
+    const i = this.infoFor(p.uid);
+    i.lastRaw = msg;
     this.recorder.rawFrame(p, at);
     this.emit('raw', msg);
+    if (this.detectsHere(p.uid)) {
+      const ta = i.nodeReport?.ta ?? i.status?.ta ?? 0;
+      this.acceptReport(this.edgeDetector(p.uid).step(p, at, ta), at);
+    }
   }
 
   private onStatus(p: Status, at: number): void {
@@ -263,6 +305,8 @@ export class EdgeRuntime extends EventEmitter {
         raws: link?.raws ?? 0,
         rejected: link?.rejected ?? 0,
         lastPeople: r ? r.detections.length : null,
+        detector: def?.detector ?? 'node',
+        edgeBackground: this.edgeDetectors.get(uid)?.state(now) ?? null,
         backgroundReady: r ? (r.flags & REPORT_BACKGROUND_READY) !== 0 : false,
         globalShift: r ? (r.flags & REPORT_GLOBAL_SHIFT) !== 0 : false,
         sceneMin: r?.sceneMin ?? null,

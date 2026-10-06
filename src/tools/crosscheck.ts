@@ -153,5 +153,6 @@ const parseOta = (buf: Buffer) => JSON.parse(execFileSync(bin, ['parse-ota', buf
 
 // The direct-to-cloud transport: the firmware's session against this edge's listener.
 await directCrosscheck(tmnode, key, ok);
+await directCrosscheck(tmnode, key, name => ok(`encrypted: ${name}`), true);
 
 console.log(`\ncrosscheck: ${checks} checks passed against ${tmnode}`);

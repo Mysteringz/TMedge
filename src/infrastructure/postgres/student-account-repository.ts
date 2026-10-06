@@ -8,7 +8,7 @@ import type { IStudentAccountRepository } from '../../modules/student-auth/repos
 import type { User } from '../../modules/student-auth/domain/user.js';
 
 interface AccountRow {
-  id: string; email: string; name: string; salt: string; hash: string; created_at: Date | string;
+  id: string; email: string; name: string; salt: string; hash: string; created_at: Date | string; google_subject?: string | null;
 }
 
 /** Always reads committed accounts from PostgreSQL; never caches credentials or falls back to JSON. */
@@ -40,6 +40,24 @@ export class PostgresStudentAccountRepository implements IStudentAccountReposito
   async verify(email: string, password: string): Promise<User | null> {
     const user = await this.get(email);
     return await verifyStudentPassword(user, password) ? user ?? null : null;
+  }
+
+  async google(identity: { sub: string; email: string; name: string }, signupOpen: boolean): Promise<User> {
+    if (!identity.sub || identity.sub.length > 255) throw new AuthError('Invalid Google identity.');
+    return this.available(() => this.source.transaction(async (manager) => {
+      const existing = await manager.query('SELECT * FROM public.student_users WHERE google_subject = $1', [identity.sub]) as AccountRow[];
+      if (existing[0]) return toUser(existing[0]);
+      const email = normalizeStudentEmail(identity.email);
+      const owner = await manager.query('SELECT id FROM public.student_users WHERE email = $1', [email]) as Array<{ id: string }>;
+      if (owner.length) throw new AuthError('That email already belongs to another account. Sign in with its existing method.');
+      if (!signupOpen) throw new AuthError('Sign-up is closed.');
+      const id = randomUUID();
+      const createdAt = new Date();
+      const name = identity.name.trim() || email;
+      await manager.query(`INSERT INTO public.student_users (id, email, name, salt, hash, google_subject, created_at, updated_at)
+        VALUES ($1, $2, $3, '', '', $4, $5, $5)`, [id, email, name, identity.sub, createdAt]);
+      return { id, email, name, salt: '', hash: '', google: identity.sub, createdAt: createdAt.getTime() };
+    }));
   }
 
   async exportAccounts(): Promise<User[]> {
@@ -74,13 +92,13 @@ export class PostgresStudentAccountRepository implements IStudentAccountReposito
 
 function toUser(row: AccountRow): User {
   return { id: row.id, email: row.email, name: row.name, salt: row.salt, hash: row.hash,
-    createdAt: new Date(row.created_at).getTime() };
+    createdAt: new Date(row.created_at).getTime(), ...(row.google_subject ? { google: row.google_subject } : {}) };
 }
 
 async function insertAccount(manager: EntityManager, user: User): Promise<void> {
-  await manager.query(`INSERT INTO public.student_users (id, email, name, salt, hash, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $6)`,
-  [user.id ?? randomUUID(), user.email, user.name, user.salt, user.hash, new Date(user.createdAt)]);
+  await manager.query(`INSERT INTO public.student_users (id, email, name, salt, hash, google_subject, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
+  [user.id ?? randomUUID(), user.email, user.name, user.salt, user.hash, user.google ?? null, new Date(user.createdAt)]);
 }
 
 function collectInsertable(users: readonly User[], existing: readonly User[]): User[] {
@@ -100,7 +118,7 @@ function collectInsertable(users: readonly User[], existing: readonly User[]): U
 
 function sameAccount(current: User, imported: User): boolean {
   return (!imported.id || current.id === imported.id) && current.name === imported.name && current.salt === imported.salt
-    && current.hash === imported.hash && current.createdAt === imported.createdAt;
+    && current.hash === imported.hash && current.google === imported.google && current.createdAt === imported.createdAt;
 }
 
 function postgresCode(error: unknown): string | undefined {

@@ -3,10 +3,12 @@ import express, { Router, type RequestHandler } from 'express';
 import { searchSeats } from '../../../shared/seats.js';
 import { isSnapshot, SnapshotStore } from '../../../web/store.js';
 import type { StudentUsageActivity } from '../../student-auth/application/student-usage-activity.js';
+import type { SnapshotPublishers } from '../../../web/publishers.js';
 
 export interface OccupancyRouterDependencies {
   store: SnapshotStore;
   pushToken: string;
+  publishers?: SnapshotPublishers;
   requireStudent: RequestHandler;
   onSnapshot(): void;
   usage?: StudentUsageActivity;
@@ -16,9 +18,14 @@ export interface OccupancyRouterDependencies {
 export function createOccupancyRouter(dependencies: OccupancyRouterDependencies): Router {
   const router = Router();
   router.post('/api/edge/snapshot', express.json({ limit: '2mb' }), (req, res) => {
-    if (!hasEdgeToken(req.get('authorization'), dependencies.pushToken)) return res.status(401).json({ error: 'bad edge token' });
+    const token = Buffer.from((req.get('authorization') ?? '').replace(/^Bearer /, ''));
+    const authenticated = dependencies.publishers
+      ? dependencies.publishers.authenticate(req.body?.edgeId, token)
+      : hasEdgeToken(req.get('authorization'), dependencies.pushToken);
+    if (!authenticated) return res.status(401).json({ error: 'bad edge token' });
     if (!isSnapshot(req.body)) return res.status(400).json({ error: 'not an occupancy snapshot' });
-    dependencies.store.put(req.body);
+    if (dependencies.publishers && !dependencies.publishers.authorizes(req.body)) return res.status(403).json({ error: 'edge is not authorized for these floors' });
+    if (!dependencies.store.put(req.body)) return res.status(503).json({ error: 'snapshot store is full' });
     dependencies.onSnapshot();
     return res.json({ ok: true });
   });

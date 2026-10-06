@@ -1,5 +1,10 @@
 # TMedge
 
+Security fixes, validation and deployment requirements are tracked in
+[the security specsheet](docs/SECURITY_BUG_SPEC.md). TMsense 1.7 encrypted
+telemetry and per-device/gateway/publisher credentials are documented in
+[the coordinated protocol and migration runbook](docs/ENCRYPTED_NODE_PROTOCOL.md).
+
 Turns reports from **TMnode** thermal sensors into live seat availability,
 and serves it to students.
 
@@ -25,7 +30,7 @@ changing what the system knows about anyone.
 
 ## Run it
 
-For PostgreSQL student accounts and signup/login/logout activity, follow [student account setup](docs/student-accounts.md). It includes persistent local PostgreSQL, safe `users.json` import and recovery commands. Named admin accounts are deferred to a later MVP.
+For PostgreSQL student accounts, optional Google sign-in, Turnstile, and retained student interaction events, follow [student account setup](docs/student-accounts.md). It includes persistent local PostgreSQL, safe `users.json` import, migration, and recovery commands. Password signup is closed by default and must be explicitly enabled with `SIGNUP_OPEN=1`; the local setup helper enables it for development. Named admin accounts are deferred to a later MVP.
 
 Keep deployment credentials in the git-ignored `.env` file. Account details
 below are examples; use your own approved university account and password.
@@ -161,7 +166,6 @@ worker service. The worker gets only the uploaded source tree; it receives no
 edge secrets or data volumes. TMWAccess 1.1+ is still required at each site. A
 node that talks to the edge directly downloads from the edge's own console
 port instead.
-
 ## Tests
 
 ```bash

@@ -12,15 +12,18 @@ src/edge/nodelink.ts     direct TMsense nodes over WSS (tmnode.v1): auth, ACKs, 
                          -- contract in docs/DIRECT_NODE_PROTOCOL.md, rollout in docs/DIRECT_NODE_RUNBOOK.md
 src/edge/registry.ts     site/nodes config + strict validation, coverage per table
 src/edge/occupancy.ts    projection -> authority per table -> seats -> smoothing
+src/edge/staticbg.ts     day-long background: heat present ~80% of 24 h is room, the rest may be people
+src/edge/edgedetect.ts   detection on RAW frames for nodes with "detector": "edge" (docs/EDGE_DETECTION.md)
 src/edge/runtime.ts      wires ingest/occupancy/recorder/publisher; node & edge health
-src/edge/console.ts      admin console HTTP/WS (raw frames live here only)
+src/edge/console.ts      debug console core: UI router (module 03 of the algo console) + device endpoints on CONSOLE_PORT
 src/edge/recorder.ts     daily JSONL logs = Phase 3 calibration data
 src/shared/geometry.ts   110° f-theta pixel <-> floor, height-aware
 src/shared/seats.ts      seat layout + "N seats together" (server and client share it)
 src/web/                 student web tier (auth, snapshot store, API, WS)
 web-app/                 student UI: React + Vite, builds into public-web/app/
-src/algo/                algo debugger: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
-algo-app/                its editor: React + React Flow, builds into public-algo/
+src/algo/                algo console: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
+src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
+algo-app/                its UI: 8-bit console shell (src/console/): 01 /flow React Flow editor, 02 /train, 03 /console
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
 ```
@@ -53,7 +56,8 @@ has hidden Linux failures before.
   varies ~2× across a 110° view and produced phantom seats (86% → 98%
   accuracy when fixed).
 - **Privacy boundary:** only `OccupancySnapshot` leaves the edge. Raw frames
-  reach a browser only in the authenticated admin console on the edge.
+  reach a browser only in the signed-in algo console on the edge (its
+  debugger and module 03, the debug console).
 - **Students can't write.** The only write on the web tier is the edge's
   bearer-token push.
 - **An update is never a broadcast.** One node is flashed first and must
@@ -64,7 +68,14 @@ has hidden Linux failures before.
 - **The debugger never re-implements the detector.** Its preview runs
   `../TMsense/src/tm_detector.cpp` compiled for the host. A copy of that file
   in this repo is a test failure, because a debugger that drifts from the
-  firmware lies about the thing it is debugging.
+  firmware lies about the thing it is debugging. `edgedetect.ts` is not such
+  a copy: it is the edge's own detector for `"detector": "edge"` nodes, with
+  a different background by design, and the debugger labels it as such.
+- **A still person is not background.** An edge-detected node's background
+  only learns heat present in ~80% of the last 24 h. Never shorten that
+  window or raise the quantile to "adapt faster": that is exactly how a
+  student sitting for two hours faded out of the count. Until the model has
+  an hour of history the node reports not-ready, so its tables are unknown.
 - **A live parameter change is temporary.** The algo dashboard's writes revert
   after 15 minutes unless committed, flash writes are a separate act, and
   every change is in `data/algo/audit.jsonl` with its old value.

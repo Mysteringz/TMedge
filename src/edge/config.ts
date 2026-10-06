@@ -4,20 +4,21 @@
  */
 import { hostname } from 'node:os';
 import { loadPostgresConnectionConfig, PostgresConfigError, type PostgresConnectionConfig } from '../infrastructure/postgres/config.js';
-
+import { DeviceKeys, GatewayKeys } from './secure.js';
 export type PersistenceMode = 'file' | 'postgres';
 
 export interface EdgeConfig {
   edgeId: string;
   keys: Buffer[];
+  devices?: DeviceKeys;
   allowUnsigned: boolean;
   udpPort: number;
   udpHost: string;
   sitePath: string;
   nodesPath: string;
   /** Explicit source of truth for registrations and provisioning. */
-  persistenceMode: PersistenceMode;
-  postgres: PostgresConnectionConfig | null;
+  persistenceMode?: PersistenceMode;
+  postgres?: PostgresConnectionConfig | null;
   dataDir: string;
   recordRaw: boolean;
   consolePort: number;
@@ -36,7 +37,9 @@ export interface EdgeConfig {
   publishMs: number;
   /** TCP port for access gateways (TMWAccess / TMLAccess); 0 disables. */
   gatewayPort: number;
+  gatewayAllowRawTcp?: boolean;
   gatewayToken: Buffer | null;
+  gatewayKeys?: GatewayKeys;
   /**
    * Direct node listener (docs/DIRECT_NODE_PROTOCOL.md): TMsense nodes that
    * reach this edge themselves over WSS, through the tunnel. Port 0 = off.
@@ -99,15 +102,20 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
       throw error;
     }
   }
+  const devices = env.DEVICE_KEYS_FILE ? DeviceKeys.fromFile(env.DEVICE_KEYS_FILE) : undefined;
   const key = env.TM_KEY ?? '';
   const allowUnsigned = env.ALLOW_UNSIGNED === '1';
-  if (!key && !allowUnsigned) {
+  if (!key && !allowUnsigned && !devices) {
     throw new EnvError('TM_KEY is not set. Set it to the key the nodes sign with, or ALLOW_UNSIGNED=1 for a bench test.');
   }
   // During a key rotation the edge accepts both; nodes are re-keyed one by one.
   const keys = [key, env.TM_KEY_PREVIOUS ?? ''].filter((k) => k.length > 0).map((k) => Buffer.from(k, 'utf8'));
 
   const adminPassword = env.ADMIN_PASSWORD ? env.ADMIN_PASSWORD : null;
+  const consoleHost = env.CONSOLE_HOST || (adminPassword ? '0.0.0.0' : '127.0.0.1');
+  if (!adminPassword && !['127.0.0.1', '::1', 'localhost'].includes(consoleHost)) {
+    throw new EnvError('CONSOLE_HOST must be loopback when ADMIN_PASSWORD is absent');
+  }
   const flashToken = env.TMFLASH_TOKEN ? env.TMFLASH_TOKEN : null;
   // Short enough to brute-force is the same as absent, and this one decides
   // whose requests reach an admin's screen.
@@ -118,7 +126,8 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
   const pushUrls = (env.WEB_PUSH_URLS ?? 'http://127.0.0.1:8080').split(',').map((s) => s.trim()).filter(Boolean);
   for (const u of pushUrls) {
     try {
-      new URL(u);
+      const url = new URL(u);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('not an HTTP URL');
     } catch {
       throw new EnvError(`WEB_PUSH_URLS: "${u}" is not a URL`);
     }
@@ -128,8 +137,9 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     throw new EnvError('WEB_PUSH_TOKEN must be set (16+ chars) when WEB_PUSH_URLS is; the web tier rejects unauthenticated snapshots.');
   }
 
+  if (env.TMGW_ALLOW_RAW_TCP && !['0', '1'].includes(env.TMGW_ALLOW_RAW_TCP)) throw new EnvError('TMGW_ALLOW_RAW_TCP must be 0 or 1');
   const nodePort = int(env, 'NODE_PORT', 0, 0, 65535);
-  if (nodePort > 0 && keys.length === 0) {
+  if (nodePort > 0 && keys.length === 0 && !devices) {
     // ALLOW_UNSIGNED is a bench convenience for UDP; a node reaching the edge
     // over the internet authenticates with the key or not at all.
     throw new EnvError('NODE_PORT is set but TM_KEY is not: the direct node listener always requires a signing key.');
@@ -140,7 +150,7 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
 
   return {
     edgeId: env.EDGE_ID || hostname(),
-    keys,
+    keys, devices,
     allowUnsigned,
     udpPort: int(env, 'UDP_PORT', 5200, 1, 65535),
     udpHost: env.UDP_HOST || '0.0.0.0',
@@ -154,13 +164,15 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     algoPort: int(env, 'ALGO_PORT', 8091, 0, 65535),
     // Without a password the console shows raw thermal frames to anyone who
     // can reach it, so it is then only reachable from this machine.
-    consoleHost: env.CONSOLE_HOST || (adminPassword ? '0.0.0.0' : '127.0.0.1'),
+    consoleHost,
     adminPassword,
     flashToken,
     pushUrls,
     pushToken,
     publishMs: int(env, 'PUBLISH_MS', 2000, 200, 60000),
     gatewayPort: int(env, 'GATEWAY_PORT', 5210, 0, 65535),
+    gatewayAllowRawTcp: env.TMGW_ALLOW_RAW_TCP === '1',
+    gatewayKeys: env.TMGW_KEYS_FILE ? GatewayKeys.fromFile(env.TMGW_KEYS_FILE) : undefined,
     gatewayToken: (() => {
       const t = env.TMGW_TOKEN ?? '';
       if (t && t.length < 16) throw new EnvError('TMGW_TOKEN must be 16+ chars');

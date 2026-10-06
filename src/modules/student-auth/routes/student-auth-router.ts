@@ -1,7 +1,7 @@
 import express, { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { IStudentAccountRepository } from '../repositories/student-account-repository.js';
-import { AuthError, parseCookies, RateLimiter, Sessions } from '../application/student-session-service.js';
+import { AuthError, parseCookies, RateLimiter, Sessions, studentSessionVersion, type HumanCheck } from '../application/student-session-service.js';
 import { asyncHandler } from '../../../infrastructure/http/errors.js';
 import type { StudentActivityLog } from '../application/student-activity-log.js';
 import type { StudentActivityAction, StudentActivityOutcome } from '../repositories/student-activity-repository.js';
@@ -16,6 +16,8 @@ export interface StudentAuthRouterDependencies {
   cookieSecure: boolean;
   noStore(res: Response): void;
   activity?: StudentActivityLog;
+  humanCheck?: HumanCheck | null;
+  onLogout?: (token: string | undefined) => void;
 }
 
 /** Creates the existing student session and account HTTP endpoints. */
@@ -27,6 +29,9 @@ export function createStudentAuthRouter(dependencies: StudentAuthRouterDependenc
   router.post('/login', body, sameOrigin, createLoginHandler(dependencies, limiter));
   router.post('/signup', body, sameOrigin, createSignupHandler(dependencies, limiter));
   router.post('/logout', body, sameOrigin, asyncHandler(async (req: Request, res: Response) => {
+    const token = parseCookies(req.headers.cookie)[COOKIE];
+    dependencies.sessions.revoke(token);
+    dependencies.onLogout?.(token);
     res.clearCookie(COOKIE, { path: '/' });
     dependencies.noStore(res);
     const email = userOf(req, dependencies.sessions);
@@ -46,9 +51,9 @@ export function createRequireStudent(dependencies: StudentAuthRouterDependencies
   return asyncHandler(async (req, res, next) => {
     const detail = dependencies.sessions.detail(parseCookies(req.headers.cookie)[COOKIE]);
     const user = detail ? await dependencies.accounts.get(detail.email) : undefined;
-    if (detail && user) {
+    if (detail && user && detail.version === studentSessionVersion(user)) {
       res.locals.studentUserId = user.id;
-      if (detail.expiresAt - Date.now() < dependencies.sessions.ttl / 2) setSession(req, res, detail.email, dependencies);
+      if (detail.expiresAt - Date.now() < dependencies.sessions.ttl / 2) await setSession(req, res, detail.email, dependencies);
       return next();
     }
     if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'sign in first' });
@@ -75,6 +80,10 @@ function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLi
       return res.status(400).json({ error: 'email and password must be strings' });
     }
     const { email: raw, password, next } = input;
+    if (deps.humanCheck && !await deps.humanCheck(String((req.body as Record<string, unknown>)['cf-turnstile-response'] ?? ''), 'login', req.ip)) {
+      recordActivity(deps, 'login', 'failed');
+      return res.status(403).json({ error: 'Please complete the verification challenge.' });
+    }
     const user = await deps.accounts.verify(asEmail(raw, deps.allowedDomains), password);
     if (!user) {
       const known = await findActivityUser(deps, asEmail(raw, deps.allowedDomains));
@@ -82,7 +91,7 @@ function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLi
       return res.status(401).json({ error: 'That UID and PIN do not match.' });
     }
     recordActivity(deps, 'login', 'succeeded', user.id);
-    setSession(req, res, user.email, deps);
+    await setSession(req, res, user.email, deps);
     return res.json({ redirect: safeNext(next) });
   });
 }
@@ -101,10 +110,14 @@ function createSignupHandler(deps: StudentAuthRouterDependencies, limiter: RateL
       return res.status(400).json({ error: 'email, password and name must be strings' });
     }
     const { email: raw, name, password, next } = input;
+    if (deps.humanCheck && !await deps.humanCheck(String((req.body as Record<string, unknown>)['cf-turnstile-response'] ?? ''), 'signup', req.ip)) {
+      recordActivity(deps, 'signup', 'failed');
+      return res.status(403).json({ error: 'Please complete the verification challenge.' });
+    }
     try {
       const user = await deps.accounts.create(asEmail(raw, deps.allowedDomains), name, password);
       recordActivity(deps, 'signup', 'succeeded', user.id);
-      setSession(req, res, user.email, deps);
+      await setSession(req, res, user.email, deps);
       return res.json({ redirect: safeNext(next) });
     } catch (error) {
       if (error instanceof AuthError) {
@@ -135,8 +148,9 @@ function authInput(body: unknown): { email: string; password: string; name: stri
     name: typeof fields.name === 'string' ? fields.name : '', next: fields.next };
 }
 
-function setSession(req: Request, res: Response, email: string, deps: StudentAuthRouterDependencies): void {
-  res.cookie(COOKIE, deps.sessions.issue(email), {
+async function setSession(req: Request, res: Response, email: string, deps: StudentAuthRouterDependencies): Promise<void> {
+  const user = await deps.accounts.get(email);
+  if (user) res.cookie(COOKIE, deps.sessions.issue(email, Date.now(), studentSessionVersion(user)), {
     httpOnly: true, sameSite: 'lax', secure: deps.cookieSecure || req.secure,
     maxAge: deps.sessions.ttl, path: '/',
   });

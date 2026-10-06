@@ -1,0 +1,17 @@
+[Unit]
+Description=Private PostgreSQL tunnel over Tailscale
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=tmedge
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/opt/tmedge-training/known_hosts -i /opt/tmedge-training/tunnel_ed25519 -L 127.0.0.1:55432:192.168.3.180:5432 training-tunnel@100.68.138.39
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

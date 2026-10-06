@@ -13,13 +13,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { DEFAULT_NODE_LIMITS } from '../edge/config.js';
+import { DeviceKeys } from '../edge/secure.js';
 import { Ingest } from '../edge/ingest.js';
 import { authMac, NodeServer } from '../edge/nodelink.js';
 import { CMD_SET_PARAM, parsePacket, type Report } from '../edge/protocol.js';
 
 type HostEvent = Record<string, unknown> & { event: string };
 
-export async function directCrosscheck(tmsense: string, key: Buffer, ok: (name: string) => void): Promise<void> {
+export async function directCrosscheck(tmsense: string, key: Buffer, ok: (name: string) => void, encrypted = false): Promise<void> {
   const vectorsPath = `${tmsense}/test/host/fixtures/tmnode_auth_vectors.json`;
   const vectors = (JSON.parse(readFileSync(vectorsPath, 'utf8')) as { vectors: { key: string; uid: string; nonce: string; mac: string }[] }).vectors;
   for (const v of vectors) assert.equal(authMac(Buffer.from(v.key), v.uid, v.nonce), v.mac);
@@ -31,13 +32,14 @@ export async function directCrosscheck(tmsense: string, key: Buffer, ok: (name: 
   ok(`firmware transport unit tests: ${unit.replace('cloud_test: ', '')}`);
 
   const uid = '01:02:03:04:05:06';
-  const ing = new Ingest({ port: 0, host: '127.0.0.1', verify: { keys: [key], allowUnsigned: false }, commandKey: key });
+  const devices = encrypted ? new DeviceKeys({ version: 2, nodes: { [uid]: { current: { id: 7, secret: '11'.repeat(32) } } } }) : undefined;
+  const ing = new Ingest({ port: 0, host: '127.0.0.1', verify: { keys: [key], allowUnsigned: false, devices }, commandKey: key });
   const reports: Report[] = [];
   ing.on('report', (p) => reports.push(p));
   const received: Buffer[] = [];
   const approved = new Set<string>();
   const server = new NodeServer({
-    host: '127.0.0.1', port: 0, limits: DEFAULT_NODE_LIMITS, keys: [key],
+    host: '127.0.0.1', port: 0, limits: DEFAULT_NODE_LIMITS, keys: [key], devices,
     isRegistered: (u) => u === uid,
     ingest: (d, r) => {
       received.push(Buffer.from(d));
@@ -48,7 +50,7 @@ export async function directCrosscheck(tmsense: string, key: Buffer, ok: (name: 
     otaApproved: (_u, build) => approved.has(build),
   });
   const port = await server.listen();
-  const child = spawn(`${dir}/cloud_host`, [`ws://127.0.0.1:${port}/tmnode`], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const child = spawn(`${dir}/cloud_host`, [`ws://127.0.0.1:${port}/tmnode`, ...(encrypted ? ['secure'] : [])], { stdio: ['pipe', 'pipe', 'inherit'] });
   const events: HostEvent[] = [];
   let wake: (() => void) | null = null;
   createInterface({ input: child.stdout }).on('line', (l) => {
@@ -82,15 +84,20 @@ export async function directCrosscheck(tmsense: string, key: Buffer, ok: (name: 
     const r = reports[0];
     assert.ok(r);
     assert.equal(r.uid, uid);
-    assert.equal(r.boot, 7);
+    assert.equal(r.boot, encrypted ? 70000 : 7);
     assert.equal(r.detections.length, 3);
-    assert.deepEqual(r, parsePacket(Buffer.from(sent[1] ?? '', 'hex'), { keys: [key], allowUnsigned: false }));
-    ok('STATUS and REPORT: firmware bytes carried unchanged, accepted, and the REPORT acknowledged');
+    assert.deepEqual(r, parsePacket(Buffer.from(sent[1] ?? '', 'hex'), { keys: [key], allowUnsigned: false, devices }));
+    if (encrypted) {
+      assert.ok(received.every(b => b[2] === 2));
+      assert.ok(received.every(b => !b.includes(Buffer.from('tmsense-host'))));
+      assert.equal(r.secureId, 7);
+      ok('encrypted STATUS/REPORT: ciphertext forwarded, decrypted only at edge, authenticated binary ACK');
+    } else ok('STATUS and REPORT: firmware bytes carried unchanged, accepted, and the REPORT acknowledged');
 
     send('raw');
     send('report 0');
     await waitFor((e) => e.event === 'ack' && e.reportsAcked === 2, 'second ACK');
-    assert.ok(received.some((b) => b.length === 806), 'an 806-byte RAW crossed as one message');
+    assert.ok(received.some((b) => b.length === (encrypted ? 834 : 806)), 'an 806-byte RAW crossed as one message');
     ok('RAW (806 B) crosses in one message; the next REPORT is acknowledged');
 
     const rejectedBefore = ing.rejectReasons.get('replayed or duplicate sequence') ?? 0;

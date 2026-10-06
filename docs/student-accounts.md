@@ -1,6 +1,6 @@
 # Student accounts and retained usage activity
 
-The student web tier can use PostgreSQL for accounts, signup/login/logout activity, and explicit seat-search/app interactions. Its `STUDENT_PERSISTENCE_MODE` is independent of the edge's `PERSISTENCE_MODE`. Default file mode retains the existing `users.json` adapter; PostgreSQL mode is the sole student account authority and never falls back to JSON. Existing scrypt password hashes and signed cookies remain compatible.
+The student web tier can use PostgreSQL for accounts, signup/login/logout activity, and explicit seat-search/app interactions. Its `STUDENT_PERSISTENCE_MODE` is independent of the edge's `PERSISTENCE_MODE`. Default file mode retains the existing `users.json` adapter; PostgreSQL mode is the sole student account authority and never falls back to JSON. Existing scrypt password hashes remain compatible. New sessions bind to the account's stable ID and credential version; logout revocations are stored in a private file so a copied cookie remains invalid after restart.
 
 ## Fresh local setup (PowerShell or any shell)
 
@@ -17,7 +17,15 @@ The config command creates `.env` with generated, distinct local credentials, ch
 
 The database uses a persistent named volume. `docker compose -f docker-compose.postgres-local.yml stop` pauses it; `start` resumes it. Do not delete its volume when keeping accounts. Initial credentials are consumed only when the volume is first initialized; changing `.env` later does not rotate existing database role passwords. The local admin role is a database maintenance credential, not an application admin account.
 
-For an existing installation, configure `STUDENT_PERSISTENCE_MODE=postgres`, PostgreSQL runtime credentials and `SESSION_SECRET` in the existing environment. Keep the existing `SESSION_SECRET` to preserve cookies. Apply reviewed migrations with separate migration credentials before starting the web process. Containerized web deployments need a reachable PostgreSQL hostname; `127.0.0.1` refers to the web container itself.
+For an existing installation, configure `STUDENT_PERSISTENCE_MODE=postgres`, PostgreSQL runtime credentials and `SESSION_SECRET` in the existing environment. Keep the existing `SESSION_SECRET` during a compatible rollout; sessions are reissued with account binding after sign-in. Apply reviewed migrations with separate migration credentials before starting the web process. Containerized web deployments need a reachable PostgreSQL hostname; `127.0.0.1` refers to the web container itself.
+
+## Google sign-in
+
+Google sign-in is optional. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` together; the redirect URI must end in `/auth/google/callback`. A Google identity is keyed by the verified OpenID Connect subject (`sub`), not by email. If that subject already has an account, a changed Google email does not create a second user or silently rename the account. If a new subject presents an email already owned by another account, sign-in is refused; accounts are never linked using email alone. Google-only accounts have no password credential. They can be created only while `SIGNUP_OPEN=1`.
+
+In PostgreSQL mode, apply the additive `AddGoogleStudentIdentity1791504000000` migration after the account and activity migrations. It adds a nullable unique subject and permits empty password fields only for Google identities. Its down migration refuses to run while Google-only accounts remain, so an operator must preserve or migrate those accounts before rollback. Existing migrations are immutable.
+
+Optional Turnstile protection requires `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`, and `TURNSTILE_HOSTNAMES` together. Sign-in and sign-up tokens are checked against the matching action and configured hostnames; Google OAuth uses Google's own authentication flow.
 
 ## Import existing accounts
 
@@ -78,7 +86,7 @@ LIMIT 100;
 
 `student_activity_summary` is an operator view with one row per current student, including students with zero activity. It exposes email/name/UUID, successful search, space-view, table-select and directions-view counts, searches returning zero calculated suggestions, successful logins, attributed failed logins, and first/last activity and last successful search timestamps. Unknown-user attempts are excluded from per-student counts. The existing login limiter records anonymous events before account lookup, so those rate-limited requests are excluded too. Search result counts are capped server seat-search suggestions, not the number of floor cards displayed in the browser. The CLI returns these fields as camelCase JSON with millisecond timestamps or null. Counts cover retained history, not lifetime activity; pruning lowers them. Dropped best-effort events can also make counts incomplete. Limits default to 100 and accept 1..1000.
 
-Apply the additive `ExtendStudentUsageActivity1791417600000` migration before running usage-enabled code. It preserves existing account IDs, password hashes, and authentication rows, replaces the action enum transactionally, and gives old events empty details. Runtime SELECT on the view follows the existing migrator's default table privileges; an installation with different role grants must grant runtime SELECT on `public.student_activity_summary`. The down migration removes only usage-action rows and the details column/view, restores the original authentication enum, and preserves accounts/authentication rows. Export or back up usage history before an intentional down migration; those usage events cannot be recovered from rollback alone.
+Apply `ExtendStudentUsageActivity1791417600000` and `AddGoogleStudentIdentity1791504000000` before running the combined usage and Google-enabled code. The usage migration preserves existing account IDs, password hashes, and authentication rows, replaces the action enum transactionally, and gives old events empty details. Runtime SELECT on the view follows the existing migrator's default table privileges; an installation with different role grants must grant runtime SELECT on `public.student_activity_summary`. The usage down migration removes only usage-action rows and the details column/view, restores the original authentication enum, and preserves accounts/authentication rows. Export or back up usage history before an intentional down migration; those usage events cannot be recovered from rollback alone.
 
 ## Recovery
 
@@ -92,4 +100,4 @@ Exports contain password hashes and salts and must remain private. The command r
 
 ## Deferred later MVP
 
-Named admin accounts, individual admin attribution, admin permissions, SSO, email verification, account changes, arbitrary browsing/location analytics and per-session revocation remain deferred. Existing shared `ADMIN_PASSWORD` behavior is unchanged.
+Named admin accounts, individual admin attribution, admin permissions, university SSO, email verification, account changes, and arbitrary browsing/location analytics remain deferred. Google sign-in is a separate optional provider. Existing shared `ADMIN_PASSWORD` behavior is unchanged.

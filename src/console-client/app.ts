@@ -287,7 +287,7 @@ function fmtAge(ms: number | null): string {
 }
 
 function metric(label: string, value: string, cls = ''): string {
-  return `<div class="metric ${cls}"><b>${value}</b><span>${label}</span></div>`;
+  return `<div class="metric ${esc(cls)}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`;
 }
 
 function esc(s: string): string {
@@ -325,19 +325,31 @@ function renderHealth(): void {
     <div><h3>Ingest</h3><ul><li>UDP ${esc(String(h.udp.iface))}:${h.udp.port}</li><li>recording to ${esc(h.recorder.dir)}${h.recorder.rawEnabled ? ' (with raw)' : ''}</li><li>host ${esc(h.hostname)}, ${h.sysFreeMb}/${h.sysTotalMb} MB free</li></ul></div>`;
 }
 
+/**
+ * An edge-detected node's background is the day-long model, which takes an
+ * hour to trust and a day to fill: say which, and how far along it is, so
+ * "learning" for an hour after a deploy does not read as a broken node.
+ */
+function backgroundCell(n: NodeHealth): string {
+  const state = n.backgroundReady ? (n.globalShift ? 'shift' : 'ready') : 'learning';
+  const bg = n.edgeBackground;
+  if (n.detector !== 'edge') return state;
+  return `edge · ${state}${bg ? ` · ${bg.hours} h of ${bg.windowHours}` : ''}`;
+}
+
 function renderNodes(): void {
   if (!last) return;
   const rows = last.nodes.map((n) => {
     const s = n.status;
     const auth = Object.entries(last?.authorities ?? {}).filter(([, a]) => a.authority === n.uid).map(([t]) => t).join(' ');
-    return `<tr data-uid="${n.uid}" class="${n.uid === selected ? 'sel' : ''}">
+    return `<tr data-uid="${esc(n.uid)}" class="${n.uid === selected ? 'sel' : ''}">
       <td><span class="dotc ${n.online ? 'on' : ''}"></span>${esc(n.label)}</td>
-      <td>${n.uid}</td><td>${n.fps.toFixed(2)}</td><td>${(n.lossRate * 100).toFixed(1)}%</td>
-      <td>${n.lastPeople ?? '–'}</td><td>${auth || '–'}</td>
-      <td>${n.backgroundReady ? (n.globalShift ? 'shift' : 'ready') : 'learning'}</td>
+      <td>${esc(n.uid)}</td><td>${n.fps.toFixed(2)}</td><td>${(n.lossRate * 100).toFixed(1)}%</td>
+      <td>${n.lastPeople ?? '–'}</td><td>${esc(auth || '–')}</td>
+      <td>${esc(backgroundCell(n))}</td>
       <td>${n.sceneMin?.toFixed(1) ?? '–'}–${n.sceneMax?.toFixed(1) ?? '–'} °C</td>
       <td>${s ? `${s.rssi} dBm` : '–'}</td><td>${s ? `${(s.heap / 1024).toFixed(0)} kB` : '–'}</td>
-      <td>${s?.fw ?? '–'}</td><td>${n.lastSeen === null ? '–' : n.signed ? 'signed' : '<b style="color:var(--bad)">UNSIGNED</b>'}</td>
+      <td>${esc(s?.fw ?? '–')}</td><td>${n.lastSeen === null ? '–' : n.signed ? 'signed' : '<b style="color:var(--bad)">UNSIGNED</b>'}</td>
       <td title="${esc(n.address ?? '')}">${addressCell(n)}</td><td>${fmtAge(n.lastSeen)}</td></tr>`;
   }).join('');
   $('#nodes').innerHTML = `<thead><tr><th>Node</th><th>MAC</th><th>fps</th><th>loss</th><th>blobs</th><th>counting</th><th>background</th><th>scene</th><th>RSSI</th><th>heap</th><th>firmware</th><th>auth</th><th>address</th><th>last seen</th></tr></thead><tbody>${rows}</tbody>`;
@@ -481,7 +493,7 @@ function renderDetail(): void {
   const params = $('#params');
   if (s && params.dataset.uid !== n.uid) {
     params.dataset.uid = n.uid;
-    params.innerHTML = Object.entries(s.params).map(([k, v]) => `<label>${k}<input data-param="${k}" type="number" step="1" value="${v}"></label>`).join('');
+    params.innerHTML = Object.entries(s.params).map(([k, v]) => `<label>${esc(k)}<input data-param="${esc(k)}" type="number" step="1" value="${esc(String(v))}"></label>`).join('');
     params.querySelectorAll<HTMLInputElement>('input').forEach((inp) => inp.addEventListener('change', () => {
       void command({ op: 'set', param: inp.dataset.param, value: Number(inp.value) });
     }));
@@ -503,6 +515,7 @@ interface JoinRequest {
 
 const joinQueue: JoinRequest[] = [];
 let joinShowing: JoinRequest | null = null;
+let joinBusy = false;
 
 function queueJoin(req: JoinRequest): void {
   if (joinQueue.some((r) => r.id === req.id) || joinShowing?.id === req.id) return;
@@ -541,32 +554,42 @@ function showNextJoin(): void {
 
 async function answerJoin(verdict: 'approve' | 'deny'): Promise<void> {
   const req = joinShowing;
-  if (!req) return;
-  const res = await fetch(`/api/provision/requests/${encodeURIComponent(req.id)}/${verdict}`, {
-    method: 'POST', headers: { 'x-tm-console': '1' },
-  });
-  if (!res.ok) {
-    const j = (await res.json().catch(() => ({}))) as { error?: string };
-    const err = $('#join-error');
-    err.textContent = j.error ?? `failed (HTTP ${res.status})`;
-    err.hidden = false;
-    // Leave it open: the admin has not had an answer, so they should not be
-    // shown the next request as if this one were dealt with.
-    ($('#join-dialog') as HTMLDialogElement).showModal();
-    return;
+  if (!req || joinBusy) return;
+  joinBusy = true;
+  const buttons = [$('#join-approve') as HTMLButtonElement, $('#join-deny') as HTMLButtonElement];
+  for (const button of buttons) button.disabled = true;
+  try {
+    const res = await fetch(`api/provision/requests/${encodeURIComponent(req.id)}/${verdict}`, {
+      method: 'POST', headers: { 'x-tm-console': '1' },
+    });
+    if (!res.ok) {
+      const j = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(j.error ?? `failed (HTTP ${res.status})`);
+    }
+    dropJoin(req.id);
+  } catch (cause) {
+    if (joinShowing?.id === req.id) {
+      const err = $('#join-error');
+      err.textContent = cause instanceof Error ? cause.message : 'Cannot reach the edge. Try again.';
+      err.hidden = false;
+    }
+  } finally {
+    joinBusy = false;
+    for (const button of buttons) button.disabled = false;
   }
-  joinShowing = null;
-  showNextJoin();
 }
 
 function initJoin(): void {
   const dlg = $('#join-dialog') as HTMLDialogElement;
-  $('#join-approve').addEventListener('click', () => void answerJoin('approve'));
-  $('#join-deny').addEventListener('click', () => void answerJoin('deny'));
+  // method=dialog would close the form before the async answer arrived,
+  // requeueing it and making a failed request impossible to retry.
+  $('#join-approve').addEventListener('click', (event) => { event.preventDefault(); void answerJoin('approve'); });
+  $('#join-deny').addEventListener('click', (event) => { event.preventDefault(); void answerJoin('deny'); });
+  dlg.addEventListener('cancel', (event) => { if (joinBusy) event.preventDefault(); });
   // Esc closes the dialog without answering; the request stays pending and
   // comes back on the next reload, which is the safe way round.
   dlg.addEventListener('close', () => {
-    if (joinShowing) {
+    if (joinShowing && !dlg.open) {
       joinQueue.unshift(joinShowing);
       joinShowing = null;
     }
@@ -575,11 +598,13 @@ function initJoin(): void {
 
 async function command(body: { op: string; param?: string | undefined; value?: number }): Promise<void> {
   if (!selected) return;
-  const res = await fetch(`/api/nodes/${selected}/command`, {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-tm-console': '1' }, body: JSON.stringify(body),
-  });
-  const j = (await res.json()) as { note?: string; error?: string };
-  $('#cmd-result').textContent = res.ok ? `sent ${body.op}${body.param ? ` ${body.param}=${body.value}` : ''} — ${j.note}` : `failed: ${j.error}`;
+  try {
+    const res = await fetch(`api/nodes/${encodeURIComponent(selected)}/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-tm-console': '1' }, body: JSON.stringify(body),
+    });
+    const j = (await res.json()) as { note?: string; error?: string };
+    $('#cmd-result').textContent = res.ok ? `sent ${body.op}${body.param ? ` ${body.param}=${body.value}` : ''} — ${j.note ?? ''}` : `failed: ${j.error ?? `HTTP ${res.status}`}`;
+  } catch { $('#cmd-result').textContent = 'Cannot reach the edge. The command has not been confirmed.'; }
 }
 
 function select(uid: string | null): void {
@@ -598,8 +623,12 @@ function select(uid: string | null): void {
 async function connect(): Promise<void> {
   const conn = $('#conn');
   try {
-    const { token } = (await (await fetch('/api/ws-token')).json()) as { token: string };
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+    const { token } = (await (await fetch('api/ws-token')).json()) as { token: string };
+    // Relative to the page: /ws on CONSOLE_PORT, /console-app/ws inside the
+    // algo console, which hosts this page under that prefix.
+    const wsUrl = new URL(`ws?token=${encodeURIComponent(token)}`, location.href);
+    wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(wsUrl);
     ws.onopen = () => {
       conn.textContent = 'live';
       conn.className = 'chip good';
@@ -666,13 +695,13 @@ async function connect(): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  layout = (await (await fetch('/api/layout')).json()) as Layout;
+  layout = (await (await fetch('api/layout')).json()) as Layout;
   initFirmware();
   initJoin();
   // Requests that arrived while nobody had the console open are still
   // waiting; a live WS event is not the only way one gets answered.
   try {
-    const j = (await (await fetch('/api/provision/requests')).json()) as { requests: JoinRequest[] };
+    const j = (await (await fetch('api/provision/requests')).json()) as { requests: JoinRequest[] };
     for (const r of j.requests) queueJoin(r);
   } catch {
     /* provisioning is optional; the rest of the console works without it */
@@ -700,4 +729,7 @@ async function start(): Promise<void> {
   }, 2000);
 }
 
-void start();
+void start().catch(() => {
+  $('#conn').textContent = 'cannot load console — reload to retry';
+  $('#conn').className = 'chip bad';
+});

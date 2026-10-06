@@ -73,7 +73,7 @@ export function setFirmwareTargets(next: FirmwareTargets): void {
 }
 
 export async function refreshFirmware(): Promise<void> {
-  const res = await fetch('/api/firmware');
+  const res = await fetch('api/firmware');
   if (!res.ok) return;
   view = (await res.json()) as FirmwareView;
   render();
@@ -124,7 +124,8 @@ function render(): void {
   $('#fw-sub').textContent = sub;
 
   // builds
-  const rows = view.builds.map((b) => `<tr><td>${b.version}</td><td class="muted">${b.id}</td><td>${kb(b.size)}</td>` +
+  const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  const rows = view.builds.map((b) => `<tr><td>${escape(b.version)}</td><td class="muted">${escape(b.id)}</td><td>${kb(b.size)}</td>` +
     `<td class="muted">${b.builtAt ? new Date(b.builtAt).toLocaleString() : '—'}</td></tr>`).join('');
   $('#fw-builds').innerHTML = rows
     ? `<tr><th>Version</th><th>Image</th><th>Size</th><th>Built</th></tr>${rows}`
@@ -179,33 +180,31 @@ function render(): void {
 /** Upload the chosen folder one file at a time, then ask the edge to build. */
 async function uploadAndBuild(): Promise<void> {
   const input = $<HTMLInputElement>('#fw-folder');
-  const files = [...(input.files ?? [])].filter((f) => !/(^|\/)(\.pio|\.git|node_modules)\//.test(f.webkitRelativePath || f.name));
+  const files = [...(input.files ?? [])].filter((f) => {
+    const path = (f.webkitRelativePath || f.name).replace(/^[^/]+\/(?=(?:src|include)\/|platformio\.ini$)/, '');
+    return (path === 'platformio.ini' || /^(src|include)\/[\w./-]+\.(h|hpp|c|cpp|cc)$/.test(path))
+      && !/(^|\/)(node_config\.h|tm_test_ca\.h)$/.test(path);
+  });
   if (files.length === 0) return;
   uploading = true;
   render();
   const log = $('#fw-log');
   log.textContent = `uploading ${files.length} files…`;
   try {
-    const started = await (await post('/api/firmware/uploads')).json() as { uploadId: string };
+    const started = await (await post('api/firmware/uploads')).json() as { uploadId: string };
     let done = 0;
     for (const file of files) {
       const path = file.webkitRelativePath || file.name;
-      const res = await fetch(`/api/firmware/uploads/${started.uploadId}/files?path=${encodeURIComponent(path)}`, {
+      const res = await fetch(`api/firmware/uploads/${started.uploadId}/files?path=${encodeURIComponent(path)}`, {
         method: 'POST',
         headers: { 'x-tm-console': '1', 'content-type': 'application/octet-stream' },
         body: await file.arrayBuffer(),
       });
-      if (!res.ok) {
-        const err = (await res.json()) as { error?: string };
-        // A file the edge will not take (a build artefact, something outside
-        // the project) is skipped rather than failing the whole upload.
-        log.textContent = `skipped ${path}: ${err.error ?? res.status}`;
-        continue;
-      }
+      if (!res.ok) throw new Error(`could not upload ${path} (${res.status})`);
       done += 1;
       if (done % 10 === 0 || done === files.length) log.textContent = `uploaded ${done}/${files.length} files…`;
     }
-    const build = await post(`/api/firmware/uploads/${started.uploadId}/build`);
+    const build = await post(`api/firmware/uploads/${started.uploadId}/build`);
     if (!build.ok) {
       const err = (await build.json()) as { error?: string };
       log.textContent = `build refused: ${err.error ?? build.status}`;
@@ -230,7 +229,7 @@ export function initFirmware(): void {
     const target = targetFromSelect();
     const what = target.kind === 'all' ? 'every node' : target.kind === 'floor' ? 'this floor' : 'this node';
     if (!confirm(`Update ${what} to ${buildId}?\n\nOne node goes first; the rest follow only if it comes back healthy.`)) return;
-    void post('/api/firmware/rollout', { buildId, target }).then(async (res) => {
+    void post('api/firmware/rollout', { buildId, target }).then(async (res) => {
       if (!res.ok) {
         const err = (await res.json()) as { error?: string };
         alert(`Could not start: ${err.error ?? res.status}`);
@@ -240,7 +239,7 @@ export function initFirmware(): void {
   });
   $('#fw-cancel').addEventListener('click', () => {
     if (!confirm('Stop the rollout? Nodes already flashing will finish.')) return;
-    void post('/api/firmware/rollout/cancel').then(() => refreshFirmware());
+    void post('api/firmware/rollout/cancel').then(() => refreshFirmware());
   });
   void refreshFirmware();
   setInterval(() => void refreshFirmware(), 2000);

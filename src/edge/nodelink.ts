@@ -20,6 +20,8 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { createServer as createHttpsServer } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
+import { requestUrl } from '../shared/http.js';
+import { DeviceKeys, deriveKey, encryptPayload, SECURE_MAX, TYPE_CONTROL, type DeviceKey } from './secure.js';
 import type { NodeListenerLimits } from './config.js';
 import type { DirectSession, IngestResult, Route } from './ingest.js';
 import { HEADER_SIZE, TAG_SIZE, GRID_SIZE, type Packet } from './protocol.js';
@@ -30,7 +32,7 @@ export const PATH = '/tmnode';
 /** Largest control message either way. */
 export const CONTROL_MAX = 512;
 /** Largest packet: a RAW (TM_PACKET_MAX_SIZE in the firmware). */
-export const BINARY_MAX = HEADER_SIZE + 8 + GRID_SIZE + TAG_SIZE;
+export const BINARY_MAX = SECURE_MAX;
 export const HANDSHAKE_MS = 10_000;
 export const HEARTBEAT_MS = 15_000;
 export const DEAD_MS = 45_000;
@@ -69,9 +71,10 @@ export interface NodeServerOptions {
   limits: NodeListenerLimits;
   /** Accepted site keys, current first. */
   keys: Buffer[];
+  devices?: DeviceKeys;
   isRegistered(uid: string): boolean;
   /** Ingest.handle: the one verification path. */
-  ingest(datagram: Buffer, route: Route): IngestResult;
+  ingest(datagram: Buffer, route: Route): IngestResult | Promise<IngestResult>;
   /** Ingest.dropDirectRoute. */
   dropRoute(uid: string, sessionId: string): void;
   /** The approved image's bytes, by build id. */
@@ -92,6 +95,9 @@ interface Session {
   source: string;
   openedAt: number;
   nonce: string;
+  controlSalt: string;
+  controlSeq: number;
+  device?: DeviceKey;
   state: 'challenged' | 'authenticated' | 'closed';
   uid: string | null;
   sessionId: string;
@@ -253,7 +259,8 @@ export class NodeServer {
   // --- HTTP: health and firmware downloads ----------------------------------
 
   private http(req: IncomingMessage, res: ServerResponse): void {
-    const url = new URL(req.url ?? '/', 'http://node');
+    const url = requestUrl(req.url);
+    if (!url) { res.writeHead(400).end(); return; }
     res.setHeader('Cache-Control', 'no-store');
     if (url.pathname === '/healthz' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/plain' }).end('ok\n');
@@ -321,18 +328,22 @@ export class NodeServer {
 
   private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     socket.on('error', () => undefined);
-    const url = new URL(req.url ?? '/', 'http://node');
+    const url = requestUrl(req.url);
+    if (!url) return this.refuse(socket, '400 Bad Request', 'malformed target');
     if (url.pathname !== PATH || url.search) return this.refuse(socket, '404 Not Found', 'wrong path');
     const offered = String(req.headers['sec-websocket-protocol'] ?? '').split(',').map((p) => p.trim());
     if (!offered.includes(SUBPROTOCOL)) return this.refuse(socket, '400 Bad Request', 'unsupported subprotocol');
     const source = this.sourceOf(req);
     const t = this.mono();
     const recent = (this.upgrades.get(source) ?? []).filter((x) => t - x < 60_000);
+    const lim = this.opts.limits;
+    if (recent.length >= lim.upgradesPerMinute) return this.refuse(socket, '429 Too Many Requests', 'too many upgrades from one source');
+    if (!this.upgrades.has(source) && this.upgrades.size >= 10_000) {
+      for (const [key, times] of this.upgrades) if (t - (times[times.length - 1] ?? 0) >= 60_000) this.upgrades.delete(key);
+      if (this.upgrades.size >= 10_000) return this.refuse(socket, '503 Service Unavailable', 'upgrade table full');
+    }
     recent.push(t);
     this.upgrades.set(source, recent);
-    if (this.upgrades.size > 10_000) this.upgrades.clear();
-    const lim = this.opts.limits;
-    if (recent.length > lim.upgradesPerMinute) return this.refuse(socket, '429 Too Many Requests', 'too many upgrades from one source');
     if (this.pending.size >= lim.maxPending) return this.refuse(socket, '503 Service Unavailable', 'too many handshakes');
     if ([...this.pending].filter((s) => s.source === source).length >= lim.maxPendingPerSource) {
       return this.refuse(socket, '429 Too Many Requests', 'too many handshakes from one source');
@@ -345,7 +356,7 @@ export class NodeServer {
     const t = this.mono();
     const s: Session = {
       ws, source, openedAt: this.now(), nonce: randomBytes(32).toString('hex'), state: 'challenged',
-      uid: null, sessionId: randomBytes(12).toString('base64url'), keyIndex: -1, active: false,
+      controlSalt: '', controlSeq: 0, uid: null, sessionId: randomBytes(12).toString('base64url'), keyIndex: -1, active: false,
       lastHeard: t, lastAcceptedAt: null, lastReportAt: null, accepted: 0, acks: 0, rejected: 0, lastRejection: null,
       tokens: { msgs: 0, bytes: 0, at: t }, drops: [], timer: null, route: null, closeReason: null,
     };
@@ -390,10 +401,14 @@ export class NodeServer {
     // One nonce, one answer: whatever happens next, this one is spent.
     const expected = s.nonce;
     s.nonce = '';
+    s.controlSalt = expected;
     const nonceOk = timingSafeEqual(Buffer.from(nonce), Buffer.from(expected));
     const got = Buffer.from(mac, 'hex');
     let keyIndex = -1;
-    this.opts.keys.forEach((k, i) => {
+    const devices = this.opts.devices?.keys(uid) ?? [];
+    const keys = devices.length ? devices.map(d => deriveKey(d.master, uid, d.id, 'auth'))
+      : !this.opts.devices || this.opts.devices.allowsLegacy(uid) ? this.opts.keys : [];
+    keys.forEach((k, i) => {
       if (keyIndex < 0 && timingSafeEqual(got, Buffer.from(authMac(k, uid, expected), 'hex'))) keyIndex = i;
     });
     // One refusal for every reason: which part was wrong is no business of
@@ -403,8 +418,10 @@ export class NodeServer {
       this.opts.log?.(`direct: auth refused from ${s.source} for ${uid}: ${why}`);
       return this.fail(s, CLOSE.authFailed, `auth: ${why}`, 'authentication failed');
     }
-    const key = this.opts.keys[keyIndex];
+    const key = keys[keyIndex];
+    s.device = devices[keyIndex];
     if (!key) return this.fail(s, CLOSE.authFailed, 'auth: no key');
+    if (this.authed.size >= this.opts.limits.maxSessions) return this.fail(s, CLOSE.authFailed, 'session table full');
     if (s.timer) clearTimeout(s.timer);
     s.timer = null;
     s.uid = uid;
@@ -425,10 +442,11 @@ export class NodeServer {
     return {
       uid,
       sessionId: s.sessionId,
-      key,
+      key, secureId: s.device?.id,
       send: (datagram) => this.downlink(s, datagram),
       grantOta: (seq, build) => this.grant(s, seq, build),
       admit: (packet) => this.admit(s, packet),
+      isOpen: () => s.state === 'authenticated',
     };
   }
 
@@ -436,6 +454,14 @@ export class NodeServer {
     const route = s.route;
     if (!route) return;
     const result = this.opts.ingest(data, { kind: 'direct', address: `ws:${route.uid}:${s.sessionId}`, session: route });
+    if (result instanceof Promise) {
+      void result.then((accepted) => this.packetResult(s, accepted))
+        .catch(() => this.fail(s, CLOSE.badMessage, 'packet admission failed'));
+    } else this.packetResult(s, result);
+  }
+
+  private packetResult(s: Session, result: IngestResult): void {
+    if (s.state !== 'authenticated') return;
     if (!result.ok) {
       s.rejected += 1;
       s.lastRejection = result.reason;
@@ -526,7 +552,17 @@ export class NodeServer {
       this.fail(s, CLOSE.slowReader, 'slow reader');
       return false;
     }
-    s.ws.send(text);
+    if (s.device && s.uid) {
+      // Controls are bound to this challenge as well as the device identity.
+      // A captured ACK/grant from another connection cannot authenticate here.
+      if (s.controlSeq >= 0xffffffff || !this.opts.devices?.find(s.uid, s.device.id)) return false;
+      const root = deriveKey(s.device.master, s.uid, s.device.id, 'control', Buffer.from(s.controlSalt, 'hex'));
+      const epoch = randomBytes(16);
+      const packet = encryptPayload({ type: TYPE_CONTROL, uid: s.uid, boot: 0, seq: ++s.controlSeq, uptimeMs: 0, keyId: s.device.id },
+        Buffer.from(text), deriveKey(root, s.uid, s.device.id, 'control-message', epoch), epoch);
+      if (s.ws.bufferedAmount + packet.length > MAX_BUFFERED) { this.fail(s, CLOSE.slowReader, 'slow reader'); return false; }
+      s.ws.send(packet, { binary: true });
+    } else s.ws.send(text);
     return true;
   }
 
@@ -594,7 +630,9 @@ export class NodeServer {
   }
 
   private count(reason: string): void {
-    this.rejects.set(reason, (this.rejects.get(reason) ?? 0) + 1);
+    // Dynamic lag/error strings must not create an unbounded diagnostics map.
+    const key = this.rejects.has(reason) || this.rejects.size < 128 ? reason : 'other';
+    this.rejects.set(key, (this.rejects.get(key) ?? 0) + 1);
   }
 }
 

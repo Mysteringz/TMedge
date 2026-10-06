@@ -12,6 +12,7 @@ import { allocate, floorIsDark, gridPosition, knownFree, label, largestTableFree
 import { spaceInfo, VENUES } from '../src/shared/venues.js';
 import { Sessions } from '../src/web/auth.js';
 import { asEmail, createWebApp } from '../src/web/main.js';
+import { disconnectedView } from '../web-app/src/live.js';
 import type { FloorState, TableState } from '../src/shared/types.js';
 
 /** Maker space A's real geometry: two rows of five six-seat tables. */
@@ -45,6 +46,17 @@ function floor(free: (number | null)[]): FloorState {
     },
   };
 }
+
+test('a disconnected portal turns every cached free table unknown', () => {
+  const original = { generatedAt: 1000, floors: [{ ...floor([6, 3, null]), edgeId: 'edge-a', updatedAt: 1000, stale: false }] };
+  const offline = disconnectedView(original);
+  assert.equal(offline.floors[0]?.stale, true);
+  assert.equal(allocate(offline.floors[0]!, 1), null);
+  assert.equal(knownFree(offline.floors[0]!), 0);
+  assert.equal(offline.floors[0]?.totals.unknownSeats, 18);
+  assert.ok(offline.floors[0]?.tables.every((t) => t.status === 'unknown' && t.free === null && t.occupied === null));
+  assert.equal(original.floors[0]?.tables[0]?.free, 6, 'the cached source is not mutated');
+});
 
 test('a group is sent to the fewest tables that seat them together', () => {
   // M1 full, M2 has 4, M3 and M4 empty.
@@ -99,6 +111,12 @@ test('tables are ordered and addressed the way a person walks the room', () => {
   assert.deepEqual(gridPosition(f.tables, 'M10'), { row: 1, column: 4, rows: 2, columns: 5 });
   assert.equal(label(['M3']), 'Table M3');
   assert.equal(label(['M3', 'M4']), 'Tables M3–M4');
+  assert.equal(label(['M3', 'M4', 'M5']), 'Tables M3–M5');
+  // A run that skips a table is a list: a range would name tables the group is
+  // not being sent to, which is the one thing this label must never do.
+  assert.equal(label(['M3', 'M7']), 'Tables M3, M7');
+  assert.equal(label(['M3', 'B4']), 'Tables M3, B4');
+  assert.equal(label([]), 'No table');
 });
 
 test('the pilot venue names the floors the edge actually publishes', () => {

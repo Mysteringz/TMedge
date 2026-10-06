@@ -33,6 +33,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -73,7 +74,11 @@ def load_pairs(root: str) -> list[Sample]:
             try:
                 with open(meta_path) as fh:
                     m = json.load(fh)
-                levels = np.frombuffer(base64.b64decode(m['pixels']), dtype=np.uint8)
+                if not isinstance(m.get('uid'), str) or not re.fullmatch(r'[0-9a-f]{2}(:[0-9a-f]{2}){5}', m['uid']):
+                    raise ValueError('invalid sensor UID')
+                if not np.isfinite(m['tMin']) or not np.isfinite(m['step']) or m['step'] < 0:
+                    raise ValueError('invalid thermal calibration')
+                levels = np.frombuffer(base64.b64decode(m['pixels'], validate=True), dtype=np.uint8)
                 if levels.size != GRID_W * GRID_H:
                     continue
                 temps = m['tMin'] + levels.astype(np.float32) * m['step']
@@ -85,6 +90,15 @@ def load_pairs(root: str) -> list[Sample]:
                 print(f'  skipped {f}: {exc}', file=sys.stderr)
     out.sort(key=lambda s: s.at)
     return out
+
+
+def select_samples(samples: list[Sample], uid: str | None = None) -> list[Sample]:
+    if uid:
+        samples = [sample for sample in samples if sample.uid == uid]
+    uids = {sample.uid for sample in samples}
+    if len(uids) > 1:
+        sys.exit('pairs contain multiple sensors; choose one with --uid before fitting a camera transform')
+    return samples
 
 
 def rgb_people(samples: list[Sample], every: int = 1) -> dict[int, list[tuple[float, float, float]]]:
@@ -100,6 +114,8 @@ def rgb_people(samples: list[Sample], every: int = 1) -> dict[int, list[tuple[fl
     for s in samples[::max(1, len(samples) // 60)]:
         img = cv2.imread(s.jpeg, cv2.IMREAD_GRAYSCALE)
         if img is not None:
+            if stack and img.shape != stack[0].shape:
+                sys.exit('RGB frame dimensions changed; export one fixed camera resolution and retrain')
             stack.append(img)
     if len(stack) < 5:
         sys.exit('not enough readable RGB frames to build a background')
@@ -113,8 +129,10 @@ def rgb_people(samples: list[Sample], every: int = 1) -> dict[int, list[tuple[fl
         if i % every:
             continue
         img = cv2.imread(s.jpeg, cv2.IMREAD_GRAYSCALE)
-        if img is None or img.shape != bg.shape:
+        if img is None:
             continue
+        if img.shape != bg.shape:
+            sys.exit('RGB frame dimensions changed; export one fixed camera resolution and retrain')
         diff = cv2.absdiff(img, bg)
         diff = cv2.GaussianBlur(diff, (9, 9), 0)
         _th, mask = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -274,6 +292,16 @@ def train_logistic(X, y, epochs=240, lr=0.35, l2=1e-4):
     return w
 
 
+def score_threshold(probabilities, labels, threshold):
+    pred = probabilities >= threshold
+    tp = float((pred & (labels > 0.5)).sum())
+    fp = float((pred & (labels < 0.5)).sum())
+    fn = float((~pred & (labels > 0.5)).sum())
+    precision = tp / max(1.0, tp + fp)
+    recall = tp / max(1.0, tp + fn)
+    return 2 * precision * recall / max(1e-9, precision + recall), precision, recall
+
+
 def emit_features() -> None:
     """Reference output for TMedge's test suite.
 
@@ -298,9 +326,11 @@ def main() -> None:
     ap.add_argument('--threshold', type=float, default=None, help='override the chosen threshold')
     args = ap.parse_args()
 
-    samples = load_pairs(args.pairs)
-    if args.uid:
-        samples = [s for s in samples if s.uid == args.uid]
+    if args.threshold is not None and (not np.isfinite(args.threshold) or not 0 < args.threshold <= 1):
+        ap.error('--threshold must be a finite probability in (0, 1]')
+    if args.threshold is not None and round(args.threshold, 3) == 0:
+        ap.error('--threshold must remain positive when rounded to three decimal places')
+    samples = select_samples(load_pairs(args.pairs), args.uid)
     if len(samples) < 200:
         sys.exit(f'only {len(samples)} pairs: leave the recorder on for longer '
                  '(a few hours of a used room is a reasonable start)')
@@ -322,6 +352,8 @@ def main() -> None:
                 continue
             Xs.append(features(s.temps))
             ys.append(labels_for(s, people[i], M))
+        if not Xs:
+            sys.exit('a training or held-out partition has no readable RGB frames; repair the dataset')
         return np.concatenate(Xs), np.concatenate(ys)
 
     Xtr, ytr = build(range(split))
@@ -332,18 +364,16 @@ def main() -> None:
     p = 1.0 / (1.0 + np.exp(-(Xte @ w)))
     best = (0.0, 0.5, 0.0, 0.0)
     for th in np.arange(0.2, 0.95, 0.05):
-        pred = p >= th
-        tp = float((pred & (yte > 0.5)).sum())
-        fp = float((pred & (yte < 0.5)).sum())
-        fn = float((~pred & (yte > 0.5)).sum())
-        prec = tp / max(1.0, tp + fp)
-        rec = tp / max(1.0, tp + fn)
-        f1 = 2 * prec * rec / max(1e-9, prec + rec)
+        f1, prec, rec = score_threshold(p, yte, th)
         if f1 > best[0]:
             best = (f1, float(th), prec, rec)
     f1, th, prec, rec = best
     if args.threshold is not None:
         th = args.threshold
+    # Metrics must describe exactly the rounded threshold deployed in the
+    # model, including an operator override.
+    th = round(float(th), 3)
+    f1, prec, rec = score_threshold(p, yte, th)
 
     # How far off is a placed person, in thermal pixels, on the held-out part?
     errs = []

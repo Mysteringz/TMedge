@@ -112,8 +112,9 @@ node_health() {
 }
 
 # Healthy = every unit active and not restarted by systemd during SETTLE,
-# the student site's /healthz answers 200, the console and the algo
-# debugger answer at all (401 is correct: they want the admin password), and
+# the student site's /healthz answers 200, the console port and the algo
+# console answer at all (401 is correct: they want a password or a signed-in
+# session), and
 # the direct node listener, if configured, answers its /healthz.
 healthy() {
   local s before=() i=0 web console algo node

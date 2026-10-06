@@ -7,6 +7,8 @@
  * working sensor stays null all the way to the screen.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { disconnectedView } from './live.ts';
 import { allocate, floorIsDark, knownFree, largestTableFree, walkOrder, type Allocation } from '../../src/shared/allocate.js';
 import { spaceInfo, VENUES, type Venue } from '../../src/shared/venues.js';
 import type { CampusFloor, CampusView, TableState } from '../../src/shared/types.js';
@@ -56,16 +58,25 @@ export function useLive(): Live {
     let alive = true;
     let socket: WebSocket | null = null;
     let timer: number | undefined;
+    let lastMessage = Date.now();
+    let latestGeneration = 0;
+    let feedDisconnected = false;
+    const disconnect = () => {
+      feedDisconnected = true;
+      setConnection('offline');
+      setView((current) => current ? disconnectedView(current) : null);
+    };
 
     const accept = (next: CampusView) => {
-      if (!alive) return;
+      if (!alive || !Number.isFinite(next.generatedAt) || !Array.isArray(next.floors) || next.generatedAt < latestGeneration) return;
+      latestGeneration = next.generatedAt;
       setView(next);
       setUpdatedAt(Date.now());
     };
 
     fetch('/api/occupancy')
       .then((r) => (r.ok ? (r.json() as Promise<CampusView>) : null))
-      .then((v) => v && accept(v))
+      .then((v) => v && !feedDisconnected && accept(v))
       .catch(() => undefined);
 
     const open = () => {
@@ -74,12 +85,22 @@ export function useLive(): Live {
       socket = ws;
       ws.onopen = () => {
         retry.current = 1000;
-        setConnection('live');
+        lastMessage = Date.now();
       };
-      ws.onmessage = (e) => accept(JSON.parse(String(e.data)) as CampusView);
+      ws.onmessage = (e) => {
+        if (!alive || socket !== ws) return;
+        try {
+          const next = JSON.parse(String(e.data)) as CampusView;
+          if (!next || !Number.isFinite(next.generatedAt) || !Array.isArray(next.floors)) return;
+          lastMessage = Date.now();
+          feedDisconnected = false;
+          accept(next);
+          setConnection('live');
+        } catch { /* a broken message cannot establish freshness */ }
+      };
       ws.onclose = () => {
-        if (!alive) return;
-        setConnection('offline');
+        if (!alive || socket !== ws) return;
+        disconnect();
         // A closed socket can mean the session expired; the server answers 401
         // and the app sends the student to sign in again.
         fetch('/api/me').then((r) => {
@@ -90,10 +111,16 @@ export function useLive(): Live {
       };
     };
     open();
+    // A lost network can leave a WebSocket looking open. The server sends a
+    // view every 10 seconds; missing three means the counts are unknown.
+    const watchdog = window.setInterval(() => {
+      if (socket?.readyState === WebSocket.OPEN && Date.now() - lastMessage > 30_000) { disconnect(); socket.close(); }
+    }, 5000);
 
     return () => {
       alive = false;
       window.clearTimeout(timer);
+      window.clearInterval(watchdog);
       socket?.close();
     };
   }, []);
@@ -151,7 +178,13 @@ export function capacityOf(floor: CampusFloor): number {
   return Math.max(0, ...floor.tables.map((t) => t.capacity));
 }
 
-/** Tables a group of `seats` could actually take, largest run first. */
+/**
+ * Tables a group of `seats` could take at all, in walking order.
+ *
+ * No screen calls this yet — Spaces marks the same tables from the live
+ * snapshot — but it is the table-level form of the question the seat search
+ * asks, so the rule has one home when the next view needs it.
+ */
 export function freeTables(floor: CampusFloor, seats: number): TableState[] {
   if (isDark(floor)) return [];
   return walkOrder(floor.tables).filter((t) => t.status !== 'unknown' && (t.free ?? 0) >= Math.min(seats, t.capacity));
@@ -161,17 +194,20 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 
 /** Group size, kept in the URL so a link to a search is a link to a search. */
 export function useSeats(): [number, (n: number) => void] {
+  const { search } = useLocation();
+  const navigate = useNavigate();
   const read = useCallback(() => {
     const n = Number(new URLSearchParams(location.search).get('seats'));
     return Number.isInteger(n) && n >= 1 && n <= 16 ? n : 1;
   }, []);
   const [seats, set] = useState(read);
+  useEffect(() => set(read()), [search, read]);
   const update = useCallback((n: number) => {
     const next = Math.min(16, Math.max(1, Math.round(n || 1)));
     set(next);
     const url = new URL(location.href);
     url.searchParams.set('seats', String(next));
-    history.replaceState(null, '', url);
-  }, []);
+    navigate(url.pathname + url.search + url.hash, { replace: true });
+  }, [navigate]);
   return [seats, update];
 }
