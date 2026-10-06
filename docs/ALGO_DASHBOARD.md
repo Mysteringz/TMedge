@@ -6,6 +6,21 @@ changing a parameter changes the thing that owns it rather than a copy.
 Built from `thermal_occupancy_debug_dashboard_plan.md`, with one structural
 departure explained below.
 
+## Phones and tablets
+
+At widths of 900px or less, the Flow debugger shows full-width **Graph**,
+**Stages**, **Inspector**, and **Output** tabs. Tap a graph node to inspect it,
+or use the stage selector in Inspector and Output. Switching tabs keeps local
+parameter edits and the live connection. The graph opens around the selected
+stage; pinch and pan to explore, or use the fit control for an overview.
+Returning to a wider window restores
+the desktop panes and their saved sizes.
+
+Training, Updates, and the embedded Debug console use touch-sized controls
+and responsive forms. Wide job, image, and node tables scroll inside their
+panels; floor tabs scroll to reveal additional floors. Dialogs scroll within
+the available screen height, including in landscape.
+
 ## The departure: half this pipeline runs on the ESP32
 
 The plan draws one pipeline and assumes a server owns it. In this system the

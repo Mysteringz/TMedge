@@ -15,6 +15,7 @@
     "students:local:config": "tsc -p tsconfig.json && node dist/src/tools/student-local-config.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck && npm --prefix algo-app run typecheck",
     "test": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && node --test --test-concurrency=1 dist/test/*.test.js",
+    "test:algo-mobile": "node --test test/algo-mobile.test.mjs",
     "crosscheck": "tsc -p tsconfig.json && node dist/src/tools/crosscheck.js",
     "build:app": "npm --prefix web-app run build",
     "build:algo": "npm --prefix algo-app run build",
@@ -37,6 +38,7 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.4",
     "@types/ws": "^8.18.2",
+    "playwright": "^1.63.0",
     "typescript": "^7.0.2"
   }
 }

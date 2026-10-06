@@ -19,7 +19,7 @@ import {
   api, unpack,
   type Envelope, type NodeSpec, type PendingChange, type Pipeline, type RunResult, type SourceNode,
 } from './api.ts';
-import { Divider, usePaneSize } from './panes.tsx';
+import { Divider, useCompactLayout, usePaneSize } from './panes.tsx';
 import { GridView, Histogram, Json, Plane, PlanView, Table, type HeatJson } from './viewers.tsx';
 
 const PORT_COLOUR: Record<string, string> = {
@@ -71,6 +71,11 @@ const nodeTypes = { stage: StageNode };
 
 /** The timeline below the output strip, which the drag has to account for. */
 const TIMELINE_H = 36;
+const MOBILE_PANES = [
+  { id: 'graph', label: 'Graph' }, { id: 'stages', label: 'Stages' },
+  { id: 'inspector', label: 'Inspector' }, { id: 'output', label: 'Output' },
+] as const;
+type MobilePane = typeof MOBILE_PANES[number]['id'];
 
 export default function App() {
   const [specs, setSpecs] = useState<NodeSpec[]>([]);
@@ -92,6 +97,8 @@ export default function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const ws = useRef<WebSocket | null>(null);
   const flow = useReactFlow();
+  const compact = useCompactLayout();
+  const [mobilePane, setMobilePane] = useState<MobilePane>('graph');
   // Panes people can size themselves. The output strip is tall by default
   // because a 32x24 frame drawn at a readable size is about 400 px, and a
   // viewer that clips the picture it exists to show is no viewer.
@@ -194,12 +201,22 @@ export default function App() {
         style: { stroke: PORT_COLOUR[type] ?? '#666', strokeWidth: 2 },
       } as Edge;
     }));
-    // Switching sensor or resetting the graph can leave the camera looking at
-    // empty space; put it back on the nodes.
-    const t = setTimeout(() => { try { flow.fitView({ padding: 0.12, duration: 200 }); } catch { /* not mounted */ } }, 60);
-    return () => clearTimeout(t);
     // `shape` is the identity of the graph; results are applied separately below.
-  }, [shape, specs, pipeline, flow, setNodes, setEdges]);
+  }, [shape, specs, pipeline, setNodes, setEdges]);
+
+  // A whole pipeline fitted into a phone makes every label tiny. Open around
+  // the selected stage; the fit control still provides the complete overview.
+  // Wait for measurement after a reset, rotation or returning to the graph.
+  const focusNode = compact ? selected : undefined;
+  useEffect(() => {
+    if (compact && mobilePane !== 'graph') return;
+    const timer = setTimeout(() => {
+      void flow.fitView({ padding: 0.12, duration: 200,
+        ...(focusNode ? { nodes: [{ id: focusNode }], minZoom: 0.75, maxZoom: 1 } : {}),
+      });
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [shape, compact, mobilePane, focusNode, flow]);
 
   // Results, selection and edits change every second, so they only patch the
   // data of nodes that already exist.
@@ -307,7 +324,7 @@ export default function App() {
       <header className="bar">
         <div className="brand"><span className="mark" /> ALGO DEBUGGER</div>
         <div className="source">
-          <select value={pipeline?.uid ?? ''} onChange={(e) => {
+          <select aria-label="Sensor source" value={pipeline?.uid ?? ''} onChange={(e) => {
             if (!pipeline) return;
             void push({ ...pipeline, uid: e.target.value });
             void api.frames(e.target.value).then((f) => setFrames(f.frames)).catch((e: Error) => setNotice(e.message));
@@ -341,12 +358,40 @@ export default function App() {
       {notice && <div className="notice" onClick={() => setNotice(null)}>{notice} <span className="x">dismiss</span></div>}
       {run?.previewUnavailable && <div className="notice">{run.previewUnavailable}</div>}
 
+      {compact && <div className="mobile-panes" role="tablist" aria-label="Debugger panels">
+        {MOBILE_PANES.map((pane, index) => (
+          <button key={pane.id} id={`tab-${pane.id}`} role="tab" aria-controls={`pane-${pane.id}`}
+            aria-selected={mobilePane === pane.id} tabIndex={mobilePane === pane.id ? 0 : -1}
+            onClick={() => setMobilePane(pane.id)} onKeyDown={(event) => {
+              let next = index;
+              if (event.key === 'ArrowRight') next = (index + 1) % MOBILE_PANES.length;
+              else if (event.key === 'ArrowLeft') next = (index + MOBILE_PANES.length - 1) % MOBILE_PANES.length;
+              else if (event.key === 'Home') next = 0;
+              else if (event.key === 'End') next = MOBILE_PANES.length - 1;
+              else return;
+              event.preventDefault();
+              const target = MOBILE_PANES[next]!;
+              setMobilePane(target.id);
+              document.getElementById(`tab-${target.id}`)?.focus();
+            }}>{pane.label}</button>
+        ))}
+      </div>}
+      <div className="mobile-stage" hidden={!compact || (mobilePane !== 'inspector' && mobilePane !== 'output')}>
+        <label htmlFor="mobile-selected-stage">Stage</label>
+        <select id="mobile-selected-stage" value={selected} onChange={(event) => setSelected(event.target.value)}>
+          {pipeline?.nodes.map((node) => <option key={node.id} value={node.id}>
+            {specs.find((entry) => entry.type === node.type)?.name ?? node.type} · {node.id}
+          </option>)}
+        </select>
+      </div>
+
       <div
         className="body"
         ref={bodyRef}
-        style={{ gridTemplateColumns: `${lib.size}px 6px minmax(0, 1fr) 6px ${insp.size}px` }}
+        style={{ gridTemplateColumns: `min(${lib.size}px, 25vw) 6px minmax(0, 1fr) 6px min(${insp.size}px, 35vw)` }}
       >
-        <aside className="library">
+        <aside className="library" id="pane-stages" hidden={compact && mobilePane !== 'stages'}
+          role={compact ? 'tabpanel' : undefined} aria-labelledby={compact ? 'tab-stages' : undefined}>
           <h3>Stages</h3>
           {['device', 'edge', 'view'].map((domain) => (
             <div key={domain} className="lib-group">
@@ -374,16 +419,18 @@ export default function App() {
           onReset={lib.reset}
         />
 
-        <main className="canvas">
+        <main className="canvas" id="pane-graph" hidden={compact && mobilePane !== 'graph'}
+          role={compact ? 'tabpanel' : undefined} aria-labelledby={compact ? 'tab-graph' : undefined}>
+          {compact && <div className="mobile-graph-hint">Pinch to zoom · Tap a stage to inspect</div>}
           <ReactFlow
             nodes={nodes} edges={edges} nodeTypes={nodeTypes}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
-            onNodeClick={(_, n) => setSelected(n.id)}
+            onNodeClick={(_, n) => { setSelected(n.id); if (compact) setMobilePane('inspector'); }}
             onNodeDragStop={(_, n) => {
               if (!pipeline) return;
               void push({ ...pipeline, nodes: pipeline.nodes.map((x) => (x.id === n.id ? { ...x, position: n.position } : x)) });
             }}
-            fitView proOptions={{ hideAttribution: true }}
+            minZoom={compact ? 0.1 : 0.5} fitView proOptions={{ hideAttribution: true }}
           >
             <Background color="#2a2a30" gap={18} />
             <Controls showInteractive={false} />
@@ -398,7 +445,8 @@ export default function App() {
           onReset={insp.reset}
         />
 
-        <aside className="inspector">
+        <aside className="inspector" id="pane-inspector" hidden={compact && mobilePane !== 'inspector'}
+          role={compact ? 'tabpanel' : undefined} aria-labelledby={compact ? 'tab-inspector' : undefined}>
           {spec ? (
             <>
               <h3>{spec.name} <span className="ver">v{spec.version}</span></h3>
@@ -422,9 +470,9 @@ export default function App() {
                       {p.unit && <span className="unit"> ({p.unit})</span>}
                     </label>
                     <div className="param-row">
-                      <input type="range" min={p.min} max={p.max} step={p.step} value={value}
+                      <input type="range" aria-label={p.label} min={p.min} max={p.max} step={p.step} value={value}
                         onChange={(e) => setEdits((s) => ({ ...s, [key]: Number(e.target.value) }))} />
-                      <input type="number" min={p.min} max={p.max} step={p.step} value={value}
+                      <input type="number" aria-label={`${p.label} value`} min={p.min} max={p.max} step={p.step} value={value}
                         onChange={(e) => setEdits((s) => ({ ...s, [key]: Number(e.target.value) }))} />
                     </div>
                     <div className="param-foot">
@@ -492,7 +540,8 @@ export default function App() {
         onReset={out.reset}
       />
 
-      <section className="output" style={{ height: out.size }}>
+      <section className="output" id="pane-output" style={{ height: out.size }} hidden={compact && mobilePane !== 'output'}
+        role={compact ? 'tabpanel' : undefined} aria-labelledby={compact ? 'tab-output' : undefined}>
         <div className="output-head">
           <b>{spec?.name ?? 'Output'}</b>
           <span className="muted">frame {run?.frameId ?? '—'} · {run ? new Date(run.timestamp).toLocaleTimeString() : ''}</span>
@@ -578,7 +627,7 @@ function Timeline({ frames, live, at, onScrub, onLive }: {
     <footer className="timeline">
       <span className="muted">{span >= 120 ? `${Math.round(span / 60)} min` : `${span} s`} of history</span>
       <input
-        type="range" min={0} max={Math.max(0, last)} value={index}
+        type="range" aria-label="Frame history" min={0} max={Math.max(0, last)} value={index}
         disabled={frames.length === 0}
         onChange={(e) => {
           const i = Number(e.target.value);

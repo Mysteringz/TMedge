@@ -13,6 +13,19 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+/** Match the CSS breakpoint without overwriting the user's desktop pane sizes. */
+export function useCompactLayout() {
+  const [compact, setCompact] = useState(() => window.matchMedia('(max-width: 900px)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 900px)');
+    const update = () => setCompact(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return compact;
+}
+
 export interface PaneLimits {
   min: number;
   max: number;

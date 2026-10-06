@@ -1,0 +1,259 @@
+/** Browser regressions against the built, authenticated algorithm console.
+ * Run npm run build, npx playwright install --with-deps chromium webkit,
+ * then npm run test:algo-mobile. All data and writes stay in a local fixture.
+ */
+import assert from 'node:assert/strict';
+import { after, before, test } from 'node:test';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { chromium, webkit } from 'playwright';
+import { createEdgeRuntime } from '../dist/src/edge/composition-root.js';
+import { createConsole } from '../dist/src/edge/console.js';
+import { startAlgo } from '../dist/src/algo/server.js';
+import { AlgoUsers, loadAlgoAuthConfig } from '../dist/src/algo/auth.js';
+import { buildRegistry } from '../dist/src/edge/registry.js';
+import { DEFAULT_NODE_LIMITS } from '../dist/src/edge/config.js';
+import { KEY, siteJson, nodesJson } from '../dist/test/fixtures.js';
+
+let runtime, handle, base, directory;
+const originalDataDir = process.env.DATA_DIR;
+before(async () => {
+  directory = mkdtempSync(join(tmpdir(), 'tmedge-mobile-'));
+  process.env.DATA_DIR = directory;
+  const config = {
+    edgeId: 'mobile-preview', keys: [KEY], allowUnsigned: false,
+    udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: '', dataDir: directory,
+    recordRaw: false, consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1',
+    adminPassword: 'local-browser-test', flashToken: null, pushUrls: [], pushToken: '',
+    publishMs: 1000, gatewayPort: 0, gatewayToken: null, nodeHost: '127.0.0.1',
+    nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
+    persistenceMode: 'file', postgres: null,
+  };
+  runtime = createEdgeRuntime(config, buildRegistry(siteJson(), nodesJson()));
+  const users = join(directory, 'users.json');
+  await new AlgoUsers(users).add('mobiletest', 'local browser test password');
+  handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
+    DATA_DIR: directory, ALGO_USERS_FILE: users,
+    SESSION_SECRET: 'local-only-test-secret'.repeat(3),
+  }, config.adminPassword), createConsole(runtime));
+  await new Promise(resolve => handle.server.once('listening', resolve));
+  base = `http://127.0.0.1:${handle.server.address().port}`;
+});
+after(async () => {
+  await handle?.dispose();
+  if (handle) await new Promise(resolve => handle.server.close(resolve));
+  await runtime?.stop();
+  if (directory) rmSync(directory, { recursive: true, force: true });
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+});
+
+async function fits(target, width) {
+  const layout = await target.evaluate(() => ({
+    viewport: innerWidth, page: document.documentElement.scrollWidth,
+    smallTargets: innerWidth > 900 ? [] : [...document.querySelectorAll('button,select,.seg-opt,.toggles label')].flatMap(element => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.width && bounds.height && bounds.height < 43
+        ? [element.getAttribute('aria-label') || element.textContent || element.id] : [];
+    }),
+    clipped: [...document.querySelectorAll('button,input,select')].flatMap(element => {
+      const bounds = element.getBoundingClientRect();
+      if (!bounds.width || !bounds.height || (bounds.left >= -1 && bounds.right <= innerWidth + 1)) return [];
+      // A wide table or floor tab strip is intentionally scrollable within
+      // its panel. Clipping ordinary form controls is still a failure.
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        if (['auto', 'scroll'].includes(getComputedStyle(parent).overflowX)) return [];
+      }
+      return [element.getAttribute('aria-label') || element.textContent || element.id];
+    }),
+  }));
+  assert.equal(layout.viewport, width, 'overflow must not make a mobile browser zoom out');
+  assert.ok(layout.page <= width + 1, `page width ${layout.page} exceeds ${width}`);
+  assert.deepEqual(layout.clipped, [], 'form controls must stay reachable');
+  assert.deepEqual(layout.smallTargets, [], 'touch controls must be at least 44px high');
+}
+
+async function shot(page, engine, name) {
+  const output = process.env.ALGO_UI_SCREENSHOTS;
+  if (!output) return;
+  mkdirSync(output, { recursive: true });
+  await page.screenshot({ path: join(output, `${engine}-${name}.png`), fullPage: true });
+}
+
+// Populate tables with long names and provide an available, disconnected
+// cluster. The sign-in dialog can be exercised without contacting HKU.
+async function trainingFixtures(page) {
+  await page.route('**/api/train/jobs', route => route.fulfill({ json: { jobs: [{
+    id: 'mobile-draft', name: 'occupancy_training_with_a_long_project_name',
+    status: 'SUBMIT_FAILED', partition: 'gpu', gpus: 1, code: { kind: 'py', filename: 'train.py' },
+    slurmJobId: null, createdAt: Date.now(), updatedAt: Date.now(),
+  }] } }));
+  await page.route('**/api/train/hpc', route => route.fulfill({ json: {
+    available: true, reason: null, profile: null, domains: ['hku.hk', 'connect.hku.hk'],
+    idleTtlSeconds: 600, ssh: { user: 'ing', host: '10.21.36.12', auth: 'shared-password' },
+    session: { state: 'none', uid: null, expiresInSeconds: null }, lockedForSeconds: 0,
+    running: null, firstUse: { hostKey: true, password: true },
+  } }));
+  await page.route('**/api/train/hpc/connect', route => route.fulfill({ status: 428, json: { needs: 'credentials' } }));
+}
+
+async function updatesFixtures(page) {
+  await page.route('**/console-app/api/firmware', route => route.fulfill({ json: {
+    pio: true, diskBytes: 1280048, building: null, rollout: null, history: [], builds: [{
+      id: '0123456789abcdef', sha256: '0123456789abcdef'.repeat(4), size: 1280048,
+      version: '1.7.2', state: 'ready', builtAt: Date.now(), files: 3,
+    }],
+  } }));
+  await page.route('**/console-app/api/state', route => route.fulfill({ json: { nodes: [{
+    uid: '02:00:00:00:00:01', label: 'Main Library / North / Sensor with a long name',
+    registered: true, floorId: 'makerspace-a', online: true, address: 'gateway-route', transport: 'gateway',
+  }] } }));
+}
+
+for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
+  test(`${engine}: the algorithm console works on phones, tablets and desktop`, { timeout: 180_000 }, async t => {
+    const browser = await browserType.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 320, height: 844 }, isMobile: true, hasTouch: true, colorScheme: 'dark' });
+    const errors = [];
+    context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
+    const page = await context.newPage();
+    page.setDefaultTimeout(10_000);
+    page.setDefaultNavigationTimeout(15_000);
+    try {
+      await page.goto(`${base}/login`);
+      await page.getByLabel('USERNAME').waitFor();
+      await fits(page, 320);
+      // Exercise the minimum width of Turnstile without relying on a third
+      // party network challenge or changing production authentication.
+      await page.locator('.cx-form').evaluate(form => {
+        const widget = document.createElement('div');
+        widget.style.width = '300px'; widget.style.height = '65px';
+        form.appendChild(widget);
+      });
+      assert.ok(await page.locator('.cx-form').evaluate(form => form.scrollWidth <= form.clientWidth));
+      await page.getByLabel('USERNAME').fill('mobiletest');
+      await page.getByLabel('PASSWORD', { exact: true }).fill('local browser test password');
+      await page.getByRole('button', { name: 'SIGN IN', exact: true }).tap();
+      await page.getByText('Welcome back, mobiletest.').waitFor();
+
+      for (const viewport of [
+        { width: 320, height: 844 }, { width: 390, height: 844 },
+        { width: 768, height: 1024 }, { width: 844, height: 390 },
+        { width: 1024, height: 844 }, { width: 1440, height: 1000 },
+      ]) {
+        await t.test(`${viewport.width}×${viewport.height}: all modules fit`, async () => {
+          await page.setViewportSize(viewport);
+          for (const path of ['/', '/flow', '/train', '/console', '/updates']) {
+            await page.unrouteAll({ behavior: 'wait' });
+            if (path === '/train') await trainingFixtures(page);
+            if (path === '/updates') await updatesFixtures(page);
+            await page.goto(`${base}${path}`);
+            await page.locator('.cx-nav').waitFor();
+            if (path === '/flow') {
+              await page.locator('.react-flow__node').first().waitFor();
+              const graph = await page.locator('.canvas').boundingBox();
+              assert.ok(graph.width >= viewport.width * 0.35 && graph.height >= 120, 'graph must have usable space');
+              if (viewport.width <= 900) await page.waitForFunction(() =>
+                document.querySelector('.react-flow__node[data-id="bg-1"]')?.getBoundingClientRect().width >= 155);
+            }
+            if (path === '/train') await page.locator('.cx-jobs').getByText('SUBMIT_FAILED').waitFor();
+            if (path === '/updates') await page.getByText('CONNECTED TO EDGE', { exact: false }).waitFor();
+            await fits(page, viewport.width);
+            if (path === '/console') {
+              await page.frameLocator('.cx-frame').locator('#conn.good').waitFor();
+              const frame = page.frames().find(frame => frame.url().includes('/console-app/'));
+              await fits(frame, viewport.width);
+              // The last floor must be reachable by scrolling the tab strip.
+              await frame.locator('#floor-tabs button').last().tap();
+              assert.equal(await frame.locator('#floor-tabs button').last().getAttribute('aria-selected'), 'true');
+            }
+            if (viewport.width === 390) await shot(page, engine, path.slice(1) || 'home');
+          }
+        });
+      }
+
+      await t.test('flow tabs preserve edits and desktop sizes across rotation', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        // These are legal desktop sizes that used to swallow the whole
+        // graph when the viewport became narrower than the stored columns.
+        await page.evaluate(() => {
+          localStorage.setItem('algo.pane.lib', '420');
+          localStorage.setItem('algo.pane.insp', '620');
+          localStorage.setItem('algo.pane.out', '1200');
+        });
+        const pipeline = (await (await context.request.get(`${base}/api/pipeline`)).json()).pipeline;
+        const catalogue = (await (await context.request.get(`${base}/api/catalogue`)).json()).nodes;
+        const plane = { pixels: Buffer.alloc(32 * 24, 100).toString('base64'), min: 20, max: 30 };
+        await page.routeWebSocket(url => url.pathname === '/ws', socket => socket.send(JSON.stringify({
+          type: 'frame', frameId: 7, timestamp: Date.now(), uid: pipeline.uid, previewUnavailable: null,
+          envelopes: pipeline.nodes.map(node => {
+            const spec = catalogue.find(spec => spec.type === node.type);
+            return {
+              frameId: 7, timestamp: Date.now(), nodeId: node.id, type: node.type, domain: spec.domain,
+              executionTimeMs: 1, outputs: { background: plane, diff: plane, foreground: plane },
+              debug: {}, metrics: { frame: 7 }, parameters: Object.fromEntries(spec.params.map(param => [param.id, param.min])),
+            };
+          }),
+        })));
+        await page.goto(`${base}/flow`);
+        await page.locator('.react-flow__node').first().waitFor();
+        await page.getByRole('tab', { name: 'Inspector', exact: true }).tap();
+        const value = page.locator('.inspector input[type=number]').first();
+        await value.fill('5');
+        const stage = await page.getByLabel('Stage', { exact: true }).inputValue();
+        await page.getByRole('tab', { name: 'Output', exact: true }).tap();
+        await page.locator('.grid-canvas').first().waitFor();
+        const image = await page.locator('.grid-canvas').first().boundingBox();
+        assert.ok(image.width >= 300 && image.width <= 390, 'thermal output should fill a phone panel');
+        await fits(page, 390);
+        await shot(page, engine, 'output');
+        await page.getByRole('tab', { name: 'Graph', exact: true }).tap();
+        await page.getByRole('tab', { name: 'Graph', exact: true }).press('ArrowRight');
+        assert.equal(await page.getByRole('tab', { name: 'Stages', exact: true }).getAttribute('aria-selected'), 'true');
+        await page.getByRole('tab', { name: 'Inspector', exact: true }).tap();
+        assert.equal(await value.inputValue(), '5');
+        assert.equal(await page.getByLabel('Stage', { exact: true }).inputValue(), stage);
+        await shot(page, engine, 'inspector');
+        await page.setViewportSize({ width: 1024, height: 844 });
+        await page.locator('.mobile-panes').waitFor({ state: 'detached' });
+        await fits(page, 1024);
+        assert.ok((await page.locator('.canvas').boundingBox()).width >= 350);
+        assert.equal(await value.inputValue(), '5');
+        assert.equal(await page.evaluate(() => localStorage.getItem('algo.pane.lib')), '420');
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.getByRole('tab', { name: 'Graph', exact: true }).tap();
+        await page.locator(`.react-flow__node[data-id="${stage}"]`).tap();
+        assert.equal(await page.getByRole('tab', { name: 'Inspector', exact: true }).getAttribute('aria-selected'), 'true');
+      });
+
+      await t.test('sign-in and OTA confirmation remain usable in short viewports', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 320, height: 568 });
+        await trainingFixtures(page);
+        await page.goto(`${base}/train`);
+        await page.locator('.cx-console .seg-opt').filter({ hasText: /ssh ing/ }).tap();
+        const dialog = page.getByRole('dialog');
+        await dialog.waitFor();
+        await fits(page, 320);
+        assert.ok((await dialog.boundingBox()).height <= 536);
+        await dialog.getByRole('button', { name: 'SIGN IN', exact: true }).scrollIntoViewIfNeeded();
+        await shot(page, engine, 'hku-sign-in');
+        await dialog.getByRole('button', { name: 'Close', exact: true }).tap();
+        await dialog.waitFor({ state: 'detached' });
+        await page.unrouteAll({ behavior: 'wait' });
+        await updatesFixtures(page);
+        await page.goto(`${base}/updates`);
+        await page.getByRole('button', { name: /Start update/ }).tap();
+        const confirmation = page.getByRole('dialog');
+        await confirmation.waitFor();
+        await fits(page, 320);
+        assert.ok((await confirmation.boundingBox()).height <= 536);
+        await confirmation.getByRole('button', { name: 'Back', exact: true }).tap();
+        assert.equal(await confirmation.isVisible(), false);
+      });
+      assert.deepEqual(errors, [], 'no browser runtime errors');
+    } finally { await browser.close(); }
+  });
+}

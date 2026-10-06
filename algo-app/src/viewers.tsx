@@ -227,6 +227,7 @@ export function Table({ rows }: { rows: Record<string, unknown>[] }) {
   if (rows.length === 0) return <div className="empty">nothing here for this frame</div>;
   const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
   return (
+    <div className="table-scroll" tabIndex={0} role="region" aria-label="Stage data">
     <table className="tbl">
       <thead><tr>{cols.map((c) => <th key={c}>{c}</th>)}</tr></thead>
       <tbody>
@@ -235,6 +236,7 @@ export function Table({ rows }: { rows: Record<string, unknown>[] }) {
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 

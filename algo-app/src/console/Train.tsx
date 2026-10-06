@@ -678,6 +678,7 @@ export function Train() {
                 <button className="btn btn-ghost cx-btn-px" onClick={() => void signOutHku()}>SIGN OUT OF HKU</button>
               </div>
             )}
+            <div className="cx-table-scroll" tabIndex={0} role="region" aria-label="Training jobs">
             <table className="table cx-jobs">
               <thead><tr><th style={{ width: 24 }} /><th>Job</th><th>Partition</th><th>State</th><th style={{ textAlign: 'right' }}>Saved</th><th style={{ width: 28 }} /></tr></thead>
               <tbody>
@@ -702,6 +703,7 @@ export function Train() {
                 })}
               </tbody>
             </table>
+            </div>
             <div className="cx-hint">{mb(cfg.usage.bytes)} of {cfg.limits.quotaMb} MB · {cfg.usage.jobs} of {cfg.limits.maxJobs} jobs</div>
           </div>
 

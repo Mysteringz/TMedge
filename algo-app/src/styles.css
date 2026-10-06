@@ -9,14 +9,16 @@
 body, html, #root { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
   font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
 button, input, select { font: inherit; color: inherit; }
-.app { display: flex; flex-direction: column; height: 100vh; }
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; min-width: 0; }
+.app [hidden] { display: none !important; }
 
-.bar { display: flex; align-items: center; gap: 16px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); flex-shrink: 0; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .12em; font-size: 12px; }
 .mark { width: 12px; height: 12px; background: var(--go); display: inline-block; }
-.source { display: flex; align-items: center; gap: 8px; flex: 1; }
+.source { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1 1 240px; min-width: 0; }
+.source select { min-width: 0; max-width: 100%; }
 .source select { background: #1f1f24; border: 1px solid var(--line); padding: 5px 8px; border-radius: 3px; }
-.modes { display: flex; gap: 6px; }
+.modes { display: flex; flex-wrap: wrap; gap: 6px; }
 .btn { background: #1f1f24; border: 1px solid var(--line); padding: 5px 10px; border-radius: 3px; cursor: pointer; }
 .btn:hover { border-color: #47474f; }
 .btn.on { background: var(--go); border-color: var(--go); color: #05201c; font-weight: 600; }
@@ -48,7 +50,7 @@ button, input, select { font: inherit; color: inherit; }
 .dot-device { background: var(--device); }
 .dot-edge { background: var(--edge); }
 
-.canvas { min-width: 0; background: var(--bg); }
+.canvas { position: relative; min-width: 0; background: var(--bg); }
 .stage { width: 208px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; }
 .stage.is-selected { border-color: var(--go); box-shadow: 0 0 0 1px var(--go); }
 .stage.is-error { border-color: #d05a5a; }
@@ -70,9 +72,9 @@ button, input, select { font: inherit; color: inherit; }
 .param label { font-size: 12px; }
 .param .unit { color: var(--muted); }
 .param-row { display: flex; gap: 8px; align-items: center; margin: 5px 0 3px; }
-.param-row input[type=range] { flex: 1; accent-color: var(--go); }
+.param-row input[type=range] { flex: 1; min-width: 0; accent-color: var(--go); }
 .param-row input[type=number] { width: 72px; background: #1f1f24; border: 1px solid var(--line); padding: 3px 5px; border-radius: 3px; }
-.param-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.param-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
 .live { font-size: 11px; color: var(--muted); }
 .held { font-size: 11px; color: var(--warn); margin-top: 4px; }
 /* An unconfirmed write is not yet a fact, so it reads as an aside rather
@@ -82,7 +84,7 @@ button, input, select { font: inherit; color: inherit; }
 .help { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .danger { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 
-.output { background: var(--panel); height: 480px; display: flex; flex-direction: column; min-height: 0; }
+.output { background: var(--panel); height: 480px; max-height: 60%; display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
 .output-head { display: flex; gap: 12px; align-items: baseline; padding: 7px 14px; border-bottom: 1px solid var(--line); }
 .output-body { flex: 1; overflow: auto; padding: 12px 14px; }
 .muted { color: var(--muted); font-size: 11px; }
@@ -98,7 +100,7 @@ button, input, select { font: inherit; color: inherit; }
    instead; the aspect is held by the canvas's own dimensions. */
 .grid-canvas, .plan-canvas { image-rendering: pixelated; border: 1px solid var(--line); background: #0d0d10; display: block; }
 .grid-canvas { width: 512px; max-width: calc((100vw - 110px) / 3); height: auto; }
-.plan-canvas { image-rendering: auto; }
+.plan-canvas { image-rendering: auto; max-width: 100%; height: auto; }
 /* With the camera beside them it is four pictures, not three: same rule. */
 .with-camera .grid-canvas, .with-camera .rgbview { max-width: calc((100vw - 128px) / 4); }
 .scale { font-size: 10px; color: var(--muted); margin-top: 3px; }
@@ -108,11 +110,12 @@ button, input, select { font: inherit; color: inherit; }
 .tbl { border-collapse: collapse; font: 11px/1.5 ui-monospace, Menlo, monospace; width: 100%; }
 .tbl th { text-align: left; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); padding: 3px 8px 3px 0; }
 .tbl td { padding: 2px 8px 2px 0; border-bottom: 1px solid #1f1f24; }
+.table-scroll { max-width: 100%; overflow-x: auto; }
 .hist { display: flex; align-items: flex-end; gap: 2px; height: 140px; }
 .hist-bar { flex: 1; background: var(--go); min-height: 1px; }
 
 .timeline { display: flex; align-items: center; gap: 12px; padding: 7px 14px; border-top: 1px solid var(--line); background: var(--panel); }
-.timeline input { flex: 1; accent-color: var(--go); }
+.timeline input { flex: 1; min-width: 0; accent-color: var(--go); }
 .timeline input:disabled { opacity: .4; }
 /* Live reads as live: red like every other stream, and the same pill becomes
    the clock the moment you drag away from now. */
@@ -128,6 +131,8 @@ button, input, select { font: inherit; color: inherit; }
 .livepill .behind { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .livedot { animation: none } }
 .react-flow__attribution { display: none; }
+.react-flow__controls-button { background: var(--panel); color: var(--ink); border-color: var(--line); }
+.react-flow__controls-button:hover { background: #25252b; }
 .warn-box { color: var(--warn); border: 1px solid #4a3a22; background: #241e13; padding: 8px 10px;
   border-radius: 3px; margin-bottom: 12px; font-size: 12px; }
 .untrained { border: 1px dashed var(--line); padding: 14px 16px; border-radius: 3px; max-width: 760px; }
@@ -155,3 +160,43 @@ body.resizing-x, body.resizing-x * { cursor: col-resize !important; user-select:
 body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select: none; }
 /* A pane being dragged must not let the flow canvas swallow the pointer. */
 body.resizing-x .react-flow, body.resizing-y .react-flow { pointer-events: none; }
+
+/* A phone gets a full pane at a time. Keeping the panes mounted preserves
+   edits, frame history and graph state when moving between these tabs. */
+.mobile-stage { display: flex; align-items: center; gap: 12px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.mobile-stage select { flex: 1; min-width: 0; background: #1f1f24; border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; }
+.mobile-graph-hint { position: absolute; top: 10px; left: 12px; right: 12px; z-index: 4; pointer-events: none; color: var(--muted); font-size: 11px; }
+@media (max-width: 900px) {
+  .app { overflow-y: auto; }
+  .app .bar { gap: 8px; padding: 8px 12px; }
+  .app .brand { flex-basis: 100%; }
+  .source { flex-basis: 100%; }
+  .source select { flex: 1 1 180px; }
+  .modes { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); width: 100%; }
+  .modes .btn { padding-inline: 4px; }
+  .app button, .app select, .app input { min-height: 44px; }
+  .app select, .app input[type=number] { font-size: 16px; }
+  .mobile-panes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .mobile-panes button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; padding: 6px 2px; }
+  .mobile-panes button[aria-selected=true] { color: var(--ink); border-bottom-color: var(--go); background: #1c2424; }
+  .mobile-panes button:focus-visible { outline: 2px solid var(--go); outline-offset: -3px; }
+  .body { display: contents; }
+  .app .divider { display: none; }
+  .library, .inspector, .canvas, .output { flex: 1; min-height: 240px; min-width: 0; border: 0; }
+  .output { height: auto !important; max-height: none; }
+  .output-head { flex-wrap: wrap; gap: 4px 12px; }
+  .output-body { min-height: 0; }
+  .views > figure { width: 100%; min-width: 0; }
+  .grid-canvas, .with-camera .grid-canvas, .rgbview, .with-camera .rgbview { width: 100%; max-width: 512px; height: auto; }
+  .grow { min-width: 0; width: 100%; flex-basis: 100%; }
+  .facts div { flex-wrap: wrap; gap: 4px 12px; overflow-wrap: anywhere; }
+  .json { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .untrained code { overflow-wrap: anywhere; }
+  .timeline { flex-shrink: 0; padding: 6px 12px max(6px, env(safe-area-inset-bottom)); gap: 8px; }
+  .react-flow__controls-button { width: 44px; padding: 12px; }
+  .stage { touch-action: none; }
+}
+@media (max-width: 560px) {
+  .modes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .timeline > .muted { display: none; }
+}

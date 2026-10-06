@@ -183,6 +183,12 @@ jobs:
         working-directory: TMedge
         run: npm run build
 
+      - name: Algorithm console mobile browser regressions
+        working-directory: TMedge
+        run: |
+          npx playwright install --with-deps chromium webkit
+          npm run test:algo-mobile
+
       # The deploy script is what touches production, so it is tested like
       # code: migrate, deploy, automatic rollback of a broken release, manual
       # rollback, pruning and the lock, against a scratch /opt on the runner.
