@@ -44,6 +44,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791072000000-CreateFirmwareRolloutPersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791158400000-CreateCommandOutcomePersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791244800000-CreateOccupancyHistory.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791590400000-AddRegistrationDetector.js'),
 ];
 
 async function approveTransaction(
@@ -90,7 +91,7 @@ test('registration schema and provisioning repository enforce persistence invari
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 6, 'foundation, registration, build, rollout, command, and occupancy migrations all run');
+    assert.equal(appliedMigrations, 7, 'foundation, registration, build, rollout, command, occupancy, and detector migrations all run');
     await assertPostgresBuildLogBoundary(runtime);
     assert.equal(
       (await migrator.query("SELECT to_regclass('public.tmedge_foundation_probe') AS table_name"))[0].table_name,
@@ -378,6 +379,7 @@ test('registration schema and provisioning repository enforce persistence invari
       return uid;
     });
     registrationFile.nodes.push({ uid: 'aa:bb:cc:dd:ee:fe', label: 'Unplaced integration identity', owns: [] });
+    registrationFile.nodes[0]!.detector = 'edge';
     importedRegistryUids.push('aa:bb:cc:dd:ee:fe');
     const preview = await importExport.import(siteJson(), registrationFile, { dryRun: true });
     assert.equal(preview.valid, true);
@@ -390,6 +392,8 @@ test('registration schema and provisioning repository enforce persistence invari
     assert.equal(rerun.unchanged, importedRegistryUids.length);
     const exported = await importExport.export(siteJson());
     assert.equal(exported.nodes.length, importedRegistryUids.length);
+    assert.equal(exported.nodes.find((node) => node.uid === importedRegistryUids[0])?.detector, 'edge');
+    assert.equal((await importExport.loadRegistry(siteJson())).nodes.get(importedRegistryUids[0]!)?.detector, 'edge');
     const unplaced = exported.nodes.find((node) => node.uid === 'aa:bb:cc:dd:ee:fe');
     assert.ok(unplaced);
     assert.equal('floor' in unplaced, false);
@@ -611,6 +615,11 @@ test('registration schema and provisioning repository enforce persistence invari
 
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
+    assert.equal((await migrator.query(
+      "SELECT count(*)::int AS count FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'registered_nodes' AND column_name = 'detector'",
+    ))[0].count, 0, 'the detector migration can be reverted independently');
+    await migrator.undoLastMigration({ transaction: 'all' });
+    appliedMigrations -= 1;
     assert.equal((await migrator.query("SELECT to_regclass('public.occupancy_history') AS table_name"))[0].table_name, null);
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
@@ -660,16 +669,51 @@ test('registration schema and provisioning repository enforce persistence invari
   }
 });
 
+test('registration detector migration preserves legacy rows and enforces detector values', {
+  skip: process.env.PG_INTEGRATION_TEST !== '1',
+}, async () => {
+  const config = loadPostgresConfig();
+  const baseline = createPostgresDataSource(config.migrator, migrations.slice(0, 2));
+  const upgraded = createPostgresDataSource(config.migrator, [...migrations.slice(0, 2), migrations.at(-1)!]);
+  const uid = 'aa:bb:cc:00:00:01';
+  let applied = 0;
+  try {
+    await baseline.initialize();
+    applied += (await baseline.runMigrations({ transaction: 'all' })).length;
+    assert.equal(applied, 2, 'a disposable legacy registration schema is required');
+    await baseline.query('INSERT INTO public.registered_nodes (uid, label) VALUES ($1, $2)', [uid, 'Legacy detector node']);
+    await closePostgres(baseline);
+    await upgraded.initialize();
+    const added = (await upgraded.runMigrations({ transaction: 'all' })).length;
+    applied += added;
+    assert.equal(added, 1);
+    assert.deepEqual((await upgraded.query('SELECT label, detector FROM public.registered_nodes WHERE uid = $1', [uid]))[0],
+      { label: 'Legacy detector node', detector: 'node' });
+    await upgraded.query('UPDATE public.registered_nodes SET detector = $2 WHERE uid = $1', [uid, 'edge']);
+    await assert.rejects(upgraded.query('UPDATE public.registered_nodes SET detector = $2 WHERE uid = $1', [uid, 'invalid']),
+      /check constraint/i);
+    await upgraded.undoLastMigration({ transaction: 'all' });
+    applied -= 1;
+    assert.equal((await upgraded.query('SELECT label FROM public.registered_nodes WHERE uid = $1', [uid]))[0].label,
+      'Legacy detector node', 'schema rollback retains the registration');
+    applied += (await upgraded.runMigrations({ transaction: 'all' })).length;
+    assert.equal((await upgraded.query('SELECT detector FROM public.registered_nodes WHERE uid = $1', [uid]))[0].detector, 'node');
+  } finally {
+    const cleanup = upgraded.isInitialized ? upgraded : baseline;
+    while (applied > 0 && cleanup.isInitialized) {
+      await cleanup.undoLastMigration({ transaction: 'all' });
+      applied -= 1;
+    }
+    await closePostgres(upgraded);
+    await closePostgres(baseline);
+  }
+});
+
 async function exerciseDurableEdgeLifecycle(
   pg: ReturnType<typeof loadPostgresConfig>['runtime'],
   database: import('typeorm').DataSource,
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'tmedge-durable-lifecycle-'));
-  const composeArgs = ['compose', '-f', 'docker-compose.postgres-test.yml'];
-  const projectRoot = dirname(dirname(testDirectory));
-  const runCompose = (...args: string[]) => execFileSync('docker', [...composeArgs, ...args], {
-    cwd: projectRoot, stdio: 'pipe', encoding: 'utf8',
-  });
   const uid = randomMac();
   const uploadIds: string[] = [];
   const rolloutIds: string[] = [];
@@ -783,7 +827,7 @@ async function exerciseDurableEdgeLifecycle(
     await heldBuildStarted;
     await waitForJobLifecycle(database, secondUpload, 'running');
 
-    runCompose('stop', 'postgres-test');
+    controlPostgresTestService('stop');
     databaseStopped = true;
     const readyResponse = await fetch(`${base}/readyz`, { headers: { authorization } });
     const readiness = await readyResponse.json() as { ready: boolean; components: { persistence: { available: boolean } } };
@@ -809,7 +853,7 @@ async function exerciseDurableEdgeLifecycle(
     assert.ok(heldResponse, 'the worker had an active request when the edge shut down');
     heldResponse = null;
 
-    runCompose('start', 'postgres-test');
+    controlPostgresTestService('start');
     databaseStopped = false;
     await waitForDatabase(database);
     const restoredRegistry = await registration.loadRegistry(siteJson());
@@ -826,7 +870,7 @@ async function exerciseDurableEdgeLifecycle(
       'restart retains the rollout as interrupted and does not replay it');
   } finally {
     if (databaseStopped) {
-      runCompose('start', 'postgres-test');
+      controlPostgresTestService('start');
       await waitForDatabase(database);
       databaseStopped = false;
     }
@@ -902,11 +946,6 @@ async function exercisePostgresEdgeCutover(
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'tmedge-cutover-'));
   const nodesPath = join(directory, 'must-not-be-read-or-created.json');
-  const projectRoot = dirname(dirname(testDirectory));
-  const composeArgs = ['compose', '-f', 'docker-compose.postgres-test.yml'];
-  const runCompose = (...args: string[]) => execFileSync('docker', [...composeArgs, ...args], {
-    cwd: projectRoot, stdio: 'pipe', encoding: 'utf8',
-  });
   const failingPort = await freeTcpPort();
   let failed: EdgeProcess | null = null;
   let live: EdgeProcess | null = null;
@@ -934,7 +973,7 @@ async function exercisePostgresEdgeCutover(
     const outagePending = await queueNode(base, token, outageUid, 'Outage retry node');
     requestIds.push(outagePending.id);
 
-    runCompose('stop', 'postgres-test');
+    controlPostgresTestService('stop');
     databaseStopped = true;
     await waitForAcceptedPacketDuringOutage(base, live, uid);
     const rejectedWhileDown = await decideNode(base, outagePending.id, 'approve');
@@ -946,7 +985,7 @@ async function exercisePostgresEdgeCutover(
     assert.ok(!liveUids.includes(outageUid), 'the failed approval does not activate an uncommitted identity');
     assert.equal(existsSync(nodesPath), false, 'the outage does not trigger a nodes.json fallback');
 
-    runCompose('start', 'postgres-test');
+    controlPostgresTestService('start');
     databaseStopped = false;
     await waitForDatabase(database);
     assert.equal((await decideNode(base, outagePending.id, 'approve')).status, 200, 'operator retry commits after recovery');
@@ -960,7 +999,7 @@ async function exercisePostgresEdgeCutover(
     let cleanupFailure: unknown;
     if (databaseStopped) {
       try {
-        runCompose('start', 'postgres-test');
+        controlPostgresTestService('start');
         await waitForDatabase(database);
         databaseStopped = false;
       } catch (error) {
@@ -986,6 +1025,17 @@ async function exercisePostgresEdgeCutover(
     rmSync(directory, { recursive: true, force: true });
     if (cleanupFailure) throw cleanupFailure;
   }
+}
+
+function controlPostgresTestService(action: 'start' | 'stop'): void {
+  // CI supplies its service-container ID; local rehearsals use disposable Compose.
+  const containerId = process.env.PG_TEST_CONTAINER_ID;
+  const args = containerId
+    ? [action, containerId]
+    : ['compose', '-f', 'docker-compose.postgres-test.yml', action, 'postgres-test'];
+  execFileSync('docker', args, {
+    cwd: dirname(dirname(testDirectory)), stdio: 'pipe', encoding: 'utf8',
+  });
 }
 
 async function queueNode(base: string, token: string, uid: string, label: string): Promise<{ id: string }> {

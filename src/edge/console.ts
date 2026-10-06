@@ -19,14 +19,13 @@
  * form cannot send -- basic-auth credentials are attached by the browser
  * automatically, so without it any page the admin visits could reboot nodes.
  */
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import express, { type NextFunction, type Request, type Response, type Router } from 'express';import { FirmwareStore } from './firmware.js';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import type { FirmwareBuildJobService } from '../modules/firmware/application/firmware-build-job-service.js';
 import { FirmwareBuildJobs } from '../modules/firmware/application/firmware-build-jobs.js';
 import { createFirmwareRouter } from '../modules/firmware/routes/firmware-router.js';
@@ -41,7 +40,6 @@ import type { EdgeRuntime } from './runtime.js';
 import { ExecuteNodeCommand } from '../modules/nodes/application/execute-node-command.js';
 import { ResetNodeCursor } from '../modules/nodes/application/reset-node-cursor.js';
 import { createNodeRouter } from '../modules/nodes/routes/node-router.js';
-import { ConsoleWebSocketAdapter } from '../modules/console-live/console-websocket-adapter.js';
 import { FirmwareBuildWorkerClient } from '../infrastructure/firmware-build/firmware-build-worker-client.js';
 import { asyncHandler } from '../infrastructure/http/errors.js';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -54,127 +52,21 @@ const consoleCleanups = new WeakMap<Server, () => Promise<void>>();
 const MAX_SUBSCRIPTIONS = 64;
 
 export interface ConsoleCore {
+  machine: Router;
   ui: Router;
   upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
   closeSessions(binding: string): void;
   dispose(): Promise<void>;
 }
 
-export function createConsole(rt: EdgeRuntime): ConsoleCore {
-  const ui = express.Router();
-  ui.use(express.json({ limit: '4kb' }));
-  ui.get('/api/state', (_req, res) => res.json(state(rt)));
-  ui.get('/api/layout', (_req, res) => res.json(rt.layout()));
-  ui.get('/api/nodes/:uid/rgb.jpg', (req, res) => {
-    const frame = rt.rgb.get((req.params.uid ?? '').toLowerCase());
-    if (!frame) return res.status(404).end();
-    return res.set({ 'content-type': 'image/jpeg', 'cache-control': 'no-store' }).send(frame.jpeg);
-  });
-  const secret = randomBytes(32);
-  const feeds = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
-  const clients = new Map<WebSocket, { binding: string; valid(): boolean; subscriptions: Set<string> }>();
-  ui.get('/api/ws-token', (req, res) => {
-    const binding = String(res.locals.wsBinding ?? 'console');
-    const expiresAt = Date.now() + 60_000;
-    res.json({ token: `${expiresAt}.${createHmac('sha256', secret).update(`${expiresAt}:${binding}`).digest('hex')}` });
-  });
-  const broadcast = (message: unknown, filter?: (client: WebSocket) => boolean) => {
-    const serialized = JSON.stringify(message);
-    for (const [ws, client] of clients) {
-      if (!client.valid()) { ws.terminate(); continue; }
-      if (ws.readyState !== ws.OPEN) continue;
-      // A slow browser is skipped instead of accumulating an unbounded feed.
-      if (ws.bufferedAmount > 2 * 1024 * 1024) { ws.terminate(); continue; }
-      if (!filter || filter(ws)) sendLatest(ws, serialized);
-    }
-  };
-  const onSnapshot = () => broadcast({ type: 'state', ...state(rt) });
-  const onRaw = (raw: RawFrameMessage) => broadcast({ type: 'raw', ...raw }, (ws) => clients.get(ws)?.subscriptions.has(raw.uid) ?? false);
-  const onRgb = (uid: string, jpeg: Buffer, at: number) => broadcast({ type: 'rgb', uid, at, jpeg: jpeg.toString('base64') }, (ws) => clients.get(ws)?.subscriptions.has(uid) ?? false);
-  rt.on('snapshot', onSnapshot);
-  const onReport = (uid: string, dets: unknown, at: number) => broadcast({ type: 'report', uid, at, dets });
-  rt.on('report', onReport);
-  rt.on('raw', onRaw);
-  rt.on('rgb', onRgb);
-  const stateTimer = setInterval(() => broadcast({ type: 'state', ...state(rt) }), 1000);
-  stateTimer.unref();
-  return {
-    ui,
-    upgrade(req, socket, head, path, access) {
-      socket.on('error', () => socket.destroy());
-      const url = requestUrl(req.url);
-      if (!url || url.pathname !== path || !sameOrigin(req) || clients.size >= 64 || (access && !access.valid())) return false;
-      const [expiry, mac] = (url.searchParams.get('token') ?? '').split('.');
-      const binding = access?.binding ?? 'console';
-      const expected = expiry ? createHmac('sha256', secret).update(`${expiry}:${binding}`).digest('hex') : '';
-      if (!expiry || !mac || Number(expiry) <= Date.now() || !safeEqual(mac, expected)) return false;
-      feeds.handleUpgrade(req, socket, head, (ws) => {
-        const currentAccess = access ?? { binding, valid: () => true };
-        const subscriptions = new Set<string>();
-        clients.set(ws, { binding, valid: currentAccess.valid, subscriptions });
-        ws.on('message', (data) => {
-          if (!currentAccess.valid()) { ws.terminate(); return; }
-          try {
-            const message = JSON.parse(String(data)) as { type?: string; uids?: unknown };
-            if (message.type === 'subscribe' && Array.isArray(message.uids)) {
-              subscriptions.clear();
-              for (const uid of message.uids.slice(0, MAX_SUBSCRIPTIONS)) if (typeof uid === 'string') subscriptions.add(uid);
-            }
-          } catch { /* malformed client messages are ignored */ }
-        });
-        ws.on('close', () => clients.delete(ws));
-        ws.on('error', () => ws.terminate());
-        ws.send(JSON.stringify({ type: 'state', ...state(rt) }));
-      });
-      return true;
-    },
-    closeSessions(binding) {
-      for (const [ws, current] of clients) if (current.binding === binding) ws.terminate();
-    },
-    async dispose() {
-      clearInterval(stateTimer);
-      rt.off('snapshot', onSnapshot);
-      rt.off('report', onReport);
-      rt.off('raw', onRaw);
-      rt.off('rgb', onRgb);
-      for (const ws of clients.keys()) ws.terminate();
-      await new Promise<void>((resolve) => feeds.close(() => resolve()));
-    },
-  };
-}
-
-export function consoleMovedTo(port: number): (req: Request) => string {
-  return (req) => {
-    const host = req.get('host') ?? 'localhost';
-    if (host === 'console.hkumyseat.com') return 'https://algo.hkumyseat.com/console';
-    const hostname = host.replace(/:\d+$/, '');
-    return `http://${hostname}:${port}/console`;
-  };
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
-}
-
-export function startConsole(rt: EdgeRuntime, optionsOrCore: {
-  firmwareBuildJobs?: FirmwareBuildJobService;
-  provisioningService?: ProvisioningService;
-  listen?: boolean;
-  uiMovedTo?: (req: Request) => string;
-} | ConsoleCore = {}, additionalOptions: { firmwareBuildJobs?: FirmwareBuildJobService; provisioningService?: ProvisioningService; listen?: boolean; uiMovedTo?: (req: Request) => string } = {}): Server {
-  const options = 'ui' in optionsOrCore ? additionalOptions : optionsOrCore;
-  const { adminPassword, consolePort, consoleHost } = rt.cfg;
+export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): ConsoleCore {
   const provisioningService = options.provisioningService ?? new FileProvisioningService(new Provisioning(rt.reg, {
     token: rt.cfg.flashToken,
     nodesPath: rt.cfg.nodesPath,
     auditPath: join(rt.cfg.dataDir, 'provisioning.jsonl'),
   }));
-  let broadcastProvisioning = (_message: unknown): void => {};
-  const app = express();
-  app.disable('x-powered-by');
-  if (options.uiMovedTo) app.get(['/', '/index.html'], (req, res) => res.redirect(302, options.uiMovedTo!(req)));
+  const firmwareBuildWorker = new FirmwareBuildWorkerClient();
+  const firmwareBuildJobs: FirmwareBuildJobService = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware, firmwareBuildWorker));
   const machine = express.Router();
   // RGB frames from verification rigs. Before the admin check because the
   // sender is a node, not a person: it signs each frame with the site key
@@ -216,15 +108,33 @@ export function startConsole(rt: EdgeRuntime, optionsOrCore: {
     res.set('Content-Type', 'application/octet-stream');
     return res.end(bytes);
   });
-  app.use(machine);
-
-  app.use('/api/provision', express.json({ limit: '4kb' }), createProvisioningToolRouter({
+  machine.post('/api/provision/request', express.json({ limit: '4kb' }));
+  machine.use('/api/provision', createProvisioningToolRouter({
     service: provisioningService,
-    broadcast: (message) => broadcastProvisioning(message),
+    broadcast: (message) => broadcast(message),
   }));
+
   const ui = express.Router();
-  if ('ui' in optionsOrCore) ui.use(optionsOrCore.ui);
   ui.use(express.json({ limit: '4kb' }));
+  ui.get('/api/state', (_req, res) => res.json(state(rt)));
+  const secret = randomBytes(32);
+  const feeds = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
+  const clients = new Map<WebSocket, { binding: string; valid(): boolean; subscriptions: Set<string> }>();
+  ui.get('/api/ws-token', (req, res) => {
+    const binding = String(res.locals.wsBinding ?? 'console');
+    const expiresAt = Date.now() + 60_000;
+    res.json({ token: `${expiresAt}.${createHmac('sha256', secret).update(`${expiresAt}:${binding}`).digest('hex')}` });
+  });
+  const broadcast = (message: unknown, filter?: (client: WebSocket) => boolean) => {
+    const serialized = JSON.stringify(message);
+    for (const [ws, client] of clients) {
+      if (!client.valid()) { ws.terminate(); continue; }
+      if (ws.readyState !== ws.OPEN) continue;
+      // A slow browser is skipped instead of accumulating an unbounded feed.
+      if (ws.bufferedAmount > 2 * 1024 * 1024) { ws.terminate(); continue; }
+      if (!filter || filter(ws)) sendLatest(ws, serialized);
+    }
+  };
   // public-console/index.html is tracked; the modules it loads are compiled
   // into public-console/js by `npm run build` and are not. A fresh checkout
   // therefore serves a page that loads, 404s its own script and sits there
@@ -253,9 +163,9 @@ export function startConsole(rt: EdgeRuntime, optionsOrCore: {
     setHeaders: (res) => res.set('Cache-Control', 'no-store'),
   }));
 
-  app.get('/api/layout', (_req, res) => res.json(rt.layout()));
-  app.get('/healthz', (_req, res) => res.status(200).json({ live: true }));
-  app.get('/readyz', asyncHandler(async (_req, res) => {
+  ui.get('/api/layout', (_req, res) => res.json(rt.layout()));
+  ui.get('/healthz', (_req, res) => res.status(200).json({ live: true }));
+  ui.get('/readyz', asyncHandler(async (_req, res) => {
     const persistenceAvailable = rt.persistenceAvailable ? await rt.persistenceAvailable().catch(() => false) : null;
     const buildStatus = firmwareBuildJobs.operationalStatus
       ? await firmwareBuildJobs.operationalStatus().catch(() => ({ unavailable: true }))
@@ -282,12 +192,12 @@ export function startConsole(rt: EdgeRuntime, optionsOrCore: {
       },
     });
   }));
-  app.get('/api/state', (_req, res) => res.json(state(rt)));  const mutating = (req: Request, res: Response, next: NextFunction) => {
+  const mutating = (req: Request, res: Response, next: NextFunction) => {
     if (req.get('x-tm-console') !== '1') return res.status(403).json({ error: 'missing x-tm-console header' });
     return next();
   };
 
-  app.use('/api/nodes', createNodeRouter({
+  ui.use('/api/nodes', createNodeRouter({
     reads: {
       rgb: (uid) => rt.rgb.get(uid) ?? null,
       raw: (uid) => rt.lastRaw(uid),
@@ -300,18 +210,15 @@ export function startConsole(rt: EdgeRuntime, optionsOrCore: {
     mutating,
   }));
 
-  app.use('/api/provision', createProvisioningAdminRouter({
+  ui.use('/api/provision', createProvisioningAdminRouter({
     service: provisioningService,
     mutating,
-    broadcast: (message) => broadcastProvisioning(message),
+    broadcast: (message) => broadcast(message),
   }));
 
-  // A short-lived token for the WebSocket, which cannot carry basic auth reliably.
-  const firmwareBuildWorker = new FirmwareBuildWorkerClient();
-  const firmwareBuildJobs: FirmwareBuildJobService = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware, firmwareBuildWorker));
   const imageInUse = new RolloutImageUsageQuery(rt.rollouts);
   rt.firmware.cleanup(imageInUse);
-  app.use('/api', createFirmwareRouter({
+  ui.use('/api', createFirmwareRouter({
     firmware: rt.firmware,
     buildJobs: firmwareBuildJobs,
     rollouts: rt.rolloutService,
@@ -320,20 +227,136 @@ export function startConsole(rt: EdgeRuntime, optionsOrCore: {
     buildWorkerConfigured: () => firmwareBuildWorker.configured,
   }));
 
-  const server = createServer(app);
-  const live = new ConsoleWebSocketAdapter(server, rt, () => state(rt));
-  live.start();
-  let cleanup: Promise<void> | null = null;
-  const dispose = () => {
-    cleanup ??= Promise.all([firmwareBuildJobs.dispose?.() ?? Promise.resolve(), live.close()]).then(() => undefined);
-    return cleanup;  };
-  consoleCleanups.set(server, dispose);
-  server.once('close', () => { void dispose(); });
-  broadcastProvisioning = (message) => live.broadcast(message);
-  app.get('/api/ws-token', (_req, res) => res.json({ token: live.issueToken() }));
-  app.use(applicationErrorHandler);
+  ui.use(applicationErrorHandler);
+  machine.use(applicationErrorHandler);
+  const onSnapshot = () => broadcast({ type: 'state', ...state(rt) });
+  const onRaw = (raw: RawFrameMessage) => broadcast({ type: 'raw', ...raw }, (ws) => clients.get(ws)?.subscriptions.has(raw.uid) ?? false);
+  const onRgb = (uid: string, jpeg: Buffer, at: number) => broadcast({ type: 'rgb', uid, at, jpeg: jpeg.toString('base64') }, (ws) => clients.get(ws)?.subscriptions.has(uid) ?? false);
+  rt.on('snapshot', onSnapshot);
+  const onReport = (uid: string, dets: unknown, at: number) => broadcast({ type: 'report', uid, at, dets });
+  rt.on('report', onReport);
+  rt.on('raw', onRaw);
+  rt.on('rgb', onRgb);
+  const stateTimer = setInterval(() => broadcast({ type: 'state', ...state(rt) }), 1000);
+  stateTimer.unref();
+  let disposal: Promise<void> | null = null;
+  return {
+    machine,
+    ui,
+    upgrade(req, socket, head, path, access) {
+      socket.on('error', () => socket.destroy());
+      const url = requestUrl(req.url);
+      if (disposal || !url || url.pathname !== path || !sameOrigin(req) || clients.size >= 64 || (access && !access.valid())) return false;
+      const [expiry, mac] = (url.searchParams.get('token') ?? '').split('.');
+      const binding = access?.binding ?? 'console';
+      const expected = expiry ? createHmac('sha256', secret).update(`${expiry}:${binding}`).digest('hex') : '';
+      if (!expiry || !mac || !Number.isFinite(Number(expiry)) || Number(expiry) <= Date.now() || !safeEqual(mac, expected)) return false;
+      feeds.handleUpgrade(req, socket, head, (ws) => {
+        const currentAccess = access ?? { binding, valid: () => true };
+        const subscriptions = new Set<string>();
+        clients.set(ws, { binding, valid: currentAccess.valid, subscriptions });
+        ws.on('message', (data) => {
+          if (!currentAccess.valid()) { ws.terminate(); return; }
+          try {
+            const message = JSON.parse(String(data)) as { type?: string; uids?: unknown };
+            if (message.type === 'subscribe' && Array.isArray(message.uids)) {
+              subscriptions.clear();
+              for (const uid of message.uids.slice(0, MAX_SUBSCRIPTIONS)) if (typeof uid === 'string') subscriptions.add(uid);
+            }
+          } catch { /* malformed client messages are ignored */ }
+        });
+        ws.on('close', () => clients.delete(ws));
+        ws.on('error', () => ws.terminate());
+        ws.send(JSON.stringify({ type: 'state', ...state(rt) }));
+      });
+      return true;
+    },
+    closeSessions(binding) {
+      for (const [ws, current] of clients) if (current.binding === binding) ws.terminate();
+    },
+    dispose() {
+      if (disposal) return disposal;
+      clearInterval(stateTimer);
+      rt.off('snapshot', onSnapshot);
+      rt.off('report', onReport);
+      rt.off('raw', onRaw);
+      rt.off('rgb', onRgb);
+      for (const ws of clients.keys()) ws.terminate();
+      disposal = Promise.all([
+        new Promise<void>((resolve) => feeds.close(() => resolve())),
+        firmwareBuildJobs.dispose?.() ?? Promise.resolve(),
+      ]).then(() => undefined);
+      return disposal;
+    },
+  };
+}
 
-  if (options.listen !== false) server.listen(consolePort, consoleHost);  return server;
+export function consoleMovedTo(port: number): (req: Request) => string {
+  return (req) => {
+    const host = req.get('host') ?? 'localhost';
+    if (host === 'console.hkumyseat.com') return 'https://algo.hkumyseat.com/console';
+    const hostname = host.replace(/:\d+$/, '');
+    return `http://${hostname}:${port}/console`;
+  };
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+export interface ConsoleOptions {
+  firmwareBuildJobs?: FirmwareBuildJobService;
+  provisioningService?: ProvisioningService;
+  listen?: boolean;
+  uiMovedTo?: (req: Request) => string;
+}
+
+export function startConsole(rt: EdgeRuntime, optionsOrCore: ConsoleOptions | ConsoleCore = {}, additionalOptions: ConsoleOptions = {}): Server {
+  const options = 'ui' in optionsOrCore ? additionalOptions : optionsOrCore;
+  const core = 'ui' in optionsOrCore ? optionsOrCore : createConsole(rt, options);
+  const { adminPassword, consolePort, consoleHost } = rt.cfg;
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(core.machine);
+  const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
+    if (!adminPassword) return next();
+    const [scheme, encoded] = (req.headers.authorization ?? '').split(' ');
+    const password = scheme === 'Basic' && encoded ? Buffer.from(encoded, 'base64').toString().split(':').slice(1).join(':') : '';
+    if (password && safeEqual(password, adminPassword)) return next();
+    return res.set('WWW-Authenticate', 'Basic realm="TMedge console"').status(401).send('authentication required');
+  };
+  app.get(['/healthz', '/readyz'], requireAdmin, core.ui);
+  const moved = options.uiMovedTo;
+  if (moved) {
+    app.use((req: Request, res: Response) => {
+      res.set('Cache-Control', 'no-store');
+      if (req.method !== 'GET' || req.path.startsWith('/api/')) {
+        return res.status(410).json({ error: 'the console moved', location: moved(req) });
+      }
+      const to = moved(req).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
+      return res.status(200).set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'").type('html').send(
+        `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${to}">`
+        + `<title>The console moved</title><p>The console is now module 03 of the algo console: <a href="${to}">${to}</a></p>`,
+      );
+    });
+  } else {
+    app.use(requireAdmin);
+    app.use(core.ui);
+  }
+  app.use(applicationErrorHandler);
+  const server = createServer(app);
+  server.on('upgrade', (req, socket, head) => {
+    if (moved || !core.upgrade(req, socket, head, '/ws')) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+    }
+  });
+  consoleCleanups.set(server, () => core.dispose());
+  server.once('close', () => { void core.dispose(); });
+  if (options.listen !== false) server.listen(consolePort, consoleHost);
+  return server;
 }
 
 /** Awaits console-owned WebSocket and firmware worker cleanup. */

@@ -4,13 +4,18 @@ import type { DataSource } from 'typeorm';
 import { PostgresStudentAccountRepository } from '../src/infrastructure/postgres/student-account-repository.js';
 import { PostgresStudentActivityRepository } from '../src/infrastructure/postgres/student-activity-repository.js';
 import type { StudentActivityEvent } from '../src/modules/student-auth/repositories/student-activity-repository.js';
+import { createStudentUser } from '../src/modules/student-auth/application/student-credentials.js';
 
 interface LegacySnapshot { userId: string; eventId: string; email: string; salt: string; hash: string; }
 
 /** Seeds the old schema before the forward migration, including a preserved credential identity. */
 export async function seedLegacyActivity(source: DataSource): Promise<LegacySnapshot> {
-  const user = await new PostgresStudentAccountRepository(source).create('preserved@example.edu', 'Preserved', 'strong password');
+  // Seed the legacy shape before google_subject exists; the current adapter requires the expanded schema.
+  const user = await createStudentUser('preserved@example.edu', 'Preserved', 'strong password');
   assert.ok(user.id);
+  await source.query(`INSERT INTO public.student_users (id, email, name, salt, hash, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+  [user.id, user.email, user.name, user.salt, user.hash, new Date(user.createdAt)]);
   const eventId = randomUUID();
   await source.query(`INSERT INTO public.student_activity_events (id, user_id, action, outcome, request_id, occurred_at)
     VALUES ($1, $2, 'login', 'succeeded', $3, $4)`, [eventId, user.id, randomUUID(), new Date('2040-01-01T00:00:00Z')]);

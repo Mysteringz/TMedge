@@ -208,10 +208,16 @@ test('node command routes keep mutation guards, validation errors, and cursor re
     assert.equal(invalid.status, 400);
     assert.deepEqual(await invalid.json(), { error: 'op must be set | reset-bg | identify | save | reboot' });
 
-    const reset = await fetch(`${base}/api/nodes/node-a/reset-cursor`, {
+    const reset = await fetch(`${base}/api/nodes/02:00:00:00:00:01/reset-cursor`, {
       method: 'POST', headers: { authorization, 'x-tm-console': '1' },
     });
+    assert.equal(reset.status, 200);
     assert.deepEqual(await reset.json(), { reset: false });
+    const invalidCursor = await fetch(`${base}/api/nodes/node-a/reset-cursor`, {
+      method: 'POST', headers: { authorization, 'x-tm-console': '1' },
+    });
+    assert.equal(invalidCursor.status, 400);
+    assert.deepEqual(await invalidCursor.json(), { error: 'uid must be a lowercase MAC address' });
     assert.equal((await fetch(`${base}/api/nodes/node-a/rgb.jpg`, { headers: { authorization } })).status, 404);
   } finally {
     server.close();

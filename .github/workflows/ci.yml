@@ -127,10 +127,29 @@ jobs:
         working-directory: TMedge
         run: npm run typecheck
 
+      - name: Start disposable isolated firmware worker
+        working-directory: TMedge
+        run: |
+          docker build --file Dockerfile.firmware-worker --tag tmedge-ci-worker .
+          docker run --detach --name tmedge-ci-worker --read-only \
+            --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges:true \
+            --pids-limit 128 --cpus 1 --memory 768m --memory-swap 1536m \
+            --tmpfs /tmp:rw,nosuid,nodev,size=2g,mode=1777 \
+            --tmpfs /workspace:rw,nosuid,nodev,size=2g,mode=1777 \
+            --publish 127.0.0.1:8123:8123 tmedge-ci-worker
+          for attempt in $(seq 30); do
+            curl --fail --silent http://127.0.0.1:8123/healthz && exit 0
+            sleep 1
+          done
+          docker logs tmedge-ci-worker
+          exit 1
+
       - name: Test
         working-directory: TMedge
         env:
           PG_INTEGRATION_TEST: '1'
+          PG_TEST_CONTAINER_ID: ${{ job.services.postgres.id }}
+          TMEDGE_TEST_WORKER_URL: http://127.0.0.1:8123/build
         run: npm test
 
       # Compiles the firmware's own packet code (g++ + OpenSSL, both on the

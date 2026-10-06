@@ -78,15 +78,20 @@ test('student PostgreSQL migration, accounts, transfer, activity and outages', {
     assert.equal(removed[0].users, null);
     assert.equal(removed[0].events, null);
   } finally {
-    while (migrated > 0) { await migrator.undoLastMigration(); migrated -= 1; }
-    if (lock) {
-      await lock.query('SELECT pg_advisory_unlock(1791331200)');
-      await lock.release();
+    try {
+      // An assertion failure can leave synthetic Google users that intentionally block schema rollback.
+      if (migrated === 3) await migrator.query('DELETE FROM public.student_users WHERE google_subject IS NOT NULL');
+      while (migrated > 0) { await migrator.undoLastMigration(); migrated -= 1; }
+    } finally {
+      if (lock) {
+        await lock.query('SELECT pg_advisory_unlock(1791331200)');
+        await lock.release();
+      }
+      if (migrator.isInitialized) await migrator.query('DROP TABLE IF EXISTS public.student_test_migrations');
+      await closePostgres(runtime);
+      await closePostgres(migrator);
+      await closePostgres(legacyMigrator);
     }
-    if (migrator.isInitialized) await migrator.query('DROP TABLE IF EXISTS public.student_test_migrations');
-    await closePostgres(runtime);
-    await closePostgres(migrator);
-    await closePostgres(legacyMigrator);
   }
 });
 
