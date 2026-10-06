@@ -105,3 +105,42 @@ export class TermChannel {
     return run;
   }
 }
+
+/** The part of a WebSocket the sender needs (the browser's, or ws in tests). */
+export interface FrameSocket { readonly readyState: number; send(data: Bytes): void }
+
+/**
+ * Sends sealed frames in order, never dropping one. A frame made before the
+ * socket is open -- the first resize when the terminal fits itself, xterm's
+ * reply to the shell's first query -- waits here, because its counter is
+ * already spent: dropping it would put every later frame out of sequence and
+ * the edge would (rightly) close the terminal.
+ */
+export class TermSender {
+  private queue: Bytes[] = [];
+  private socket: FrameSocket | null = null;
+  private chain: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly channel: TermChannel) {}
+
+  send(type: number, payload: Uint8Array): Promise<void> {
+    const sealed = this.channel.seal(type, payload);
+    // seal() resolves in counter order; so do these, one after another.
+    const run = this.chain.then(() => sealed).then((frame) => {
+      if (this.socket && this.socket.readyState === 1) this.socket.send(frame);
+      else this.queue.push(frame);
+    });
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Call when the socket opens: everything held goes first, in order. */
+  open(socket: FrameSocket): Promise<void> {
+    const run = this.chain.then(() => {
+      this.socket = socket;
+      for (const f of this.queue.splice(0)) socket.send(f);
+    });
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+}

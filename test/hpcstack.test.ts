@@ -22,7 +22,7 @@ import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { buildRegistry } from '../src/edge/registry.js';
 import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { packCredentials, sealCredentials, type SealTicket } from '../src/shared/hpcseal.js';
-import { T_DATA, T_EXIT, T_RESIZE, TermChannel, type TermTicket } from '../src/shared/hpcterm.js';
+import { T_DATA, T_EXIT, T_RESIZE, TermChannel, TermSender, type TermTicket } from '../src/shared/hpcterm.js';
 import { fingerprintOf } from '../src/algo/train/hpc/hostkeys.js';
 import { WebSocket } from 'ws';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
@@ -397,6 +397,26 @@ describe('Plan A with a shared cluster account (ing@<ip>), as on 10.21.36.12', {
     await t.type('exit\r');
     assert.equal(await t.closed, 1000);
     assert.equal(t.exit(), 0);
+  });
+
+  test('a resize and keystrokes sent while the socket is still opening are not lost (the page does this)', async () => {
+    const tk = (await call(c, c.alice, 'POST', '/hpc/term')).json as unknown as TermTicket;
+    const ch = await TermChannel.open(tk);
+    const sender = new TermSender(ch);
+    const ws = new WebSocket(`${c.base.replace('http', 'ws')}/train-term?tid=${tk.tid}&epk=${ch.publicKey}&cols=80&rows=24`, { headers: { cookie: c.alice, origin: c.base } });
+    let screen = '';
+    ws.on('message', async (d: Buffer) => { const m = await ch.open(new Uint8Array(d)); if (m.type === T_DATA) screen += Buffer.from(m.payload).toString('utf8'); });
+    const closed = new Promise<number>((r) => ws.once('close', (code) => r(code)));
+    // Before 'open': exactly what xterm's fit and the first keystroke produce.
+    void sender.send(T_RESIZE, new Uint8Array([0, 117, 0, 33]));
+    void sender.send(T_DATA, new TextEncoder().encode('stty size; echo early-ok\r'));
+    await new Promise((ok) => ws.once('open', ok));
+    await sender.open({ readyState: 1, send: (f: Uint8Array) => ws.send(f) });
+    const end = Date.now() + 15_000;
+    while (!/33 117[\s\S]*early-ok/.test(screen) && Date.now() < end) await sleep(100);
+    assert.match(screen, /33 117[\s\S]*early-ok/, `screen was: ${JSON.stringify(screen.slice(-300))}`);
+    await sender.send(T_DATA, new TextEncoder().encode('exit\r'));
+    assert.equal(await closed, 1000, 'closed by the shell exiting, not "frame out of sequence"');
   });
 
   test('a frame replayed or out of order closes the terminal', async () => {

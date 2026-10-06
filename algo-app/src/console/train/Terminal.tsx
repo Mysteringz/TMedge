@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import '@xterm/xterm/css/xterm.css';
-import { T_DATA, T_EXIT, T_RESIZE, TermChannel, type TermTicket } from '../../../../src/shared/hpcterm.js';
+import { T_DATA, T_EXIT, T_RESIZE, TermChannel, TermSender, type TermTicket } from '../../../../src/shared/hpcterm.js';
 import { installCspShims } from './csp.ts';
 
 const THEME = {
@@ -53,8 +53,10 @@ export function ClusterTerminal({ ticket, target, onClosed }: TerminalProps) {
       const ws = new WebSocket(`${scheme}://${location.host}/train-term?tid=${encodeURIComponent(t.tid)}&epk=${ch.publicKey}&cols=${term.cols}&rows=${term.rows}`);
       ws.binaryType = 'arraybuffer';
       const enc = new TextEncoder();
-      const send = (type: number, payload: Uint8Array) => { void ch.seal(type, payload).then((f) => { if (ws.readyState === WebSocket.OPEN) ws.send(f); }); };
-      ws.onopen = () => { if (!disposed) setState('open'); term.focus(); };
+      // Frames made before the socket opens are held, not dropped (TermSender).
+      const sender = new TermSender(ch);
+      const send = (type: number, payload: Uint8Array) => { void sender.send(type, payload); };
+      ws.onopen = () => { void sender.open(ws); if (!disposed) setState('open'); term.focus(); };
       ws.onmessage = (m) => {
         void ch.open(new Uint8Array(m.data as ArrayBuffer)).then((msg) => {
           if (msg.type === T_DATA) term.write(msg.payload);
