@@ -90,7 +90,7 @@ export interface NodeDef {
    * present nearly all day (edgedetect.ts), so someone sitting still for
    * hours is not faded out. An edge node must send RAW every frame.
    */
-  detector: NodeDetector;
+  detector?: NodeDetector;
 }
 
 export type NodeDetector = 'node' | 'edge';

@@ -55,6 +55,8 @@ export interface PendingChange {
   restoring?: boolean;
 }
 
+export interface ParameterAuditSink { append(entry: AuditEntry): void }
+
 export class ParamBroker {
   private readonly pending = new Map<string, PendingChange>();
   private readonly audit: AuditEntry[] = [];

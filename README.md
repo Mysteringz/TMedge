@@ -30,6 +30,8 @@ changing what the system knows about anyone.
 
 ## Run it
 
+For PostgreSQL student accounts, Turnstile, and retained student interaction events, follow [student account setup](docs/student-accounts.md). It includes persistent local PostgreSQL, safe `users.json` import, migration, and recovery commands. Google sign-in is currently file-mode only; PostgreSQL mode hides the button and returns 404 from both OAuth endpoints pending verified PostgreSQL integration and recovery. Password signup is closed by default and must be explicitly enabled with `SIGNUP_OPEN=1`; the local setup helper enables it for development. Named admin accounts are deferred to a later MVP.
+
 Keep deployment credentials in the git-ignored `.env` file. Account details
 below are examples; use your own approved university account and password.
 
@@ -157,18 +159,13 @@ what the edge signed is thrown away before it can boot. A freshly flashed
 image is on probation for three minutes — if it cannot join Wi-Fi, read its
 sensor and get a packet accepted, the node puts the old image back and reboots.
 
-Requirements: Linux with `bubblewrap`, PlatformIO on the edge (`PIO_PATH` in
-`.env` pointing to `bin/pio` inside its dedicated installation), and TMWAccess
-1.1+ at each site. Preinstall the espressif32@6.9.0 Heltec V3 Arduino SDK in
-`PLATFORMIO_CORE_DIR` before enabling builds. The compiler runs without network
-access and sees only system tools, that SDK, and the uploaded source. Uploaded
-PlatformIO hooks and local provisioning headers are excluded. Direct cloud
-nodes download through their authenticated HTTPS grant on port 443.
-
-Password signup is closed by default; set `SIGNUP_OPEN=1` only when intended.
-Password signup does not verify ownership of the email address, and Google
-login never automatically links an account based on that unverified claim.
-
+Builds run in a separate PlatformIO worker container with CPU, memory, process,
+filesystem, and time limits. In Docker Compose it starts with the edge. For a
+native `npm run edge`, set `FIRMWARE_BUILD_WORKER_URL` to a separately running
+worker service. The worker gets only the uploaded source tree; it receives no
+edge secrets or data volumes. TMWAccess 1.1+ is still required at each site. A
+node that talks to the edge directly downloads from the edge's own console
+port instead.
 ## Tests
 
 ```bash

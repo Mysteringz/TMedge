@@ -107,6 +107,7 @@ test('registry: typos and ambiguity refuse to start instead of silently miscount
   bad((s) => (s.floors[0].tables[1].id = 'M1'), /duplicate table id/);
   bad((s) => (s.floors[0].tables[0].zone = 'nope'), /no zone "nope"/);
   bad((_s, n) => n.nodes[1].owns.push('M1'), /already owned/);
+  bad((_s, n) => (n.nodes[0].floor = 'missing-floor'), /no floor "missing-floor"/);
   bad((_s, n) => (n.nodes[0].owns = ['M99']), /no table "M99"/);
   bad((_s, n) => (n.nodes[0].uid = n.nodes[1].uid), /duplicate uid/);
   bad((_s, n) => (n.nodes[0].pose.heightCm = 90), /heightCm/);

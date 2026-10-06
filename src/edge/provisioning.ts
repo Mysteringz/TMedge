@@ -23,11 +23,9 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { NodeDef, Registry } from './registry.js';
-
-/** A request nobody has answered goes stale rather than waiting forever. */
-export const REQUEST_TTL_MS = 30 * 60_000;
-/** One machine cannot fill the console with requests. */
-export const MAX_PENDING = 32;
+import { ApplicationError } from '../modules/shared/application/contracts.js';
+import { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
+export { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
 
 const UID_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
 const LABEL_RE = /^[\w .,'()/-]{1,60}$/;
@@ -95,19 +93,19 @@ export class Provisioning {
   request(input: { uid?: unknown; label?: unknown; firmware?: unknown }, from: string): JoinOutcome {
     this.expire();
     const uid = String(input.uid ?? '').toLowerCase().trim();
-    if (!UID_RE.test(uid)) throw new Error('uid must be a MAC like 30:ed:a0:cb:f5:f8');
+    if (!UID_RE.test(uid)) throw new ApplicationError('validation', 'uid must be a MAC like 30:ed:a0:cb:f5:f8');
 
     const rawLabel = String(input.label ?? '').trim();
     // A label ends up in an admin's UI and in nodes.json; keep it to things
     // that cannot be mistaken for markup or break the file.
-    if (rawLabel && !LABEL_RE.test(rawLabel)) throw new Error('label may only contain letters, digits and . , \' ( ) / -');
+    if (rawLabel && !LABEL_RE.test(rawLabel)) throw new ApplicationError('validation', 'label may only contain letters, digits and . , \' ( ) / -');
     const firmware = String(input.firmware ?? '').trim().slice(0, 40) || null;
 
     if (this.reg.nodes.has(uid)) return { status: 'already-registered', uid };
 
     const existing = [...this.pending.values()].find((r) => r.uid === uid);
     if (existing) return { status: 'pending', request: existing };
-    if (this.pending.size >= MAX_PENDING) throw new Error('too many requests are already waiting for an answer');
+    if (this.pending.size >= MAX_PENDING) throw new ApplicationError('conflict', 'too many requests are already waiting for an answer');
 
     const at = this.now();
     const req: JoinRequest = {
@@ -143,10 +141,10 @@ export class Provisioning {
   approve(id: string, by: string): NodeDef {
     this.expire();
     const req = this.pending.get(id);
-    if (!req) throw new Error('no such request (it may have expired)');
+    if (!req) throw new ApplicationError('not-found', 'no such request (it may have expired)');
     if (this.reg.nodes.has(req.uid)) {
       this.pending.delete(id);
-      throw new Error(`${req.uid} is already registered`);
+      throw new ApplicationError('conflict', `${req.uid} is already registered`);
     }
 
     const node: NodeDef = {
@@ -171,7 +169,7 @@ export class Provisioning {
 
   deny(id: string, by: string): JoinRequest {
     const req = this.pending.get(id);
-    if (!req) throw new Error('no such request (it may have expired)');
+    if (!req) throw new ApplicationError('not-found', 'no such request (it may have expired)');
     this.pending.delete(id);
     this.log({ action: 'deny', at: this.now(), uid: req.uid, label: req.label, by, id });
     return req;
@@ -194,7 +192,7 @@ export class Provisioning {
     }
     const doc = parsed as { nodes: unknown[] };
     if (doc.nodes.some((n) => typeof n === 'object' && n !== null && (n as { uid?: unknown }).uid === node.uid)) {
-      throw new Error(`${node.uid} is already in ${path}`);
+      throw new ApplicationError('conflict', `${node.uid} is already registered`);
     }
     // Only the fields an unplaced node has: floor, pose and owns are what
     // placing it later will add.

@@ -8,6 +8,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { recordStudentActivity } from '../activity.ts';
 import { isDark, knownFree, plural, useLive, useMe, useSeats, useVenues, type VenueSpaces } from '../data.ts';
 import { Chrome, DashboardSkeleton } from '../ui.tsx';
 
@@ -37,6 +38,7 @@ export default function Dashboard() {
 
   const search = () => {
     if (!picked) return;
+    recordStudentActivity({ action: 'seat-search', seats, venueId: picked.venue.id });
     const first = picked.floors[0];
     navigate(`/dashboard/spaces/${first ? encodeURIComponent(first.id) : ''}?seats=${seats}`);
   };

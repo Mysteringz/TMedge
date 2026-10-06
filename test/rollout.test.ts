@@ -4,7 +4,8 @@
  * these are the rules that keep a bad build from costing a floor.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -220,20 +221,22 @@ test('uploaded paths that climb out of the project are refused', () => {
   assert.throws(() => safeRelativePath('TMsense/.pio/build/firmware.bin'), FirmwareError, 'build output is not source');
 });
 
-test('a project without the secret-free release environment is refused', async () => {
+test('a project without the secret-free release environment is refused before worker dispatch', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
-  const store = new FirmwareStore(dir, { pio: '/bin/false' });
+  const store = new FirmwareStore(dir);
   const up = store.startUpload('tester');
   store.addFile(up, 'TMsense/platformio.ini', Buffer.from('[env:heltec]\nboard = heltec_wifi_lora_32_V3\n'));
-  await assert.rejects(store.build(up, 'tester'), /\[env:tmflash\]/);
+  assert.throws(() => store.buildWorkspace(up), /\[env:tmflash\]/);
 });
 
-test('a build with no platformio.ini at all is refused', async () => {
+test('a build with no platformio.ini at all is refused before worker dispatch', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
-  const store = new FirmwareStore(dir, { pio: '/bin/false' });
+  const store = new FirmwareStore(dir);
   const up = store.startUpload('tester');
+  assert.throws(() => store.addFile(up, 'notes.md', Buffer.from('# not a project')), FirmwareError,
+    'non-source documentation is rejected by the upload allowlist');
+  assert.throws(() => store.buildWorkspace(up), /no platformio\.ini/);
   store.addFile(up, 'src/main.cpp', Buffer.from('// not a project'));
-  await assert.rejects(store.build(up, 'tester'), /no platformio\.ini/);
 });
 
 test('firmware uploads reject executable build hooks, provisioning secrets and excess sessions', () => {
@@ -256,8 +259,7 @@ test('failed builds unlock their upload for correction and a retry', async () =>
   store.discard(up);
 });
 
-test('the firmware compiler cannot read private files outside its source and SDKs', async () => {
-  if (process.platform !== 'linux') return;
+test('firmware store refuses inline compilation even when a host compiler is configured', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
   const install = join(dir, 'compiler');
   mkdirSync(join(install, 'bin'), { recursive: true });
@@ -265,33 +267,35 @@ test('the firmware compiler cannot read private files outside its source and SDK
   const secret = 'fixture-private-contents';
   writeFileSync(privatePath, secret);
   const runner = join(install, 'bin', 'pio');
-  writeFileSync(runner, '#!/bin/sh\nexec /usr/bin/g++ -c src/main.cpp -o /tmp/main.o\n', { mode: 0o700 });
+  const invoked = join(dir, 'compiler-invoked');
+  writeFileSync(runner, `#!/bin/sh\ntouch '${invoked}'\n`, { mode: 0o700 });
   const store = new FirmwareStore(join(dir, 'images'), { pio: runner });
   const up = store.startUpload('tester');
   store.addFile(up, 'platformio.ini', Buffer.from('[env:tmflash]'));
   store.addFile(up, 'src/main.cpp', Buffer.from(`#include "${privatePath}"\n`));
-  await assert.rejects(store.build(up, 'tester'), (error: unknown) => {
-    const log = (error as FirmwareError & { log?: string[] }).log?.join('\n') ?? '';
-    assert.match(log, /No such file/);
-    assert.ok(!log.includes(secret));
-    return true;
-  });
+  await assert.rejects(store.build(up, 'tester'), /isolated firmware builds require the configured build worker/);
+  assert.equal(existsSync(invoked), false, 'the edge never invokes uploaded build scripts on the host');
+  assert.equal(store.list().length, 0);
 });
 
 test('builds survive a restart of the edge, and a missing image is not offered', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
-  const first = new FirmwareStore(dir, { pio: '/bin/false' });
-  const id = 'c0ffee00c0ffee00';
+  const first = new FirmwareStore(dir);
+  const bytes = Buffer.alloc(16, 3);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const id = sha256.slice(0, 16);
   const buildDir = join(dir, 'builds', id);
   mkdirSync(buildDir, { recursive: true });
-  writeFileSync(join(buildDir, 'firmware.bin'), Buffer.alloc(16, 3));
+  writeFileSync(join(buildDir, 'firmware.bin'), bytes);
   writeFileSync(join(buildDir, 'build.json'), JSON.stringify({
-    id, sha256: 'c0ffee00'.repeat(8), size: 16, version: 'tmsense-1.2', state: 'ready',
+    id, sha256, size: bytes.length, version: 'tmsense-1.2', state: 'ready',
     uploadedBy: 'tester', uploadedAt: 1, builtAt: 2, files: 3, sourceBytes: 4, log: [],
   }));
   void first;
-  const reopened = new FirmwareStore(dir, { pio: '/bin/false' });
+  const reopened = new FirmwareStore(dir);
   assert.equal(reopened.get(id)?.version, 'tmsense-1.2');
   assert.equal(reopened.bytes(id)?.length, 16);
+  assert.equal(existsSync(join(dir, 'artifacts', `${id}.bin`)), true);
+  assert.equal(existsSync(join(dir, 'builds', id)), false);
   assert.equal(reopened.get('deadbeefdeadbeef'), null);
 });

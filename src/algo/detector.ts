@@ -13,7 +13,7 @@
  * different `bg_tau` means replaying the whole ring, not one frame. That also
  * gives determinism: same frames, same parameters, same answer, every time.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,8 +68,16 @@ export class DetectorHost {
   private binary: string | null = null;
   private checked = false;
   private buildError: string | null = null;
+  private disposed = false;
   private activeRuns = 0;
+  private readonly children = new Set<ChildProcess>();
 
+  constructor(private readonly options: { binary?: string; spawnProcess?: typeof spawn } = {}) {
+    if (options.binary) {
+      this.binary = options.binary;
+      this.checked = true;
+    }
+  }
   /** Why the preview is unavailable, or null when it works. */
   get unavailable(): string | null {
     this.ensure();
@@ -115,6 +123,7 @@ export class DetectorHost {
    * frame of interest is the last one.
    */
   run(frames: FramePair[], params: DetectorParams, planes: boolean): Promise<FrameResult[]> {
+    if (this.disposed) return Promise.reject(new Error('detector host is disposed'));
     this.ensure();
     const binary = this.binary;
     if (!binary) return Promise.reject(new Error(this.unavailable ?? 'no detector'));
@@ -135,21 +144,18 @@ export class DetectorHost {
 
     this.activeRuns += 1;
     return new Promise<FrameResult[]>((resolve, reject) => {
-      const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = (this.options.spawnProcess ?? spawn)(binary, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      this.children.add(child);
       const chunks: Buffer[] = [];
       let err = '';
       let bytes = 0;
       const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
-      child.stdout.on('data', (c: Buffer) => {
-        bytes += c.length;
-        if (bytes > 4 * 1024 * 1024) { child.kill('SIGKILL'); return; }
-        chunks.push(c);
-      });
-      child.stderr.on('data', (c: Buffer) => { err = (err + c.toString()).slice(-1000); });
-      child.stdin.on('error', (e) => { child.kill('SIGKILL'); reject(e); });
-      child.on('error', (e) => { clearTimeout(timer); reject(e); });
-      child.on('close', (code) => {
+      child.stdout.on('data', (c: Buffer) => chunks.push(c));
+      child.stderr.on('data', (c: Buffer) => { err += c.toString(); });
+      child.on('error', (e) => { clearTimeout(timer); this.children.delete(child); reject(e); });      child.on('close', (code) => {
         clearTimeout(timer);
+        this.children.delete(child);
+        if (this.disposed) return reject(new Error('detector run cancelled during shutdown'));
         if (code !== 0) return reject(new Error(`detector exited ${code}: ${err.slice(0, 200)}`));
         try {
           return resolve(parse(Buffer.concat(chunks), planes));
@@ -160,6 +166,19 @@ export class DetectorHost {
       child.stdin.end(input);
     }).finally(() => { this.activeRuns -= 1; });
   }
+
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    const children = [...this.children];
+    const closing = children.map((child) => waitForClose(child));
+    for (const child of children) child.kill('SIGKILL');
+    await Promise.all(closing);
+  }
+}
+
+function waitForClose(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => child.once('close', () => resolve()));
 }
 
 function parse(out: Buffer, planes: boolean): FrameResult[] {

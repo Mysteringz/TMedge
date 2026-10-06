@@ -483,7 +483,18 @@ test('direct: enabling the node listener without a key refuses to start', () => 
   assert.throws(() => loadEdgeConfig({ ALLOW_UNSIGNED: '1', NODE_PORT: '5211', WEB_PUSH_URLS: '' }), EnvError);
   const cfg = loadEdgeConfig({ TM_KEY: 'k', NODE_PORT: '5211', WEB_PUSH_URLS: '' });
   assert.equal(cfg.nodeHost, '127.0.0.1', 'loopback unless told otherwise: the tunnel is the way in');
-  assert.equal(loadEdgeConfig({ TM_KEY: 'k', WEB_PUSH_URLS: '' }).nodePort, 0, 'off by default');
+  const fileMode = loadEdgeConfig({ TM_KEY: 'k', WEB_PUSH_URLS: '' });
+  assert.equal(fileMode.nodePort, 0, 'off by default');
+  assert.equal(fileMode.persistenceMode, 'file');
+  assert.equal(fileMode.postgres, null);
+  const postgresMode = loadEdgeConfig({
+    TM_KEY: 'k', WEB_PUSH_URLS: '', PERSISTENCE_MODE: 'postgres', PGDATABASE: 'edge',
+    PG_RUNTIME_USER: 'edge_runtime', PG_RUNTIME_PASSWORD: 'runtime-secret',
+  });
+  assert.equal(postgresMode.persistenceMode, 'postgres');
+  assert.equal(postgresMode.postgres?.role, 'runtime');
+  assert.throws(() => loadEdgeConfig({ TM_KEY: 'k', WEB_PUSH_URLS: '', PERSISTENCE_MODE: 'postgres' }), EnvError);
+  assert.throws(() => loadEdgeConfig({ TM_KEY: 'k', WEB_PUSH_URLS: '', PERSISTENCE_MODE: 'other' }), EnvError);
   assert.throws(() => loadEdgeConfig({ TM_KEY: 'k', NODE_PORT: '5211', NODE_MSGS_PER_SEC: '0', WEB_PUSH_URLS: '' }), EnvError);
   assert.throws(() => loadEdgeConfig({ TM_KEY: 'k', NODE_TLS_CERT: 'x', WEB_PUSH_URLS: '' }), EnvError);
 });
@@ -497,4 +508,3 @@ test('direct: a listener that cannot bind is an error, not a quiet half-start', 
   await assert.rejects(clash.listen(), /EADDRINUSE/);
   await h.close();
 });
-

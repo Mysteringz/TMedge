@@ -1,3 +1,4 @@
+import { studentSessionVersion } from '../src/modules/student-auth/application/student-session-service.js';
 /**
  * Claims about the HKUMySeat portal: which table a group is sent to, and
  * what the portal does when a sensor is down.
@@ -164,7 +165,7 @@ test('the bare domain is a gateway, and every screen behind it needs a session',
     }
 
     await web.users.create('u3587219@connect.hku.hk', 'Chan Tai Man', 'a-long-enough-pin');
-    const cookie = `tm_session=${web.sessions.issue('u3587219@connect.hku.hk')}`;
+    const cookie = `tm_session=${web.sessions.issue('u3587219@connect.hku.hk', Date.now(), studentSessionVersion((await web.users.get('u3587219@connect.hku.hk'))!))}`;
     const warm = await fetch(`${base}/`, { headers: { cookie }, redirect: 'manual' });
     assert.equal(warm.headers.get('location'), '/dashboard/', 'a signed-in student goes straight to the dashboard');
     // Signed in, the sign-in screen is not a screen they need.
@@ -190,7 +191,8 @@ test('the bare domain is a gateway, and every screen behind it needs a session',
       assert.equal(out.headers.get('location'), to, `${from} still works`);
     }
   } finally {
-    await new Promise<void>((r) => web.server.close(() => r()));
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
   }
 });
 
@@ -221,7 +223,8 @@ test('sign-in answers the app in JSON, and will not forward you off-site', async
       assert.deepEqual(await out.json(), { redirect: '/dashboard/' }, `${next} is not somewhere we send people`);
     }
   } finally {
-    await new Promise<void>((r) => web.server.close(() => r()));
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
   }
 });
 

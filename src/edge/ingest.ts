@@ -142,6 +142,9 @@ export class Ingest extends EventEmitter {
   private bytesInWindow: { t: number; n: number }[] = [];
   private rejectTimes: number[] = [];
   private lastCommandSeq = 0;
+  private bound = false;
+  private closed = false;
+  private stopPromise: Promise<void> | null = null;
   private readonly replay: ReplayStore | null;
   private readonly durableTails = new Map<string, Promise<void>>();
   private readonly pendingNewNodes = new Set<string>();
@@ -160,22 +163,48 @@ export class Ingest extends EventEmitter {
     });
     this.socket.on('error', (err) => this.emit('error', err));
     this.socket.on('listening', () => {
+      this.bound = true;
       const a = this.socket.address();
       this.emit('listening', { address: a.address, port: a.port });
     });
   }
 
-  start(): void {
-    this.socket.bind(this.opts.port, this.opts.host);
+  start(): Promise<void> {
+    if (this.closed) return Promise.reject(new Error('ingest listener is closed'));
+    if (this.bound) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const onListening = () => {
+        this.off('error', onError);
+        resolve();
+      };
+      const onError = (error: Error) => {
+        this.off('listening', onListening);
+        reject(error);
+      };
+      this.once('listening', onListening);
+      this.once('error', onError);
+      try {
+        this.socket.bind(this.opts.port, this.opts.host);
+      } catch (error) {
+        this.off('listening', onListening);
+        this.off('error', onError);
+        reject(error);
+      }
+    });
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.closed = true;
     this.closing = true;
-    await new Promise<void>((resolve) => {
-      try { this.socket.close(() => resolve()); } catch { resolve(); }
-    });
-    // Stop admitting new transport data, then finish the already queued writes.
-    await Promise.allSettled([...this.durableTails.values()]);
+    this.stopPromise = (async () => {
+      await new Promise<void>((resolve) => {
+        try { this.socket.close(() => resolve()); } catch { resolve(); }
+      });
+      // Stop admitting new transport data, then finish the already queued writes.
+      await Promise.allSettled([...this.durableTails.values()]);
+    })();
+    return this.stopPromise;
   }
 
   /**

@@ -9,19 +9,21 @@ import type { ConsoleDetection, EdgeHealth, NodeHealth, OccupancySnapshot, RawFr
 import type { EdgeConfig } from './config.js';
 import { DwellMap } from './dwell.js';
 import { EdgeDetector } from './edgedetect.js';
-import { GatewayServer } from './gwlink.js';
-import { HostMonitor } from './health.js';
-import { Ingest } from './ingest.js';
-import { NodeServer } from './nodelink.js';
-import { readFileSync } from 'node:fs';
-import { DEFAULT_OCCUPANCY, OccupancyEngine, type OccupancyOptions } from './occupancy.js';
-import { REPORT_BACKGROUND_READY, REPORT_GLOBAL_SHIFT, type Raw, type Report, type Status } from './protocol.js';
-import { Publisher } from './publisher.js';
-import { Recorder } from './recorder.js';
-import { FirmwareStore } from './firmware.js';
 import { join } from 'node:path';
+import { HostMonitor } from './health.js';
+import type { Ingest } from './ingest.js';
+import type { OccupancyEngine } from './occupancy.js';
+import { REPORT_BACKGROUND_READY, REPORT_GLOBAL_SHIFT, type Raw, type Report, type Status } from './protocol.js';
+import type { Recorder } from './recorder.js';
+import type { FirmwareStore } from './firmware.js';
 import type { Registry } from './registry.js';
-import { Rollouts } from './rollout.js';
+import type { Rollouts } from './rollout.js';
+import type { GatewayServer } from './gwlink.js';
+import type { NodeServer } from './nodelink.js';
+import type { Publisher } from './publisher.js';
+import type { BoundedOccupancyHistorySink } from '../modules/occupancy-history/application/bounded-occupancy-history-sink.js';
+import type { DurableCommandOutcomes } from '../modules/nodes/application/durable-command-outcomes.js';
+import type { RolloutService } from '../modules/rollouts/application/rollout-service.js';
 import { StaticBackground } from './staticbg.js';
 
 export const EDGE_VERSION = '1.0.0';
@@ -41,6 +43,26 @@ export declare interface EdgeRuntime {
   on(event: 'raw', l: (msg: RawFrameMessage) => void): this;
   on(event: 'snapshot', l: (s: OccupancySnapshot) => void): this;
   on(event: 'rgb', l: (uid: string, jpeg: Buffer, at: number) => void): this;
+  off(event: 'report', l: (uid: string, dets: ConsoleDetection[], at: number) => void): this;
+  off(event: 'raw', l: (msg: RawFrameMessage) => void): this;
+  off(event: 'snapshot', l: (s: OccupancySnapshot) => void): this;
+  off(event: 'rgb', l: (uid: string, jpeg: Buffer, at: number) => void): this;
+}
+
+/** Dependencies supplied by the edge composition root. */
+export interface EdgeRuntimeServices {
+  ingest: Ingest;
+  engine: OccupancyEngine;
+  recorder: Recorder;
+  publisher: Publisher;
+  gateways: GatewayServer | null;
+  direct: NodeServer | null;
+  firmware: FirmwareStore;
+  rollouts: Rollouts;
+  occupancyHistory?: BoundedOccupancyHistorySink;
+  commandOutcomes?: DurableCommandOutcomes;
+  rolloutService?: RolloutService;
+  persistenceAvailable?: () => Promise<boolean>;
 }
 
 export class EdgeRuntime extends EventEmitter {
@@ -58,75 +80,40 @@ export class EdgeRuntime extends EventEmitter {
   readonly edgeDetectors = new Map<string, EdgeDetector>();
   private publishTimer: NodeJS.Timeout | null = null;
   private rolloutTimer: NodeJS.Timeout | null = null;
+  private stopPromise: Promise<void> | null = null;
+  private started = false;
   readonly firmware: FirmwareStore;
   readonly rollouts: Rollouts;
+  readonly occupancyHistory: BoundedOccupancyHistorySink | null;
+  readonly commandOutcomes: DurableCommandOutcomes | null;
+  readonly rolloutService: RolloutService;
+  readonly persistenceAvailable: (() => Promise<boolean>) | null;
   private lastRecordedMinute = -1;
   latest: OccupancySnapshot;
 
-  constructor(readonly cfg: EdgeConfig, readonly reg: Registry, occupancy: OccupancyOptions = DEFAULT_OCCUPANCY) {
+  get isStarted(): boolean {
+    return this.started;
+  }
+
+  constructor(readonly cfg: EdgeConfig, readonly reg: Registry, services: EdgeRuntimeServices = {} as EdgeRuntimeServices) {
     super();
-    this.engine = new OccupancyEngine(reg, cfg.edgeId, occupancy);
-    this.recorder = new Recorder(cfg.dataDir, cfg.recordRaw);
-    this.publisher = new Publisher(cfg.pushUrls, cfg.pushToken);
+    this.engine = services.engine;
+    this.recorder = services.recorder;
+    this.publisher = services.publisher;
+    this.ingest = services.ingest;
+    this.gateways = services.gateways;
+    this.direct = services.direct;
+    this.firmware = services.firmware;
+    this.rollouts = services.rollouts;
+    this.occupancyHistory = services.occupancyHistory ?? null;
+    this.commandOutcomes = services.commandOutcomes ?? null;
+    this.rolloutService = services.rolloutService ?? services.rollouts;
+    this.persistenceAvailable = services.persistenceAvailable ?? null;
     for (const f of reg.floors) this.dwell.set(f.id, new DwellMap(f.width, f.height));
-    this.ingest = new Ingest({
-      port: cfg.udpPort,
-      host: cfg.udpHost,
-      verify: { keys: cfg.keys, allowUnsigned: cfg.allowUnsigned, devices: cfg.devices },
-      commandKey: cfg.keys[0] ?? null,
-      cursorPath: join(cfg.dataDir, 'replay.jsonl'),
-      routeViaGateway: (address, buf) => this.gateways?.sendDownlink(address, buf) ?? false,
-    });
-    // Access gateways only if a token is configured: an unauthenticated
-    // uplink port would let anyone on the tailnet inject datagrams (still
-    // signed per node, but a flood is a flood).
-    this.gateways = cfg.gatewayPort > 0 && (cfg.gatewayToken || cfg.gatewayKeys)
-      ? new GatewayServer({
-        port: cfg.gatewayPort, host: '0.0.0.0', helloPath: join(cfg.dataDir, 'gateway-hellos.json'), allowRawTcp: cfg.gatewayAllowRawTcp ?? false, token: cfg.gatewayToken ?? Buffer.alloc(0), tokens: cfg.gatewayKeys ? id => cfg.gatewayKeys!.tokens(id) : undefined, edgeId: cfg.edgeId,
-        onUplink: (datagram, source) => this.ingest.handleDurable(datagram, source),
-        onImageReady: (gatewayId, result) => this.rollouts.onImageReady(gatewayId, result),
-        log: (m) => console.log(`[edge] ${m}`),
-      })
-      : null;
-    // Firmware uploads, builds and rollouts. The console drives these; the
-    // runtime owns them so a rollout survives the console being closed.
-    this.firmware = new FirmwareStore(join(cfg.dataDir, 'firmware'), { log: (m) => console.log(`[edge] ${m}`) });
-    this.rollouts = new Rollouts({
-      image: (buildId) => {
-        const build = this.firmware.get(buildId);
-        const bytes = this.firmware.bytes(buildId);
-        return build && bytes ? { bytes, sha256: build.sha256, size: build.size, version: build.version } : null;
-      },
-      nodes: () => this.nodes().filter((n) => n.registered).map((n) => ({
-        uid: n.uid, label: n.label, floorId: n.floorId, address: n.address, transport: n.transport, online: n.online,
-        encryptionRequired: !!this.ingest.links.get(n.uid)?.secureId || !!cfg.devices?.keys(n.uid).length,
-      })),
-      sendImageToGateway: (id, meta, bytes) => this.gateways?.sendImage(id, meta, bytes) ?? false,
-      sendOta: (uid, image) => this.ingest.sendOta(uid, image),
-      onNodeDone: (uid) => this.direct?.revokeGrants(uid),
-      directPort: cfg.consolePort,
-      log: (m) => console.log(`[edge] ${m}`),
-    });
-    this.direct = cfg.nodePort > 0
-      ? new NodeServer({
-        host: cfg.nodeHost,
-        port: cfg.nodePort,
-        limits: cfg.nodeLimits,
-        keys: cfg.keys,
-        devices: cfg.devices,
-        isRegistered: (uid) => this.reg.nodes.has(uid),
-        ingest: (datagram, route) => this.ingest.handleDurable(datagram, route),
-        dropRoute: (uid, sessionId) => void this.ingest.dropDirectRoute(uid, sessionId),
-        image: (buildId) => this.firmware.bytes(buildId),
-        otaApproved: (uid, buildId) => this.rollouts.wantsDownload(uid, buildId),
-        tls: cfg.nodeTls ? { cert: readFileSync(cfg.nodeTls.certPath), key: readFileSync(cfg.nodeTls.keyPath) } : undefined,
-        log: (m) => console.log(`[edge] ${m}`),
-      })
-      : null;
     this.ingest.on('report', (p, _a, at) => this.onReport(p, at));
     this.ingest.on('raw', (p, _a, at) => this.onRaw(p, at));
     this.ingest.on('status', (p, _a, at) => this.onStatus(p, at));
-    this.ingest.on('ota', (p) => this.rollouts.onOtaStatus(p.uid, p));
+    this.ingest.on('ota', (p) => setImmediate(() => this.rollouts.onOtaStatus(p.uid, p)));
     this.latest = this.engine.snapshot(Date.now());
   }
 
@@ -135,27 +122,46 @@ export class EdgeRuntime extends EventEmitter {
    * configured and cannot bind must stop the service, not leave an edge that
    * looks healthy while every direct node is shut out.
    */
-  async startNodeListener(): Promise<number | null> {
-    return this.direct ? this.direct.listen() : null;
-  }
-
   start(): void {
-    this.ingest.start();
+    if (this.started || this.stopPromise) return;
+    this.started = true;
     // A rollout moves on its own: nodes report, gateways take delivery, and
     // stalled nodes have to time out even when nobody is watching a console.
-    this.rolloutTimer = setInterval(() => this.rollouts.tick(), 1000);
+    this.rolloutTimer = setInterval(() => {
+      const tick = this.rolloutService.tick?.();
+      if (tick instanceof Promise) void tick.catch(() => console.error('[edge] rollout persistence unavailable; dispatch paused'));
+      else if (!this.rolloutService.tick) this.rollouts.tick();
+    }, 1000);
     this.rolloutTimer.unref();
-    void this.gateways?.listen().then((p) => console.log(`[edge] access gateways: TCP 0.0.0.0:${p} (TMGW v1)`));
     this.publishTimer = setInterval(() => this.tick(Date.now()), this.cfg.publishMs);
+    this.publishTimer.unref();
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.started = false;
     if (this.publishTimer) clearInterval(this.publishTimer);
     if (this.rolloutTimer) clearInterval(this.rolloutTimer);
-    await this.ingest.stop();
-    await this.gateways?.close();
-    await this.direct?.close();
-    await this.recorder.close();
+    this.publishTimer = null;
+    this.rolloutTimer = null;
+    this.stopPromise = this.stopComponents();
+    return this.stopPromise;
+  }
+
+  private async stopComponents(): Promise<void> {
+    const transportResults = await Promise.allSettled([
+      this.ingest.stop(),
+      this.gateways?.close() ?? Promise.resolve(),
+      this.direct?.close() ?? Promise.resolve(),
+    ]);
+    const drainResults = await Promise.allSettled([
+      this.recorder.close(),
+      this.occupancyHistory?.dispose() ?? Promise.resolve(),
+      this.commandOutcomes?.dispose() ?? Promise.resolve(),
+      this.rolloutService.dispose?.() ?? Promise.resolve(),
+    ]);
+    const failure = [...transportResults, ...drainResults].find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
   tick(now: number): OccupancySnapshot {
@@ -165,6 +171,7 @@ export class EdgeRuntime extends EventEmitter {
     if (minute !== this.lastRecordedMinute) {
       this.lastRecordedMinute = minute;
       this.recorder.snapshot(this.latest);
+      this.occupancyHistory?.enqueue(this.latest);
     }
     this.emit('snapshot', this.latest);
     return this.latest;
@@ -253,6 +260,7 @@ export class EdgeRuntime extends EventEmitter {
     const i = this.infoFor(p.uid);
     i.status = p;
     i.statusAt = at;
+    this.commandOutcomes?.observeStatus(p.uid, p.lastCmd);
   }
 
   lastRaw(uid: string): RawFrameMessage | null {
@@ -349,7 +357,12 @@ export class EdgeRuntime extends EventEmitter {
       rejectReasons: Object.fromEntries(this.ingest.rejectReasons),
       unknownSources: [...this.ingest.rejectedSources.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 20),
       publish: this.publisher.status,
-      recorder: { dir: this.recorder.dir, bytesToday: this.recorder.bytesToday(), rawEnabled: this.recorder.rawEnabled },
+      recorder: {
+        dir: this.recorder.dir,
+        bytesToday: this.recorder.bytesToday(),
+        rawEnabled: this.recorder.rawEnabled,
+        health: this.recorder.health(),
+      },
       udp: { port: this.cfg.udpPort, iface: this.cfg.udpHost },
       gateways: this.gateways?.gateways() ?? [],
       gatewayPort: this.gateways ? this.cfg.gatewayPort : null,

@@ -12,7 +12,8 @@ import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { DEFAULT_SEGMENT, EdgeDetector, segment } from '../src/edge/edgedetect.js';
 import { buildRaw, buildReport, GRID_SIZE, parsePacket, REPORT_BACKGROUND_READY, type Raw } from '../src/edge/protocol.js';
 import { buildRegistry, ConfigError } from '../src/edge/registry.js';
-import { EdgeRuntime } from '../src/edge/runtime.js';
+import { createEdgeRuntime } from '../src/edge/composition-root.js';
+import type { EdgeRuntime } from '../src/edge/runtime.js';
 import { DEFAULT_STATIC_BACKGROUND, StaticBackground, type StaticBackgroundOptions } from '../src/edge/staticbg.js';
 import { identity, KEY, nodesJson, personAt, siteJson } from './fixtures.js';
 
@@ -167,7 +168,7 @@ function runtime(detector: 'node' | 'edge', prepare?: (dataDir: string) => void)
   const rig = n.nodes.find((x) => x.uid === RIG);
   assert.ok(rig);
   rig.detector = detector;
-  return new EdgeRuntime(cfg, buildRegistry(siteJson(), n));
+  return createEdgeRuntime(cfg, buildRegistry(siteJson(), n));
 }
 
 function d1(rt: EdgeRuntime) {

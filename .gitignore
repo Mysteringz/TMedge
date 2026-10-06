@@ -14,7 +14,7 @@ data/
 __pycache__/
 *.pyc
 public-algo/
-
+docs/superpowers/
 # macOS and editors leave "name 2.ext" copies behind; they compiled quietly
 # once, as a second copy of a file whose whole point is that there is one.
 # Scoped to the sources that are compiled or run by the tests: the old blanket

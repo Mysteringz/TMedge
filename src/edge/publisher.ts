@@ -11,6 +11,7 @@
  * boundary -- see src/shared/types.ts.
  */
 import type { OccupancySnapshot } from '../shared/types.js';
+import { operationalLog } from '../shared/logging/operational-logger.js';
 
 export interface PublishTarget {
   target: string;
@@ -44,13 +45,17 @@ export class Publisher {
           // Do not buffer an unbounded error body or expose its contents in the console.
           if (!res.ok) { await res.body?.cancel(); throw new Error(`HTTP ${res.status}`); }
           await res.body?.cancel();
+          const recovered = !st.ok;
           st.ok = true;
           st.lastOkAt = Date.now();
           st.lastError = null;
+          if (recovered) operationalLog('snapshot_publisher.state', { component: 'snapshot-publisher', outcome: 'recovered' });
         })
         .catch((err: unknown) => {
+          const wasHealthy = st.ok;
           st.ok = false;
           st.lastError = err instanceof Error ? err.message : String(err);
+          if (wasHealthy) operationalLog('snapshot_publisher.state', { component: 'snapshot-publisher', outcome: 'degraded' });
         })
         .finally(() => this.inFlight.delete(st.target));
     }
