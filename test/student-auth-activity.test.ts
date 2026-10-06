@@ -15,7 +15,8 @@ import type { StudentActivityEvent, StudentActivityRepository } from '../src/mod
 import { ApplicationError } from '../src/modules/shared/application/contracts.js';
 
 async function start(options: { failActivity?: boolean; unavailable?: boolean; beforeGet?: () => Promise<void> } = {}) {
-  const accounts = new JsonStudentAccountRepository(join(mkdtempSync(join(tmpdir(), 'student-activity-')), 'users.json'), ['connect.hku.hk']);
+  const usersPath = join(mkdtempSync(join(tmpdir(), 'student-activity-')), 'users.json');
+  const accounts = new JsonStudentAccountRepository(usersPath, ['connect.hku.hk']);
   const events: StudentActivityEvent[] = [];
   const adapter: IStudentAccountRepository = {
     count: async () => accounts.count(),
@@ -39,7 +40,7 @@ async function start(options: { failActivity?: boolean; unavailable?: boolean; b
   });
   const web = createWebApp({
     port: 0, host: '127.0.0.1', pushToken: 'test-edge-token-long-enough', sessionSecret: Buffer.from('s'.repeat(40)),
-    usersPath: 'unused.json', allowedDomains: ['connect.hku.hk'], signupOpen: true,
+    usersPath, allowedDomains: ['connect.hku.hk'], signupOpen: true,
     cookieSecure: false, trustProxy: false, staleMs: 30_000, studentPersistenceMode: 'postgres',
   }, { accounts: adapter, activity });
   await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));

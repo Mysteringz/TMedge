@@ -24,7 +24,7 @@ async function start(t: { after(fn: () => Promise<void>): void }, failActivity =
     prune: async () => 0,
   });
   const web = createWebApp({ port: 0, host: '127.0.0.1', pushToken: 'test-edge-token-long-enough',
-    sessionSecret: Buffer.from('s'.repeat(40)), usersPath: 'unused.json', allowedDomains: ['example.edu'],
+    sessionSecret: Buffer.from('s'.repeat(40)), usersPath: join(directory, 'users.json'), allowedDomains: ['example.edu'],
     signupOpen: true, cookieSecure: false, trustProxy: false, staleMs: 30_000, studentPersistenceMode: fileMode ? 'file' : 'postgres',
   }, { accounts, ...(fileMode ? {} : { activity }) });
   await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
