@@ -55,7 +55,9 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
   if (!publishers && pushToken.length < 16) throw new Error('WEB_PUSH_TOKEN must be set (16+ chars): it is how edges authenticate their snapshots');
   const secret = env.SESSION_SECRET ?? '';
   if (secret.length < 32) throw new Error('SESSION_SECRET must be set (32+ chars): it signs login sessions');
-  const port = Number(env.WEB_PORT ?? 3000);
+  // 8080: what the README, docker-compose, the edge's WEB_PUSH_URLS and the
+  // production units all assume. An unset (or empty) WEB_PORT means that port.
+  const port = Number(env.WEB_PORT || 8080);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error('WEB_PORT must be an integer 1..65535');
   const staleMs = Number(env.STALE_MS ?? 30_000);
   if (!Number.isSafeInteger(staleMs) || staleMs < 1000 || staleMs > 3_600_000) throw new Error('STALE_MS must be an integer 1000..3600000');
