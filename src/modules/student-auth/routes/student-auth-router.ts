@@ -30,11 +30,11 @@ export function createStudentAuthRouter(dependencies: StudentAuthRouterDependenc
   router.post('/signup', body, sameOrigin, createSignupHandler(dependencies, limiter));
   router.post('/logout', body, sameOrigin, asyncHandler(async (req: Request, res: Response) => {
     const token = parseCookies(req.headers.cookie)[COOKIE];
+    const email = userOf(req, dependencies.sessions);
     dependencies.sessions.revoke(token);
     dependencies.onLogout?.(token);
     res.clearCookie(COOKIE, { path: '/' });
     dependencies.noStore(res);
-    const email = userOf(req, dependencies.sessions);
     const user = email ? await findActivityUser(dependencies, email) : undefined;
     recordActivity(dependencies, 'logout', 'succeeded', user?.id);
     res.json({ redirect: '/login/' });
@@ -49,6 +49,7 @@ export function createStudentAuthRouter(dependencies: StudentAuthRouterDependenc
 /** Builds the shared browser/API session guard while preserving cookie renewal. */
 export function createRequireStudent(dependencies: StudentAuthRouterDependencies): RequestHandler {
   return asyncHandler(async (req, res, next) => {
+    dependencies.noStore(res);
     const detail = dependencies.sessions.detail(parseCookies(req.headers.cookie)[COOKIE]);
     const user = detail ? await dependencies.accounts.get(detail.email) : undefined;
     if (detail && user && detail.version === studentSessionVersion(user)) {
@@ -70,14 +71,14 @@ export function userOf(req: Request, sessions: Sessions): string | null {
 function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLimiter): RequestHandler {
   return asyncHandler(async (req, res) => {
     deps.noStore(res);
-    if (!limiter.allow(req.ip ?? 'unknown')) {
-      recordActivity(deps, 'login', 'rate-limited');
-      return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
-    }
     const input = authInput(req.body);
     if (!input) {
       recordActivity(deps, 'login', 'failed');
       return res.status(400).json({ error: 'email and password must be strings' });
+    }
+    if (!limiter.allow(req.ip ?? 'unknown')) {
+      recordActivity(deps, 'login', 'rate-limited');
+      return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
     }
     const { email: raw, password, next } = input;
     if (deps.humanCheck && !await deps.humanCheck(String((req.body as Record<string, unknown>)['cf-turnstile-response'] ?? ''), 'login', req.ip)) {
@@ -100,14 +101,14 @@ function createSignupHandler(deps: StudentAuthRouterDependencies, limiter: RateL
   return asyncHandler(async (req, res) => {
     deps.noStore(res);
     if (!deps.signupOpen) return res.status(403).json({ error: 'Sign-up is closed.' });
-    if (!limiter.allow(req.ip ?? 'unknown')) {
-      recordActivity(deps, 'signup', 'rate-limited');
-      return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
-    }
     const input = authInput(req.body);
     if (!input) {
       recordActivity(deps, 'signup', 'failed');
       return res.status(400).json({ error: 'email, password and name must be strings' });
+    }
+    if (!limiter.allow(req.ip ?? 'unknown')) {
+      recordActivity(deps, 'signup', 'rate-limited');
+      return res.status(429).json({ error: 'Too many attempts. Wait a few minutes and try again.' });
     }
     const { email: raw, name, password, next } = input;
     if (deps.humanCheck && !await deps.humanCheck(String((req.body as Record<string, unknown>)['cf-turnstile-response'] ?? ''), 'signup', req.ip)) {
@@ -142,7 +143,8 @@ function authInput(body: unknown): { email: string; password: string; name: stri
   const fields = body as Record<string, unknown>;
   if ((fields.email !== undefined && typeof fields.email !== 'string') ||
       (fields.password !== undefined && typeof fields.password !== 'string') ||
-      (fields.name !== undefined && typeof fields.name !== 'string')) return null;
+      (fields.name !== undefined && typeof fields.name !== 'string') ||
+      (typeof fields.password === 'string' && fields.password.length > 1024)) return null;
   return { email: typeof fields.email === 'string' ? fields.email : '',
     password: typeof fields.password === 'string' ? fields.password : '',
     name: typeof fields.name === 'string' ? fields.name : '', next: fields.next };
@@ -159,7 +161,7 @@ async function setSession(req: Request, res: Response, email: string, deps: Stud
 export function sameOrigin(req: Request, res: Response, next: NextFunction): void {
   const origin = req.get('origin');
   let allowed = true;
-  try { allowed = !origin || new URL(origin).host === req.get('host'); } catch { allowed = false; }
+  try { allowed = !origin || (new URL(origin).host === req.get('host') && new URL(origin).protocol === `${req.protocol}:`); } catch { allowed = false; }
   if (!allowed) {
     res.status(403).json({ error: 'cross-origin post refused' });
     return;

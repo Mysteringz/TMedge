@@ -259,8 +259,7 @@ test('failed builds unlock their upload for correction and a retry', async () =>
   store.discard(up);
 });
 
-test('the firmware compiler cannot read private files outside its source and SDKs', async () => {
-  if (process.platform !== 'linux') return;
+test('firmware store refuses inline compilation even when a host compiler is configured', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
   const install = join(dir, 'compiler');
   mkdirSync(join(install, 'bin'), { recursive: true });
@@ -268,17 +267,15 @@ test('the firmware compiler cannot read private files outside its source and SDK
   const secret = 'fixture-private-contents';
   writeFileSync(privatePath, secret);
   const runner = join(install, 'bin', 'pio');
-  writeFileSync(runner, '#!/bin/sh\nexec /usr/bin/g++ -c src/main.cpp -o /tmp/main.o\n', { mode: 0o700 });
+  const invoked = join(dir, 'compiler-invoked');
+  writeFileSync(runner, `#!/bin/sh\ntouch '${invoked}'\n`, { mode: 0o700 });
   const store = new FirmwareStore(join(dir, 'images'), { pio: runner });
   const up = store.startUpload('tester');
   store.addFile(up, 'platformio.ini', Buffer.from('[env:tmflash]'));
   store.addFile(up, 'src/main.cpp', Buffer.from(`#include "${privatePath}"\n`));
-  await assert.rejects(store.build(up, 'tester'), (error: unknown) => {
-    const log = (error as FirmwareError & { log?: string[] }).log?.join('\n') ?? '';
-    assert.match(log, /No such file/);
-    assert.ok(!log.includes(secret));
-    return true;
-  });
+  await assert.rejects(store.build(up, 'tester'), /isolated firmware builds require the configured build worker/);
+  assert.equal(existsSync(invoked), false, 'the edge never invokes uploaded build scripts on the host');
+  assert.equal(store.list().length, 0);
 });
 
 test('builds survive a restart of the edge, and a missing image is not offered', () => {

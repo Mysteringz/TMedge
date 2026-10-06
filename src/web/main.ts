@@ -137,7 +137,7 @@ export function createWebApp(cfg: WebConfig, options: {
     .replaceAll('{{google}}', google ? 'on' : '');
   const app = createExpressApp(cfg);
   const cfSource = cfg.turnstile ? ' https://challenges.cloudflare.com' : '';
-  const csp = `default-src 'self'; script-src 'self'${cfSource}; frame-src 'self'${cfSource}; img-src 'self' data:; ` +
+  const csp = `default-src 'self'; script-src 'self'${cfSource}; frame-src ${cfg.turnstile ? `'self'${cfSource}` : "'none'"}; img-src 'self' data:; ` +
     "style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; " +
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
   app.use((_req, res, next) => {
@@ -148,6 +148,7 @@ export function createWebApp(cfg: WebConfig, options: {
     });
     next();
   });
+  app.get('/index.html', (req, res) => redirectBySession(req, res, sessions, noStore));
   app.get('/healthz', (_req, res) => res.json({ ok: true, edges: store.edges() }));
   app.get('/readyz', async (_req, res) => {
     try {

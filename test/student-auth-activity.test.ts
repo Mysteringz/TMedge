@@ -1,3 +1,4 @@
+import { studentSessionVersion } from '../src/modules/student-auth/application/student-session-service.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
@@ -13,12 +14,13 @@ import type { IStudentAccountRepository } from '../src/modules/student-auth/repo
 import type { StudentActivityEvent, StudentActivityRepository } from '../src/modules/student-auth/repositories/student-activity-repository.js';
 import { ApplicationError } from '../src/modules/shared/application/contracts.js';
 
-async function start(options: { failActivity?: boolean; unavailable?: boolean } = {}) {
+async function start(options: { failActivity?: boolean; unavailable?: boolean; beforeGet?: () => Promise<void> } = {}) {
   const accounts = new JsonStudentAccountRepository(join(mkdtempSync(join(tmpdir(), 'student-activity-')), 'users.json'), ['connect.hku.hk']);
   const events: StudentActivityEvent[] = [];
   const adapter: IStudentAccountRepository = {
     count: async () => accounts.count(),
     get: async (email) => {
+      await options.beforeGet?.();
       if (options.unavailable) throw new ApplicationError('unavailable', 'Student account storage unavailable');
       return accounts.get(email);
     },
@@ -118,7 +120,7 @@ test('HTTP and WebSocket account checks await storage and fail closed', async ()
     assert.equal((await fetch(`${web.base}/api/occupancy`, { headers: { cookie: missing } })).status, 401);
     assert.equal(await rejectedSocket(web.base, missing), 401);
     const user = await web.accounts.create('known@connect.hku.hk', 'Known', 'correct horse battery');
-    const cookie = `tm_session=${web.sessions.issue(user.email)}`;
+    const cookie = `tm_session=${web.sessions.issue(user.email, Date.now(), studentSessionVersion(user))}`;
     const client = new WebSocket(web.base.replace('http:', 'ws:') + '/ws', { headers: { cookie } });
     await new Promise<void>((resolve, reject) => { client.once('message', () => resolve()); client.once('error', reject); });
     client.terminate();
@@ -220,4 +222,21 @@ test('rejected WebSocket upgrades release half-open client connections', async (
       assert.equal(count, 0);
     } finally { client.destroy(); await web.close(); }
   }
+});
+
+test('logout revokes access before a delayed account lookup completes', async () => {
+  let release!: () => void;
+  let markLookup!: () => void;
+  const lookup = new Promise<void>(resolve => { markLookup = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const web = await start({ beforeGet: async () => { markLookup(); await gate; } });
+  const user = await web.accounts.create('delayed@connect.hku.hk', 'Student', 'correct horse battery');
+  const token = web.sessions.issue(user.email, Date.now(), studentSessionVersion(user));
+  const logout = post(web.base, 'logout', {}, `tm_session=${token}`);
+  try {
+    await lookup;
+    assert.equal(web.sessions.read(token), null, 'access ends while account storage is still pending');
+    release();
+    assert.equal((await logout).status, 200);
+  } finally { release(); await logout; await web.close(); }
 });

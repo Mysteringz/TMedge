@@ -18,7 +18,7 @@ import type { Request } from 'express';
 import { AlgoUsers, loadAlgoAuthConfig } from '../src/algo/auth.js';
 import { startAlgo } from '../src/algo/server.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
-import { consoleMovedTo, createConsole, startConsole } from '../src/edge/console.js';
+import { consoleMovedTo, createConsole, startConsole, stopConsole } from '../src/edge/console.js';
 import { buildRegistry } from '../src/edge/registry.js';
 import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
@@ -52,10 +52,15 @@ async function boot() {
   const rt = runtime();
   const core = createConsole(rt);
   const consoleServer = startConsole(rt, core, { uiMovedTo: consoleMovedTo(8091) });
-  const { server } = startAlgo(rt, 0, '127.0.0.1',
+  const handle = startAlgo(rt, 0, '127.0.0.1',
     loadAlgoAuthConfig({ SESSION_SECRET: 'x'.repeat(40), ALGO_USERS_FILE: usersPath }, 'admin-pass'), core);
+  const { server } = handle;
   const [consoleBase, algoBase] = await Promise.all([listening(consoleServer), listening(server)]);
-  running.push(async () => { consoleServer.close(); server.close(); await rt.stop(); });
+  running.push(async () => {
+    await Promise.all([stopConsole(consoleServer), handle.dispose()]);
+    await Promise.all([new Promise<void>(resolve => consoleServer.close(() => resolve())), new Promise<void>(resolve => server.close(() => resolve()))]);
+    await rt.stop();
+  });
   const login = await fetch(`${algoBase}/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: 'alice', password: 'correct horse battery' }),

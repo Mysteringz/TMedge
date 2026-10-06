@@ -7,6 +7,7 @@
  * the Cloudflare Access in front of it -- never on the tier students can
  * reach.
  */
+import type { ConsoleDetection, RawFrameMessage } from '../shared/types.js';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
@@ -94,7 +95,7 @@ export function startAlgo(
   let pipeline: Pipeline = loadPipeline(dir, 'default') ?? defaultPipeline(pickUid());
   // Nothing has been heard from anyone at start-up, so revisit the choice once
   // frames have had a moment to arrive.
-  setTimeout(() => {
+  const pickTimer = setTimeout(() => {
     if (algo.frames.list(pipeline.uid).length === 0) {
       const better = pickUid();
       if (better && better !== pipeline.uid) {
@@ -107,30 +108,33 @@ export function startAlgo(
 
   // Frames arrive whether or not anyone is looking; the ring is what makes
   // stepping backwards possible at all.
-  rt.on('raw', (msg) => {
+  const onRaw = (msg: RawFrameMessage) => {
     if (!rt.reg.nodes.has(msg.uid)) return;
     algo.frames.addRaw(msg);
     const node = rt.reg.nodes.get(msg.uid);
     if (node && !node.simulated) spool?.raw(msg, { floorId: node.floorId, pose: node.pose, detector: node.detector });
     scheduleRun('frame');
-  });
+  };
+  rt.on('raw', onRaw);
   // Every RGB frame is offered to the recorder, which keeps it only when a
   // thermal frame of the same moment exists to pair it with.
-  rt.on('rgb', (uid, jpeg, at) => {
+  const onRgb = (uid: string, jpeg: Buffer, at: number) => {
     const node = rt.reg.nodes.get(uid);
     // No pose means no orientation to record the pair against.
     if (!node?.pose) return;
     pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
-  });
+  };
+  rt.on('rgb', onRgb);
 
-  rt.on('report', (uid, dets) => {
+  const onReport = (uid: string, dets: ConsoleDetection[]) => {
     if (!rt.reg.nodes.has(uid)) return;
     // The report's own frame number, not the last RAW's: they are only the
     // same when a RAW happened to arrive for that frame, and the whole point
     // of the pairing is to know when it did.
     const report = rt.lastReport(uid);
     if (report) algo.frames.addReport(uid, report.frame, dets, report.flags, report.boot);
-  });
+  };
+  rt.on('report', onReport);
 
   // Turnstile is a script plus an iframe from Cloudflare; allow exactly that
   // origin, and only when it is switched on. Fonts come from Google, as on
@@ -519,15 +523,28 @@ export function startAlgo(
     return res.json({ ok: true, live, frame: heldFrame });
   });
 
-  setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000).unref();
+  const stateTimer = setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000).unref();
 
+  let disposal: Promise<void> | undefined;
   if (options.listen !== false) server.listen(port, host);
   return {
     server,
     algo,
-    dispose: async () => {
+    // Release owned feeds and timers once, including during startup rollback.
+    dispose: () => {
+      if (disposal) return disposal;
+      clearTimeout(pickTimer);
+      clearInterval(stateTimer);
+      rt.off('raw', onRaw);
+      rt.off('rgb', onRgb);
+      rt.off('report', onReport);
       broker.stop();
-      await Promise.all([algo.dispose(), consoleCore?.dispose()]);
+      for (const ws of wss.clients) ws.terminate();
+      disposal = Promise.all([
+        algo.dispose(), consoleCore?.dispose(),
+        new Promise<void>(resolve => wss.close(() => resolve())),
+      ]).then(() => undefined);
+      return disposal;
     },
   };
 }

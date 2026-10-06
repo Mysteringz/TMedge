@@ -1,3 +1,5 @@
+import { WebSocket } from 'ws';
+import { AlgoUsers } from '../src/algo/auth.js';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, readFileSync } from 'node:fs';
@@ -10,6 +12,9 @@ import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { FirmwareBuildJobs } from '../src/modules/firmware/application/firmware-build-jobs.js';
 import { buildRegistry } from '../src/edge/registry.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
+
+process.env.SESSION_SECRET = 'x'.repeat(40);
+process.env.ALGO_USERS_FILE = join(mkdtempSync(join(tmpdir(), 'lifecycle-users-')), 'users.json');
 
 function config(): EdgeConfig {
   return {
@@ -95,15 +100,18 @@ test('edge shutdown closes live console sockets, stops a build, and flushes reco
   });
   const cfg = config();
   cfg.algoPort = await availablePort();
+  await new AlgoUsers(process.env.ALGO_USERS_FILE!).add('alice', 'correct horse battery');
   const app = createEdgeApplication(cfg, registry(), { firmwareBuildJobs: jobs });
   await app.start();
   assert.equal(app.runtime.isStarted, true);
   assert.ok(app.debuggerServer?.server.listening);
-  const port = (app.consoleServer.address() as AddressInfo).port;
+  const port = cfg.algoPort;
   const base = `http://127.0.0.1:${port}`;
-  const auth = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
-  const token = ((await (await fetch(`${base}/api/ws-token`, { headers: { authorization: auth } })).json()) as { token: string }).token;
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
+  const login = await fetch(base + '/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'alice', password: 'correct horse battery' }) });
+  const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+  const token = ((await (await fetch(`${base}/console-app/api/ws-token`, { headers: { cookie } })).json()) as { token: string }).token;
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/console-app/ws?token=${encodeURIComponent(token)}`, { headers: { cookie } });
   await new Promise<void>((resolve, reject) => {
     socket.addEventListener('open', () => resolve(), { once: true });
     socket.addEventListener('error', () => reject(new Error('console websocket failed to connect')), { once: true });

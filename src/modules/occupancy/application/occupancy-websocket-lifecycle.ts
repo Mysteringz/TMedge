@@ -1,3 +1,4 @@
+import { sameOrigin } from '../../../shared/http.js';
 import type { IncomingMessage, Server } from 'node:http';
 import { parseCookies, Sessions, studentSessionVersion } from '../../student-auth/application/student-session-service.js';
 import type { IStudentAccountRepository } from '../../student-auth/repositories/student-account-repository.js';
@@ -65,6 +66,10 @@ export class OccupancyWebSocketLifecycle {
   private async authorizeUpgrade(request: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {
     const timer = setTimeout(() => socket.destroy(), 5000);
     try {
+      if (!sameOrigin(request)) {
+        socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy());
+        return;
+      }
       const token = parseCookies(request.headers.cookie)[COOKIE];
       const detail = this.sessions.detail(token);
       const user = detail ? await this.accounts.get(detail.email) : undefined;
@@ -75,6 +80,7 @@ export class OccupancyWebSocketLifecycle {
       if (this.disposed || socket.destroyed) return;
       this.server.handleUpgrade(request, socket, head, (client) => {
         this.clients.set(client, { email: detail.email, token: token! });
+        client.on('error', () => client.terminate());
         client.on('close', () => this.clients.delete(client));
         client.send(JSON.stringify(this.store.view()));
       });

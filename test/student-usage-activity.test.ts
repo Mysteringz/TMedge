@@ -1,3 +1,4 @@
+import { studentSessionVersion } from '../src/modules/student-auth/application/student-session-service.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -34,7 +35,7 @@ async function start(t: { after(fn: () => Promise<void>): void }, failActivity =
     rmSync(directory, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
-  const cookie = `tm_session=${web.sessions.issue(user.email)}`;
+  const cookie = `tm_session=${web.sessions.issue(user.email, Date.now(), studentSessionVersion(user))}`;
   const snapshot = new OccupancyEngine(makerspace(), 'usage-test').snapshot(Date.now());
   snapshot.floors = snapshot.floors.filter((floor) => floor.id === 'iw-maker-a');
   const floor = snapshot.floors[0]!;

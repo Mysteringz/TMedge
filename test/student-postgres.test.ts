@@ -242,7 +242,7 @@ async function assertHttp(source: DataSource): Promise<void> {
   const usersPath = join(directory, 'never-written-users.json');
   const web = await createConfiguredWebApp(loadWebConfig({ ...process.env, STUDENT_PERSISTENCE_MODE: 'postgres',
     SESSION_SECRET: 's'.repeat(40), WEB_PUSH_TOKEN: 't'.repeat(20), ALLOWED_EMAIL_DOMAINS: 'example.edu',
-    USERS_FILE: usersPath, SIGNUP_OPEN: '1', COOKIE_SECURE: '0', WEB_PORT: '0', WEB_HOST: '127.0.0.1' }));
+    USERS_FILE: usersPath, SIGNUP_OPEN: '1', COOKIE_SECURE: '0', WEB_PORT: '8080', WEB_HOST: '127.0.0.1' }));
   try {
     await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;

@@ -1,3 +1,4 @@
+import { WebSocket } from 'ws';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -73,13 +74,15 @@ test('algo debugger preserves authenticated APIs and owns its WebSocket lifecycl
     assert.match(audit, /"action":"revert"/);
 
     const token = ((await (await fetch(`${base}/api/ws-token`, { headers: { cookie } })).json()) as { token: string }).token;
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`, { headers: { cookie } });
     const initial = await new Promise<{ type: string; live: boolean }>((resolve, reject) => {
       socket.addEventListener('message', (event) => resolve(JSON.parse(String(event.data)) as { type: string; live: boolean }), { once: true });
       socket.addEventListener('error', () => reject(new Error('algo WebSocket failed to connect')), { once: true });
     });
     assert.deepEqual(initial, { type: 'pipeline_state', pipeline: current.pipeline, live: true });
+    const closed = new Promise<void>(resolve => socket.once('close', () => resolve()));
     await handle.dispose();
+    await closed;
     assert.equal(socket.readyState, WebSocket.CLOSED);
     assert.equal(runtime.listenerCount('raw'), 0);
     assert.equal(runtime.listenerCount('rgb'), 0);

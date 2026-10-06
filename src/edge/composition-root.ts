@@ -16,7 +16,7 @@ import { FirmwareStore } from './firmware.js';
 import type { EdgeConfig } from './config.js';
 import type { Registry } from './registry.js';
 import { EdgeRuntime } from './runtime.js';
-import { startConsole, stopConsole } from './console.js';
+import { consoleMovedTo, createConsole, startConsole, stopConsole } from './console.js';
 import type { ProvisioningService } from '../modules/provisioning/application/provisioning-service.js';
 import type { DataSource } from 'typeorm';
 import type { FirmwareBuildJobService } from '../modules/firmware/application/firmware-build-job-service.js';
@@ -55,7 +55,8 @@ export function createEdgeRuntime(
   const ingest = new Ingest({
     port: cfg.udpPort,
     host: cfg.udpHost,
-    verify: { keys: cfg.keys, allowUnsigned: cfg.allowUnsigned },
+    verify: { keys: cfg.keys, allowUnsigned: cfg.allowUnsigned, devices: cfg.devices },
+    cursorPath: join(cfg.dataDir, 'replay.jsonl'),
     commandKey: cfg.keys[0] ?? null,
     routeViaGateway: (address, bytes) => gateways?.sendDownlink(address, bytes) ?? false,
   });
@@ -68,6 +69,7 @@ export function createEdgeRuntime(
     nodes: () => runtime?.nodes().filter((node) => node.registered).map((node) => ({
       uid: node.uid, label: node.label, floorId: node.floorId, address: node.address,
       transport: node.transport, online: node.online,
+      encryptionRequired: !!ingest.links.get(node.uid)?.secureId || !!cfg.devices?.keys(node.uid).length,
     })) ?? [],
     sendImageToGateway: (id, metadata, bytes) => gateways?.sendImage(id, metadata, bytes) ?? false,
     sendOta: (uid, image) => ingest.sendOta(uid, image),
@@ -75,19 +77,22 @@ export function createEdgeRuntime(
     directPort: cfg.consolePort,
     log: logRuntime,
   });
-  if (cfg.gatewayPort > 0 && cfg.gatewayToken) {
+  if (cfg.gatewayPort > 0 && (cfg.gatewayToken || cfg.gatewayKeys)) {
     gateways = new GatewayServer({
-      port: cfg.gatewayPort, host: '0.0.0.0', token: cfg.gatewayToken, edgeId: cfg.edgeId,
-      onUplink: (datagram, source) => ingest.handle(datagram, source),
+      port: cfg.gatewayPort, host: '0.0.0.0', token: cfg.gatewayToken ?? Buffer.alloc(0), edgeId: cfg.edgeId,
+      tokens: cfg.gatewayKeys ? (id) => cfg.gatewayKeys!.tokens(id) : undefined,
+      helloPath: join(cfg.dataDir, 'gateway-hellos.json'),
+      allowRawTcp: cfg.gatewayAllowRawTcp ?? false,
+      onUplink: (datagram, source) => ingest.handleDurable(datagram, source),
       onImageReady: (gatewayId, result) => rollouts.onImageReady(gatewayId, result),
       log: logRuntime,
     });
   }
   if (cfg.nodePort > 0) {
     direct = new NodeServer({
-      host: cfg.nodeHost, port: cfg.nodePort, limits: cfg.nodeLimits, keys: cfg.keys,
+      host: cfg.nodeHost, port: cfg.nodePort, limits: cfg.nodeLimits, keys: cfg.keys, devices: cfg.devices,
       isRegistered: (uid) => reg.nodes.has(uid),
-      ingest: (datagram, route) => ingest.handle(datagram, route),
+      ingest: (datagram, route) => ingest.handleDurable(datagram, route),
       dropRoute: (uid, sessionId) => void ingest.dropDirectRoute(uid, sessionId),
       image: (buildId) => firmware.bytes(buildId),
       otaApproved: (uid, buildId) => rollouts.wantsDownload(uid, buildId),
@@ -126,11 +131,15 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
     persistenceAvailable: options.postgres ? async () => (await postgresAvailability(options.postgres!)).available : undefined,
   });
   const builds = options.firmwareBuildJobs ?? (options.postgres ? createDurableFirmwareBuildJobs(runtime, options.postgres) : createFirmwareBuildJobs(runtime));
-  const consoleServer = startConsole(runtime, {
-    firmwareBuildJobs: builds, provisioningService: options.provisioningService, listen: false,
+  // Both listeners share the injected services and the same live feed.
+  const consoleCore = createConsole(runtime, {
+    firmwareBuildJobs: builds, provisioningService: options.provisioningService,
+  });
+  const consoleServer = startConsole(runtime, consoleCore, {
+    listen: false, uiMovedTo: cfg.algoPort > 0 ? consoleMovedTo(cfg.algoPort) : undefined,
   });
   const debuggerServer = cfg.algoPort > 0
-    ? startAlgo(runtime, cfg.algoPort, cfg.consoleHost, { listen: false, dataDir: cfg.dataDir })
+    ? startAlgo(runtime, cfg.algoPort, cfg.consoleHost, { listen: false, dataDir: cfg.dataDir }, consoleCore)
     : null;
   return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg, options.closePersistence,
     async () => {
