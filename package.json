@@ -14,7 +14,7 @@
     "db:students": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/student-accounts.js",
     "students:local:config": "tsc -p tsconfig.json && node dist/src/tools/student-local-config.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck && npm --prefix algo-app run typecheck",
-    "test": "tsc -p tsconfig.json && node --test --test-concurrency=1 dist/test/*.test.js",
+    "test": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && node --test --test-concurrency=1 dist/test/*.test.js",
     "crosscheck": "tsc -p tsconfig.json && node dist/src/tools/crosscheck.js",
     "build:app": "npm --prefix web-app run build",
     "build:algo": "npm --prefix algo-app run build",
