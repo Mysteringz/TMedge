@@ -107,7 +107,7 @@ export class TermChannel {
 }
 
 /** The part of a WebSocket the sender needs (the browser's, or ws in tests). */
-export interface FrameSocket { readonly readyState: number; send(data: Uint8Array): void }
+export interface FrameSocket { readonly readyState: number; send(data: Bytes): void }
 
 /**
  * Sends sealed frames in order, never dropping one. A frame made before the
@@ -117,7 +117,7 @@ export interface FrameSocket { readonly readyState: number; send(data: Uint8Arra
  * the edge would (rightly) close the terminal.
  */
 export class TermSender {
-  private queue: Uint8Array[] = [];
+  private queue: Bytes[] = [];
   private socket: FrameSocket | null = null;
   private chain: Promise<unknown> = Promise.resolve();
 
