@@ -1,0 +1,18 @@
+#!/bin/bash
+# Fake sacct: only `-j ids --format=... --parsable2 --noheader`, with the
+# .batch and .extern steps real SLURM prints too.
+ids=
+while [ $# -gt 0 ]; do case "$1" in -j) ids=$2; shift 2 ;; -j*) ids=${1#-j}; shift ;; *) shift ;; esac; done
+fmt() { local s=$1; printf '%02d:%02d:%02d' $((s/3600)) $((s%3600/60)) $((s%60)); }
+iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%S; }
+IFS=, read -ra list <<<"$ids"
+for id in "${list[@]}"; do
+  f="$HOME/.fakeslurm/$id"; [ -f "$f" ] || continue
+  IFS='|' read -r st code start end _ < "$f"
+  now=$(date +%s); el=0; s=Unknown; e=Unknown; node=None
+  if [ "$st" != PENDING ]; then el=$(( ${end:-$now} - start )); s=$(iso "$start"); node=fake-node1; fi
+  [ -n "$end" ] && e=$(iso "$end")
+  echo "$id|$st|$code|$(fmt $el)|$s|$e|$node"
+  [ "$st" != PENDING ] && echo "$id.batch|${st%% *}|$code|$(fmt $el)|$s|$e|$node" && echo "$id.extern|COMPLETED|0:0|$(fmt $el)|$s|$e|$node"
+done
+exit 0

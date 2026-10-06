@@ -1,0 +1,3 @@
+#!/bin/bash
+# One task, here and now.
+exec "$@"

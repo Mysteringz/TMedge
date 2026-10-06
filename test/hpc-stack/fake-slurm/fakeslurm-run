@@ -1,0 +1,15 @@
+#!/bin/bash
+# The "node": wait a moment in PENDING, then run, then record how it ended.
+id=$1 dir=$2 script=$3 out=$4 err=$5
+f="$HOME/.fakeslurm/$id"
+sleep "${FAKE_PENDING_SECONDS:-1}"
+start=$(date +%s)
+echo "RUNNING|0:0|$start||$$" > "$f"
+cd "$dir"
+SLURM_SUBMIT_DIR="$dir" SLURM_JOB_ID="$id" bash "$script" >"$out" 2>"$err" &
+child=$!
+echo "RUNNING|0:0|$start||$child" > "$f"
+wait "$child"; rc=$?
+grep -q '^CANCELLED' "$f" && exit 0
+if [ "$rc" = 0 ]; then st=COMPLETED; else st=FAILED; fi
+echo "$st|$rc:0|$start|$(date +%s)|" > "$f"

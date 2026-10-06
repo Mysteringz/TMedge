@@ -177,6 +177,16 @@ scp data/algo/models/*.json <box>:/var/lib/tmedge/algo/models/
 The node re-reads the model every ten seconds, so dropping one in needs no
 restart. Until one exists it says so and explains how to make it.
 
+## Module 02: ML Training
+
+`/train` writes or uploads a training script, takes what it needs from HKU
+HPC2021, and sends it there as the person who wrote it: they sign in with
+their own UID, PIN and code, which open their own HKUVPN tunnel and SSH
+login once and are wiped (Plan A). See [hpc/plan-a-runbook.md](hpc/plan-a-runbook.md)
+for the box, [hpc/decisions.md](hpc/decisions.md) for why, the spec
+[hpc/HANDOVER.md](hpc/HANDOVER.md), and [hpc/m0-checklist.md](hpc/m0-checklist.md)
+for what the first real logins must record.
+
 ## Layout
 
 ```
@@ -192,6 +202,7 @@ src/algo/nodes.ts      the node catalogue and the default graph
 src/algo/graph.ts      typed connections, cycles, execution order
 src/algo/runtime.ts    runs the graph over one frame
 src/algo/server.ts     HTTP + WS on ALGO_PORT
+src/algo/train/        module 02: HPC2021 job drafts, safe uploads, sbatch rendering (docs/hpc/)
 src/algo/auth.ts       sign-in: accounts, session cookie, Turnstile
 src/edge/console.ts    module 03's core (mounted at /console-app/) + the console port
 src/tools/algouser.ts  npm run algo-user

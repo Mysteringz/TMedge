@@ -1,0 +1,27 @@
+{
+  "verified": true,
+  "source": "From `sinfo -s` / `sinfo -o \"%P %l %G\"` on ing@10.21.36.12 (iw-g2), 2026-10-06: one partition, debug, 30 days, gpu:4. No modules listed: add them here if the cluster has Lmod.",
+  "backend": "vpn-ssh",
+  "planA": {
+    "vpnHost": "vpn2fa.hku.hk",
+    "vpnDomains": ["hku.hk", "connect.hku.hk"],
+    "vpnServerCert": null,
+    "vpnAuthGroup": null,
+    "submitHost": "10.21.36.12",
+    "sshUser": "ing",
+    "sshAuth": "shared-password",
+    "knownHosts": null,
+    "idleTtlSeconds": 600,
+    "maxSessions": 4,
+    "socksPorts": [21000, 21099],
+    "tools": {}
+  },
+  "partitions": [
+    { "name": "debug", "maxTime": "30-00:00:00", "gpu": true, "maxGpus": 4 }
+  ],
+  "defaultPartition": "debug",
+  "modules": [],
+  "maxUploadMb": 95,
+  "maxUnpackedMb": 1024,
+  "quotaMb": 2048
+}

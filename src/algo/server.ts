@@ -25,6 +25,7 @@ import { createAlgoRouter } from './routes.js';
 import { defaultPipeline } from './nodes.js';
 import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
+import { createTrain, trainRoot } from './train/routes.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
@@ -141,9 +142,10 @@ export function startAlgo(
   // the student site.
   const cf = authCfg.turnstile ? ' https://challenges.cloudflare.com' : '';
   // frame-src 'self': module 03 is the debug console in a same-origin frame.
-  const csp = `default-src 'self'; script-src 'self'${cf}; frame-src 'self'${cf}; img-src 'self' data:; ` +
-    "style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; " +
+  const cspWith = (styleNonce?: string) => `default-src 'self'; script-src 'self'${cf}; frame-src 'self'${cf}; img-src 'self' data:; ` +
+    `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ''} https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; ` +
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+  const csp = cspWith();
 
   /**
    * The one HTML page, for every screen. Read per request rather than at
@@ -153,7 +155,13 @@ export function startAlgo(
   const sendShell = (res: Response) => {
     const index = join(PUBLIC, 'index.html');
     if (!existsSync(index)) return res.status(503).send('the algo dashboard is not built (npm run build)');
-    return res.type('html').send(readFileSync(index, 'utf8').replaceAll('{{turnstile}}', authCfg.turnstile?.siteKey ?? ''));
+    // Module 02's editor (CodeMirror) writes its theme into one <style>
+    // element, which style-src 'self' refuses. A fresh nonce per page admits
+    // that element and nothing else; 'unsafe-inline' would admit anything.
+    const nonce = randomBytes(16).toString('base64');
+    res.set('Content-Security-Policy', cspWith(nonce));
+    return res.type('html').send(readFileSync(index, 'utf8')
+      .replaceAll('{{turnstile}}', authCfg.turnstile?.siteKey ?? '').replaceAll('{{nonce}}', nonce));
   };
 
   const app = express();
@@ -214,6 +222,16 @@ export function startAlgo(
     if (req.get('x-tm-algo') !== '1') return res.status(403).json({ error: 'missing x-tm-algo header' });
     return next();
   };
+
+  // Module 02: training jobs for HKU HPC2021 (src/algo/train/, docs/hpc/).
+  const train = createTrain({
+    root: trainRoot(process.env.DATA_DIR || join(ROOT, 'data')),
+    configPath: process.env.HPC_CONFIG || join(ROOT, 'config', 'hpc.json'),
+    mutating,
+    bindingOf: (req) => auth.sessionToken(req),
+  });
+  if (train.error) console.warn(`[algo] ${train.error}`);
+  app.use('/api/train', train.router);
 
   app.get('/api/catalogue', (_req, res) => res.json({
     nodes: NODE_SPECS,
@@ -430,11 +448,13 @@ export function startAlgo(
   });
 
   const server = createServer(app);
+  server.on('close', train.stop);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
   const clients = new Map<WebSocket, { req: IncomingMessage; binding: string }>();
   auth.onLogout((binding) => {
     for (const [ws, client] of clients) if (client.binding === binding) ws.terminate();
     consoleCore?.closeSessions(binding);
+    train.sockets?.closeFor(binding);
   });
 
   server.on('upgrade', (req: IncomingMessage, socket, head) => {
@@ -451,6 +471,13 @@ export function startAlgo(
       return;
     }
     const binding = auth.sessionToken(req);
+    // Module 02's shell on the cluster: its own one-time ticket, bound to this sign-in.
+    if (url.pathname === '/train-term') {
+      if (train.sockets?.upgrade(req, socket, head, url, auth.userOf(req)!, binding)) return;
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     // The console's live feed. Its token comes from /console-app/api/ws-token,
     // which only a signed-in engineer can reach.
     if (url.pathname === '/console-app/ws') {
