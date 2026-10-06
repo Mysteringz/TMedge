@@ -4,6 +4,7 @@ import { StartFirmwareRollout } from '../application/start-firmware-rollout.js';
 import type { FirmwareArtifactFiles, ImageInUseQuery } from '../repositories/firmware-repository.js';
 import type { RolloutService } from '../../rollouts/application/rollout-service.js';
 import { asyncHandler } from '../../../infrastructure/http/errors.js';
+import { routeParam } from '../../../shared/http.js';
 
 export interface FirmwareRouterDependencies {
   firmware: FirmwareArtifactFiles;
@@ -56,7 +57,7 @@ function addFirmwareFile(dependencies: FirmwareRouterDependencies): RequestHandl
     try {
       const path = typeof req.query.path === 'string' ? req.query.path : '';
       const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-      dependencies.firmware.addFile(req.params.id ?? '', path, body);
+      dependencies.firmware.addFile(routeParam(req.params, 'id'), path, body);
       return res.json({ ok: true });
     } catch (error: unknown) {
       return res.status(400).json({ error: errorMessage(error) });
@@ -65,14 +66,14 @@ function addFirmwareFile(dependencies: FirmwareRouterDependencies): RequestHandl
 }
 
 function startFirmwareBuild(dependencies: FirmwareRouterDependencies): RequestHandler {
-  return async (req, res) => await dependencies.buildJobs.start(req.params.id ?? '', { id: 'console', kind: 'console' })
+  return async (req, res) => await dependencies.buildJobs.start(routeParam(req.params, 'id'), { id: 'console', kind: 'console' })
     ? res.status(202).json({ ok: true })
     : res.status(409).json({ error: 'a build is already running' });
 }
 
 function deleteFirmwareImage(dependencies: FirmwareRouterDependencies): RequestHandler {
   return (req, res) => {
-    const id = req.params.id ?? '';
+    const id = routeParam(req.params, 'id');
     if (dependencies.imageInUse.isImageInUse(id)) return res.status(409).json({ error: 'that image is rolling out right now' });
     return res.json({ ok: dependencies.firmware.remove(id, dependencies.imageInUse) });
   };

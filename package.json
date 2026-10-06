@@ -28,13 +28,13 @@
     "test:hpc-stack": "tsc -p tsconfig.json && test/hpc-stack/run.sh"
   },
   "dependencies": {
-    "express": "^4.21.2",
+    "express": "^5.2.1",
     "pg": "^8.23.1",
     "typeorm": "^0.3.31",
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.6.4",
     "@types/ws": "^8.18.2",
     "typescript": "^5.7.2"
