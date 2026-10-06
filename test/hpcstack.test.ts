@@ -20,7 +20,7 @@ import { AlgoUsers, loadAlgoAuthConfig } from '../src/algo/auth.js';
 import { startAlgo } from '../src/algo/server.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { buildRegistry } from '../src/edge/registry.js';
-import { EdgeRuntime } from '../src/edge/runtime.js';
+import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { packCredentials, sealCredentials, type SealTicket } from '../src/shared/hpcseal.js';
 import { T_DATA, T_EXIT, T_RESIZE, TermChannel, type TermTicket } from '../src/shared/hpcterm.js';
 import { fingerprintOf } from '../src/algo/train/hpc/hostkeys.js';
@@ -128,7 +128,7 @@ async function boot(o: BootOpts | string = {}) {
     consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', flashToken: null, pushUrls: [], pushToken: '', publishMs: 1000,
     gatewayPort: 0, gatewayToken: null, nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
-  const rt = new EdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
+  const rt = createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
   const { server } = startAlgo(rt, 0, '127.0.0.1', loadAlgoAuthConfig({ SESSION_SECRET: 'x'.repeat(40), ALGO_USERS_FILE: usersPath }, 'admin-pass'));
   const base = await new Promise<string>((r) => {
     const done = () => r(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);

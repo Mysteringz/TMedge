@@ -22,7 +22,7 @@ import { JobStore } from '../src/algo/train/store.js';
 import { extractZip, readZip, ZipError } from '../src/algo/train/zip.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { ConfigError, buildRegistry } from '../src/edge/registry.js';
-import { EdgeRuntime } from '../src/edge/runtime.js';
+import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -444,7 +444,7 @@ function runtime() {
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
-  return new EdgeRuntime(c, buildRegistry(siteJson(), nodesJson()));
+  return createEdgeRuntime(c, buildRegistry(siteJson(), nodesJson()));
 }
 
 const running: (() => Promise<void>)[] = [];
