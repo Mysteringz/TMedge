@@ -131,7 +131,7 @@ GitHub settings that go with CI, are in
 ## Firmware updates
 
 The console can build and roll out TMsense firmware without anyone visiting a
-ceiling. Open **Firmware**, pick the TMsense project folder, and press
+ceiling. Open **04 Updates** (`/updates`) in the algorithm console, pick the TMsense project folder, and press
 *Upload and build*: the edge compiles it with PlatformIO's `tmflash`
 environment (the release build, which bakes in no Wi-Fi password or key) and
 keeps the image under its SHA-256.

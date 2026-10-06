@@ -20,7 +20,7 @@
  * automatically, so without it any page the admin visits could reboot nodes.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { dirname, join } from 'node:path';
@@ -152,6 +152,13 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
       );
     });
   }
+  // Module 04 owns OTA in the algo console. Keep the original panel when
+  // ALGO_PORT=0, where this document is the only admin UI available.
+  ui.get(['/', '/index.html'], (_req, res) => {
+    let html = readFileSync(join(ROOT, 'public-console', 'index.html'), 'utf8');
+    if (res.locals.embeddedConsole) html = html.replace(/<!-- firmware:start -->[\s\S]*?<!-- firmware:end -->/, '');
+    res.set('Cache-Control', 'no-store').type('html').send(html);
+  });
   // Never cached. Express would send max-age=0 with an ETag, which is correct
   // and not enough: Cloudflare caches by file extension in front of this, so a
   // .js file can be served from the edge long after a deploy -- the same trap
