@@ -2,7 +2,7 @@
  * The console around everything: sign-in, module select, and the modules.
  * Module 01 is the algo debugger exactly as it was (App.tsx), and module 03
  * the edge's debug console (formerly console.hkumyseat.com), each under the
- * console's top bar; nothing inside either changed.
+ * console's top bar. Module 04 owns firmware builds and OTA rollouts.
  */
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Root as FlowApp } from '../App.tsx';
@@ -15,6 +15,7 @@ import './console.css';
 // The editor (CodeMirror) is most of module 02's weight; sign-in and the
 // home screen should not wait for it.
 const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
+const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Updates })));
 
 export function Shell() {
   const path = usePath();
@@ -85,8 +86,10 @@ export function Shell() {
   return (
     <div className="cx cx-page">
       <Backdrop />
-      <Nav user={user} crumb={screen === 'train' ? 'ml-training' : undefined} onSignOut={signOut} />
-      {screen === 'train' ? <Suspense fallback={null}><Train /></Suspense> : <Home user={user} />}
+      <Nav user={user} crumb={screen === 'train' ? 'ml-training' : screen === 'updates' ? 'updates' : undefined} onSignOut={signOut} />
+      {screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
+        : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
+          : <Home user={user} />}
       <Toast text={toast} />
     </div>
   );

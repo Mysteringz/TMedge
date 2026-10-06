@@ -6,6 +6,7 @@
  * at once: one node goes first, and the rest only follow once it reports the
  * new image and a working sensor. The panel shows that happening.
  */
+import { firmwareSourcePath } from '../shared/firmware-upload.js';
 
 interface Build {
   id: string;
@@ -180,11 +181,7 @@ function render(): void {
 /** Upload the chosen folder one file at a time, then ask the edge to build. */
 async function uploadAndBuild(): Promise<void> {
   const input = $<HTMLInputElement>('#fw-folder');
-  const files = [...(input.files ?? [])].filter((f) => {
-    const path = (f.webkitRelativePath || f.name).replace(/^[^/]+\/(?=(?:src|include)\/|platformio\.ini$)/, '');
-    return (path === 'platformio.ini' || /^(src|include)\/[\w./-]+\.(h|hpp|c|cpp|cc)$/.test(path))
-      && !/(^|\/)(node_config\.h|tm_test_ca\.h)$/.test(path);
-  });
+  const files = [...(input.files ?? [])].filter((f) => firmwareSourcePath(f.webkitRelativePath || f.name) !== null);
   if (files.length === 0) return;
   uploading = true;
   render();

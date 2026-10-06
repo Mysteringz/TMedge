@@ -254,13 +254,16 @@ password prompt. Cloudflare Access still sits in front; behind it:
 ## Screens
 
 - `/login` — sign-in.
-- `/` — module select (↑ ↓, 1 / 2, enter).
+- `/` — module select (↑ ↓, 1–4, enter).
 - `/flow` — module 01, the node-graph debugger described above, unchanged.
 - `/train` — module 02, ML Training: a placeholder until there is a sandboxed
   job runner to back it.
 - `/console` — module 03, the edge's debug console (formerly
   `console.hkumyseat.com`): health, floor fusion, raw frames, node commands,
-  admitting TMflash nodes, firmware rollouts.
+  admitting TMflash nodes.
+- `/updates` — module 04, firmware source upload, build output, saved images,
+  target selection and pilot-first OTA rollout progress. Uses the console's
+  existing `/console-app/api/firmware*` services and `x-tm-console: 1` write guard.
 
 ### Module 03, the debug console
 
@@ -285,7 +288,8 @@ provisioning queue, the live feed) exists once and is served in two places:
   host on ALGO_PORT) and answers its old API with `410`.
 
 With `ALGO_PORT=0` the console port serves the screens itself, behind Basic
-auth, as before.
+auth, as before, including the original firmware panel. When embedded in
+module 03, that panel is omitted and OTA is handled by module 04.
 
 ## API
 

@@ -210,6 +210,7 @@ export function startAlgo(
       if (req.originalUrl === '/console-app') return res.redirect('/console-app/');
       res.set('Content-Security-Policy', consoleCsp);
       res.locals.wsBinding = auth.sessionToken(req);
+      res.locals.embeddedConsole = true;
       return next();
     }, consoleCore.ui);
   }
@@ -441,7 +442,7 @@ export function startAlgo(
     res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(`${exp}:${auth.sessionToken(req)}`).digest('hex')}` });
   });
 
-  // Home, /flow, /train: every screen is routed in the browser.
+  // Home, /flow, /train, /console, /updates: routed in the browser.
   app.get('/{*splat}', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'no such endpoint' });
     return sendShell(res);

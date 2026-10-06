@@ -85,6 +85,10 @@ test('signed in, the console page, its API and its live feed all work under /con
   assert.equal((await fetch(`${algoBase}/console-app`, { headers, redirect: 'manual' })).headers.get('location'), '/console-app/',
     'the trailing slash its relative URLs need');
   const page = await fetch(`${algoBase}/console-app/`, { headers });
+  assert.equal(page.status, 200, 'npm test compiles the console client before serving it');
+  const html = await page.text();
+  assert.ok(!html.includes('id="firmware"'), 'OTA belongs to module 04, not the embedded debug page');
+  assert.ok(html.includes('id="fusion"') && html.includes('id="controls"'), 'debug views and node commands remain');
   // The page itself only exists after a build; the headers are the claim here.
   const csp = page.headers.get('content-security-policy') ?? '';
   assert.match(csp, /frame-ancestors 'self'/, 'only the algo console may frame it');
@@ -135,6 +139,31 @@ test('console writes still need their header, and the cookie alone is not enough
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ op: 'identify' }),
   });
   assert.equal(res.status, 403, 'a cross-site form can carry the cookie but not x-tm-console');
+});
+
+test('module 04 deep links require sign-in and its firmware services retain the upload guard', async () => {
+  const { algoBase, cookie } = await boot();
+  for (const path of ['/updates', '/updates/']) {
+    const signedOut = await fetch(`${algoBase}${path}`, { redirect: 'manual' });
+    assert.equal(signedOut.status, 302);
+    assert.equal(signedOut.headers.get('location'), `/login?next=${encodeURIComponent(path)}`);
+    const signedIn = await fetch(`${algoBase}${path}`, { headers: { cookie } });
+    assert.ok([200, 503].includes(signedIn.status), 'the shell is available after build, never a missing route');
+    assert.equal(signedIn.headers.get('cache-control'), 'no-store');
+  }
+  const url = `${algoBase}/console-app/api/firmware`;
+  assert.equal((await fetch(url)).status, 401);
+  const status = await fetch(url, { headers: { cookie } });
+  assert.equal(status.status, 200);
+  assert.ok(Array.isArray((await status.json() as { builds: unknown[] }).builds));
+  assert.equal((await fetch(`${url}/uploads`, { method: 'POST', headers: { cookie } })).status, 403);
+  const upload = await fetch(`${url}/uploads`, { method: 'POST', headers: { cookie, 'x-tm-console': '1' } });
+  assert.equal(upload.status, 200);
+  const { uploadId } = await upload.json() as { uploadId: string };
+  const fileUrl = `${url}/uploads/${uploadId}/files?path=`;
+  const headers = { cookie, 'x-tm-console': '1', 'content-type': 'application/octet-stream' };
+  assert.equal((await fetch(`${fileUrl}TMsense%2Fsrc%2Fmain.cpp`, { method: 'POST', headers, body: 'void setup() {}' })).status, 200);
+  assert.equal((await fetch(`${fileUrl}TMsense%2Finclude%2Fnode_config.h`, { method: 'POST', headers, body: 'private settings' })).status, 400);
 });
 
 test('the console port keeps the device endpoints and sends a browser on to module 03', async () => {

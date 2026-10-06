@@ -7,7 +7,8 @@ import { navigate } from './router.ts';
 const MODULES = [
   { n: '01', title: 'Algorithm Flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
   { n: '02', title: 'ML Training', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
-  { n: '03', title: 'Debug Console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands, admitting nodes, firmware rollouts.' },
+  { n: '03', title: 'Debug Console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands, and admitting nodes.' },
+  { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
 ];
 
 export function Home({ user }: { user: string }) {

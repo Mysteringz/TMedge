@@ -32,6 +32,22 @@ function runtime(persistenceAvailable?: () => Promise<boolean>) {
 
 const frame = (uid: string) => ({ uid, frame: 1, tMin: 20, step: 0.05, pixels: Array(768).fill(120), receivedAt: Date.now() });
 
+test('standalone mode keeps firmware controls when the algo console is disabled', async () => {
+  const rt = runtime();
+  const server = startConsole(rt);
+  await new Promise<void>((resolve) => server.listening ? resolve() : server.once('listening', resolve));
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const authorization = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
+    const page = await fetch(base, { headers: { authorization } });
+    assert.equal(page.status, 200, 'npm test compiles the console client before serving it');
+    assert.match(await page.text(), /id="firmware"/, 'the standalone console still owns its OTA panel');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rt.stop();
+  }
+});
+
 /** Open the console's live socket the way the page does. */
 async function live(base: string, auth: string) {
   const token = ((await (await fetch(`${base}/api/ws-token`, { headers: { authorization: auth } })).json()) as { token: string }).token;

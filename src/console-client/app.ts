@@ -696,7 +696,8 @@ async function connect(): Promise<void> {
 
 async function start(): Promise<void> {
   layout = (await (await fetch('api/layout')).json()) as Layout;
-  initFirmware();
+  const hasFirmware = !!document.querySelector('#firmware');
+  if (hasFirmware) initFirmware();
   initJoin();
   // Requests that arrived while nobody had the console open are still
   // waiting; a live WS event is not the only way one gets answered.
@@ -720,7 +721,7 @@ async function start(): Promise<void> {
   await connect();
   setInterval(renderFusion, 1000);
   // The rollout targets are the nodes and floors this console already knows.
-  setInterval(() => {
+  if (hasFirmware) setInterval(() => {
     if (!layout || !last) return;
     setFirmwareTargets({
       floors: layout.floors.map((f) => ({ id: f.id, name: f.name })),
