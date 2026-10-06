@@ -310,3 +310,25 @@ describe('Plan A config', () => {
     assert.throws(() => parseHpcConfig({ ...base, backend: 'none' }), /only with backend/);
   });
 });
+
+describe('terminal frames', () => {
+  test('frames made before the socket opens are held and sent in order, never dropped', async () => {
+    const { TermChannel, TermSender, counterOf, T_DATA, T_RESIZE } = await import('../src/shared/hpcterm.js');
+    const { createECDH, randomBytes } = await import('node:crypto');
+    const server = createECDH('prime256v1');
+    const ch = await TermChannel.open({ tid: randomBytes(16).toString('base64url'), publicKey: server.generateKeys().toString('base64url') });
+    const sender = new TermSender(ch);
+    const sent: Uint8Array[] = [];
+    const socket = { readyState: 0, send: (f: Uint8Array) => { sent.push(f); } };
+    // What the page does while the socket is still connecting: the terminal
+    // fits itself (a resize) and answers the shell's first query (data).
+    void sender.send(T_RESIZE, new Uint8Array([0, 120, 0, 40]));
+    void sender.send(T_DATA, new TextEncoder().encode('\x1b[?1;2c'));
+    await sender.send(T_DATA, new TextEncoder().encode('l'));
+    assert.equal(sent.length, 0, 'nothing goes out before the socket is open');
+    socket.readyState = 1;
+    await sender.open(socket);
+    await sender.send(T_DATA, new TextEncoder().encode('s\r'));
+    assert.deepEqual(sent.map((f) => counterOf(f.subarray(0, 12)).counter), [0, 1, 2, 3], 'every frame, in sequence: none skipped');
+  });
+});
