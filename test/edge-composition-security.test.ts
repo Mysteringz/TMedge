@@ -193,7 +193,7 @@ test('production gateway activates per-identity credentials, defaults raw TCP of
     try {
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('HELLO response timed out')), 2000);
-        socket.on('data', bytes => reader.push(bytes, type => { clearTimeout(timeout); try { assert.equal(type, expected); resolve(); } catch (error) { reject(error); } }));
+        socket.on('data', (bytes: Buffer) => reader.push(bytes, type => { clearTimeout(timeout); try { assert.equal(type, expected); resolve(); } catch (error) { reject(error); } }));
         socket.write(frame(T_HELLO, Buffer.from(JSON.stringify({ v: 1, gatewayId: 'test', ts, nonce, mac: helloMac(Buffer.from('55'.repeat(32)), 'test', ts, nonce) }))));
       });
     } finally { socket.destroy(); }

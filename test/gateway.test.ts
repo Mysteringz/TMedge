@@ -56,7 +56,7 @@ async function client(port: number, token = TOKEN, ts = Date.now(), nonce = 'n1'
   await new Promise<void>((r) => sock.once('connect', () => r()));
   const frames: { type: number; payload: Buffer }[] = [];
   const reader = new FrameReader();
-  sock.on('data', (c) => reader.push(c, (type, payload) => frames.push({ type, payload: Buffer.from(payload) })));
+  sock.on('data', (c: Buffer) => reader.push(c, (type, payload) => frames.push({ type, payload: Buffer.from(payload) })));
   sock.write(frame(T_HELLO, Buffer.from(JSON.stringify({ v: 1, gatewayId: 'esanhouse', ts, nonce, mac: helloMac(token, 'esanhouse', ts, nonce) }))));
   const next = async (type: number, ms = 2000) => {
     const t0 = Date.now();
@@ -178,7 +178,7 @@ test('gateway: rejection is terminal even if a valid HELLO follows in the same r
   const sock = connect(port, '127.0.0.1');
   const frames: number[] = [];
   const reader = new FrameReader();
-  sock.on('data', (b) => reader.push(b, (type) => frames.push(type)));
+  sock.on('data', (b: Buffer) => reader.push(b, (type) => frames.push(type)));
   try {
     await new Promise<void>((r) => sock.once('connect', r));
     const ts = Date.now();
