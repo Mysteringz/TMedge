@@ -116,7 +116,10 @@ export function createWebApp(cfg: WebConfig, options: {
   const accounts = options.accounts ?? new JsonStudentAccountRepository(cfg.usersPath, cfg.allowedDomains);
   const sessions = new Sessions(cfg.sessionSecret, undefined, join(dirname(cfg.usersPath), 'session-revocations.json'));
   let sockets!: OccupancyWebSocketLifecycle;
-  const google = cfg.google ? new GoogleLogin(cfg.google, cfg.sessionSecret) : null;
+  // Google identities are intentionally unavailable with PostgreSQL-backed
+  // student accounts until that storage path has its own verified rollout.
+  const googleEnabled = cfg.studentPersistenceMode !== 'postgres' && !!cfg.google;
+  const google = googleEnabled && cfg.google ? new GoogleLogin(cfg.google, cfg.sessionSecret) : null;
   const store = new SnapshotStore(cfg.staleMs);
   const noStore = (res: Response) => res.set('Cache-Control', 'no-store').set('Vary', 'Cookie');
   const authDependencies = {
@@ -128,7 +131,10 @@ export function createWebApp(cfg: WebConfig, options: {
   };
   const requireStudent = createRequireStudent(authDependencies);
   const usage = new StudentUsageActivity(() => store.view(), options.activity);
-  const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8').replaceAll('{{v}}', assetVersion()).replaceAll('{{turnstile}}', cfg.turnstile?.siteKey ?? '');
+  const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8')
+    .replaceAll('{{v}}', assetVersion())
+    .replaceAll('{{turnstile}}', cfg.turnstile?.siteKey ?? '')
+    .replaceAll('{{google}}', google ? 'on' : '');
   const app = createExpressApp(cfg);
   const cfSource = cfg.turnstile ? ' https://challenges.cloudflare.com' : '';
   const csp = `default-src 'self'; script-src 'self'${cfSource}; frame-src 'self'${cfSource}; img-src 'self' data:; ` +
@@ -167,7 +173,8 @@ export function createWebApp(cfg: WebConfig, options: {
   });
   app.get('/auth/google/callback', async (req, res) => {
     noStore(res);
-    if (!google || !accounts.google) return res.redirect('/login/?error=google');
+    if (!google) return res.status(404).json({ error: 'Google sign-in is not enabled' });
+    if (!accounts.google) return res.redirect('/login/?error=google');
     res.clearCookie(GOOGLE_COOKIE, { path: '/auth/google' });
     try {
       const identity = await google.finish(req.query, parseCookies(req.headers.cookie)[GOOGLE_COOKIE]);

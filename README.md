@@ -30,7 +30,7 @@ changing what the system knows about anyone.
 
 ## Run it
 
-For PostgreSQL student accounts, optional Google sign-in, Turnstile, and retained student interaction events, follow [student account setup](docs/student-accounts.md). It includes persistent local PostgreSQL, safe `users.json` import, migration, and recovery commands. Password signup is closed by default and must be explicitly enabled with `SIGNUP_OPEN=1`; the local setup helper enables it for development. Named admin accounts are deferred to a later MVP.
+For PostgreSQL student accounts, Turnstile, and retained student interaction events, follow [student account setup](docs/student-accounts.md). It includes persistent local PostgreSQL, safe `users.json` import, migration, and recovery commands. Google sign-in is currently file-mode only; PostgreSQL mode hides the button and returns 404 from both OAuth endpoints pending verified PostgreSQL integration and recovery. Password signup is closed by default and must be explicitly enabled with `SIGNUP_OPEN=1`; the local setup helper enables it for development. Named admin accounts are deferred to a later MVP.
 
 Keep deployment credentials in the git-ignored `.env` file. Account details
 below are examples; use your own approved university account and password.
