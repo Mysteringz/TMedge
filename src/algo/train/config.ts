@@ -27,10 +27,13 @@ export interface HpcConfig {
   verified: boolean;
   source: string;
   /**
-   * Which HpcBackend submits jobs. Only "none" exists until the human picks
-   * Plan A, B or C after M0 (HANDOVER.md §3 decision gate).
+   * Which HpcBackend submits jobs: "none", or "vpn-ssh" -- Plan A, each
+   * person's own HKUVPN tunnel and SSH login (HANDOVER.md §4), chosen on
+   * 2026-10-06 (docs/hpc/decisions.md).
    */
-  backend: 'none';
+  backend: 'none' | 'vpn-ssh';
+  /** Plan A's settings; present exactly when backend is "vpn-ssh". */
+  planA: PlanAConfig | null;
   partitions: Partition[];
   defaultPartition: string;
   modules: string[];
@@ -38,6 +41,69 @@ export interface HpcConfig {
   maxUnpackedMb: number;
   /** Per person, across all of their jobs' extracted code. */
   quotaMb: number;
+}
+
+export interface PlanAConfig {
+  /** host[:port] of the AnyConnect server: vpn2fa.hku.hk. */
+  vpnHost: string;
+  /** VPN usernames are UID@<domain> (§2); the person picks one of these. */
+  vpnDomains: string[];
+  /** openconnect --servercert pin; null means the system's CAs decide (HKU's real certificate). */
+  vpnServerCert: string | null;
+  /** openconnect --authgroup, if M0 finds HKU shows a group menu. */
+  vpnAuthGroup: string | null;
+  /** The login node for SSH, sbatch and the code copy: hpc2021.hku.hk. */
+  submitHost: string;
+  /** Pinned host keys; null = DATA_DIR/algo/train/known_hosts (npm run hpc-hostkeys). */
+  knownHosts: string | null;
+  idleTtlSeconds: number;
+  maxSessions: number;
+  socksPorts: [number, number];
+  tools: { openconnect: string | null; ocproxy: string | null; ssh: string | null };
+}
+
+const HOST_PORT = /^[A-Za-z0-9.-]{1,253}(?::\d{1,5})?$/;
+const HOST = /^[A-Za-z0-9.-]{1,253}$/;
+/** Paths end up in command lines; nothing a shell would reinterpret. */
+const ABS_PATH = /^\/[A-Za-z0-9._/-]{1,200}$/;
+
+function parsePlanA(raw: unknown, where: string): PlanAConfig {
+  const o = obj(raw, where);
+  only(o, where, ['vpnHost', 'vpnDomains', 'vpnServerCert', 'vpnAuthGroup', 'submitHost', 'knownHosts', 'idleTtlSeconds', 'maxSessions', 'socksPorts', 'tools']);
+  if (typeof o.vpnHost !== 'string' || !HOST_PORT.test(o.vpnHost)) throw new ConfigError(`${where}.vpnHost: expected host or host:port`);
+  if (!Array.isArray(o.vpnDomains) || o.vpnDomains.length < 1 || o.vpnDomains.length > 8 ||
+      o.vpnDomains.some((d) => typeof d !== 'string' || !/^[a-z0-9.-]{1,100}$/.test(d))) {
+    throw new ConfigError(`${where}.vpnDomains: expected 1-8 domains like "hku.hk"`);
+  }
+  const cert = o.vpnServerCert ?? null;
+  if (cert !== null && (typeof cert !== 'string' || !/^(?:pin-sha256:[A-Za-z0-9+/]{43}=|sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64})$/.test(cert))) {
+    throw new ConfigError(`${where}.vpnServerCert: expected pin-sha256:<base64> or null`);
+  }
+  const group = o.vpnAuthGroup ?? null;
+  if (group !== null && (typeof group !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(group))) throw new ConfigError(`${where}.vpnAuthGroup: expected a group name or null`);
+  if (typeof o.submitHost !== 'string' || !HOST.test(o.submitHost)) throw new ConfigError(`${where}.submitHost: expected a host name`);
+  const known = o.knownHosts ?? null;
+  if (known !== null && (typeof known !== 'string' || !ABS_PATH.test(known))) throw new ConfigError(`${where}.knownHosts: expected an absolute path or null`);
+  const ports = o.socksPorts;
+  if (!Array.isArray(ports) || ports.length !== 2 || !ports.every((p) => Number.isInteger(p) && p >= 1024 && p <= 65535) ||
+      (ports[0] as number) > (ports[1] as number) || (ports[1] as number) - (ports[0] as number) > 1000) {
+    throw new ConfigError(`${where}.socksPorts: expected [first, last] within 1024-65535, at most 1000 apart`);
+  }
+  const t = obj(o.tools ?? {}, `${where}.tools`);
+  only(t, `${where}.tools`, ['openconnect', 'ocproxy', 'ssh']);
+  const tool = (k: string) => {
+    const v = t[k] ?? null;
+    if (v !== null && (typeof v !== 'string' || !ABS_PATH.test(v))) throw new ConfigError(`${where}.tools.${k}: expected an absolute path or null`);
+    return v as string | null;
+  };
+  return {
+    vpnHost: o.vpnHost, vpnDomains: o.vpnDomains as string[], vpnServerCert: cert as string | null, vpnAuthGroup: group as string | null,
+    submitHost: o.submitHost, knownHosts: known as string | null,
+    idleTtlSeconds: int(o, 'idleTtlSeconds', where, 60, 3600, 600),
+    maxSessions: int(o, 'maxSessions', where, 1, 50, 10),
+    socksPorts: [ports[0] as number, ports[1] as number],
+    tools: { openconnect: tool('openconnect'), ocproxy: tool('ocproxy'), ssh: tool('ssh') },
+  };
 }
 
 /** Module names are rendered into `module load`; keep them boring. */
@@ -94,15 +160,18 @@ export function parseTimeLimit(s: string): number | null {
 
 export function parseHpcConfig(raw: unknown, where = 'hpc.json'): HpcConfig {
   const o = obj(raw, where);
-  only(o, where, ['verified', 'source', 'backend', 'partitions', 'defaultPartition', 'modules',
+  only(o, where, ['verified', 'source', 'backend', 'planA', 'partitions', 'defaultPartition', 'modules',
     'maxUploadMb', 'maxUnpackedMb', 'quotaMb']);
   const verified = bool(o, 'verified', where);
   const source = typeof o.source === 'string' ? o.source : '';
-  if (o.backend !== 'none') {
-    // Not a typo to be fixed by adding a value: a backend that reaches HKU is
-    // M2+ work, which the handover gates on M0 results and a human's choice.
-    throw new ConfigError(`${where}.backend: only "none" exists until the M0 gate is passed (got ${JSON.stringify(o.backend)})`);
+  if (o.backend !== 'none' && o.backend !== 'vpn-ssh') {
+    // Plan B (pull agent) and C (an official HKU route) are not built.
+    throw new ConfigError(`${where}.backend: "none" or "vpn-ssh" (got ${JSON.stringify(o.backend)})`);
   }
+  const backend = o.backend;
+  if (backend === 'vpn-ssh' && o.planA === undefined) throw new ConfigError(`${where}.planA: required when backend is "vpn-ssh"`);
+  if (backend === 'none' && o.planA !== undefined) throw new ConfigError(`${where}.planA: only with backend "vpn-ssh"`);
+  const planA = backend === 'vpn-ssh' ? parsePlanA(o.planA, `${where}.planA`) : null;
   if (!Array.isArray(o.partitions) || o.partitions.length === 0 || o.partitions.length > 32) {
     throw new ConfigError(`${where}.partitions: expected 1-32 partitions`);
   }
@@ -130,7 +199,7 @@ export function parseHpcConfig(raw: unknown, where = 'hpc.json'): HpcConfig {
   const modules = o.modules as string[];
   if (new Set(modules).size !== modules.length) throw new ConfigError(`${where}.modules: duplicate module`);
   return {
-    verified, source, backend: 'none', partitions, defaultPartition, modules,
+    verified, source, backend, planA, partitions, defaultPartition, modules,
     // Defaults are the handover's (§6.2, §10); the 1 GB unpacked limit is its zip-bomb line.
     maxUploadMb: int(o, 'maxUploadMb', where, 1, 1024, 200),
     maxUnpackedMb: int(o, 'maxUnpackedMb', where, 1, 1024, 1024),

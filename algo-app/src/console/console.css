@@ -285,6 +285,30 @@
 .cx-check { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--color-neutral-500); }
 .cx-check input { accent-color: var(--color-accent); }
 
+/* — module 02: Plan A (HKU sign-in, job actions, session) — */
+.cx-job-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cx .cx-danger { color: var(--color-accent-300); }
+.cx-session {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md);
+  font: 400 11px var(--mono); color: var(--color-neutral-300);
+  background: color-mix(in srgb, #f28c38 6%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, #f28c38 35%, transparent);
+}
+.cx-session b { color: var(--color-accent); font-weight: 500; }
+.cx-session .btn { margin-left: auto; min-height: 28px; }
+.cx-modal-back {
+  position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(8, 9, 16, .72); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+}
+.cx .cx-modal { width: min(460px, 100%); max-height: calc(100vh - 32px); overflow: auto; padding: 20px; gap: 14px; box-shadow: var(--shadow-md); }
+.cx-modal-lede { color: var(--color-neutral-300); font-size: 14px; margin: 0 !important; }
+.cx-modal-lede b { font-family: var(--mono); font-weight: 400; color: var(--color-text); }
+.cx-modal-uid { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; }
+.cx .cx-otp { letter-spacing: .3em; font-size: 18px; }
+.cx .cx-otp::placeholder { letter-spacing: 0; font-size: 13px; }
+.cx-modal-note { line-height: 1.6; border-left: 2px solid var(--color-accent-700); padding-left: 10px; }
+.cx-modal-actions { display: flex; justify-content: space-between; gap: 12px; }
+.cx-modal-actions .btn-primary { min-width: 200px; justify-content: space-between; }
+
 /* — toast — */
 .cx-toast {
   position: fixed; left: 28px; bottom: 24px; z-index: 10; display: flex; align-items: center; gap: 10px;
@@ -319,6 +343,8 @@
   .cx-train { padding: 8px 16px 40px; }
   .cx-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cx-jobs th:nth-child(3), .cx-jobs td:nth-child(3) { display: none; }
+  .cx-modal-uid { grid-template-columns: 1fr; }
+  .cx-modal-actions .btn-primary { min-width: 0; }
   .cx-file > .cx-dim { display: none; }
   .cx-editor { height: 360px; }
   .cx-toast { left: 16px; max-width: calc(100vw - 32px); }

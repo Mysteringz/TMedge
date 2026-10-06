@@ -1,4 +1,5 @@
-/** Module 02's server: /api/train (src/algo/train/routes.ts). */
+/** Module 02's server: /api/train (src/algo/train/routes.ts, hpc/routes.ts). */
+import type { SealTicket } from '../../../../src/shared/hpcseal.js';
 
 export interface JobSpec {
   name: string;
@@ -45,7 +46,31 @@ export interface Job {
   endedAt: number | null;
   slurmJobId: number | null;
   exitCode: number | null;
+  remoteDir: string | null;
+  slurmState: string | null;
+  elapsedSeconds: number | null;
+  node: string | null;
+  /** Why the last attempt failed, in words. */
+  message: string | null;
 }
+
+export interface HpcState {
+  available: boolean;
+  reason: string | null;
+  profile: { hkuUid: string; vpnDomain: string } | null;
+  domains: string[];
+  idleTtlSeconds: number;
+  session: { state: 'none' | 'opening' | 'up'; uid: string | null; expiresInSeconds: number | null };
+  lockedForSeconds: number;
+  running: string | null;
+}
+
+export type HpcAction = 'submit' | 'refresh' | 'cancel';
+
+/** The answer to starting an action: an operation to follow, or why not. */
+export interface ActResult { status: number; opId?: string; error?: string; needs?: 'credentials'; retryAfterSeconds?: number }
+
+export interface OpEvent { type: string; data: Record<string, unknown> }
 
 export interface JobSummary {
   id: string;
@@ -116,6 +141,42 @@ export const train = {
     fetch(`/api/train/jobs/${q(id)}`, { method: 'PUT', headers: write, body: JSON.stringify({ uploadId, spec }) })
       .then(json<{ job: Job }>).then((r) => r.job),
   remove: (id: string) => fetch(`/api/train/jobs/${q(id)}`, { method: 'DELETE', headers: { 'x-tm-algo': '1' } }).then(json<{ ok: boolean }>),
+  /** A new draft from one of my jobs' code, with a new spec. */
+  copy: (fromJobId: string, spec: unknown) =>
+    fetch('/api/train/jobs', { method: 'POST', headers: write, body: JSON.stringify({ fromJobId, spec }) })
+      .then(json<{ job: Job }>).then((r) => r.job),
+
+  hpc: () => fetch('/api/train/hpc').then(json<HpcState>),
+  ticket: () => fetch('/api/train/hpc/ticket', { method: 'POST', headers: write }).then(json<SealTicket>),
+  endSession: () => fetch('/api/train/hpc/session', { method: 'DELETE', headers: { 'x-tm-algo': '1' } }).then(json<{ ok: boolean }>),
+  /** 428 is an answer here, not an error: it means "sign in to HKU first". */
+  act: async (id: string, action: HpcAction, body: unknown = {}): Promise<ActResult> => {
+    const r = await fetch(`/api/train/jobs/${q(id)}/${action}`, { method: 'POST', headers: write, body: JSON.stringify(body) });
+    if (r.status === 401) signIn();
+    const out = (await r.json().catch(() => ({}))) as Omit<ActResult, 'status'>;
+    return { status: r.status, ...out };
+  },
+  log: async (id: string, stream: 'out' | 'err'): Promise<{ status: number; text?: string; error?: string }> => {
+    const r = await fetch(`/api/train/jobs/${q(id)}/log?stream=${stream}`);
+    if (r.status === 401) signIn();
+    if (r.ok) return { status: r.status, text: await r.text() };
+    return { status: r.status, ...((await r.json().catch(() => ({}))) as { error?: string }) };
+  },
+  /** Follows an operation's Server-Sent Events until "done" or "error". */
+  follow: (opId: string, onEvent: (e: OpEvent) => void) => new Promise<OpEvent>((resolve) => {
+    const es = new EventSource(`/api/train/ops/${q(opId)}/events`);
+    const types = ['vpn_auth', 'vpn_connect', 'vpn_up', 'ssh_auth', 'ssh_up', 'session_reused', 'uploading', 'submitting', 'submitted', 'done', 'error'];
+    let last: OpEvent = { type: 'error', data: { message: 'lost the connection to the console' } };
+    for (const type of types) {
+      es.addEventListener(type, (m) => {
+        last = { type, data: JSON.parse((m as MessageEvent<string>).data) as Record<string, unknown> };
+        onEvent(last);
+        if (type === 'done' || type === 'error') { es.close(); resolve(last); }
+      });
+    }
+    // The server ends the stream after the last event; anything else is a lost connection.
+    es.onerror = () => { es.close(); resolve(last); };
+  }),
 
   /**
    * The file is the body. XHR rather than fetch because only XHR reports

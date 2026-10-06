@@ -54,16 +54,20 @@ function problemsOf(spec: unknown, files: readonly string[] = FILES): string[] {
 // --- config -----------------------------------------------------------------
 
 describe('HPC config', () => {
-  test('the shipped config/hpc.json loads, and says it is unverified until M0', () => {
+  test('the shipped config/hpc.json loads: Plan A at HKU, partitions marked unverified until M0', () => {
     const shipped = loadHpcConfig(join(REPO, 'config', 'hpc.json'));
-    assert.equal(shipped.backend, 'none');
+    assert.equal(shipped.backend, 'vpn-ssh');
+    assert.equal(shipped.planA?.vpnHost, 'vpn2fa.hku.hk');
+    assert.equal(shipped.planA?.submitHost, 'hpc2021.hku.hk');
+    assert.equal(shipped.planA?.vpnServerCert, null, 'the real VPN is checked against the system CAs, not a pin');
     assert.equal(shipped.verified, false, 'placeholders must not pose as what sinfo said');
     assert.ok(shipped.maxUploadMb < 100, 'Cloudflare Tunnel refuses request bodies over 100 MB');
   });
 
   test('is strict: unknown fields, a backend that reaches HKU, bad partitions are refused', () => {
     assert.throws(() => parseHpcConfig({ ...CFG_JSON, extra: 1 }), ConfigError);
-    assert.throws(() => parseHpcConfig({ ...CFG_JSON, backend: 'ssh' }), /M0 gate/);
+    assert.throws(() => parseHpcConfig({ ...CFG_JSON, backend: 'ssh' }), /"none" or "vpn-ssh"/);
+    assert.throws(() => parseHpcConfig({ ...CFG_JSON, backend: 'vpn-ssh' }), /planA: required/);
     assert.throws(() => parseHpcConfig({ ...CFG_JSON, defaultPartition: 'nope' }), ConfigError);
     assert.throws(() => parseHpcConfig({ ...CFG_JSON, partitions: [{ name: 'cpu', maxTime: '99', gpu: false }] }), /maxTime/);
     assert.throws(() => parseHpcConfig({ ...CFG_JSON, partitions: [{ name: 'cpu', maxTime: '1:00:00', gpu: false, maxGpus: 2 }] }), /GPU/);
@@ -504,7 +508,13 @@ describe('module 02 over HTTP', () => {
     assert.equal(edited.status, 200);
     assert.match(((await edited.json()) as { job: { sbatch: string } }).job.sbatch, /--cpus-per-task=8/);
 
+    const copy = await send(base, alice, 'POST', '/jobs', { fromJobId: job.id, spec: good({ name: 'again', cpusPerTask: 2 }) });
+    assert.equal(copy.status, 201, 'a new draft from a job\'s code');
+    const copied = ((await copy.json()) as { job: { id: string } }).job.id;
+    assert.equal(readFileSync(join(root, 'jobs', copied, 'code', 'train.py'), 'utf8'), 'print("epoch 1")\n');
+
     assert.equal((await send(base, alice, 'DELETE', `/jobs/${job.id}`)).status, 200);
+    assert.equal(existsSync(join(root, 'jobs', copied, 'code', 'train.py')), true, 'the copy keeps its own code');
     assert.equal(existsSync(join(root, 'jobs', job.id)), false);
     const audit = readFileSync(join(root, 'audit.jsonl'), 'utf8');
     assert.match(audit, /"action":"create"/);
@@ -522,6 +532,7 @@ describe('module 02 over HTTP', () => {
     const listed = await (await fetch(`${base}/api/train/jobs`, { headers: { cookie: bob } })).json() as { jobs: unknown[] };
     assert.deepEqual(listed.jobs, []);
 
+    assert.equal((await send(base, bob, 'POST', '/jobs', { fromJobId: job.id, spec: good() })).status, 400, 'nor copied');
     const { upload: u2 } = await (await upload(base, alice, 'other.py', py('pass\n'))).json() as { upload: { id: string } };
     assert.equal((await send(base, bob, 'POST', '/jobs', { uploadId: u2.id, spec: good({ entrypoint: 'other.py' }) })).status, 400);
     assert.equal((await fetch(`${base}/api/train/uploads/${u2.id}/file?path=other.py`, { headers: { cookie: bob } })).status, 404);
@@ -599,15 +610,17 @@ describe('module 02 over HTTP', () => {
       assert.doesNotMatch(api.headers.get('content-security-policy') ?? '', /nonce/, 'nothing else carries one');
     });
 
-  test('no endpoint accepts HKU credentials before the M0 gate', async () => {
+  test('with Plan A switched off, submit refuses before reading any credential', async () => {
     const { base, alice } = await boot();
     const config = await (await fetch(`${base}/api/train/config`, { headers: { cookie: alice } })).json() as { hpc: { available: boolean; reason: string } };
     assert.equal(config.hpc.available, false);
-    assert.match(config.hpc.reason, /M0/);
+    assert.match(config.hpc.reason, /not switched on/);
     const { upload: u } = await (await upload(base, alice, 'train.py', py('pass\n'))).json() as { upload: { id: string } };
-    const { job } = await (await send(base, alice, 'POST', '/jobs', { uploadId: u.id, spec: good() })).json() as { job: { id: string } };
-    for (const path of [`/jobs/${job.id}/submit`, `/jobs/${job.id}/refresh`, `/jobs/${job.id}/cancel`]) {
-      assert.equal((await send(base, alice, 'POST', path, { pin: 'PIN_CANARY_7f3a', otp: 'OTP_CANARY_918273' })).status, 404, path);
-    }
+    const { job } = await (await send(base, alice, 'POST', '/jobs', { uploadId: u.id, spec: good() })).json() as { job: { id: string; status: string } };
+    const r = await send(base, alice, 'POST', `/jobs/${job.id}/submit`, { sealed: { kid: 'x', epk: 'y', iv: 'z', ct: 'w' } });
+    assert.equal(r.status, 503);
+    const after = await (await fetch(`${base}/api/train/jobs/${job.id}`, { headers: { cookie: alice } })).json() as { job: { status: string } };
+    assert.equal(after.job.status, 'DRAFT', 'and the draft is untouched');
+    assert.equal((await send(base, alice, 'POST', `/jobs/${job.id}/refresh`, {})).status, 409, 'nothing to refresh: never sent');
   });
 });

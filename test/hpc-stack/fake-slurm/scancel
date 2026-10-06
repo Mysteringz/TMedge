@@ -1,0 +1,11 @@
+#!/bin/bash
+# Fake scancel: stop the job's process group, record who cancelled it.
+for id in "$@"; do
+  [[ "$id" =~ ^[0-9]+$ ]] || { echo "scancel: error: Invalid job id $id" >&2; exit 1; }
+  f="$HOME/.fakeslurm/$id"; [ -f "$f" ] || { echo "scancel: error: Kill job error on job id $id: Invalid job id specified" >&2; exit 1; }
+  IFS='|' read -r st code start end pid < "$f"
+  case "$st" in PENDING|RUNNING) ;; *) continue ;; esac
+  echo "CANCELLED by $(id -u)|0:15|${start:-$(date +%s)}|$(date +%s)|" > "$f"
+  [ -n "$pid" ] && pkill -TERM -P "$pid" 2>/dev/null; [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null
+done
+exit 0

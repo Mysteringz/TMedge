@@ -12,7 +12,7 @@
  * password exists anywhere in this module until M4, and when it does it
  * lives in a request handler's memory only (HANDOVER.md rule 2).
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { writePrivateJson } from '../../shared/private-file.js';
 import type { JobSpec } from './spec.js';
@@ -56,7 +56,21 @@ export interface TrainJob {
   remoteDir: string | null;
   exitCode: number | null;
   lastPolledAt: number | null;
+  /** SLURM's own words for the state, e.g. "CANCELLED by 12345". */
+  slurmState: string | null;
+  elapsedSeconds: number | null;
+  node: string | null;
+  /** Why the last attempt failed, in words for the person; never a credential. */
+  message: string | null;
 }
+
+/** Records written before a field existed read as null, not undefined. */
+function normalise(j: TrainJob): TrainJob {
+  return { ...j, slurmState: j.slurmState ?? null, elapsedSeconds: j.elapsedSeconds ?? null, node: j.node ?? null, message: j.message ?? null };
+}
+
+/** Jobs SLURM might still change. */
+export const ACTIVE: readonly JobStatus[] = ['SUBMITTED', 'PENDING', 'RUNNING', 'UNKNOWN'];
 
 export class StoreError extends Error {}
 
@@ -89,7 +103,7 @@ export class JobStore {
     try {
       const list: unknown = JSON.parse(readFileSync(this.file, 'utf8'));
       if (!Array.isArray(list) || !list.every(looksLikeJob)) throw new Error('not a list of jobs');
-      this.jobs = new Map(list.map((j) => [j.id, j]));
+      this.jobs = new Map(list.map((j) => [j.id, normalise(j)]));
     } catch (err) {
       this.error = `${this.file} is unreadable (${(err as Error).message}); module 02 is read-only until it is repaired`;
     }
@@ -139,6 +153,15 @@ export class JobStore {
     this.save();
   }
 
+  /** A new job with a copy of another job's code. */
+  createCopy(job: TrainJob, codeOf: string): void {
+    this.check();
+    mkdirSync(join(this.jobsDir, job.id), { mode: 0o700 });
+    cpSync(codeOf, this.codeDir(job.id), { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+    this.jobs.set(job.id, job);
+    this.save();
+  }
+
   /** Replaces a job's record, and its code when `codeFrom` is given. */
   update(job: TrainJob, codeFrom?: string): void {
     this.check();
@@ -173,6 +196,17 @@ export class JobStore {
     return removed;
   }
 
+  /** Another person's job too: for the poller, which works per session. */
+  byId(id: string): TrainJob | undefined {
+    this.check();
+    return UUID.test(id) ? this.jobs.get(id) : undefined;
+  }
+
+  jobDir(id: string): string {
+    if (!UUID.test(id)) throw new StoreError('bad job id');
+    return join(this.jobsDir, id);
+  }
+
   /** HANDOVER.md §8 audit_log: who did what to which job. Never a credential. */
   audit(entry: { user: string; action: string; jobId?: string | null; ip?: string; userAgent?: string; result: string }): void {
     try {
@@ -181,5 +215,37 @@ export class JobStore {
     } catch (err) {
       console.warn(`[algo] module 02 audit write failed: ${(err as Error).message}`);
     }
+  }
+}
+
+/**
+ * Who each person is at HKU (§6.1 hpc_profiles): their UID and which VPN
+ * domain they log in with. Neither is a secret; the PIN never comes here.
+ */
+export interface HpcProfile { hkuUid: string; vpnDomain: string }
+export const HKU_UID = /^[a-z0-9]{2,32}$/;
+
+export class ProfileStore {
+  private profiles: Record<string, HpcProfile> = {};
+  private readonly file: string;
+
+  constructor(root: string) {
+    this.file = join(root, 'profiles.json');
+    if (!existsSync(this.file)) return;
+    try {
+      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Record<string, HpcProfile>;
+      for (const [user, p] of Object.entries(raw)) {
+        if (p && typeof p.hkuUid === 'string' && HKU_UID.test(p.hkuUid) && typeof p.vpnDomain === 'string') this.profiles[user] = { hkuUid: p.hkuUid, vpnDomain: p.vpnDomain };
+      }
+    } catch { /* an unreadable file costs people retyping a UID, nothing more */ }
+  }
+
+  get(user: string): HpcProfile | null {
+    return Object.hasOwn(this.profiles, user) ? this.profiles[user]! : null;
+  }
+
+  set(user: string, p: HpcProfile): void {
+    this.profiles = { ...this.profiles, [user]: { hkuUid: p.hkuUid, vpnDomain: p.vpnDomain } };
+    writePrivateJson(this.file, this.profiles);
   }
 }

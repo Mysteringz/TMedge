@@ -110,3 +110,68 @@ credentials before the M0 gate").
 
     Run M0's S2 from the host and region that would actually run the gateway.
     Check that openconnect and ocproxy can be installed there.
+
+## 2026-10-06 (later): Plan A, chosen by the team before M0
+
+The team chose **Plan A**: each person types their own UID, Portal PIN and
+one-time code, and the console opens their own HKUVPN tunnel and HPC2021 login
+with them. They chose it before M0 had run, so the first real logins double as
+M0's S1–S4 and need a person present, which they have by design: each person
+is typing their own code. **The ITS policy question (§3 Q12) is still open.**
+If HKU says no to relaying credentials, switch to `"backend": "none"`.
+
+13. **Credentials are sealed in the browser** (ECDH P-256 + HKDF + AES-GCM to a
+    one-time server key; `src/shared/hpcseal.ts`). This site is behind
+    Cloudflare Tunnel, so TLS ends twice before the edge. Sealing means
+    Cloudflare, cloudflared and Express only ever carry ciphertext. The edge
+    decrypts straight into a Buffer (`Credentials`), never a JavaScript string,
+    and zeroes it the moment the SSH login is done, before any upload or
+    sbatch. A V8 heap snapshot taken after a full run contains no trace of the
+    PIN (`test/hpcstack.test.ts`).
+14. **The code is sent only when openconnect asks for it.** Against a real
+    AnyConnect server, a wrong PIN makes openconnect show the form again and
+    read the next stdin line as a second password. Fed "PIN\nOTP\n" up front,
+    one typo would cost two failed logins and send the code as a password. So
+    the driver writes the PIN, waits for the second-factor prompt, and kills
+    openconnect on "Login failed". That is one attempt per click (rule 4).
+    openconnect's stderr carries Set-Cookie headers, so it is never logged or
+    shown; failures map to fixed messages.
+15. **The system's OpenSSH as a ControlMaster, not paramiko or ssh2.**
+    - **No new dependency:** the runtime dependencies stay express and ws.
+    - **Session cache:** the master connection is the cache; later commands reuse
+      it with no password.
+    - **The password:** it reaches ssh only via SSH_ASKPASS. A tiny helper asks a
+      one-time Unix socket in a 0700 directory, so the password is never in argv
+      or the environment.
+    - **Host keys:** pinned with `StrictHostKeyChecking=yes` (the handover's
+      RejectPolicy).
+16. **The code is copied with tar over the same SSH connection**, to
+    `hpc2021.hku.hk`, not SFTP to `hpc2021-io1`. That is one login instead of
+    two, so the PIN lives half as long. Job code is small; the IO nodes are
+    for bulk data, which stays out of scope (§6.2).
+17. **Limits for a 1 GB t3.micro:**
+    - 4 concurrent sessions (one tunnel, ocproxy and ssh master each).
+    - 10 minutes idle.
+    - SOCKS ports 21000–21099 on loopback only.
+    - Locked for 15 minutes after 3 failed logins in 15 minutes, per dashboard
+      account *and* per HKU UID, before anything reaches HKU.
+18. **Status:** while someone is signed in, their active jobs are polled
+    every 30 s, and polling does not keep the session alive. Otherwise the
+    job shows its last-known state, and "Refresh" asks for a code only if
+    the session has ended (§6.6 layers 1 and 3; the webhook layer is not
+    built).
+19. **The local fake HKU** (`test/hpc-stack/`, `npm run test:hpc-stack`, needs
+    Docker) uses ocserv with password + TOTP, DNS and SSH that exist only inside
+    the tunnel, and a fake SLURM. All names are under `.test`. Two things it
+    taught us that matter at HKU:
+    - openconnect's retry behaviour (#14).
+    - ocserv refuses a source IP after failed logins. If HKU does the same, one
+      person's typos could lock everyone out, because everyone shares the EC2
+      IP. Measuring this is in m0-checklist.md.
+20. **On the box**, see plan-a-runbook.md:
+    - openconnect and ocproxy are built for Amazon Linux 2023, which does not
+      package them.
+    - `LimitCORE=0` on the edge unit. It was `infinity` with systemd-coredump
+      on, so a crash mid-login would have written the PIN to disk.
+    - The 2 GB swap is unencrypted. A PIN lives for seconds, but could in
+      principle be paged out; encrypted swap is the fix if that matters.

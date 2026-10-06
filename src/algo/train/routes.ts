@@ -6,8 +6,8 @@
  * per account: every lookup goes through JobStore.get(user, id), so another
  * person's job answers exactly like a job that does not exist.
  *
- * Submit, refresh, logs and cancel are absent on purpose. They carry HKU
- * credentials, and the handover allows none of that before M0.
+ * Submit, refresh, cancel and logs (Plan A, the only routes that can carry
+ * HKU credentials) are in hpc/routes.ts.
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
@@ -15,11 +15,13 @@ import { join, resolve, sep } from 'node:path';
 import express, { type NextFunction, type Request, type RequestHandler, type Response, type Router } from 'express';
 import { ConfigError } from '../../edge/registry.js';
 import { RateLimiter } from '../../web/auth.js';
-import { NO_BACKEND, type HpcBackend } from './backend.js';
 import { loadHpcConfig, type HpcConfig } from './config.js';
 import { renderSbatch } from './sbatch.js';
 import { MAX_ARG_LENGTH, MAX_ARGS, MAX_ENV, MAX_ENV_VALUE, validateSpec } from './spec.js';
-import { EDITABLE, JobStore, MAX_JOBS_PER_USER, StoreError, type CodeInfo, type TrainJob } from './store.js';
+import { EDITABLE, JobStore, MAX_JOBS_PER_USER, ProfileStore, StoreError, type CodeInfo, type TrainJob } from './store.js';
+import type { GatewayDeps } from './hpc/gateway.js';
+import { mountHpc } from './hpc/routes.js';
+import { HpcService } from './hpc/service.js';
 import { MAX_PY_BYTES, MAX_ZIP_ENTRIES, UploadError, Uploads, type Upload } from './uploads.js';
 
 /** The editor shows one file at a time; a megabyte of Python is plenty. */
@@ -31,7 +33,8 @@ export interface TrainOptions {
   configPath: string;
   /** The algo console's write guard (the x-tm-algo header). */
   mutating: RequestHandler;
-  backend?: HpcBackend;
+  /** Tests replace openconnect and ssh with fakes. */
+  gatewayDeps?: GatewayDeps;
 }
 
 const codeOf = (u: Upload): CodeInfo => ({
@@ -58,7 +61,6 @@ function readCode(dir: string, py: readonly string[], path: unknown): { text: st
 
 export function createTrain(opts: TrainOptions): { router: Router; error: string | null; stop(): void } {
   const router = express.Router();
-  const backend = opts.backend ?? NO_BACKEND;
   let cfg: HpcConfig | null = null;
   let error: string | null = null;
   try {
@@ -80,11 +82,15 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
   else store.sweep();
   const sweeper = setInterval(() => uploads.sweep(), 10 * 60_000);
   sweeper.unref();
+  const service = new HpcService(config, store, new ProfileStore(opts.root), opts.root, opts.gatewayDeps);
+  service.start();
 
   const uploadLimiter = new RateLimiter(30, 10 * 60_000);
   const writeLimiter = new RateLimiter(120, 10 * 60_000);
   /** Debounced keystrokes: generous, but still a ceiling. */
   const previewLimiter = new RateLimiter(1200, 10 * 60_000);
+  /** Each of these may start an HKU login. */
+  const hpcLimiter = new RateLimiter(60, 10 * 60_000);
   const userOf = (res: Response) => String(res.locals.user);
   const limit = (limiter: RateLimiter): RequestHandler => (_req, res, next) =>
     limiter.allow(userOf(res)) ? next() : void res.status(429).json({ error: 'too many changes; wait a few minutes' });
@@ -105,7 +111,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
         maxArgs: MAX_ARGS, maxArgLength: MAX_ARG_LENGTH, maxEnv: MAX_ENV, maxEnvValue: MAX_ENV_VALUE,
       },
       usage: { bytes: store.usage(user) + uploads.usage(user), jobs: store.count(user) },
-      hpc: { backend: backend.name, available: backend.unavailable === null, reason: backend.unavailable },
+      hpc: { backend: config.backend, available: service.unavailable() === null, reason: service.unavailable() },
     });
   });
 
@@ -167,23 +173,35 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
 
   router.post('/jobs', opts.mutating, limit(writeLimiter), (req, res) => {
     const user = userOf(res);
-    const body = (req.body ?? {}) as { uploadId?: unknown; spec?: unknown };
+    const body = (req.body ?? {}) as { uploadId?: unknown; fromJobId?: unknown; spec?: unknown };
+    // New code (an upload), or the code of one of this person's jobs: a job
+    // that has been sent is a record, and "run it again with 8 CPUs" starts here.
     const upload = typeof body.uploadId === 'string' ? uploads.get(user, body.uploadId) : undefined;
-    if (!upload) return res.status(400).json({ error: 'upload the code first (an upload is kept for an hour)' });
+    const from = !upload && typeof body.fromJobId === 'string' ? store.get(user, body.fromJobId) : undefined;
+    if (!upload && !from) return res.status(400).json({ error: 'upload the code first (an upload is kept for an hour)' });
     if (store.count(user) >= MAX_JOBS_PER_USER) {
       return res.status(409).json({ error: `you have ${MAX_JOBS_PER_USER} jobs; delete some drafts first` });
     }
-    const v = validateSpec(body.spec, config, upload.py);
+    const code = upload ? codeOf(upload) : from!.code;
+    if (from && store.usage(user) + uploads.usage(user) + code.unpackedBytes > config.quotaMb * 1024 * 1024) {
+      return res.status(413).json({ error: `copying it would pass your ${config.quotaMb} MB of job code; delete old drafts first` });
+    }
+    const v = validateSpec(body.spec, config, code.py);
     if (!v.ok) return res.status(400).json({ error: 'the job spec needs fixing', problems: v.problems });
     const now = Date.now();
     const job: TrainJob = {
-      id: randomUUID(), user, spec: v.spec, status: 'DRAFT', code: codeOf(upload), sbatch: renderSbatch(v.spec),
+      id: randomUUID(), user, spec: v.spec, status: 'DRAFT', code, sbatch: renderSbatch(v.spec),
       createdAt: now, updatedAt: now, submittedAt: null, startedAt: null, endedAt: null,
       slurmJobId: null, remoteDir: null, exitCode: null, lastPolledAt: null,
+      slurmState: null, elapsedSeconds: null, node: null, message: null,
     };
-    store.create(job, uploads.codeDir(upload.id));
-    uploads.adopted(upload.id);
-    audit(req, res, 'create', job.id, 'ok');
+    if (upload) {
+      store.create(job, uploads.codeDir(upload.id));
+      uploads.adopted(upload.id);
+    } else {
+      store.createCopy(job, store.codeDir(from!.id));
+    }
+    audit(req, res, 'create', job.id, from ? `ok copy of ${from.id}` : 'ok');
     return res.status(201).json({ job });
   });
 
@@ -219,12 +237,14 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
     return res.json({ ok: true });
   });
 
+  mountHpc(router, { service, store, config, mutating: opts.mutating, limit: limit(hpcLimiter), userOf });
+
   router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (err instanceof StoreError) return res.status(503).json({ error: err.message });
     return next(err);
   });
 
-  return { router, error, stop: () => clearInterval(sweeper) };
+  return { router, error, stop: () => { clearInterval(sweeper); void service.stop(); } };
 }
 
 /** Where module 02 keeps its files, beside the console's other state. */

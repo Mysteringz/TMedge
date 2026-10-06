@@ -1,7 +1,9 @@
 # M0: the feasibility spike, before any job reaches HKU
 
-M0 is a hard gate (HANDOVER.md §3, §14, rule 7). Until it has run, module 02
-saves drafts and renders their `job.sbatch` but submits nothing.
+The team chose Plan A on 2026-10-06 before M0 had run (decisions.md). M0's
+questions still need answers, and the first real logins answer S1–S4:
+`npm run hpc-hostkeys` on the box (plan-a-runbook.md) is S1–S4 with a person
+present. Record what you see in `feasibility-results.md`.
 
 - **Who:** one volunteer with an HKU account, with a person present the whole
   time.
@@ -64,6 +66,21 @@ Then update `config/hpc.json`:
 
 The "placeholders · M0" tag on the JOB SPEC card disappears once `verified`
 is true.
+
+## Added by Plan A: one IP for everyone
+
+Every dashboard user reaches `vpn2fa.hku.hk` from the EC2 box's single IP.
+A local stand-in for the VPN (ocserv) refuses an IP for minutes after a
+failed login, which would let one person's typo lock out every user. The
+dashboard's own guard stops each person after 3 failures, but it cannot
+change what HKU does. Record:
+
+- [ ] After one deliberate wrong code (S14), can a *different* person log in
+      from the same EC2 IP straight away?
+- [ ] Do two people logging in within the same minute both succeed (S11)?
+
+If HKU throttles per IP, tell the team to type their code carefully, and
+consider Plan B or C (an IP allow-list, §12).
 
 ## Also decide at M0
 

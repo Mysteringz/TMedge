@@ -17,7 +17,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { FilePy, FloppyDisk, PaperPlaneRight, Plus, UploadSimple, XMark } from './icons.tsx';
 import { Toast, useToast } from './parts.tsx';
 import { CodeEditor } from './train/CodeEditor.tsx';
-import { train, TrainError, type Job, type JobSpec, type JobSummary, type Problem, type TrainConfig } from './train/api.ts';
+import { train, TrainError, type HpcAction, type HpcState, type Job, type JobSpec, type JobSummary, type OpEvent, type Problem, type TrainConfig } from './train/api.ts';
+import { SignIn } from './train/SignIn.tsx';
 
 const DEFAULT_SCRIPT = `# algo.hkumyseat.com — training job for HKU HPC2021 (SLURM)
 # Runs on a compute node as: srun python train.py <arguments>
@@ -62,6 +63,29 @@ if __name__ == "__main__":
 const STORE_KEY = 'algo_train_v1';
 const FILENAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.py$/;
 const EDITABLE = new Set(['DRAFT', 'SUBMIT_FAILED']);
+/** States SLURM may still change. */
+const ACTIVE = new Set(['SUBMITTED', 'PENDING', 'RUNNING', 'UNKNOWN']);
+
+/** What each step of an HKU action looks like in the console, and how far along the bar it is. */
+const STEPS: Record<string, { at?: number; tone: Tone; say(d: Record<string, unknown>): string }> = {
+  vpn_auth: { at: 0.1, tone: 'info', say: () => '[vpn]    signing in to HKUVPN as you (one attempt)' },
+  vpn_connect: { at: 0.25, tone: 'info', say: () => '[vpn]    accepted · opening your own tunnel' },
+  vpn_up: { at: 0.4, tone: 'info', say: () => '[vpn]    tunnel up' },
+  ssh_auth: { at: 0.5, tone: 'info', say: () => '[ssh]    signing in to HPC2021' },
+  ssh_up: { at: 0.6, tone: 'info', say: () => '[ssh]    signed in · your PIN and code are wiped from the server' },
+  session_reused: { at: 0.6, tone: 'info', say: () => '[hku]    using your open session · no code needed' },
+  uploading: { at: 0.75, tone: 'info', say: (d) => `[upload] copying ${String(d.files ?? '')} file(s) to ~/hpc-dash/jobs/` },
+  submitting: { at: 0.9, tone: 'info', say: () => '[sbatch] sbatch --parsable job.sbatch' },
+  submitted: { at: 1, tone: 'accent', say: (d) => `[slurm]  accepted as job ${String(d.slurmJobId)}` },
+  done: { tone: 'accent', say: (d) => `[done]   ${String(d.status ?? 'ok')}` },
+  error: { tone: 'err', say: (d) => `! ${String(d.message ?? 'failed')}` },
+};
+
+function duration(sec: number | null): string {
+  if (sec === null) return '—';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(x).padStart(2, '0')}s`;
+}
 
 const LABELS: Record<string, string> = {
   name: 'Job name', partition: 'Partition', cpusPerTask: 'CPUs', memGb: 'Mem GB', gpus: 'GPUs', timeLimit: 'Time',
@@ -166,7 +190,11 @@ export function Train() {
   const [source, setSource] = useState<Source>(loadScript);
   const [form, setForm] = useState<Form | null>(null);
   const [viewText, setViewText] = useState('');
-  const [tab, setTab] = useState<'code' | 'sbatch'>('code');
+  const [tab, setTab] = useState<'code' | 'sbatch' | 'log'>('code');
+  const [hpc, setHpc] = useState<HpcState | null>(null);
+  const [signIn, setSignIn] = useState<{ action: HpcAction; jobId: string; jobName: string; then?: 'log' } | null>(null);
+  const [acting, setActing] = useState<HpcAction | null>(null);
+  const [logText, setLogText] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ sbatch: string | null; problems: Problem[] }>({ sbatch: null, problems: [] });
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<'' | 'upload' | 'save' | 'load'>('');
@@ -188,6 +216,19 @@ export function Train() {
     return { c, list };
   }, []);
 
+  const loadHpc = useCallback(async () => {
+    try { const h = await train.hpc(); setHpc(h); return h; } catch { return null; }
+  }, []);
+
+  /** The saved record again (state, SLURM id, exit code), leaving the editor and form alone. */
+  const reloadJob = useCallback(async (id: string) => {
+    try {
+      const j = await train.job(id);
+      setJob((cur) => (cur?.id === j.id ? j : cur));
+      setJobs(await train.jobs());
+    } catch { /* it was deleted, or the console is unreachable */ }
+  }, []);
+
   const open = useCallback(async (id: string) => {
     setBusy('load');
     try {
@@ -202,6 +243,8 @@ export function Train() {
       }
       setDirty(false);
       setProgress(0);
+      setLogText(null);
+      setTab('code');
       history.replaceState(null, '', `/train?job=${j.id}`);
       say(`$ open ${j.spec.name} (${j.id.slice(0, 8)})`, 'cmd');
     } catch (e) {
@@ -216,9 +259,9 @@ export function Train() {
     refresh().then(async ({ c, list }) => {
       if (gone) return;
       setForm((f) => f ?? defaultForm(c, source.kind === 'script' ? source.filename : ''));
-      if (c.hpc.available) say('[hpc]    HPC2021 submission is on', 'info');
+      if (c.hpc.available) say('[hku]    HPC2021 is on: you sign in as yourself when you send, refresh or cancel', 'info');
       else {
-        say('[hpc]    submission to HPC2021 is not switched on yet: it waits on the M0 feasibility gate', 'accent');
+        say(`[hku]    sending to HPC2021 is not ready: ${c.hpc.reason ?? ''}`, 'accent');
         say('[ok]     drafts, uploads and the exact job.sbatch preview work now', 'info');
       }
       if (!c.verified) say('[config] partitions and modules are placeholders until M0 reads them off HPC2021', 'muted');
@@ -229,6 +272,20 @@ export function Train() {
     return () => { gone = true; };
     // Once, on arrival.
   }, []);
+
+  useEffect(() => {
+    void loadHpc();
+    const t = setInterval(() => void loadHpc(), 20_000);
+    return () => clearInterval(t);
+  }, [loadHpc]);
+
+  // A job on the cluster: the server polls SLURM while its owner is signed
+  // in; this picks up what it found.
+  useEffect(() => {
+    if (!job || !ACTIVE.has(job.status)) return;
+    const t = setInterval(() => void reloadJob(job.id), 15_000);
+    return () => clearInterval(t);
+  }, [job?.id, job?.status, reloadJob]);
 
   useEffect(() => { keepScript(source); }, [source]);
   useEffect(() => { if (logEl.current) logEl.current.scrollTop = logEl.current.scrollHeight; }, [log]);
@@ -307,11 +364,11 @@ export function Train() {
     }
   };
 
-  const save = async () => {
-    if (!cfg || !form || busy) return;
+  const save = async (): Promise<Job | null> => {
+    if (!cfg || !form || busy) return null;
     const { spec, local } = specOf(form);
     say(`$ save draft ${String(spec.name) || '(unnamed)'}`, 'cmd');
-    if (local.length > 0) { for (const p of local) say(`! ${LABELS[p.field] ?? p.field}: ${p.message}`, 'err'); return; }
+    if (local.length > 0) { for (const p of local) say(`! ${LABELS[p.field] ?? p.field}: ${p.message}`, 'err'); return null; }
     setBusy('save');
     try {
       let uploadId: string | undefined;
@@ -326,6 +383,8 @@ export function Train() {
       let saved: Job;
       if (job && EDITABLE.has(job.status)) saved = await train.update(job.id, spec, uploadId);
       else if (uploadId) saved = await train.create(uploadId, spec);
+      // A job that was sent is a record: its unchanged code starts a new draft.
+      else if (job) saved = await train.copy(job.id, spec);
       else throw new TrainError('write or upload the code first');
       setJob(saved);
       setSource(source.kind === 'script'
@@ -336,17 +395,70 @@ export function Train() {
       history.replaceState(null, '', `/train?job=${saved.id}`);
       say('[check]  spec ok · job.sbatch rendered', 'info');
       say(`[draft]  ${saved.spec.name} saved as ${saved.id.slice(0, 8)}`, 'accent');
-      if (!cfg.hpc.available) say('[hpc]    not sent: HPC2021 submission waits on M0', 'muted');
       flash(`Draft ${saved.spec.name} saved`);
       await refresh();
+      return saved;
     } catch (e) {
       const err = e as TrainError;
       say(`! ${err.message}`, 'err');
       for (const p of err.problems ?? []) say(`!   ${LABELS[p.field] ?? p.field}: ${p.message}`, 'err');
       if (err.problems?.length) setPreview((p) => ({ ...p, problems: err.problems }));
+      return null;
     } finally {
       setBusy('');
     }
+  };
+
+  /**
+   * Starts an HKU action and follows it. A 428 means "sign in first": the
+   * sign-in form opens, and it calls this again with sealed credentials.
+   */
+  const runOp = async (action: HpcAction, id: string, name: string, body?: unknown, then?: 'log'): Promise<OpEvent | null> => {
+    setActing(action);
+    try {
+      const r = await train.act(id, action, body);
+      if (r.status === 428) { setSignIn({ action, jobId: id, jobName: name, then }); return null; }
+      if (r.status !== 202 || !r.opId) { say(`! ${r.error ?? `HTTP ${r.status}`}`, 'err'); return null; }
+      if (action === 'submit') setProgress(0.02);
+      return await train.follow(r.opId, (e) => {
+        const step = STEPS[e.type];
+        if (!step) return;
+        say(step.say(e.data), step.tone);
+        if (step.at !== undefined && action === 'submit') setProgress(step.at);
+        if (e.type === 'error' && action === 'submit') setProgress(0);
+      });
+    } finally {
+      setActing(null);
+      await Promise.all([loadHpc(), reloadJob(id)]);
+    }
+  };
+
+  const send = async () => {
+    if (!cfg || !form || busy || acting) return;
+    let target = job;
+    const unsaved = dirty || (source.kind === 'script' && !source.saved) || (source.kind === 'zip' && source.uploadId !== null);
+    if (!target || unsaved || !EDITABLE.has(target.status)) {
+      target = await save();
+      if (!target) return;
+    }
+    say(`$ send ${target.spec.name} to HPC2021`, 'cmd');
+    await runOp('submit', target.id, target.spec.name);
+  };
+
+  const showLog = async (stream: 'out' | 'err' = 'out') => {
+    if (!job?.slurmJobId) return;
+    const r = await train.log(job.id, stream);
+    if (r.status === 428) { setSignIn({ action: 'refresh', jobId: job.id, jobName: job.spec.name, then: 'log' }); return; }
+    if (r.text === undefined) { say(`! ${r.error ?? `HTTP ${r.status}`}`, 'err'); return; }
+    say(`$ tail slurm-${job.slurmJobId}.${stream}`, 'cmd');
+    setLogText(r.text || `# slurm-${job.slurmJobId}.${stream} is empty so far\n`);
+    setTab('log');
+  };
+
+  const signOutHku = async () => {
+    await train.endSession().catch(() => undefined);
+    say('$ hku sign-out · tunnel and SSH session closed', 'cmd');
+    await loadHpc();
   };
 
   const saveRef = useRef(save);
@@ -389,12 +501,15 @@ export function Train() {
   const shownFile = source.kind === 'script' ? source.filename : `${source.filename} › ${form.entrypoint}`;
   const srun = preview.sbatch?.split('\n').find((l) => l.startsWith('srun '));
   const filled = Math.round(progress * 20);
-  const canSend = cfg.hpc.available && !busy;
-  const elapsed = job?.startedAt ? Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000) : null;
+  const ready = hpc?.available ?? cfg.hpc.available;
+  const canSend = ready && !busy && !acting;
+  const sent = !!job && !EDITABLE.has(job.status);
+  const elapsed = job?.elapsedSeconds ?? (job?.startedAt ? Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000) : null);
+  const session = hpc?.session.state === 'up' ? hpc.session : null;
 
   return (
     <main className="cx-train">
-      <Head status={status} hpc={cfg.hpc} />
+      <Head status={status} hpc={hpc} />
 
       <div className="cx-train-cols">
         {/* left: editor + console */}
@@ -408,18 +523,20 @@ export function Train() {
               <div className="seg cx-tabs" role="tablist" aria-label="Show">
                 <label className="seg-opt"><input type="radio" name="tab" checked={tab === 'code'} onChange={() => setTab('code')} />code</label>
                 <label className="seg-opt"><input type="radio" name="tab" checked={tab === 'sbatch'} onChange={() => setTab('sbatch')} />job.sbatch</label>
+                {logText !== null && <label className="seg-opt"><input type="radio" name="tab" checked={tab === 'log'} onChange={() => setTab('log')} />log</label>}
               </div>
               <input ref={fileInput} type="file" accept=".py,.zip" hidden onChange={pickFile} />
               <button className="btn btn-secondary cx-btn-px" onClick={() => fileInput.current?.click()} disabled={!!busy}
                 title={`a .py (≤ ${cfg.limits.maxPyMb} MB) or a .zip of your project (≤ ${cfg.limits.maxUploadMb} MB)`}>
                 <UploadSimple />UPLOAD
               </button>
-              <button className="btn btn-secondary cx-btn-px" onClick={() => void save()} disabled={!!busy} title="Save draft (Ctrl/⌘ S)">
-                <FloppyDisk />{busy === 'save' ? 'SAVING…' : 'SAVE DRAFT'}
+              <button className="btn btn-secondary cx-btn-px" onClick={() => void save()} disabled={!!busy || !!acting}
+                title={sent ? 'This job was sent: saving starts a new draft' : 'Save draft (Ctrl/⌘ S)'}>
+                <FloppyDisk />{busy === 'save' ? 'SAVING…' : sent ? 'SAVE AS NEW' : 'SAVE DRAFT'}
               </button>
-              <button className="btn btn-primary cx-btn-px" disabled={!canSend} aria-describedby="cx-hpc-why"
-                title={cfg.hpc.available ? 'Send to HPC2021' : cfg.hpc.reason ?? undefined}>
-                <PaperPlaneRight />SEND JOB TO TRAIN
+              <button className="btn btn-primary cx-btn-px" disabled={!canSend} aria-describedby="cx-hpc-why" onClick={() => void send()}
+                title={ready ? 'Save if needed, sign in as yourself, and send to HPC2021' : hpc?.reason ?? cfg.hpc.reason ?? undefined}>
+                <PaperPlaneRight />{acting === 'submit' ? 'SENDING…' : 'SEND JOB TO TRAIN'}
               </button>
             </div>
             <div className="cx-editor">
@@ -434,8 +551,13 @@ export function Train() {
                 />
               </div>
               <div hidden={tab !== 'sbatch'} className="cx-editor-pane">
-                <CodeEditor value={preview.sbatch ?? '# job.sbatch appears here once the job spec is valid\n'} language="text" readOnly label="Rendered job.sbatch" />
+                <CodeEditor value={(sent ? job?.sbatch : preview.sbatch) ?? '# job.sbatch appears here once the job spec is valid\n'} language="text" readOnly label="Rendered job.sbatch" />
               </div>
+              {logText !== null && (
+                <div hidden={tab !== 'log'} className="cx-editor-pane">
+                  <CodeEditor value={logText} language="text" readOnly label="Job output" />
+                </div>
+              )}
             </div>
           </div>
 
@@ -452,7 +574,7 @@ export function Train() {
               <span className="cx-accent cx-blink">█</span>
             </div>
           </div>
-          {!cfg.hpc.available && <p id="cx-hpc-why" className="cx-hint cx-why">{cfg.hpc.reason}</p>}
+          {!ready && <p id="cx-hpc-why" className="cx-hint cx-why">{hpc?.reason ?? cfg.hpc.reason}</p>}
         </section>
 
         {/* right: the job + its spec */}
@@ -468,12 +590,37 @@ export function Train() {
             <div className="cx-metrics">
               <Metric label="State" value={status} accent />
               <Metric label="SLURM id" value={job?.slurmJobId != null ? String(job.slurmJobId) : '—'} />
-              <Metric label="Elapsed" value={elapsed === null ? '—' : `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, '0')}s`} />
+              <Metric label="Elapsed" value={duration(elapsed)} />
               <Metric label="Exit" value={job?.exitCode != null ? String(job.exitCode) : '—'} />
             </div>
+            {job?.message && <div className="cx-hint is-err">! {job.message}</div>}
             <div className="cx-hint">
+              {job?.slurmState && job.slurmState !== job.status ? `${job.slurmState} · ` : ''}
+              {job?.node ? `${job.node} · ` : ''}
               {form.cpus} cpu · {form.mem} GB · {form.gpus} gpu · {form.time} on {form.partition}
             </div>
+            {job?.slurmJobId != null && (
+              <div className="cx-job-actions">
+                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void runOp('refresh', job.id, job.spec.name)}>
+                  {acting === 'refresh' ? 'REFRESHING…' : 'REFRESH'}
+                </button>
+                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('out')}>LOG</button>
+                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('err')}>STDERR</button>
+                {ACTIVE.has(job.status) && (
+                  <button className="btn btn-ghost cx-btn-px cx-danger" disabled={!!acting}
+                    onClick={() => { if (window.confirm(`Cancel ${job.spec.name} (SLURM ${job.slurmJobId}) on HPC2021?`)) void runOp('cancel', job.id, job.spec.name); }}>
+                    {acting === 'cancel' ? 'CANCELLING…' : 'CANCEL JOB'}
+                  </button>
+                )}
+              </div>
+            )}
+            {session && (
+              <div className="cx-session">
+                <span className="cx-online" />
+                <span>signed in to HKU as <b>{session.uid}</b> · {Math.max(1, Math.round((session.expiresInSeconds ?? 0) / 60))} min left</span>
+                <button className="btn btn-ghost cx-btn-px" onClick={() => void signOutHku()}>SIGN OUT OF HKU</button>
+              </div>
+            )}
             <table className="table cx-jobs">
               <thead><tr><th style={{ width: 24 }} /><th>Job</th><th>Partition</th><th>State</th><th style={{ textAlign: 'right' }}>Saved</th><th style={{ width: 28 }} /></tr></thead>
               <tbody>
@@ -592,11 +739,23 @@ export function Train() {
         </section>
       </div>
       <Toast text={toast} />
+      {signIn && hpc && (
+        <SignIn hpc={hpc} action={signIn.action} jobId={signIn.jobId} jobName={signIn.jobName}
+          onCancel={() => { setSignIn(null); say('[hku]    sign-in cancelled · nothing was sent', 'muted'); }}
+          onSealed={(body) => {
+            const s = signIn;
+            setSignIn(null);
+            void runOp(s.action, s.jobId, s.jobName, body).then((last) => { if (s.then === 'log' && last?.type === 'done') void showLog(); });
+          }} />
+      )}
     </main>
   );
 }
 
-function Head({ status, hpc }: { status: string; hpc: TrainConfig['hpc'] | null }) {
+function Head({ status, hpc }: { status: string; hpc: HpcState | null }) {
+  const up = hpc?.session.state === 'up';
+  const label = !hpc ? null : !hpc.available ? 'NOT READY' : up ? `SIGNED IN · ${Math.max(1, Math.round((hpc.session.expiresInSeconds ?? 0) / 60))}M`
+    : hpc.session.state === 'opening' ? 'SIGNING IN…' : 'SIGNED OUT';
   return (
     <header className="cx-train-head">
       <div>
@@ -605,9 +764,9 @@ function Head({ status, hpc }: { status: string; hpc: TrainConfig['hpc'] | null 
       </div>
       <div className="cx-job">
         {hpc && <>
-          <span>hpc2021</span>
-          <span className={`tag ${hpc.available ? 'tag-accent' : 'tag-neutral'} cx-tag-px`} title={hpc.reason ?? undefined}>
-            {hpc.available ? 'CONNECTED' : 'NOT CONNECTED'}
+          <span>hku</span>
+          <span className={`tag ${up ? 'tag-accent' : 'tag-neutral'} cx-tag-px`} title={hpc.reason ?? (up ? `signed in as ${hpc.session.uid ?? ''}` : 'you sign in when you send')}>
+            {label}
           </span>
         </>}
         <span>job</span><span className={`tag ${tagClass(status)} cx-tag-px`}>{status}</span>

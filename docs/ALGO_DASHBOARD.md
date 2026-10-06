@@ -180,10 +180,12 @@ restart. Until one exists it says so and explains how to make it.
 ## Module 02: ML Training
 
 `/train` writes or uploads a training script, takes what it needs from HKU
-HPC2021, and saves it as a draft whose `job.sbatch` is exactly what would be
-submitted. Submission itself waits on the M0 feasibility gate: see
-[hpc/m0-checklist.md](hpc/m0-checklist.md), the spec
-[hpc/HANDOVER.md](hpc/HANDOVER.md) and [hpc/decisions.md](hpc/decisions.md).
+HPC2021, and sends it there as the person who wrote it: they sign in with
+their own UID, PIN and code, which open their own HKUVPN tunnel and SSH
+login once and are wiped (Plan A). See [hpc/plan-a-runbook.md](hpc/plan-a-runbook.md)
+for the box, [hpc/decisions.md](hpc/decisions.md) for why, the spec
+[hpc/HANDOVER.md](hpc/HANDOVER.md), and [hpc/m0-checklist.md](hpc/m0-checklist.md)
+for what the first real logins must record.
 
 ## Layout
 

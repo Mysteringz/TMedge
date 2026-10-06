@@ -1,0 +1,3 @@
+#!/bin/bash
+# Lmod stand-in: the rendered script calls module purge / module load.
+exit 0

@@ -1,0 +1,20 @@
+#!/bin/bash
+# Fake sbatch: runs the script for real, in the background, the way SLURM
+# would on a node: in the submit directory, output to the #SBATCH files.
+set -euo pipefail
+parsable=0; script=
+for a in "$@"; do case "$a" in --parsable) parsable=1 ;; -*) ;; *) script=$a ;; esac; done
+[ -n "$script" ] && [ -f "$script" ] || { echo "sbatch: error: Unable to open file $script" >&2; exit 1; }
+part=$(sed -n 's/^#SBATCH --partition=//p' "$script" | head -1)
+case "$part" in intel|amd|gpu|cpu) ;; *)
+  echo "sbatch: error: invalid partition specified: $part" >&2
+  echo "sbatch: error: Batch job submission failed: Invalid partition name specified" >&2; exit 1 ;; esac
+exec 9>/var/lib/fakeslurm/lock; flock 9
+id=$(( $(cat /var/lib/fakeslurm/next 2>/dev/null || echo 4100) + 1 )); echo "$id" > /var/lib/fakeslurm/next
+exec 9>&-
+out=$(sed -n 's/^#SBATCH --output=//p' "$script" | head -1); out=${out:-slurm-%j.out}
+err=$(sed -n 's/^#SBATCH --error=//p' "$script" | head -1); err=${err:-$out}
+mkdir -p "$HOME/.fakeslurm"
+echo "PENDING|0:0|$(date +%s)||" > "$HOME/.fakeslurm/$id"
+nohup setsid /usr/local/bin/fakeslurm-run "$id" "$PWD" "$script" "${out//%j/$id}" "${err//%j/$id}" </dev/null >/dev/null 2>&1 &
+if [ "$parsable" = 1 ]; then echo "$id"; else echo "Submitted batch job $id"; fi
