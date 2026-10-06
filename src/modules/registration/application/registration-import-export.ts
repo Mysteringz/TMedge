@@ -28,6 +28,7 @@ export interface RegistrationExport {
     owns: string[];
     simulated: boolean;
     rgb: boolean;
+    detector: 'node' | 'edge';
   }>;
 }
 
@@ -109,6 +110,7 @@ export class RegistrationImportExport {
       owns: [...node.owns],
       simulated: node.simulated,
       rgb: node.rgb,
+      detector: node.detector ?? 'node',
     })) };
   }
 }
@@ -166,6 +168,7 @@ function nodesFromRegistry(registry: Registry): RegistryNodeRecord[] {
     owns: [...node.owns],
     simulated: node.simulated,
     rgb: node.rgb,
+    detector: node.detector ?? 'node',
   }));
 }
 
@@ -174,7 +177,7 @@ function toJsonNode(node: RegistryNodeRecord): Record<string, unknown> {
     uid: node.uid, label: node.label,
     ...(node.floorId === null ? {} : { floor: node.floorId }),
     ...(node.pose === null ? {} : { pose: node.pose }),
-    owns: [...node.owns], simulated: node.simulated, rgb: node.rgb,
+    owns: [...node.owns], simulated: node.simulated, rgb: node.rgb, detector: node.detector,
   };
 }
 
@@ -182,7 +185,7 @@ function sameNode(a: RegistryNodeRecord, b: RegistryNodeRecord): boolean {
   return a.uid === b.uid && a.label === b.label && a.floorId === b.floorId
     && JSON.stringify(a.pose) === JSON.stringify(b.pose)
     && [...a.owns].sort().join('\0') === [...b.owns].sort().join('\0')
-    && a.simulated === b.simulated && a.rgb === b.rgb;
+    && a.simulated === b.simulated && a.rgb === b.rgb && a.detector === b.detector;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

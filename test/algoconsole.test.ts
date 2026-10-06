@@ -20,7 +20,7 @@ import { startAlgo } from '../src/algo/server.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { consoleMovedTo, createConsole, startConsole } from '../src/edge/console.js';
 import { buildRegistry } from '../src/edge/registry.js';
-import { EdgeRuntime } from '../src/edge/runtime.js';
+import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'tmedge-algoconsole-'));
@@ -33,7 +33,7 @@ function runtime() {
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
-  return new EdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
+  return createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
 }
 
 const running: (() => Promise<void>)[] = [];

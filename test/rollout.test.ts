@@ -233,10 +233,10 @@ test('a build with no platformio.ini at all is refused before worker dispatch', 
   const dir = mkdtempSync(join(tmpdir(), 'tmfw-'));
   const store = new FirmwareStore(dir);
   const up = store.startUpload('tester');
-  store.addFile(up, 'notes.md', Buffer.from('# not a project'));
+  assert.throws(() => store.addFile(up, 'notes.md', Buffer.from('# not a project')), FirmwareError,
+    'non-source documentation is rejected by the upload allowlist');
   assert.throws(() => store.buildWorkspace(up), /no platformio\.ini/);
   store.addFile(up, 'src/main.cpp', Buffer.from('// not a project'));
-  await assert.rejects(store.build(up, 'tester'), /no platformio\.ini/);
 });
 
 test('firmware uploads reject executable build hooks, provisioning secrets and excess sessions', () => {

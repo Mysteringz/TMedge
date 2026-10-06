@@ -7,6 +7,7 @@ interface RegistryNodeRow {
   label: string;
   simulated: boolean;
   rgb: boolean;
+  detector: 'node' | 'edge';
   floor_id: string | null;
   x: number | string | null;
   y: number | string | null;
@@ -36,8 +37,8 @@ export class PostgresRegistryRepository implements RegistryRepository {
           continue;
         }
         await manager.query(
-          'INSERT INTO public.registered_nodes (uid, label, simulated, rgb) VALUES ($1, $2, $3, $4)',
-          [node.uid, node.label, node.simulated, node.rgb],
+          'INSERT INTO public.registered_nodes (uid, label, simulated, rgb, detector) VALUES ($1, $2, $3, $4, $5)',
+          [node.uid, node.label, node.simulated, node.rgb, node.detector],
         );
         if (node.floorId !== null && node.pose !== null) {
           await manager.query(
@@ -58,12 +59,12 @@ export class PostgresRegistryRepository implements RegistryRepository {
 
 async function queryNodes(manager: EntityManager): Promise<RegistryNodeRecord[]> {
   const rows = await manager.query(
-    `SELECT n.uid, n.label, n.simulated, n.rgb, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror,
+    `SELECT n.uid, n.label, n.simulated, n.rgb, n.detector, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror,
        COALESCE(array_agg(o.table_id ORDER BY o.table_id) FILTER (WHERE o.table_id IS NOT NULL), '{}') AS owns
      FROM public.registered_nodes n
      LEFT JOIN public.node_placements p ON p.uid = n.uid
      LEFT JOIN public.node_table_owners o ON o.uid = n.uid
-     GROUP BY n.uid, n.label, n.simulated, n.rgb, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror
+     GROUP BY n.uid, n.label, n.simulated, n.rgb, n.detector, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror
      ORDER BY n.uid`,
   ) as RegistryNodeRow[];
   return rows.map(mapNode);
@@ -72,13 +73,13 @@ async function queryNodes(manager: EntityManager): Promise<RegistryNodeRecord[]>
 async function queryNode(manager: EntityManager, uid: string, lock: boolean): Promise<RegistryNodeRecord | null> {
   if (lock) await manager.query('SELECT uid FROM public.registered_nodes WHERE uid = $1 FOR UPDATE', [uid]);
   const rows = await manager.query(
-    `SELECT n.uid, n.label, n.simulated, n.rgb, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror,
+    `SELECT n.uid, n.label, n.simulated, n.rgb, n.detector, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror,
        COALESCE(array_agg(o.table_id ORDER BY o.table_id) FILTER (WHERE o.table_id IS NOT NULL), '{}') AS owns
      FROM public.registered_nodes n
      LEFT JOIN public.node_placements p ON p.uid = n.uid
      LEFT JOIN public.node_table_owners o ON o.uid = n.uid
      WHERE n.uid = $1
-     GROUP BY n.uid, n.label, n.simulated, n.rgb, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror`,
+     GROUP BY n.uid, n.label, n.simulated, n.rgb, n.detector, p.floor_id, p.x, p.y, p.height_cm, p.yaw_deg, p.mirror`,
     [uid],
   ) as RegistryNodeRow[];
   return rows[0] ? mapNode(rows[0]) : null;
@@ -92,7 +93,7 @@ function mapNode(row: RegistryNodeRow): RegistryNodeRecord {
   } : null;
   return {
     uid: row.uid, label: row.label, floorId: row.floor_id, pose,
-    owns: row.owns ?? [], simulated: row.simulated, rgb: row.rgb,
+    owns: row.owns ?? [], simulated: row.simulated, rgb: row.rgb, detector: row.detector,
   };
 }
 
@@ -100,5 +101,5 @@ function sameNode(a: RegistryNodeRecord, b: RegistryNodeRecord): boolean {
   return a.uid === b.uid && a.label === b.label && a.floorId === b.floorId
     && JSON.stringify(a.pose) === JSON.stringify(b.pose)
     && [...a.owns].sort().join('\0') === [...b.owns].sort().join('\0')
-    && a.simulated === b.simulated && a.rgb === b.rgb;
+    && a.simulated === b.simulated && a.rgb === b.rgb && a.detector === b.detector;
 }

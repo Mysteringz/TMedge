@@ -9,6 +9,7 @@ export interface RegistryNodeRecord {
   owns: readonly string[];
   simulated: boolean;
   rgb: boolean;
+  detector: 'node' | 'edge';
 }
 
 export class RegistrationConflictError extends Error {}

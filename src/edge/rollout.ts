@@ -254,7 +254,7 @@ export class Rollouts {
   /** Progress straight from the node. */
   onOtaStatus(uid: string, status: { state: string; percent: number; error: string; image: string }): void {
     const node = this.active?.nodes.find((n) => n.uid === uid);
-    if (!this.active || !node || this.active.stage === 'done' || this.active.stage === 'stopped' ||
+    if (!this.active || !node || this.active.stage === 'done' ||
         node.startedAt === null || TERMINAL.includes(node.state)) return;
     // The node reports the image it is talking about; ignore anything stale.
     const expect = this.active.buildId.slice(0, 8);

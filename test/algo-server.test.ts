@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { AlgoUsers, loadAlgoAuthConfig } from '../src/algo/auth.js';
 import { startAlgo } from '../src/algo/server.js';
 import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
@@ -29,25 +30,33 @@ function close(server: Server): Promise<void> {
 
 test('algo debugger preserves authenticated APIs and owns its WebSocket lifecycle', async () => {
   const { cfg, runtime } = createRuntime();
-  const handle = startAlgo(runtime, 0, '127.0.0.1', { dataDir: cfg.dataDir });
+  const usersPath = join(mkdtempSync(join(tmpdir(), 'tmedge-algo-users-')), 'users.json');
+  await new AlgoUsers(usersPath).add('alice', 'correct horse battery');
+  const auth = loadAlgoAuthConfig({ SESSION_SECRET: 'x'.repeat(40), ALGO_USERS_FILE: usersPath }, cfg.adminPassword);
+  const handle = startAlgo(runtime, 0, '127.0.0.1', auth);
   await new Promise<void>((resolve) => handle.server.once('listening', () => resolve()));
   const port = (handle.server.address() as AddressInfo).port;
   const base = `http://127.0.0.1:${port}`;
-  const auth = `Basic ${Buffer.from('admin:admin-pass').toString('base64')}`;
-  const headers = { authorization: auth, 'content-type': 'application/json', 'x-tm-algo': '1' };
   try {
+    const login = await fetch(`${base}/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'alice', password: 'correct horse battery' }),
+    });
+    assert.equal(login.status, 200);
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    const headers = { cookie, 'content-type': 'application/json', 'x-tm-algo': '1' };
     assert.equal((await fetch(`${base}/api/catalogue`)).status, 401);
-    assert.equal((await fetch(`${base}/api/catalogue`, { headers: { authorization: auth } })).status, 200);
-    const current = await (await fetch(`${base}/api/pipeline`, { headers: { authorization: auth } })).json() as {
+    assert.equal((await fetch(`${base}/api/catalogue`, { headers: { cookie } })).status, 200);
+    const current = await (await fetch(`${base}/api/pipeline`, { headers: { cookie } })).json() as {
       pipeline: { version: number; nodes: unknown[] };
       saved: string[];
     };
     assert.equal(current.pipeline.version, 1);
-    assert.equal((await fetch(`${base}/api/pipeline/reset`, { method: 'POST', headers: { authorization: auth } })).status, 403);
+    assert.equal((await fetch(`${base}/api/pipeline/reset`, { method: 'POST', headers: { cookie } })).status, 403);
     assert.equal((await fetch(`${base}/api/pipeline/save`, {
       method: 'POST', headers, body: JSON.stringify({ name: 'regression' }),
     })).status, 200);
-    const saved = await (await fetch(`${base}/api/pipeline`, { headers: { authorization: auth } })).json() as { saved: string[] };
+    const saved = await (await fetch(`${base}/api/pipeline`, { headers: { cookie } })).json() as { saved: string[] };
     assert.ok(saved.saved.includes('regression'));
 
     const applied = await fetch(`${base}/api/params/apply`, {
@@ -63,7 +72,7 @@ test('algo debugger preserves authenticated APIs and owns its WebSocket lifecycl
     assert.match(audit, /"action":"apply"/);
     assert.match(audit, /"action":"revert"/);
 
-    const token = ((await (await fetch(`${base}/api/ws-token`, { headers: { authorization: auth } })).json()) as { token: string }).token;
+    const token = ((await (await fetch(`${base}/api/ws-token`, { headers: { cookie } })).json()) as { token: string }).token;
     const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
     const initial = await new Promise<{ type: string; live: boolean }>((resolve, reject) => {
       socket.addEventListener('message', (event) => resolve(JSON.parse(String(event.data)) as { type: string; live: boolean }), { once: true });

@@ -96,13 +96,20 @@ for (const transport of ['direct', 'gateway'] as const) {
   test(`${transport} dispatch rechecks node eligibility after persistence`, async () => {
     const h = harness(transport);
     const current = h.rollouts.start(OLD_BUILD, { kind: 'all' }, 'operator');
+    if (transport === 'gateway') {
+      h.commits[0]?.resolve();
+      await settle();
+      assert.deepEqual(h.images, [OLD_BUILD], 'gateway receives the image before node delivery starts');
+      h.rollouts.onImageReady('g1', { id: OLD_BUILD, ok: true, port: 8080 });
+      assert.equal(h.commits.length, 2, 'node dispatch has its own persistence gate');
+    }
     h.rollouts.onOtaStatus('same-node', { state: 'confirmed', percent: 100, error: '', image: OLD_BUILD.slice(0, 8) });
     assert.equal(current.stage, 'done');
 
-    h.commits[0]?.resolve();
+    h.commits[transport === 'direct' ? 0 : 1]?.resolve();
     await settle();
 
-    assert.deepEqual(h.images, []);
+    assert.deepEqual(h.images, transport === 'direct' ? [] : [OLD_BUILD]);
     assert.deepEqual(h.requests, []);
     assert.equal(current.nodes[0]?.state, 'confirmed');
   });

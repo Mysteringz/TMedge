@@ -52,6 +52,7 @@ test('validated import is insert-only and export/load preserve placement and nul
   const service = new RegistrationImportExport(repository);
   const json = nodesJson();
   json.nodes[0]!.uid = 'aa:00:00:00:00:01';
+  json.nodes[0]!.detector = 'edge';
   json.nodes.push({ uid: 'aa:00:00:00:00:02', label: 'unplaced', owns: [] });
 
   const preview = await service.import(siteJson(), json, { dryRun: true });
@@ -74,6 +75,8 @@ test('validated import is insert-only and export/load preserve placement and nul
   assert.equal(reloaded.nodes.get('aa:00:00:00:00:01')?.floorId, json.nodes[0]!.floor);
   assert.equal(reloaded.nodes.get('aa:00:00:00:00:02')?.floorId, null);
   assert.equal(reloaded.nodes.get('aa:00:00:00:00:02')?.pose, null);
+  assert.equal(reloaded.nodes.get('aa:00:00:00:00:01')?.detector, 'edge');
+  assert.equal(exported.nodes.find((node) => node.uid === 'aa:00:00:00:00:01')?.detector, 'edge');
   assert.deepEqual(registrySummary(reloaded), registrySummary(buildRegistry(siteJson(), json)));
 });
 
