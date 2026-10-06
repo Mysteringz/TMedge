@@ -21,6 +21,7 @@ import { startAlgo } from '../src/algo/server.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { buildRegistry } from '../src/edge/registry.js';
 import { EdgeRuntime } from '../src/edge/runtime.js';
+import { makeFingerprint, saveFingerprint } from '../src/algo/train/hpc/fingerprint.js';
 import { packCredentials, sealCredentials, type SealTicket } from '../src/shared/hpcseal.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
 
@@ -29,6 +30,8 @@ const skip = ON ? false : 'needs the fake HKU stack: npm run test:hpc-stack';
 
 /** PIN_CANARY_7f3a, never spelled out here. */
 const canary = () => Buffer.from('50494e5f43414e4152595f37663361', 'hex');
+/** The shared ing account's password on the fake cluster (SRV_CANARY_51e9), likewise. */
+const serverCanary = () => Buffer.from('5352565f43414e4152595f35316539', 'hex');
 const PINS: Record<string, () => Buffer> = { tmchan: canary, kwlee: () => Buffer.from('kwlee-portal-pin-2'), lockme: () => Buffer.from('lockme-pin-3') };
 const SEEDS: Record<string, string> = {
   tmchan: '3132333435363738393031323334353637383930', kwlee: '3837363534333231303938373635343332313039', lockme: '3131313131313131313131313131313131313131',
@@ -96,7 +99,10 @@ function filesContaining(dir: string, needle: Buffer): string[] {
 const running: (() => Promise<void>)[] = [];
 after(async () => { for (const stop of running) await stop(); });
 
-async function boot(knownHosts = process.env.HPC_STACK_KNOWN_HOSTS!) {
+interface BootOpts { knownHosts?: string; shared?: boolean }
+async function boot(o: BootOpts | string = {}) {
+  const opts: BootOpts = typeof o === 'string' ? { knownHosts: o } : o;
+  const knownHosts = opts.knownHosts ?? process.env.HPC_STACK_KNOWN_HOSTS!;
   const dir = mkdtempSync(join(tmpdir(), 'tmedge-hpcstack-'));
   process.env.DATA_DIR = join(dir, 'data');
   process.env.HPC_CONFIG = join(dir, 'hpc.json');
@@ -104,7 +110,10 @@ async function boot(knownHosts = process.env.HPC_STACK_KNOWN_HOSTS!) {
     verified: false, source: 'fake HKU', backend: 'vpn-ssh',
     planA: {
       vpnHost: process.env.HPC_STACK_VPN, vpnDomains: ['hku.hk'], vpnServerCert: process.env.HPC_STACK_CERT, vpnAuthGroup: null,
-      submitHost: 'hpc.fakehku.test', knownHosts, idleTtlSeconds: 120, maxSessions: 2, socksPorts: [21500 + Math.floor(Math.random() * 400), 21999], tools: {},
+      // Shared mode mirrors ing@10.21.36.12: one account, reached by IP inside the tunnel.
+      submitHost: opts.shared ? '192.168.99.1' : 'hpc.fakehku.test',
+      sshUser: opts.shared ? 'ing' : null, sshAuth: opts.shared ? 'shared-password' : 'pin',
+      knownHosts, idleTtlSeconds: 120, maxSessions: 2, socksPorts: [21500 + Math.floor(Math.random() * 400), 21999], tools: {},
     },
     partitions: [{ name: 'cpu', maxTime: '1:00:00', gpu: false }], defaultPartition: 'cpu', modules: ['python'],
     maxUploadMb: 5, maxUnpackedMb: 10, quotaMb: 50,
@@ -160,11 +169,12 @@ async function draft(c: Ctx, cookie: string, name: string, script: string): Prom
   return (r.json.job as { id: string }).id;
 }
 
-async function sealed(c: Ctx, cookie: string, action: string, jobId: string, uid: string, pin?: Buffer, code?: Buffer) {
+async function sealed(c: Ctx, cookie: string, action: string, jobId: string, uid: string, pin?: Buffer, code?: Buffer, serverPassword?: Buffer) {
   const ticket = (await call(c, cookie, 'POST', '/hpc/ticket')).json as unknown as SealTicket;
   const p = pin ?? PINS[uid]!();
-  const plain = packCredentials(p, code ?? await otp(uid));
+  const plain = packCredentials(p, code ?? await otp(uid), serverPassword);
   p.fill(0);
+  serverPassword?.fill(0);
   return { sealed: await sealCredentials(ticket, action, jobId, plain), profile: { hkuUid: uid, vpnDomain: 'hku.hk' } };
 }
 
@@ -207,14 +217,14 @@ describe('Plan A against a fake HKU', { skip }, () => {
     const stop = watchProcs([canary()]);
     const r = await act(c, c.alice, 'submit', id, await sealed(c, c.alice, 'submit', id, 'tmchan'));
     const procHits = stop();
-    assert.equal(r.status, 202);
+    assert.equal(r.status, 202, `submit answered ${r.status}: ${JSON.stringify(r.json)}`);
     assert.deepEqual(r.events.map((e) => e.type),
       ['vpn_auth', 'vpn_connect', 'vpn_up', 'ssh_auth', 'ssh_up', 'uploading', 'submitting', 'submitted', 'done'], JSON.stringify(r.events));
     assert.deepEqual(procHits, [], 'the PIN never appears in any process\'s arguments or environment');
 
     const done = await until(c, c.alice, id, ['COMPLETED', 'FAILED']);
     assert.equal(done.status, 'COMPLETED', JSON.stringify(done));
-    assert.equal(done.exitCode, 0);
+    assert.equal(done.exitCode, 0, JSON.stringify(done));
     const log = await fetch(`${c.base}/api/train/jobs/${id}/log`, { headers: { cookie: c.alice } }).then((x) => x.text());
     assert.match(log, /client 192\.168\.99\.\d+/, 'SSH arrived from the VPN pool: it went through the tunnel');
     assert.match(log, /user tmchan/, 'and ran as the person who signed in');
@@ -226,11 +236,11 @@ describe('Plan A against a fake HKU', { skip }, () => {
     const r = await act(c, c.alice, 'submit', id);
     assert.deepEqual(r.events.map((e) => e.type), ['session_reused', 'uploading', 'submitting', 'submitted', 'done']);
     const running = await until(c, c.alice, id, ['RUNNING']);
-    assert.equal(running.status, 'RUNNING');
+    assert.equal(running.status, 'RUNNING', JSON.stringify(running));
     const cancelled = await act(c, c.alice, 'cancel', id);
     assert.equal(cancelled.events.at(-1)?.type, 'done', JSON.stringify(cancelled.events));
     const after = await until(c, c.alice, id, ['CANCELLED']);
-    assert.equal(after.status, 'CANCELLED');
+    assert.equal(after.status, 'CANCELLED', JSON.stringify(after));
     assert.match(String(after.slurmState), /^CANCELLED by \d+$/);
 
     assert.equal((await call(c, c.alice, 'DELETE', '/hpc/session')).status, 200);
@@ -285,5 +295,63 @@ describe('Plan A against a fake HKU', { skip }, () => {
     assert.ok(!responses.some((r) => Buffer.from(r).includes(needle)), 'HTTP responses and event streams');
     const snap = writeHeapSnapshot(join(mkdtempSync(join(tmpdir(), 'tmedge-heap-')), 'h.heapsnapshot'));
     assert.equal(readFileSync(snap).indexOf(needle), -1, 'no JavaScript string anywhere in the server process holds the PIN');
+  });
+});
+
+describe('Plan A with a shared cluster account (ing@<ip>), as on 10.21.36.12', { skip }, () => {
+  let c: Ctx;
+
+  test('until an admin sets the password fingerprint, nothing can be sent', async () => {
+    c = await boot({ shared: true });
+    const hpc = (await call(c, c.alice, 'GET', '/hpc')).json as { available: boolean; reason: string; ssh: { user: string; host: string; auth: string } };
+    assert.equal(hpc.available, false, JSON.stringify(hpc));
+    assert.match(hpc.reason, /password for ing@192\.168\.99\.1 has not been set up/);
+    assert.deepEqual(hpc.ssh, { user: 'ing', host: '192.168.99.1', auth: 'shared-password' });
+    const id = await draft(c, c.alice, 'no_fp', 'print(1)\n');
+    assert.equal((await call(c, c.alice, 'POST', `/jobs/${id}/submit`, {})).status, 503);
+    saveFingerprint(join(c.dataDir, 'algo', 'train', 'ssh-password.json'), await makeFingerprint(serverCanary()));
+    assert.equal(((await call(c, c.alice, 'GET', '/hpc')).json as { available: boolean }).available, true);
+  });
+
+  test('a wrong cluster password stops before the VPN, and does not count against the HKU account', async () => {
+    const id = await draft(c, c.alice, 'wrong_server_pw', 'print(1)\n');
+    for (let i = 0; i < 3; i++) {
+      const r = await act(c, c.alice, 'submit', id, await sealed(c, c.alice, 'submit', id, 'tmchan', undefined, Buffer.from('000000'), Buffer.from(`not-it-${i}`)));
+      assert.deepEqual(r.events.map((e) => e.type), ['error'], 'no vpn_auth: nothing reached HKU or the cluster');
+      assert.equal(r.events[0]!.data.code, 'server_password', JSON.stringify(r.events));
+    }
+    assert.equal((await job(c, c.alice, id)).status, 'SUBMIT_FAILED');
+    assert.equal(((await call(c, c.alice, 'GET', '/hpc')).json as { lockedForSeconds: number }).lockedForSeconds, 0);
+    const missing = await act(c, c.alice, 'submit', id, await sealed(c, c.alice, 'submit', id, 'tmchan', undefined, Buffer.from('000000')));
+    assert.equal(missing.events[0]?.data.code, 'server_password', 'and leaving it out is refused the same way');
+  });
+
+  test('two people, each on their own VPN login, both run as ing on the cluster by IP', async () => {
+    const a = await draft(c, c.alice, 'alice_on_ing', 'import os, getpass\nprint("user", getpass.getuser(), "via", os.environ.get("SSH_CONNECTION", "?").split()[0])\n');
+    const b = await draft(c, c.bob, 'bob_on_ing', 'import getpass\nprint("user", getpass.getuser())\n');
+    const stop = watchProcs([canary(), serverCanary()]);
+    const [ra, rb] = await Promise.all([
+      act(c, c.alice, 'submit', a, await sealed(c, c.alice, 'submit', a, 'tmchan', undefined, undefined, serverCanary())),
+      act(c, c.bob, 'submit', b, await sealed(c, c.bob, 'submit', b, 'kwlee', undefined, undefined, serverCanary())),
+    ]);
+    const hits = stop();
+    assert.equal(ra.events.at(-1)?.type, 'done', JSON.stringify(ra.events));
+    assert.equal(rb.events.at(-1)?.type, 'done', JSON.stringify(rb.events));
+    assert.deepEqual(hits, [], 'neither password appears in any process\'s arguments or environment');
+    await until(c, c.alice, a, ['COMPLETED']);
+    await until(c, c.bob, b, ['COMPLETED']);
+    assert.match(await fetch(`${c.base}/api/train/jobs/${a}/log`, { headers: { cookie: c.alice } }).then((x) => x.text()), /user ing via 192\.168\.99\.\d+/);
+    assert.match(await fetch(`${c.base}/api/train/jobs/${b}/log`, { headers: { cookie: c.bob } }).then((x) => x.text()), /user ing/);
+  });
+
+  test('the cluster password is nowhere either: files, logs, responses, heap', async () => {
+    const needle = serverCanary();
+    assert.deepEqual(filesContaining(c.dataDir, needle), []);
+    assert.ok(!logged.some((l) => Buffer.from(l).includes(needle)));
+    assert.ok(!responses.some((r) => Buffer.from(r).includes(needle)));
+    const snap = writeHeapSnapshot(join(mkdtempSync(join(tmpdir(), 'tmedge-heap-')), 'h.heapsnapshot'));
+    const heap = readFileSync(snap);
+    assert.equal(heap.indexOf(needle), -1, 'the cluster password as a string in the heap');
+    assert.equal(heap.indexOf(canary()), -1, 'the PIN as a string in the heap');
   });
 });

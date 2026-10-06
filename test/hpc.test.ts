@@ -176,14 +176,15 @@ describe('SLURM parsing (HANDOVER §6.5)', () => {
 });
 
 describe('session manager (HANDOVER §6.4)', () => {
-  const setup = (opts: { authFails?: 'bad_credentials' | 'bad_otp' | 'server_error'; sshFails?: boolean; max?: number } = {}) => {
+  const setup = (opts: { authFails?: 'bad_credentials' | 'bad_otp' | 'server_error'; sshFails?: boolean; max?: number; sshUser?: string } = {}) => {
     let now = 1_000_000;
-    const calls = { auth: 0, connect: 0, sshOpen: 0, tunnelsClosed: 0, sshClosed: 0 };
+    const calls = { auth: 0, connect: 0, sshOpen: 0, tunnelsClosed: 0, sshClosed: 0, sshUsers: [] as string[], vpnUsers: [] as string[] };
     const deps: GatewayDeps = {
       now: () => now,
       portFree: async () => true,
-      authenticate: async () => {
+      authenticate: async (o) => {
         calls.auth++;
+        calls.vpnUsers.push(o.vpnUser);
         if (opts.authFails) throw new AuthFailed(opts.authFails, 'no');
         return { cookie: Buffer.from('cookie'), connectUrl: 'https://v/', fingerprint: 'pin-sha256:A', resolve: null };
       },
@@ -192,7 +193,8 @@ describe('session manager (HANDOVER §6.4)', () => {
         assert.ok(o.auth.cookie.length > 0);
         return { pid: 1, port: o.port, closed: new Promise(() => undefined), close: async () => { calls.tunnelsClosed++; } };
       },
-      ssh: () => {
+      ssh: (o) => {
+        calls.sshUsers.push(o.user);
         let alive = false;
         const link: SshLike = {
           get alive() { return alive; },
@@ -204,7 +206,7 @@ describe('session manager (HANDOVER §6.4)', () => {
       },
     };
     const g = new Gateway({
-      vpnHost: 'v', vpnServerCert: null, vpnAuthGroup: null, submitHost: 'h', knownHosts: '/k', runDir: '/r',
+      vpnHost: 'v', vpnServerCert: null, vpnAuthGroup: null, submitHost: 'h', sshUser: opts.sshUser ?? null, knownHosts: '/k', runDir: '/r',
       idleTtlMs: 600_000, maxSessions: opts.max ?? 10, ports: [21000, 21002],
       tools: { openconnect: '/oc', ocproxy: '/ocp', ssh: '/ssh' },
     }, deps);
@@ -221,6 +223,16 @@ describe('session manager (HANDOVER §6.4)', () => {
     tick(15 * 60_000 + 1);
     await assert.rejects(g.open('alice', 'u1', 'u1@hku.hk', creds()), AuthFailed);
     assert.equal(calls.auth, 4);
+  });
+
+  test('each person logs in to the VPN as themselves; SSH uses the shared account when there is one', async () => {
+    const own = setup();
+    await own.g.open('alice', 'u1', 'u1@hku.hk', creds());
+    assert.deepEqual([own.calls.vpnUsers, own.calls.sshUsers], [['u1@hku.hk'], ['u1']]);
+    const shared = setup({ sshUser: 'ing' });
+    await shared.g.open('alice', 'u1', 'u1@hku.hk', creds());
+    await shared.g.open('bob', 'u2', 'u2@connect.hku.hk', creds());
+    assert.deepEqual([shared.calls.vpnUsers, shared.calls.sshUsers], [['u1@hku.hk', 'u2@connect.hku.hk'], ['ing', 'ing']]);
   });
 
   test('an unreachable VPN does not count toward the lockout', async () => {
@@ -257,6 +269,25 @@ describe('session manager (HANDOVER §6.4)', () => {
   });
 });
 
+describe('the shared cluster password, kept as a fingerprint', () => {
+  test('the right bytes match, anything else does not, and the file holds no password', async () => {
+    const { makeFingerprint, matches, saveFingerprint, loadFingerprint } = await import('../src/algo/train/hpc/fingerprint.js');
+    const pw = Buffer.from('correct-cluster-pw');
+    const fp = await makeFingerprint(pw);
+    assert.equal(await matches(Buffer.from('correct-cluster-pw'), fp), true);
+    assert.equal(await matches(Buffer.from('correct-cluster-pX'), fp), false);
+    assert.equal(await matches(Buffer.alloc(0), fp), false);
+    const file = join(mkdtempSync(join(tmpdir(), 'tmedge-fp-')), 'ssh-password.json');
+    saveFingerprint(file, fp);
+    assert.doesNotMatch(readFileSync(file, 'utf8'), /correct-cluster-pw/);
+    assert.deepEqual(loadFingerprint(file), fp);
+    writeFileSync(file, JSON.stringify({ ...fp, N: 2 }));
+    assert.equal(loadFingerprint(file), null, 'a weakened fingerprint is not accepted');
+    const second = await makeFingerprint(pw);
+    assert.notEqual(second.hash, fp.hash, 'salted: the same password never fingerprints the same twice');
+  });
+});
+
 describe('Plan A config', () => {
   const base = {
     verified: false, backend: 'vpn-ssh', partitions: [{ name: 'cpu', maxTime: '1:00:00', gpu: false }], defaultPartition: 'cpu', modules: [],
@@ -270,6 +301,10 @@ describe('Plan A config', () => {
     assert.throws(bad({ tools: { ocproxy: '/usr/bin/ocproxy -g' } }), /ocproxy/);
     assert.throws(bad({ socksPorts: [80, 90] }), /socksPorts/);
     assert.throws(bad({ extra: 1 }), /unknown field/);
+    assert.throws(bad({ sshAuth: 'shared-password' }), /sshUser: required/);
+    assert.throws(bad({ sshUser: 'ing; id' }), /sshUser/);
+    assert.throws(bad({ submitHost: '-oProxyCommand=x' }), /submitHost/);
+    assert.equal(parseHpcConfig({ ...base, planA: { ...base.planA, submitHost: '10.21.36.12', sshUser: 'ing', sshAuth: 'shared-password' } }).planA?.sshUser, 'ing');
     assert.throws(() => parseHpcConfig({ ...base, backend: 'none' }), /only with backend/);
   });
 });

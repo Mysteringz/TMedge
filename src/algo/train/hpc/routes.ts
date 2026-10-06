@@ -33,7 +33,7 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const profile = service.profiles.get(user);
     res.json({
       available: service.unavailable() === null, reason: service.unavailable(),
-      profile, domains: service.domains(), idleTtlSeconds: service.idleTtlSeconds(),
+      profile, domains: service.domains(), idleTtlSeconds: service.idleTtlSeconds(), ssh: service.sshTarget(),
       session: service.gateway?.info(user) ?? { state: 'none', uid: null, expiresInSeconds: null },
       lockedForSeconds: profile && service.gateway ? Math.ceil(service.gateway.lockedFor(user, profile.hkuUid) / 1000) : 0,
       running: service.ops.running(user)?.id ?? null,

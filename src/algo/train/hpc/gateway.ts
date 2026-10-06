@@ -42,6 +42,8 @@ export interface GatewayConfig {
   vpnServerCert: string | null;
   vpnAuthGroup: string | null;
   submitHost: string;
+  /** A shared SSH account, or null for each person's own UID. */
+  sshUser: string | null;
   knownHosts: string;
   runDir: string;
   idleTtlMs: number;
@@ -172,7 +174,7 @@ export class Gateway {
       onStep('vpn_up');
       onStep('ssh_auth');
       session.ssh = this.deps.ssh({
-        bin: this.cfg.tools.ssh, host: this.cfg.submitHost, user: uid, socksPort: session.port,
+        bin: this.cfg.tools.ssh, host: this.cfg.submitHost, user: this.cfg.sshUser ?? uid, socksPort: session.port,
         knownHosts: this.cfg.knownHosts, runDir: this.cfg.runDir,
       });
       try {

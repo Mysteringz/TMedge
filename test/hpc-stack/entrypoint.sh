@@ -15,6 +15,13 @@ for spec in $FAKE_USERS; do
   echo "HOTP/T30 $name@hku.hk - $seed" >> /etc/ocserv/users.oath
 done
 chmod 600 /etc/ocserv/users.oath
+# FAKE_SHARED="name:password": a cluster account the whole team shares (no VPN
+# login of its own), like ing@10.21.36.12.
+for spec in ${FAKE_SHARED:-}; do
+  IFS=: read -r name pw <<<"$spec"
+  id "$name" >/dev/null 2>&1 || useradd -m -s /bin/bash "$name"
+  echo "$name:$pw" | chpasswd
+done
 
 if [ ! -f /certs/server-key.pem ]; then
   certtool --generate-privkey --outfile /certs/server-key.pem 2>/dev/null

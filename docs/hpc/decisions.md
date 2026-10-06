@@ -175,3 +175,32 @@ If HKU says no to relaying credentials, switch to `"backend": "none"`.
       on, so a crash mid-login would have written the PIN to disk.
     - The 2 GB swap is unencrypted. A PIN lives for seconds, but could in
       principle be paged out; encrypted swap is the fix if that matters.
+
+## 2026-10-06 (later still): the cluster is ing@10.21.36.12, not HPC2021
+
+21. **The SSH target is `ing@10.21.36.12`**, a SLURM cluster inside HKU's
+    network, reached through each person's own HKUVPN tunnel as before.
+    `ing` is **one account the whole team shares**:
+    - Every person still signs in to the VPN as themselves (UID, PIN, code).
+    - On the cluster, every job runs as `ing`. The dashboard still keeps each
+      person's jobs apart in its UI and API.
+    - Anyone with the password can see every job in `~ing/hpc-dash` from a
+      shell.
+    The config is `planA.submitHost`, `sshUser: "ing"` and
+    `sshAuth: "shared-password"`. `sshUser: null` with `sshAuth: "pin"` is
+    still there for personal accounts (HPC2021's model).
+22. **The shared password is typed at every sign-in and kept only as a
+    fingerprint** (the team's instruction).
+    - **The fingerprint:** scrypt, N=2^15, r=8, with a random salt
+      (`hpc/fingerprint.ts`). It is stored in
+      `DATA_DIR/algo/train/ssh-password.json` (0600) on the box, never in git.
+      This repo may be public, and a hash of a shared password in it would
+      invite offline guessing.
+    - **Who sets it:** an admin sets or changes it with `npm run hpc-password`,
+      typed hidden and twice.
+    - **When it is checked:** each sign-in checks the typed password against
+      the fingerprint *before* the VPN login. A typo costs no HKU login, no
+      one-time code and no failed SSH attempt on the cluster, and does not
+      count toward the HKU lockout.
+    - **Guessing:** because the check answers at once, wrong guesses are
+      limited to 5 per person per 15 minutes.

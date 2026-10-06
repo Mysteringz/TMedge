@@ -18,6 +18,7 @@
     "user": "node --env-file-if-exists=.env dist/src/tools/user.js",
     "algo-user": "node --env-file-if-exists=.env dist/src/tools/algouser.js",
     "hpc-hostkeys": "node --env-file-if-exists=.env dist/src/tools/hpchostkeys.js",
+    "hpc-password": "node --env-file-if-exists=.env dist/src/tools/hpcpassword.js",
     "test:hpc-stack": "tsc -p tsconfig.json && test/hpc-stack/run.sh"
   },
   "dependencies": {

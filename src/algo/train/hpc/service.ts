@@ -14,6 +14,8 @@ import type { HpcConfig } from '../config.js';
 import { renderSbatch } from '../sbatch.js';
 import { validateSpec } from '../spec.js';
 import { ACTIVE, type HpcProfile, type JobStore, type ProfileStore, type TrainJob } from '../store.js';
+import { RateLimiter } from '../../../web/auth.js';
+import { loadFingerprint, matches } from './fingerprint.js';
 import { Gateway, GatewayBusy, LockedOut, REAL_DEPS, type GatewayDeps, type Session } from './gateway.js';
 import { AuthFailed } from './openconnect.js';
 import { Ops, type Op } from './ops.js';
@@ -42,8 +44,12 @@ export function runDirFor(root: string): string {
   return mkdtempSync(join(tmpdir(), 'tmhpc-'));
 }
 
+/** The shared cluster password did not match its fingerprint: nothing was sent anywhere. */
+export class ServerPasswordWrong extends Error {}
+
 /** Words for a person; never an exception's own text, which could be anything. */
 export function userMessage(err: unknown): { code: string; message: string } {
+  if (err instanceof ServerPasswordWrong) return { code: 'server_password', message: err.message };
   if (err instanceof AuthFailed) return { code: `vpn_${err.code}`, message: err.message };
   if (err instanceof SshFailed) return { code: `ssh_${err.code}`, message: err.message };
   if (err instanceof LockedOut) return { code: 'locked_out', message: err.message };
@@ -62,19 +68,23 @@ export class HpcService {
   readonly gateway: Gateway | null;
   private poller: ReturnType<typeof setInterval> | null = null;
   private readonly knownHosts: string;
+  readonly fingerprintFile: string;
+  /** Wrong shared passwords: the check answers instantly, so it must not be a guessing oracle. */
+  private readonly wrongPassword = new RateLimiter(5, 15 * 60_000);
   private readonly tools: { openconnect: string | null; ocproxy: string | null; ssh: string | null };
 
   constructor(private readonly cfg: HpcConfig, private readonly store: JobStore, readonly profiles: ProfileStore,
     root: string, deps: GatewayDeps = REAL_DEPS) {
     const a = cfg.planA;
     this.knownHosts = a?.knownHosts ?? join(root, 'known_hosts');
+    this.fingerprintFile = join(root, 'ssh-password.json');
     this.tools = {
       openconnect: findTool('openconnect', a?.tools.openconnect ?? null),
       ocproxy: findTool('ocproxy', a?.tools.ocproxy ?? null),
       ssh: findTool('ssh', a?.tools.ssh ?? null),
     };
     this.gateway = a ? new Gateway({
-      vpnHost: a.vpnHost, vpnServerCert: a.vpnServerCert, vpnAuthGroup: a.vpnAuthGroup, submitHost: a.submitHost,
+      vpnHost: a.vpnHost, vpnServerCert: a.vpnServerCert, vpnAuthGroup: a.vpnAuthGroup, submitHost: a.submitHost, sshUser: a.sshUser,
       knownHosts: this.knownHosts, runDir: runDirFor(root), idleTtlMs: a.idleTtlSeconds * 1000,
       maxSessions: a.maxSessions, ports: a.socksPorts,
       tools: { openconnect: this.tools.openconnect ?? 'openconnect', ocproxy: this.tools.ocproxy ?? 'ocproxy', ssh: this.tools.ssh ?? 'ssh' },
@@ -104,7 +114,32 @@ export class HpcService {
     if (!existsSync(this.knownHosts) || !readFileSync(this.knownHosts, 'utf8').split('\n').some((l) => l.split(/[\s,]/).includes(a.submitHost))) {
       return `${a.submitHost}'s SSH host key is not pinned yet: an admin runs npm run hpc-hostkeys on the server once, with their own HKU login.`;
     }
+    if (a.sshAuth === 'shared-password' && !loadFingerprint(this.fingerprintFile)) {
+      return `The password for ${a.sshUser}@${a.submitHost} has not been set up: an admin runs npm run hpc-password on the server.`;
+    }
     return null;
+  }
+
+  /** Who and where SSH logs in as, for the sign-in form. */
+  sshTarget(): { user: string | null; host: string; auth: 'pin' | 'shared-password' } | null {
+    const a = this.cfg.planA;
+    return a ? { user: a.sshUser, host: a.submitHost, auth: a.sshAuth } : null;
+  }
+
+  /**
+   * Before any login: in shared-password mode the typed password must match
+   * its fingerprint. A wrong one ends here, having reached nothing.
+   */
+  private async checkServerPassword(user: string, creds: Credentials): Promise<void> {
+    const a = this.cfg.planA!;
+    if (a.sshAuth !== 'shared-password') return;
+    const fp = loadFingerprint(this.fingerprintFile);
+    if (!fp) throw new GatewayBusy(this.unavailable() ?? 'The shared password is not set up.');
+    if (creds.sshPasswordGiven() === null) throw new ServerPasswordWrong(`Type the password for ${a.sshUser}@${a.submitHost}.`);
+    if (!(await matches(creds.sshPasswordGiven()!, fp))) {
+      if (!this.wrongPassword.allow(user)) throw new ServerPasswordWrong('Too many wrong cluster passwords; wait 15 minutes.');
+      throw new ServerPasswordWrong(`That is not the password for ${a.sshUser}@${a.submitHost}. It was checked here; nothing was sent to HKU or the cluster.`);
+    }
   }
 
   domains(): string[] { return this.cfg.planA?.vpnDomains ?? []; }
@@ -121,6 +156,7 @@ export class HpcService {
       if (!creds) throw new GatewayBusy('Your HKU session has ended; sign in again.');
       const profile = this.profiles.get(op.user);
       if (!profile) throw new GatewayBusy('Set your HKU UID first.');
+      await this.checkServerPassword(op.user, creds);
       return await g.open(op.user, profile.hkuUid, this.vpnUser(profile), creds, (step) => op.emit(step));
     } finally {
       // The login is over, one way or the other: nothing below needs a secret.

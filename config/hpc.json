@@ -1,13 +1,15 @@
 {
   "verified": false,
-  "source": "Placeholders until M0: replace partitions with `sinfo -s` and modules with `module avail` on hpc2021.hku.hk, then set verified to true (docs/hpc/m0-checklist.md S7).",
+  "source": "Placeholders until M0: replace partitions with `sinfo -s` and modules with `module avail` on the cluster (ing@10.21.36.12), then set verified to true (docs/hpc/m0-checklist.md S7).",
   "backend": "vpn-ssh",
   "planA": {
     "vpnHost": "vpn2fa.hku.hk",
     "vpnDomains": ["hku.hk", "connect.hku.hk"],
     "vpnServerCert": null,
     "vpnAuthGroup": null,
-    "submitHost": "hpc2021.hku.hk",
+    "submitHost": "10.21.36.12",
+    "sshUser": "ing",
+    "sshAuth": "shared-password",
     "knownHosts": null,
     "idleTtlSeconds": 600,
     "maxSessions": 4,

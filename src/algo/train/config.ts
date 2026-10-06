@@ -52,8 +52,19 @@ export interface PlanAConfig {
   vpnServerCert: string | null;
   /** openconnect --authgroup, if M0 finds HKU shows a group menu. */
   vpnAuthGroup: string | null;
-  /** The login node for SSH, sbatch and the code copy: hpc2021.hku.hk. */
+  /** The login node for SSH, sbatch and the code copy (host name or IP, inside the VPN). */
   submitHost: string;
+  /**
+   * The SSH account. null: each person's own HKU UID. A name: one account
+   * the whole team shares (e.g. "ing"), with its own password -- see sshAuth.
+   */
+  sshUser: string | null;
+  /**
+   * "pin": SSH takes the person's Portal PIN (HPC2021's rule, §2).
+   * "shared-password": everyone types the shared account's password at each
+   * sign-in; only its fingerprint is kept, on the box (hpc/fingerprint.ts).
+   */
+  sshAuth: 'pin' | 'shared-password';
   /** Pinned host keys; null = DATA_DIR/algo/train/known_hosts (npm run hpc-hostkeys). */
   knownHosts: string | null;
   idleTtlSeconds: number;
@@ -69,7 +80,7 @@ const ABS_PATH = /^\/[A-Za-z0-9._/-]{1,200}$/;
 
 function parsePlanA(raw: unknown, where: string): PlanAConfig {
   const o = obj(raw, where);
-  only(o, where, ['vpnHost', 'vpnDomains', 'vpnServerCert', 'vpnAuthGroup', 'submitHost', 'knownHosts', 'idleTtlSeconds', 'maxSessions', 'socksPorts', 'tools']);
+  only(o, where, ['vpnHost', 'vpnDomains', 'vpnServerCert', 'vpnAuthGroup', 'submitHost', 'sshUser', 'sshAuth', 'knownHosts', 'idleTtlSeconds', 'maxSessions', 'socksPorts', 'tools']);
   if (typeof o.vpnHost !== 'string' || !HOST_PORT.test(o.vpnHost)) throw new ConfigError(`${where}.vpnHost: expected host or host:port`);
   if (!Array.isArray(o.vpnDomains) || o.vpnDomains.length < 1 || o.vpnDomains.length > 8 ||
       o.vpnDomains.some((d) => typeof d !== 'string' || !/^[a-z0-9.-]{1,100}$/.test(d))) {
@@ -81,7 +92,12 @@ function parsePlanA(raw: unknown, where: string): PlanAConfig {
   }
   const group = o.vpnAuthGroup ?? null;
   if (group !== null && (typeof group !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(group))) throw new ConfigError(`${where}.vpnAuthGroup: expected a group name or null`);
-  if (typeof o.submitHost !== 'string' || !HOST.test(o.submitHost)) throw new ConfigError(`${where}.submitHost: expected a host name`);
+  if (typeof o.submitHost !== 'string' || !HOST.test(o.submitHost) || o.submitHost.startsWith('-')) throw new ConfigError(`${where}.submitHost: expected a host name or IP`);
+  const sshUser = o.sshUser ?? null;
+  if (sshUser !== null && (typeof sshUser !== 'string' || !/^[a-z_][a-z0-9_-]{0,31}$/.test(sshUser))) throw new ConfigError(`${where}.sshUser: expected a Unix user name or null`);
+  const sshAuth = o.sshAuth ?? 'pin';
+  if (sshAuth !== 'pin' && sshAuth !== 'shared-password') throw new ConfigError(`${where}.sshAuth: "pin" or "shared-password"`);
+  if (sshAuth === 'shared-password' && sshUser === null) throw new ConfigError(`${where}.sshUser: required with sshAuth "shared-password" (whose password is it?)`);
   const known = o.knownHosts ?? null;
   if (known !== null && (typeof known !== 'string' || !ABS_PATH.test(known))) throw new ConfigError(`${where}.knownHosts: expected an absolute path or null`);
   const ports = o.socksPorts;
@@ -98,7 +114,7 @@ function parsePlanA(raw: unknown, where: string): PlanAConfig {
   };
   return {
     vpnHost: o.vpnHost, vpnDomains: o.vpnDomains as string[], vpnServerCert: cert as string | null, vpnAuthGroup: group as string | null,
-    submitHost: o.submitHost, knownHosts: known as string | null,
+    submitHost: o.submitHost, sshUser: sshUser as string | null, sshAuth, knownHosts: known as string | null,
     idleTtlSeconds: int(o, 'idleTtlSeconds', where, 60, 3600, 600),
     maxSessions: int(o, 'maxSessions', where, 1, 50, 10),
     socksPorts: [ports[0] as number, ports[1] as number],

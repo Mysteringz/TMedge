@@ -60,6 +60,8 @@ export interface HpcState {
   profile: { hkuUid: string; vpnDomain: string } | null;
   domains: string[];
   idleTtlSeconds: number;
+  /** Where SSH logs in: a shared account (with a password typed each time) or the person's own UID. */
+  ssh: { user: string | null; host: string; auth: 'pin' | 'shared-password' } | null;
   session: { state: 'none' | 'opening' | 'up'; uid: string | null; expiresInSeconds: number | null };
   lockedForSeconds: number;
   running: string | null;

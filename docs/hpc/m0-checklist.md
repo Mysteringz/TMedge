@@ -12,6 +12,10 @@ present. Record what you see in `feasibility-results.md`.
   Create that file only when there are results: its existence is the signal
   rule 7 waits for. Redact every credential.
 
+**The cluster is `ing@10.21.36.12`**, not HPC2021 (decisions.md #21).
+Wherever this list says `hpc2021.hku.hk`, read `10.21.36.12`. HKUVPN
+(`vpn2fa.hku.hk`) is unchanged.
+
 ## Rules for the session
 
 - Never put the PIN in shell history or argv. Read it with `read -s`.

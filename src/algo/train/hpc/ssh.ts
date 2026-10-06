@@ -31,11 +31,11 @@ export class SshFailed extends Error {
 }
 
 export const SSH_MESSAGES: Record<SshFailure, string> = {
-  bad_password: 'HPC2021 did not accept the password (the Portal PIN, unless you gave an HPC password). Nothing was retried.',
-  host_key: "HPC2021's host key is not the pinned one, or none is pinned yet (npm run hpc-hostkeys). Refused, as it should be.",
-  unreachable: 'The VPN is up but HPC2021 did not answer on SSH.',
-  timeout: 'HPC2021 did not finish the SSH login in time.',
-  unsupported: 'HPC2021 asked for something other than a password (see docs/hpc/m0-checklist.md).',
+  bad_password: 'The cluster did not accept the SSH password. Nothing was retried. If the password was changed there, an admin updates its fingerprint (npm run hpc-password).',
+  host_key: "The cluster's SSH host key is not the pinned one, or none is pinned yet (npm run hpc-hostkeys). Refused, as it should be.",
+  unreachable: 'The VPN is up but the cluster did not answer on SSH.',
+  timeout: 'The cluster did not finish the SSH login in time.',
+  unsupported: 'The cluster asked for something other than a password (see docs/hpc/m0-checklist.md).',
 };
 
 /** Paths that go into a ProxyCommand line or a script: nothing a shell would reinterpret. */

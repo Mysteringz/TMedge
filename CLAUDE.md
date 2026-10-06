@@ -97,8 +97,10 @@ has hidden Linux failures before.
   `Ingest.handle`; no transport skips the signature, replay rule or
   occupancy. Only an accepted packet may set a node's route or earn an ACK,
   and a direct node's closed session is "no route", never a UDP fallback.
-- **An HKU credential is used once and never kept** (module 02, Plan A). It
-  is sealed in the browser, opened on the edge into a Buffer (never a
+- **An HKU credential, or the shared cluster password, is used once and never
+  kept** (module 02, Plan A; the cluster is ing@10.21.36.12). The cluster
+  password exists on the box only as a fingerprint, never in git. Each
+  credential is sealed in the browser, opened on the edge into a Buffer (never a
   string), fed to openconnect on stdin and to ssh through askpass (never
   argv or env), and wiped when the login ends. Never log openconnect's
   stderr (it prints cookies). Never retry a login. test/hpcstack.test.ts

@@ -52,12 +52,13 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
     if (!/^[a-z0-9]{2,32}$/.test(uid)) return setError('your HKU UID: lowercase letters and digits, without @hku.hk');
     if (!pin) return setError('your Portal PIN');
     if (!/^\d{6,8}$/.test(otp)) return setError('the 6-digit code from Microsoft Authenticator or SMS');
+    if (hpc.ssh?.auth === 'shared-password' && !hpcPw) return setError(`the password for ${hpc.ssh.user ?? ''}@${hpc.ssh.host}`);
     setBusy(true);
     setError('');
     try {
       const ticket = await train.ticket();
       const enc = new TextEncoder();
-      const p = enc.encode(pin), o = enc.encode(otp), w = enc.encode(separate ? hpcPw : '');
+      const p = enc.encode(pin), o = enc.encode(otp), w = enc.encode(shared || separate ? hpcPw : '');
       setPin(''); setOtp(''); setHpcPw('');
       const plain = packCredentials(p, o, w);
       p.fill(0); o.fill(0); w.fill(0);
@@ -69,6 +70,8 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
   };
 
   const locked = hpc.lockedForSeconds > 0;
+  const shared = hpc.ssh?.auth === 'shared-password';
+  const target = hpc.ssh ? `${hpc.ssh.user ?? (uid || 'you')}@${hpc.ssh.host}` : 'the cluster';
   return (
     <div className="cx-modal-back" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
       <form className="card cx-modal" role="dialog" aria-modal="true" aria-labelledby="hku-title" onSubmit={submit} autoComplete="off">
@@ -76,7 +79,7 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
           <span id="hku-title" className="cx-kicker" style={{ margin: 0 }}>&gt; HKU SIGN-IN</span>
           <button type="button" className="btn btn-ghost cx-icon" onClick={onCancel} aria-label="Close"><XMark /></button>
         </div>
-        <p className="cx-modal-lede">Sign in as yourself to {action === 'submit' ? 'send' : action} <b>{jobName}</b> on HPC2021.</p>
+        <p className="cx-modal-lede">Sign in to HKUVPN as yourself to {action === 'submit' ? 'send' : action} <b>{jobName}</b> on <b>{target}</b>.</p>
         <div className="cx-modal-uid">
           <div className="field">
             <label htmlFor="hku-uid">HKU UID</label>
@@ -102,19 +105,29 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
           <input id="hku-otp" className="input cx-otp" inputMode="numeric" autoComplete="one-time-code" maxLength={8} value={otp}
             placeholder="from Microsoft Authenticator or SMS" onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} />
         </div>
-        <label className="cx-check">
-          <input type="checkbox" checked={separate} onChange={(e) => setSeparate(e.target.checked)} /> My HPC2021 password is not my Portal PIN
-        </label>
-        {separate && (
+        {shared ? (
           <div className="field">
-            <label htmlFor="hku-hpcpw">HPC2021 password</label>
+            <label htmlFor="hku-hpcpw">Password for {target}</label>
             <input id="hku-hpcpw" className="input" type="password" value={hpcPw} autoComplete="off" onChange={(e) => setHpcPw(e.target.value)} />
           </div>
+        ) : (
+          <>
+            <label className="cx-check">
+              <input type="checkbox" checked={separate} onChange={(e) => setSeparate(e.target.checked)} /> My cluster password is not my Portal PIN
+            </label>
+            {separate && (
+              <div className="field">
+                <label htmlFor="hku-hpcpw">Cluster password</label>
+                <input id="hku-hpcpw" className="input" type="password" value={hpcPw} autoComplete="off" onChange={(e) => setHpcPw(e.target.value)} />
+              </div>
+            )}
+          </>
         )}
         <p className="cx-hint cx-modal-note">
-          Sealed in this browser for this one action. The console uses it once to open your own HKUVPN tunnel and HPC2021
-          login, then wipes it: never stored, never logged. One attempt only: a wrong PIN is not retried, and three
-          failures pause sign-ins for 15 min to protect your HKU account. You stay signed in for {Math.round(hpc.idleTtlSeconds / 60)} min after last use.
+          Sealed in this browser for this one action. The console uses it once to open your own HKUVPN tunnel and the
+          SSH login to {target}, then wipes it: never stored, never logged.{shared ? ' The cluster password is checked against a fingerprint first, so a typo is caught before anything connects.' : ''}{' '}
+          One attempt only: a wrong PIN is not retried, and three failures pause sign-ins for 15 min to protect your HKU
+          account. You stay signed in for {Math.round(hpc.idleTtlSeconds / 60)} min after last use.
         </p>
         {locked && <div className="cx-error">! sign-ins paused for {Math.ceil(hpc.lockedForSeconds / 60)} min after three failures</div>}
         {error && <div className="cx-error" role="alert">! {error}</div>}

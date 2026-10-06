@@ -63,6 +63,8 @@ export class Credentials {
   otp(): Buffer { return this.#live(this.#otp); }
   /** HPC2021's SSH password is the Portal PIN unless the person said otherwise. */
   sshPassword(): Buffer { return this.#live(this.#password ?? this.#pin); }
+  /** The password typed for SSH, if one was (shared-account mode requires it). */
+  sshPasswordGiven(): Buffer | null { return this.#password ? this.#live(this.#password) : null; }
   get wiped(): boolean { return this.#wiped; }
 
   wipe(): void {

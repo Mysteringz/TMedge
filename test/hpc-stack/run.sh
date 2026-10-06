@@ -26,7 +26,7 @@ mkdir -p "$WORK/certs"
 # Seeds are RFC 6238's test seed and two made-up ones.
 $DOCKER run -d --name "$NAME" --cap-add NET_ADMIN --device /dev/net/tun -p "127.0.0.1:$PORT:4443" \
   -e FAKE_USERS="tmchan:PIN_CANARY_7f3a:3132333435363738393031323334353637383930 kwlee:kwlee-portal-pin-2:3837363534333231303938373635343332313039 lockme:lockme-pin-3:3131313131313131313131313131313131313131" \
-  -e FAKE_PENDING_SECONDS=1 -e FAKE_DEBUG="${FAKE_DEBUG:-0}" -v "$WORK/certs:/certs" tmedge-fake-hku >/dev/null
+  -e FAKE_SHARED="ing:SRV_CANARY_51e9" -e FAKE_PENDING_SECONDS=1 -e FAKE_DEBUG="${FAKE_DEBUG:-0}" -v "$WORK/certs:/certs" tmedge-fake-hku >/dev/null
 for _ in $(seq 1 60); do [ -s "$WORK/certs/hpc_host_ed25519.pub" ] && break; sleep 0.5; done
 [ -s "$WORK/certs/hpc_host_ed25519.pub" ] || { $DOCKER logs "$NAME" >&2; echo "fake HKU did not start" >&2; exit 1; }
 for _ in $(seq 1 40); do (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && break; sleep 0.25; done
@@ -34,7 +34,8 @@ for _ in $(seq 1 40); do (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && bre
 export HPC_STACK=1 HPC_STACK_VPN="127.0.0.1:$PORT"
 HPC_STACK_CERT="$(node -e "const {X509Certificate,createHash}=require('crypto');const x=new X509Certificate(require('fs').readFileSync(process.argv[1]));console.log('pin-sha256:'+createHash('sha256').update(x.publicKey.export({type:'spki',format:'der'})).digest('base64'))" "$WORK/certs/server-cert.pem")"
 export HPC_STACK_CERT
-echo "hpc.fakehku.test $(cut -d' ' -f1,2 "$WORK/certs/hpc_host_ed25519.pub")" > "$WORK/known_hosts"
+# Pinned by name and by the address inside the tunnel (the real cluster is an IP).
+echo "hpc.fakehku.test,192.168.99.1 $(cut -d' ' -f1,2 "$WORK/certs/hpc_host_ed25519.pub")" > "$WORK/known_hosts"
 export HPC_STACK_KNOWN_HOSTS="$WORK/known_hosts"
 cd "$REPO"
 node --test --test-concurrency=1 ${HPC_STACK_ONLY:+--test-name-pattern="$HPC_STACK_ONLY"} dist/test/hpcstack.test.js

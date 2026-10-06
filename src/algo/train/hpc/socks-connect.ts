@@ -23,8 +23,13 @@ s.on('data', (chunk: Buffer) => {
   if (stage === 0 && pending.length >= 2) {
     if (pending[0] !== 5 || pending[1] !== 0) fail('proxy refused the greeting');
     pending = pending.subarray(2);
+    // An IPv4 address goes as one (ATYP 1); a name goes unresolved (ATYP 3).
+    const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
     const name = Buffer.from(host, 'ascii');
-    s.write(Buffer.concat([Buffer.from([5, 1, 0, 3, name.length]), name, Buffer.from([q >> 8, q & 255])]));
+    const addr = v4 && v4.slice(1).every((x) => Number(x) <= 255)
+      ? Buffer.from([1, ...v4.slice(1).map(Number)])
+      : Buffer.concat([Buffer.from([3, name.length]), name]);
+    s.write(Buffer.concat([Buffer.from([5, 1, 0]), addr, Buffer.from([q >> 8, q & 255])]));
     stage = 1;
   }
   if (stage === 1 && pending.length >= 5) {

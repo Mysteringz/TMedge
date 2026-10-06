@@ -58,7 +58,9 @@ describe('HPC config', () => {
     const shipped = loadHpcConfig(join(REPO, 'config', 'hpc.json'));
     assert.equal(shipped.backend, 'vpn-ssh');
     assert.equal(shipped.planA?.vpnHost, 'vpn2fa.hku.hk');
-    assert.equal(shipped.planA?.submitHost, 'hpc2021.hku.hk');
+    assert.equal(shipped.planA?.submitHost, '10.21.36.12');
+    assert.equal(shipped.planA?.sshUser, 'ing');
+    assert.equal(shipped.planA?.sshAuth, 'shared-password', 'the shared password is typed each time, never configured');
     assert.equal(shipped.planA?.vpnServerCert, null, 'the real VPN is checked against the system CAs, not a pin');
     assert.equal(shipped.verified, false, 'placeholders must not pose as what sinfo said');
     assert.ok(shipped.maxUploadMb < 100, 'Cloudflare Tunnel refuses request bodies over 100 MB');

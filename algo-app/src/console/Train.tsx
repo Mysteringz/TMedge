@@ -1,17 +1,16 @@
 /**
  * ML Training, module 02: write or upload a training script, say what it
- * needs from HKU HPC2021, and keep it as a draft whose job.sbatch is exactly
- * what would be submitted (docs/hpc/HANDOVER.md, milestone M1).
+ * needs from the HKU cluster (SLURM), keep it as a draft whose job.sbatch is
+ * exactly what will be submitted, and send it (docs/hpc/HANDOVER.md, Plan A).
  *
- * Sending a job to HPC2021 is not here yet, and the screen says so instead
- * of pretending: the handover makes the M0 feasibility spike a hard gate
- * before anything touches HKU's VPN or login nodes, and a console that
- * showed invented job states would be believed. The send button is drawn,
- * disabled, where the design puts it, and the reason is on screen.
+ * Sending signs the person in as themselves: their own HKUVPN login (UID,
+ * Portal PIN, one-time code) opens their own tunnel, and SSH logs in to the
+ * cluster -- as a shared account with a password typed each time, or as
+ * them (train/SignIn.tsx). When the box cannot send yet, the screen says
+ * why instead of pretending.
  *
  * The design's results and export cards become the job's state and its
- * spec: there are no accuracies to show until jobs run, and this module
- * does not make any up.
+ * spec: this module shows what SLURM reports and makes no numbers up.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { FilePy, FloppyDisk, PaperPlaneRight, Plus, UploadSimple, XMark } from './icons.tsx';
@@ -20,7 +19,7 @@ import { CodeEditor } from './train/CodeEditor.tsx';
 import { train, TrainError, type HpcAction, type HpcState, type Job, type JobSpec, type JobSummary, type OpEvent, type Problem, type TrainConfig } from './train/api.ts';
 import { SignIn } from './train/SignIn.tsx';
 
-const DEFAULT_SCRIPT = `# algo.hkumyseat.com — training job for HKU HPC2021 (SLURM)
+const DEFAULT_SCRIPT = `# algo.hkumyseat.com — training job for the HKU cluster (SLURM)
 # Runs on a compute node as: srun python train.py <arguments>
 # Data is not uploaded from here: --data is a path on HPC storage.
 import argparse
@@ -71,7 +70,7 @@ const STEPS: Record<string, { at?: number; tone: Tone; say(d: Record<string, unk
   vpn_auth: { at: 0.1, tone: 'info', say: () => '[vpn]    signing in to HKUVPN as you (one attempt)' },
   vpn_connect: { at: 0.25, tone: 'info', say: () => '[vpn]    accepted · opening your own tunnel' },
   vpn_up: { at: 0.4, tone: 'info', say: () => '[vpn]    tunnel up' },
-  ssh_auth: { at: 0.5, tone: 'info', say: () => '[ssh]    signing in to HPC2021' },
+  ssh_auth: { at: 0.5, tone: 'info', say: () => '[ssh]    signing in to the cluster' },
   ssh_up: { at: 0.6, tone: 'info', say: () => '[ssh]    signed in · your PIN and code are wiped from the server' },
   session_reused: { at: 0.6, tone: 'info', say: () => '[hku]    using your open session · no code needed' },
   uploading: { at: 0.75, tone: 'info', say: (d) => `[upload] copying ${String(d.files ?? '')} file(s) to ~/hpc-dash/jobs/` },
@@ -259,12 +258,12 @@ export function Train() {
     refresh().then(async ({ c, list }) => {
       if (gone) return;
       setForm((f) => f ?? defaultForm(c, source.kind === 'script' ? source.filename : ''));
-      if (c.hpc.available) say('[hku]    HPC2021 is on: you sign in as yourself when you send, refresh or cancel', 'info');
+      if (c.hpc.available) say('[hku]    sending is on: you sign in as yourself when you send, refresh or cancel', 'info');
       else {
-        say(`[hku]    sending to HPC2021 is not ready: ${c.hpc.reason ?? ''}`, 'accent');
+        say(`[hku]    sending is not ready: ${c.hpc.reason ?? ''}`, 'accent');
         say('[ok]     drafts, uploads and the exact job.sbatch preview work now', 'info');
       }
-      if (!c.verified) say('[config] partitions and modules are placeholders until M0 reads them off HPC2021', 'muted');
+      if (!c.verified) say('[config] partitions and modules are placeholders until M0 reads them off the cluster', 'muted');
       say(`[jobs]   ${list.length} saved · ${mb(c.usage.bytes)} of ${c.limits.quotaMb} MB used`, 'muted');
       const want = new URLSearchParams(location.search).get('job');
       if (want && list.some((j) => j.id === want)) await open(want);
@@ -441,7 +440,7 @@ export function Train() {
       target = await save();
       if (!target) return;
     }
-    say(`$ send ${target.spec.name} to HPC2021`, 'cmd');
+    say(`$ send ${target.spec.name} to ${hpc?.ssh ? `${hpc.ssh.user ?? hpc.session.uid ?? ''}@${hpc.ssh.host}` : 'the cluster'}`, 'cmd');
     await runOp('submit', target.id, target.spec.name);
   };
 
@@ -535,7 +534,7 @@ export function Train() {
                 <FloppyDisk />{busy === 'save' ? 'SAVING…' : sent ? 'SAVE AS NEW' : 'SAVE DRAFT'}
               </button>
               <button className="btn btn-primary cx-btn-px" disabled={!canSend} aria-describedby="cx-hpc-why" onClick={() => void send()}
-                title={ready ? 'Save if needed, sign in as yourself, and send to HPC2021' : hpc?.reason ?? cfg.hpc.reason ?? undefined}>
+                title={ready ? 'Save if needed, sign in as yourself, and send to the cluster' : hpc?.reason ?? cfg.hpc.reason ?? undefined}>
                 <PaperPlaneRight />{acting === 'submit' ? 'SENDING…' : 'SEND JOB TO TRAIN'}
               </button>
             </div>
@@ -608,7 +607,7 @@ export function Train() {
                 <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('err')}>STDERR</button>
                 {ACTIVE.has(job.status) && (
                   <button className="btn btn-ghost cx-btn-px cx-danger" disabled={!!acting}
-                    onClick={() => { if (window.confirm(`Cancel ${job.spec.name} (SLURM ${job.slurmJobId}) on HPC2021?`)) void runOp('cancel', job.id, job.spec.name); }}>
+                    onClick={() => { if (window.confirm(`Cancel ${job.spec.name} (SLURM ${job.slurmJobId}) on the cluster?`)) void runOp('cancel', job.id, job.spec.name); }}>
                     {acting === 'cancel' ? 'CANCELLING…' : 'CANCEL JOB'}
                   </button>
                 )}
@@ -726,7 +725,7 @@ export function Train() {
               <textarea id="f-env" className={`input cx-textarea ${bad.has('env') ? 'is-bad' : ''}`} rows={3} value={form.env}
                 placeholder="OMP_NUM_THREADS=4" spellCheck={false} onChange={(e) => edit({ env: e.target.value })} />
             </Field>
-            <label className="cx-check" title="Needs M0 to show HPC2021 delivers SLURM mail, and your HKU UID">
+            <label className="cx-check" title="Needs M0 to show the cluster delivers SLURM mail">
               <input type="checkbox" checked={false} disabled readOnly /> Email me when it ends
               <span className="cx-hint">waits on M0</span>
             </label>
