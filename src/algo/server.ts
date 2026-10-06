@@ -7,6 +7,7 @@
  * the Cloudflare Access in front of it -- never on the tier students can
  * reach.
  */
+import type { ConsoleDetection, RawFrameMessage } from '../shared/types.js';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
@@ -16,11 +17,12 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
-import type { ConsoleCore } from '../edge/console.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
-import { encodeFrame } from './frames.js';
-import { validate } from './graph.js';
-import { defaultPipeline, NODE_SPECS, specOf } from './nodes.js';
+import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
+import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
+import { AlgoWebSocketAdapter } from './websocket-adapter.js';
+import { createAlgoRouter } from './routes.js';
+import { defaultPipeline } from './nodes.js';
 import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
@@ -28,38 +30,51 @@ import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
 import { sendLatest } from '../shared/fanout.js';
 import { requestUrl, sameOrigin } from '../shared/http.js';
+import { encodeFrame } from './frames.js';
+import { validate } from './graph.js';
+import { NODE_SPECS, specOf } from './nodes.js';
 
+export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
+interface ConsoleCore {
+  ui: express.Router;
+  upgrade(req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
+  closeSessions(binding: string): void;
+  dispose(): Promise<void>;
+}
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
 
-function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
+export interface AlgoServerHandle {
+  server: Server;
+  algo: AlgoRuntime;
+  dispose(): Promise<void>;
 }
 
 export function startAlgo(
   rt: EdgeRuntime, port: number, host: string,
-  authCfg: AlgoAuthConfig = loadAlgoAuthConfig(process.env, rt.cfg.adminPassword),
+  authOrOptions: AlgoAuthConfig | AlgoServerOptions = {},
   /** The debug console, hosted here as module 03 when given (edge/console.ts). */
   consoleCore?: ConsoleCore,
-): { server: Server; algo: AlgoRuntime } {
+): AlgoServerHandle {
+  const options = 'enabled' in authOrOptions ? {} : authOrOptions;
+  const authCfg: AlgoAuthConfig = 'enabled' in authOrOptions ? authOrOptions : loadAlgoAuthConfig(process.env, rt.cfg.adminPassword);
   const auth = createAlgoAuth(authCfg);
   const broker = new ParamBroker(rt);
   broker.start();
   const algo = new AlgoRuntime(rt, broker);
   const wsSecret = randomBytes(32);
-  const dir = join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pipelines');
+  const dataDir = options.dataDir ?? process.env.DATA_DIR ?? join(ROOT, 'data');
+  const dir = join(dataDir, 'algo', 'pipelines');
   mkdirSync(dir, { recursive: true });
   // Training data for the ML locator. Off by default: it writes to disk and
   // holds pictures of a room, so somebody has to ask for it.
-  const pairsDir = join(process.env.DATA_DIR || join(ROOT, 'data'), 'algo', 'pairs');
+  const pairsDir = join(dataDir, 'algo', 'pairs');
   if (process.env.TRAINING_STORAGE && !['postgres', 'files'].includes(process.env.TRAINING_STORAGE)) {
     throw new Error('TRAINING_STORAGE must be postgres or files');
   }
   mkdirSync(pairsDir, { recursive: true });
   const spool = process.env.TRAINING_STORAGE === 'postgres'
-    ? new TrainingSpool(join(process.env.DATA_DIR || join(ROOT, 'data'), 'training'), join(pairsDir, 'recording.on')) : null;
+    ? new TrainingSpool(join(dataDir, 'training'), join(pairsDir, 'recording.on')) : null;
   const pairs = spool ?? new PairRecorder({ dir: pairsDir });
   // The env var forces it on; otherwise the recorder remembers what it was
   // last told, so a deploy does not quietly stop a collection run.
@@ -80,7 +95,7 @@ export function startAlgo(
   let pipeline: Pipeline = loadPipeline(dir, 'default') ?? defaultPipeline(pickUid());
   // Nothing has been heard from anyone at start-up, so revisit the choice once
   // frames have had a moment to arrive.
-  setTimeout(() => {
+  const pickTimer = setTimeout(() => {
     if (algo.frames.list(pipeline.uid).length === 0) {
       const better = pickUid();
       if (better && better !== pipeline.uid) {
@@ -93,30 +108,33 @@ export function startAlgo(
 
   // Frames arrive whether or not anyone is looking; the ring is what makes
   // stepping backwards possible at all.
-  rt.on('raw', (msg) => {
+  const onRaw = (msg: RawFrameMessage) => {
     if (!rt.reg.nodes.has(msg.uid)) return;
     algo.frames.addRaw(msg);
     const node = rt.reg.nodes.get(msg.uid);
     if (node && !node.simulated) spool?.raw(msg, { floorId: node.floorId, pose: node.pose, detector: node.detector });
     scheduleRun('frame');
-  });
+  };
+  rt.on('raw', onRaw);
   // Every RGB frame is offered to the recorder, which keeps it only when a
   // thermal frame of the same moment exists to pair it with.
-  rt.on('rgb', (uid, jpeg, at) => {
+  const onRgb = (uid: string, jpeg: Buffer, at: number) => {
     const node = rt.reg.nodes.get(uid);
     // No pose means no orientation to record the pair against.
     if (!node?.pose) return;
     pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
-  });
+  };
+  rt.on('rgb', onRgb);
 
-  rt.on('report', (uid, dets) => {
+  const onReport = (uid: string, dets: ConsoleDetection[]) => {
     if (!rt.reg.nodes.has(uid)) return;
     // The report's own frame number, not the last RAW's: they are only the
     // same when a RAW happened to arrive for that frame, and the whole point
     // of the pairing is to know when it did.
     const report = rt.lastReport(uid);
     if (report) algo.frames.addReport(uid, report.frame, dets, report.flags, report.boot);
-  });
+  };
+  rt.on('report', onReport);
 
   // Turnstile is a script plus an iframe from Cloudflare; allow exactly that
   // origin, and only when it is switched on. Fonts come from Google, as on
@@ -505,10 +523,30 @@ export function startAlgo(
     return res.json({ ok: true, live, frame: heldFrame });
   });
 
-  setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000).unref();
+  const stateTimer = setInterval(() => send({ type: 'pipeline_state', pipeline, live, pending: broker.changes() }), 5000).unref();
 
-  server.listen(port, host);
-  return { server, algo };
+  let disposal: Promise<void> | undefined;
+  if (options.listen !== false) server.listen(port, host);
+  return {
+    server,
+    algo,
+    // Release owned feeds and timers once, including during startup rollback.
+    dispose: () => {
+      if (disposal) return disposal;
+      clearTimeout(pickTimer);
+      clearInterval(stateTimer);
+      rt.off('raw', onRaw);
+      rt.off('rgb', onRgb);
+      rt.off('report', onReport);
+      broker.stop();
+      for (const ws of wss.clients) ws.terminate();
+      disposal = Promise.all([
+        algo.dispose(), consoleCore?.dispose(),
+        new Promise<void>(resolve => wss.close(() => resolve())),
+      ]).then(() => undefined);
+      return disposal;
+    },
+  };
 }
 
 function loadPipeline(dir: string, name: string): Pipeline | null {
@@ -518,6 +556,19 @@ function loadPipeline(dir: string, name: string): Pipeline | null {
     const pipeline = JSON.parse(readFileSync(path, 'utf8')) as Pipeline;
     return validate(pipeline).length === 0 ? pipeline : null;
   } catch {
-    return null;
+    return null;  }
+}
+
+function sendDashboard(res: Response): void {
+  if (!existsSync(join(PUBLIC, 'index.html'))) {
+    res.status(503).send('the algo dashboard is not built (npm run build)');
+    return;
   }
+  res.sendFile(join(PUBLIC, 'index.html'));
+}
+
+function safeEqual(actual: string, expected: string): boolean {
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }

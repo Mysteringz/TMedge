@@ -3,7 +3,9 @@
  * Nothing secret is ever logged.
  */
 import { hostname } from 'node:os';
+import { loadPostgresConnectionConfig, PostgresConfigError, type PostgresConnectionConfig } from '../infrastructure/postgres/config.js';
 import { DeviceKeys, GatewayKeys } from './secure.js';
+export type PersistenceMode = 'file' | 'postgres';
 
 export interface EdgeConfig {
   edgeId: string;
@@ -14,6 +16,9 @@ export interface EdgeConfig {
   udpHost: string;
   sitePath: string;
   nodesPath: string;
+  /** Explicit source of truth for registrations and provisioning. */
+  persistenceMode?: PersistenceMode;
+  postgres?: PostgresConnectionConfig | null;
   dataDir: string;
   recordRaw: boolean;
   consolePort: number;
@@ -84,6 +89,19 @@ function int(env: NodeJS.ProcessEnv, k: string, def: number, min: number, max: n
 }
 
 export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
+  const persistenceMode = env.PERSISTENCE_MODE ?? 'file';
+  if (persistenceMode !== 'file' && persistenceMode !== 'postgres') {
+    throw new EnvError('PERSISTENCE_MODE must be "file" or "postgres"');
+  }
+  let postgres: PostgresConnectionConfig | null = null;
+  if (persistenceMode === 'postgres') {
+    try {
+      postgres = loadPostgresConnectionConfig('runtime', env);
+    } catch (error) {
+      if (error instanceof PostgresConfigError) throw new EnvError(error.message);
+      throw error;
+    }
+  }
   const devices = env.DEVICE_KEYS_FILE ? DeviceKeys.fromFile(env.DEVICE_KEYS_FILE) : undefined;
   const key = env.TM_KEY ?? '';
   const allowUnsigned = env.ALLOW_UNSIGNED === '1';
@@ -138,6 +156,8 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     udpHost: env.UDP_HOST || '0.0.0.0',
     sitePath: env.SITE_CONFIG || 'config/site.json',
     nodesPath: env.NODES_CONFIG || 'config/nodes.json',
+    persistenceMode,
+    postgres,
     dataDir: env.DATA_DIR || 'data',
     recordRaw: env.RECORD_RAW === '1',
     consolePort: int(env, 'CONSOLE_PORT', 8090, 1, 65535),

@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+ARG PLATFORMIO_VERSION=6.1.19
+ENV HOME=/tmp/home \
+    PLATFORMIO_CORE_DIR=/tmp/.platformio \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN pip install --no-cache-dir "platformio==${PLATFORMIO_VERSION}" \
+    && mkdir -p /opt/worker \
+    && chmod 0555 /opt/worker
+COPY docker/firmware-worker.py /opt/worker/firmware-worker.py
+RUN chmod 0444 /opt/worker/firmware-worker.py
+
+USER 10001:10001
+EXPOSE 8123
+CMD ["python", "/opt/worker/firmware-worker.py"]

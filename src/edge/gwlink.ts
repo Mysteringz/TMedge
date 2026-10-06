@@ -231,6 +231,8 @@ export class GatewayServer {
   private readonly hellos = new Map<string, number>();
   private readonly helloStore: HelloReplayStore | null;
   private readonly now: () => number;
+  private started = false;
+  private closePromise: Promise<void> | null = null;
 
   constructor(private readonly opts: GatewayServerOptions) {
     this.now = opts.now ?? Date.now;
@@ -254,22 +256,33 @@ export class GatewayServer {
 
   listen(): Promise<number> {
     return new Promise((resolve, reject) => {
-      this.server.once('error', reject);
-      this.server.listen(this.opts.port, this.opts.host, () => {
-        this.server.removeListener('error', reject);
-        const a = this.server.address();
-        resolve(typeof a === 'object' && a ? a.port : this.opts.port);
-      });
+      const onError = (error: Error) => {
+        this.server.off('listening', onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        this.started = true;
+        this.server.off('error', onError);
+        const address = this.server.address();
+        resolve(typeof address === 'object' && address ? address.port : this.opts.port);
+      };
+      this.server.once('error', onError);
+      this.server.once('listening', onListening);
+      this.server.listen(this.opts.port, this.opts.host);
     });
   }
 
   close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     // Include sniffing, HTTP and unauthenticated sockets, otherwise close()
     // can hang waiting for a peer that has never sent a HELLO.
     for (const socket of this.sockets) socket.destroy();
     for (const c of this.conns.values()) c.link.destroy();
-    this.wss.close();
-    return new Promise((resolve) => this.server.close(() => resolve()));
+    this.closePromise = new Promise((resolve) => {
+      if (!this.started) return resolve();
+      this.wss.close(() => this.server.close(() => resolve()));
+    });
+    return this.closePromise;
   }
 
   gateways(): GatewayInfo[] {

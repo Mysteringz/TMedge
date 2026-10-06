@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { JsonStudentAccountRepository } from '../src/infrastructure/web/json-student-account-repository.js';
 import { googleFromEnv } from '../src/web/google.js';
 import { createWebApp, loadWebConfig } from '../src/web/main.js';
 
@@ -18,7 +19,7 @@ const REDIRECT = 'https://hkumyseat.com/auth/google/callback';
 type Claims = Record<string, unknown>;
 const jwt = (claims: Claims) => `e30.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`;
 
-async function start(opts: { signupOpen?: boolean } = {}) {
+async function start(opts: { signupOpen?: boolean; studentPersistenceMode?: 'file' | 'postgres' } = {}) {
   // Each test sets what the next token exchange returns, given the nonce the
   // browser carried to Google; `exchanges` records what we sent.
   let answer: (nonce: string) => Claims = () => ({});
@@ -28,12 +29,17 @@ async function start(opts: { signupOpen?: boolean } = {}) {
     exchanges.push(init.body);
     return new Response(JSON.stringify({ id_token: jwt(answer(lastNonce)) }), { status: 200 });
   }) as unknown as typeof fetch;
-  const web = createWebApp({
+  const usersPath = join(mkdtempSync(join(tmpdir(), 'tmweb-')), 'users.json');
+  const config = {
     port: 0, host: '127.0.0.1', pushToken: 'edge-token-for-tests-0123456789', sessionSecret: Buffer.from('s'.repeat(40)),
-    usersPath: join(mkdtempSync(join(tmpdir(), 'tmweb-')), 'users.json'),
+    usersPath,
     allowedDomains: ['connect.hku.hk'], signupOpen: opts.signupOpen ?? true, cookieSecure: false, trustProxy: false, staleMs: 30_000,
     google: { clientId: CLIENT, clientSecret: 'client-secret', redirectUri: REDIRECT, fetch: fakeFetch },
-  });
+    studentPersistenceMode: opts.studentPersistenceMode,
+  };
+  const web = opts.studentPersistenceMode === 'postgres'
+    ? createWebApp(config, { accounts: new JsonStudentAccountRepository(usersPath, ['connect.hku.hk']) })
+    : createWebApp(config);
   await new Promise<void>((r) => web.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
 
@@ -218,6 +224,17 @@ test('google: the shell says whether the button is on; off, its routes do not ex
     assert.equal((await fetch(`${base}/auth/google`, { redirect: 'manual' })).status, 404);
   } finally {
     await new Promise<void>((r) => web.server.close(() => r()));
+  }
+});
+
+test('google: PostgreSQL mode hides Google sign-in and both OAuth routes return 404', async () => {
+  const w = await start({ studentPersistenceMode: 'postgres' });
+  try {
+    assert.match(await (await fetch(`${w.base}/login/`)).text(), /<meta name="google" content="">/);
+    assert.equal((await fetch(`${w.base}/auth/google`, { redirect: 'manual' })).status, 404);
+    assert.equal((await fetch(`${w.base}/auth/google/callback?code=unused&state=unused`, { redirect: 'manual' })).status, 404);
+  } finally {
+    await w.close();
   }
 });
 

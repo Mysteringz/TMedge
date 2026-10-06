@@ -67,6 +67,10 @@ export class AlgoRuntime {
 
   constructor(private readonly rt: EdgeRuntime, private readonly broker: ParamBroker) {}
 
+  dispose(): Promise<void> {
+    return this.detector.dispose();
+  }
+
   private async detect(uid: string, frame: number, params: DetectorParams): Promise<FrameResult | null> {
     // Frame numbers start again after a sensor reboot. A cached verdict must
     // belong to this received frame, rather than the old image with that id.

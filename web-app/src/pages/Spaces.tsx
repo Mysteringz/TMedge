@@ -7,6 +7,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { recordStudentActivity, useSpaceViewActivity } from '../activity.ts';
 import {
   allocate, capacityOf, isDark, knownFree, plural, spaceInfo, unknownTables,
   useLive, useMe, useSeats, useVenues, walkOrder, type CampusFloor,
@@ -32,6 +33,18 @@ export default function Spaces() {
   const chosen = floor?.tables.find((t) => t.id === table);
   const availableTable = chosen && floor && !isDark(floor) && chosen.status !== 'unknown' &&
     (chosen.free ?? 0) >= Math.min(seats, chosen.capacity) ? table : null;
+  useSpaceViewActivity(floor?.id, seats);
+
+  const pickTable = (tableId: string | null) => {
+    if (floor && tableId) recordStudentActivity({ action: 'table-select', seats, floorId: floor.id, tableId });
+    setTable(tableId);
+  };
+  const toggleDirections = () => {
+    if (floor && !directions) recordStudentActivity({
+      action: 'directions-view', seats, floorId: floor.id, ...(table ? { tableId: table } : {}),
+    });
+    setDirections(!directions);
+  };
 
   useEffect(() => {
     document.title = `${entry?.venue.shortName ?? 'Spaces'} · HKUMySeat`;
@@ -74,9 +87,9 @@ export default function Spaces() {
                 floor={floor}
                 seats={seats}
                 table={availableTable}
-                onTable={setTable}
+                onTable={pickTable}
                 directions={directions}
-                onDirections={() => setDirections((d) => !d)}
+                onDirections={toggleDirections}
               />
             )}
           </>

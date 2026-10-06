@@ -1,8 +1,9 @@
 # TMedge in Docker
 
-One image, `tmedge`, builds on any machine with Docker: Linux, macOS or
-Windows, on x86-64 or ARM. It runs the edge, the student web tier and the
-simulator. Nothing else needs installing on the host: no Node, no compiler.
+The `tmedge` image runs the edge, student web tier, and simulator. An
+additional, separate PlatformIO worker image compiles uploaded firmware in an
+isolated container. Nothing needs installing on the host except Docker: no
+Node or compiler.
 
 ## Install
 
@@ -10,8 +11,8 @@ simulator. Nothing else needs installing on the host: no Node, no compiler.
 
 - Docker Engine 24+ with the Compose plugin (`docker compose version`), or
   Docker Desktop.
-- About 300 MB of disk for the image, plus recordings in the `edge-data`
-  volume (a few MB per node per day, or about 70 MB with `RECORD_RAW=1`).
+- Enough disk for both images and per-build PlatformIO downloads (up to the
+  configured worker temporary-space limit), plus recordings in `edge-data`.
 
 ### 2. Get the code and configure
 
@@ -30,6 +31,11 @@ Fill in `.env`. Generate each secret with `openssl rand -hex 32`.
 | `ADMIN_PASSWORD` | Debug console password. **Required in Docker**: without it the console binds to the container's own localhost and can't be reached |
 | `TMGW_TOKEN` | Shared with every TMWAccess gateway (16+ chars) |
 | `BIND_ADDR` | Host address the ports listen on (see [Security](#security)). Default `127.0.0.1` |
+| `FIRMWARE_WORKER_MEMORY` | Per-worker memory limit; default `768m` |
+| `FIRMWARE_WORKER_MEMORY_SWAP` | Worker memory plus swap limit; default `1536m` |
+| `FIRMWARE_WORKER_CPUS` | Worker CPU limit; default `1.0` |
+| `FIRMWARE_WORKER_PIDS` | Maximum worker process count; default `128` |
+| `FIRMWARE_WORKER_TIMEOUT_SECONDS` | Build timeout; default `1200` |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Only for the `tunnel` profile |
 
 Put your site layout in `config/site.json` and `config/nodes.json`. These are
@@ -95,7 +101,7 @@ docker run --rm -v tmedge_edge-data:/d -v "$PWD":/b alpine tar czf /b/edge-data.
 
 ## How it works
 
-### The image
+### The images
 
 A two-stage build:
 
@@ -115,6 +121,14 @@ from the first argument:
 | `tmedge sim [args]` | Simulator (`dist/src/tools/simulator.js`) |
 | `tmedge user …` | Account management |
 | `tmedge health` | Healthcheck: web `/healthz` is 200, or the console port answers (401 counts as up) |
+
+The worker uses `Dockerfile.firmware-worker`, runs as UID 10001, and receives
+only a streamed source archive. It has no backend environment variables,
+configuration mounts, data volumes, Docker socket, or access to stored
+recordings. Its root filesystem is read-only; its `/tmp` and `/workspace` are
+temporary filesystems. Docker drops all capabilities and applies no-new-
+privileges, CPU, memory, process-count, and time limits. PlatformIO package
+downloads use the worker's isolated container network.
 
 ### The compose stack
 
@@ -136,6 +150,9 @@ TMWAccess ─TCP 5210──►│  │ :8090 console                    ▲     
   `WEB_PUSH_URLS` at it.
 - **State lives in named volumes** (`edge-data`, `web-data`), so rebuilding or
   replacing the containers loses nothing.
+- The firmware worker has no persistent volume. Toolchains and dependencies
+  are fetched into temporary space for each build, so builds may take longer
+  than a host with a warm PlatformIO cache.
 - The web tier trusts `X-Forwarded-*` headers only from loopback and private
   addresses (`TRUST_PROXY`), which is where `cloudflared` connects from.
 
@@ -159,6 +176,7 @@ TMWAccess ─TCP 5210──►│  │ :8090 console                    ▲     
 - Secrets come only from `.env`. It is git-ignored and `.dockerignore`d, so it
   is never baked into the image.
 - The containers run as non-root. The config mount is read-only.
-- The standard container does not include an OTA compiler. Console builds
-  require the Linux host's isolated PlatformIO installation and bubblewrap;
-  do not enable privileged container access to bypass this boundary.
+- The worker service is on a private Compose network shared with the edge and
+  is published only on host loopback (`127.0.0.1:8123`). It has no secret
+  environment or host mounts. Review memory and temporary-space limits before
+  enabling firmware builds on a small host.

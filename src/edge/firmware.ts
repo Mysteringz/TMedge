@@ -10,11 +10,15 @@
  * Builds are kept on disk so a rollout survives a restart of the edge, and
  * the old image stays available to roll back to.
  */
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, normalize, resolve as resolvePath, sep } from 'node:path';
-
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
+import type {
+  FirmwareArtifactContentStorage, FirmwareArtifactFiles, FirmwareCleanupReport, ImageInUseQuery,
+} from '../modules/firmware/repositories/firmware-repository.js';
+import { FirmwareArtifactContentStore } from './firmware-artifact-content-store.js';
+import { FirmwareBuildMetadataStore, type FirmwareBuildMetadataStorage } from './firmware-build-metadata-store.js';
+import { cleanupFirmwareData, emptyFirmwareCleanupReport } from './firmware-retention-cleanup.js';
 export type BuildState = 'uploading' | 'building' | 'ready' | 'failed';
 
 export interface FirmwareBuild {
@@ -39,14 +43,14 @@ export interface FirmwareLimits {
   maxFiles: number;
   maxFileBytes: number;
   maxTotalBytes: number;
-  buildTimeoutMs: number;
+  maxArtifactBytes: number;
 }
 
 const DEFAULTS: FirmwareLimits = {
   maxFiles: 800,
   maxFileBytes: 8 * 1024 * 1024,
   maxTotalBytes: 64 * 1024 * 1024,
-  buildTimeoutMs: 20 * 60_000,
+  maxArtifactBytes: 8 * 1024 * 1024,
 };
 
 export class FirmwareError extends Error {}
@@ -79,48 +83,44 @@ interface Upload {
   files: number;
   bytes: number;
   startedAt: number;
-  building: boolean;
+  lastActivityAt: number;
+  building?: boolean;
 }
 
-export class FirmwareStore {
+export class FirmwareStore implements FirmwareArtifactFiles {
   private readonly uploads = new Map<string, Upload>();
   private readonly builds = new Map<string, FirmwareBuild>();
+  private readonly pendingBuilds = new Map<string, FirmwareBuild>();
   private readonly limits: FirmwareLimits;
   private readonly now: () => number;
+  private readonly persistMetadata: boolean;
+  private readonly artifactContent: FirmwareArtifactContentStorage;
+  private readonly metadata: FirmwareBuildMetadataStorage;
+  private lastCleanup: FirmwareCleanupReport = emptyFirmwareCleanupReport();
 
   constructor(
     private readonly dir: string,
-    private readonly opts: { pio?: string; limits?: Partial<FirmwareLimits>; now?: () => number; log?: (m: string) => void } = {},
+    private readonly opts: {
+      limits?: Partial<FirmwareLimits>; now?: () => number; log?: (m: string) => void;
+      artifactContent?: FirmwareArtifactContentStorage;
+      metadata?: FirmwareBuildMetadataStorage;
+      persistMetadata?: boolean;
+      /** Ignored compatibility input; builds no longer spawn a local compiler. */
+      pio?: string;
+    } = {},
   ) {
     this.limits = { ...DEFAULTS, ...opts.limits };
     this.now = opts.now ?? Date.now;
+    this.persistMetadata = opts.persistMetadata ?? true;
     mkdirSync(join(this.dir, 'builds'), { recursive: true });
     mkdirSync(join(this.dir, 'uploads'), { recursive: true });
+    this.artifactContent = opts.artifactContent ?? new FirmwareArtifactContentStore(join(this.dir, 'artifacts'));
+    this.metadata = opts.metadata ?? new FirmwareBuildMetadataStore(join(this.dir, 'builds'), this.artifactContent);
     this.loadBuilds();
   }
 
-  /** PlatformIO, wherever it was installed. */
-  static findPio(): string | null {
-    const candidates = [
-      process.env.PIO_PATH,
-      join(process.env.PLATFORMIO_CORE_DIR ?? join(process.env.HOME ?? '/root', '.platformio'), 'penv/bin/pio'),
-      '/usr/local/bin/pio',
-      '/usr/bin/pio',
-    ].filter((p): p is string => Boolean(p));
-    return candidates.find((p) => existsSync(p)) ?? null;
-  }
-
   private loadBuilds(): void {
-    for (const id of readdirSync(join(this.dir, 'builds'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
-      try {
-        const meta = JSON.parse(readFileSync(join(this.dir, 'builds', id, 'build.json'), 'utf8')) as FirmwareBuild;
-        // A build that was still running when the edge stopped is not a build.
-        if (meta.state === 'building' || meta.state === 'uploading') meta.state = 'failed';
-        this.builds.set(meta.id, meta);
-      } catch {
-        /* a half-written build directory is ignored */
-      }
-    }
+    if (this.persistMetadata) for (const build of this.metadata.load()) this.builds.set(build.id, build);
   }
 
   list(): FirmwareBuild[] {
@@ -135,11 +135,12 @@ export class FirmwareStore {
   bytes(id: string): Buffer | null {
     const b = this.builds.get(id);
     if (!b || b.state !== 'ready') return null;
-    try {
-      return readFileSync(join(this.dir, 'builds', id, 'firmware.bin'));
-    } catch {
-      return null;
-    }
+    return this.artifactContent.read(id, b.sha256, b.size);
+  }
+
+  /** Reads a verified content-addressed image for durable metadata validation. */
+  readArtifactContent(id: string, sha256: string, size: number): Buffer | null {
+    return this.artifactContent.read(id, sha256, size);
   }
 
   // --- upload ---------------------------------------------------------------
@@ -150,8 +151,15 @@ export class FirmwareStore {
     const id = `up-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const dir = join(this.dir, 'uploads', id);
     mkdirSync(dir, { recursive: true });
-    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: this.now(), building: false });
-    return id;
+    const now = this.now();
+    this.uploads.set(id, { id, dir, by, files: 0, bytes: 0, startedAt: now, lastActivityAt: now });    return id;
+  }
+
+  private sweep(): void {
+    const cutoff = this.now() - 60 * 60_000;
+    for (const upload of this.uploads.values()) {
+      if (!upload.building && upload.lastActivityAt < cutoff) this.discard(upload.id);
+    }
   }
 
   addFile(uploadId: string, path: string, bytes: Buffer): void {
@@ -174,6 +182,13 @@ export class FirmwareStore {
     writeFileSync(full, bytes);
     up.files += 1;
     up.bytes += bytes.length;
+    up.lastActivityAt = this.now();
+    utimesSync(up.dir, new Date(up.lastActivityAt), new Date(up.lastActivityAt));
+  }
+
+  /** Inline compilation was removed; compilation is owned by the isolated worker service. */
+  async build(_uploadId: string, _by: string): Promise<FirmwareBuild> {
+    throw new FirmwareError('isolated firmware builds require the configured build worker');
   }
 
   /**
@@ -192,7 +207,7 @@ export class FirmwareStore {
 
   private versionOf(root: string): string {
     try {
-      const header = readFileSync(join(root, 'include', 'tm_config.h'), 'utf8');
+      const header = readFileInside(root, join(root, 'include', 'tm_config.h')).toString('utf8');
       return /#define\s+TM_FW_VERSION\s+"([^"]+)"/.exec(header)?.[1] ?? 'unknown';
     } catch {
       return 'unknown';
@@ -201,71 +216,80 @@ export class FirmwareStore {
 
   // --- build ----------------------------------------------------------------
 
-  /**
-   * Compile an upload. Resolves when the image exists; rejects with the tail
-   * of the build log, which is what a person needs to fix their code.
-   */
-  async build(uploadId: string, by: string): Promise<FirmwareBuild> {
+  /** Returns a validated project directory for the isolated build service. */
+  buildWorkspace(uploadId: string): string {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');
-    if (up.building) throw new FirmwareError('the upload is already building');
-    const pio = this.opts.pio ?? FirmwareStore.findPio();
-    if (!pio) throw new FirmwareError('PlatformIO is not installed on this edge: firmware cannot be built here');
-    const root = this.projectRoot(up.dir);
-    const ini = readFileSync(join(root, 'platformio.ini'), 'utf8');
+    const uploadRoot = realpathSync(up.dir);
+    const root = realpathSync(this.projectRoot(up.dir));
+    if (!isInside(uploadRoot, root)) throw new FirmwareError('the project root escaped its upload directory');
+    const ini = readFileInside(root, join(root, 'platformio.ini')).toString('utf8');
     if (!ini.includes('[env:tmflash]')) {
       throw new FirmwareError('the project has no [env:tmflash] environment (the release build with no baked-in secrets)');
     }
-    writeFileSync(join(root, 'platformio.ini'), RELEASE_INI);
-    up.building = true;
+    return root;
+  }
 
-    const log: string[] = [];
-    const keep = (line: string) => {
-      log.push(line);
-      if (log.length > 400) log.splice(0, log.length - 400);
+  /** Validates and promotes the worker's staged firmware image. */
+  completeBuild(uploadId: string, by: string, log: readonly string[], bytes: Buffer, options: { deferActivation?: boolean } = {}): FirmwareBuild {
+    const up = this.uploads.get(uploadId);
+    if (!up) throw new FirmwareError('no such upload');
+    const root = this.buildWorkspace(uploadId);
+    if (bytes.length === 0 || bytes.length > this.limits.maxArtifactBytes) {
+      throw new FirmwareError(`the build output size must be between 1 and ${this.limits.maxArtifactBytes} bytes`);
+    }
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const id = sha256.slice(0, 16);
+
+    this.artifactContent.promote(id, sha256, bytes);
+    const build: FirmwareBuild = {
+      id,
+      sha256,
+      size: bytes.length,
+      version: this.versionOf(root),
+      state: 'ready',
+      uploadedBy: by || up.by,
+      uploadedAt: up.startedAt,
+      builtAt: this.now(),
+      files: up.files,
+      sourceBytes: up.bytes,
+      log: log.slice(-60),
     };
-    this.opts.log?.(`firmware: building upload ${uploadId} (${up.files} files) from ${root}`);
-    try {
-      const status = await this.run(pio, ['run', '-e', 'tmflash', '-d', root], root, keep);
-      if (status !== 0) {
-        const err = new FirmwareError(`build failed (pio exit ${status})`);
-        (err as FirmwareError & { log?: string[] }).log = log;
-        throw err;
-      }
-      const binPath = join(root, '.pio', 'build', 'tmflash', 'firmware.bin');
-      if (!existsSync(binPath)) throw new FirmwareError('the build produced no firmware.bin');
-      if (statSync(binPath).size < 1 || statSync(binPath).size > 2 * 1024 * 1024) {
-        throw new FirmwareError('firmware image must be 1 byte to 2 MiB');
-      }
-      const bytes = readFileSync(binPath);
-      const sha256 = createHash('sha256').update(bytes).digest('hex');
-      const id = sha256.slice(0, 16);
-
-      const dest = join(this.dir, 'builds', id);
-      mkdirSync(dest, { recursive: true });
-      writeFileSync(join(dest, 'firmware.bin'), bytes);
-      const build: FirmwareBuild = {
-        id,
-        sha256,
-        size: bytes.length,
-        version: this.versionOf(root),
-        state: 'ready',
-        uploadedBy: by || up.by,
-        uploadedAt: up.startedAt,
-        builtAt: this.now(),
-        files: up.files,
-        sourceBytes: up.bytes,
-        log: log.slice(-60),
-      };
-      writeFileSync(join(dest, 'build.json'), JSON.stringify(build, null, 2));
+    if (options.deferActivation) this.pendingBuilds.set(id, build);
+    else {
+      if (this.persistMetadata) this.metadata.save(build);
       this.builds.set(id, build);
-      // The sources have done their job; the image and its log are what matter.
-      rmSync(up.dir, { recursive: true, force: true });
-      this.uploads.delete(uploadId);
-      this.opts.log?.(`firmware: built ${build.version} ${id} (${bytes.length} bytes)`);
-      return build;
-    } finally {
-      up.building = false;
+    }
+    // The sources have done their job; the image and its log are what matter.
+    rmSync(up.dir, { recursive: true, force: true });
+    this.uploads.delete(uploadId);
+    this.opts.log?.(`firmware: built ${build.version} ${id} (${bytes.length} bytes)`);
+    return build;  }
+
+  /** Makes a locally verified image visible only after its durable metadata commit. */
+  activateBuild(id: string): void {
+    const build = this.pendingBuilds.get(id);
+    if (!build) throw new FirmwareError(`no staged firmware build ${id}`);
+    if (this.persistMetadata) this.metadata.save(build);
+    this.builds.set(id, build);
+    this.pendingBuilds.delete(id);
+  }
+
+  /** Rehydrates usable image views from database rows plus successful durable build records. */
+  hydrateDurableArtifacts(artifacts: readonly { id: string; sha256: string; size: number; version: string }[],
+    jobs: readonly { lifecycle: string; actor: { id: string }; startedAt: number; finishedAt: number | null; artifact: { id: string; sha256: string; size: number; version: string } | null; log: readonly string[] }[]): void {
+    this.builds.clear();
+    this.pendingBuilds.clear();
+    for (const artifact of artifacts) {
+      const job = jobs.find((entry) => entry.lifecycle === 'succeeded' && entry.artifact?.id === artifact.id
+        && entry.artifact.sha256 === artifact.sha256 && entry.artifact.size === artifact.size
+        && entry.artifact.version === artifact.version);
+      const bytes = this.artifactContent.read(artifact.id, artifact.sha256, artifact.size);
+      if (!job || !bytes || bytes.length !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) continue;
+      this.builds.set(artifact.id, {
+        ...artifact, state: 'ready', uploadedBy: job.actor.id, uploadedAt: job.startedAt,
+        builtAt: job.finishedAt, files: 0, sourceBytes: 0, log: [...job.log].slice(-60),
+      });
     }
   }
 
@@ -278,102 +302,48 @@ export class FirmwareStore {
     this.uploads.delete(uploadId);
   }
 
-  /** Uploads left behind by an abandoned browser tab. */
-  sweep(olderThanMs = 3600_000): void {
-    for (const up of this.uploads.values()) {
-      if (!up.building && this.now() - up.startedAt > olderThanMs) this.discard(up.id);
-    }
+  /** Cleans aged source/output leftovers without deleting images used by a rollout. */
+  cleanup(imageInUse: ImageInUseQuery, olderThanMs = 3600_000): FirmwareCleanupReport {
+    this.lastCleanup = cleanupFirmwareData({
+      directory: this.dir, artifacts: this.artifactContent, builds: this.builds, uploads: this.uploads,
+      imageInUse, now: this.now(), retentionMs: olderThanMs,
+    });
+    return this.retentionReport();
   }
 
-  private run(exe: string, args: string[], root: string, onLine: (line: string) => void): Promise<number> {
-    return new Promise((resolve, reject) => {
-      // Compile untrusted source in an empty filesystem. In particular, neither
-      // absolute #include nor assembler .incbin may reach service credentials.
-      // SDKs must be populated by an administrator before building: this child
-      // has no network or access to the rest of the service's data directory.
-      const core = process.env.PLATFORMIO_CORE_DIR ?? join(process.env.HOME ?? '/root', '.platformio');
-      const sandbox = ['/usr/bin/bwrap', '/bin/bwrap'].find(existsSync);
-      if (!sandbox || process.platform !== 'linux') {
-        reject(new FirmwareError('isolated firmware builds require Linux bubblewrap; install it and preinstall the tmflash SDK'));
-        return;
-      }
-      const isolated = ['--die-with-parent', '--new-session', '--unshare-all'];
-      for (const path of ['/usr', '/bin', '/lib', '/lib64']) {
-        if (existsSync(path)) isolated.push('--ro-bind', path, path);
-      }
-      isolated.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/etc');
-      for (const path of ['/etc/ld.so.cache', '/etc/ssl']) {
-        if (existsSync(path)) isolated.push('--ro-bind', path, path);
-      }
-      isolated.push('--dir', '/tmp/home', '--dir', '/tmp/pio');
-      for (const part of ['packages', 'platforms']) {
-        const path = join(core, part);
-        if (existsSync(path)) isolated.push('--ro-bind', path, `/tmp/pio/${part}`);
-      }
-      // PlatformIO's Python virtualenv may live outside the SDK cache. Bind
-      // only that installation, never its parent /opt or the user's home.
-      const install = dirname(dirname(resolvePath(exe)));
-      if (!['/', '/usr', '/bin'].includes(install)) {
-        if (basename(dirname(exe)) !== 'bin' || ['tmp', 'home', 'opt'].includes(basename(install))) {
-          reject(new FirmwareError('PIO_PATH must point to bin/pio inside a dedicated compiler installation'));
-          return;
-        }
-        isolated.push('--ro-bind', install, install);
-      }
-      isolated.push('--bind', resolvePath(root), resolvePath(root), '--chdir', resolvePath(root), '--', exe, ...args);
-      const child = spawn(sandbox, isolated, {
-        // Never give the compiler TM_KEY, session secrets or service tokens.
-        env: Object.fromEntries([
-          ...['PATH', 'LANG'].flatMap((k) =>
-            process.env[k] ? [[k, process.env[k] as string]] : []),
-          ['HOME', '/tmp/home'], ['PLATFORMIO_CORE_DIR', '/tmp/pio'], ['TMPDIR', '/tmp'],
-          ['PLATFORMIO_NO_ANSI', 'true'], ['NO_COLOR', '1'], ['PYTHONUNBUFFERED', '1'],
-        ]),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const timer = setTimeout(() => child.kill('SIGKILL'), this.limits.buildTimeoutMs);
-      let buffered = '';
-      const feed = (chunk: Buffer) => {
-        buffered += chunk.toString('utf8');
-        const lines = buffered.split(/\r?\n/);
-        buffered = lines.pop() ?? '';
-        for (const l of lines) if (l.trim()) onLine(l.slice(-4096));
-        // A compiler diagnostic need not contain a newline. Keep its tail.
-        buffered = buffered.slice(-4096);
-      };
-      child.stdout.on('data', feed);
-      child.stderr.on('data', feed);
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        reject(new FirmwareError(`cannot run ${exe}: ${err.message}`));
-      });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        if (buffered.trim()) onLine(buffered);
-        resolve(code ?? -1);
-      });
-    });
-  }
+  /** Returns the latest cleanup outcome for the admin status view. */
+  retentionReport(): FirmwareCleanupReport {
+    return { ...this.lastCleanup };  }
 
   /** Total bytes of stored images, for the console's housekeeping line. */
   diskBytes(): number {
     let total = 0;
-    for (const id of this.builds.keys()) {
-      try {
-        total += statSync(join(this.dir, 'builds', id, 'firmware.bin')).size;
-      } catch {
-        /* gone */
-      }
-    }
+    for (const artifact of this.artifactContent.list()) total += artifact.size;
     return total;
   }
 
   /** Forget a build and delete its image. */
-  remove(id: string): boolean {
-    if (!this.builds.delete(id)) return false;
-    rmSync(join(this.dir, 'builds', id), { recursive: true, force: true });
+  remove(id: string, imageInUse: ImageInUseQuery): boolean {
+    if (imageInUse.isImageInUse(id)) return false;
+    const build = this.builds.get(id);
+    if (!build) return false;
+    this.artifactContent.remove(id);
+    if (this.persistMetadata) this.metadata.remove(id);
+    this.builds.delete(id);
     return true;
   }
 }
 
 export const pathSeparator = sep;
+
+function isInside(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
+function readFileInside(root: string, file: string): Buffer {
+  const realRoot = realpathSync(root);
+  const realFile = realpathSync(file);
+  if (!isInside(realRoot, realFile)) throw new FirmwareError('a project file escaped its workspace');
+  return readFileSync(realFile);
+}
