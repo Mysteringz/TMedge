@@ -23,6 +23,7 @@ src/web/                 student web tier (auth, snapshot store, API, WS)
 web-app/                 student UI: React + Vite, builds into public-web/app/
 src/algo/                algo console: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
+src/algo/train/          module 02: HPC2021 training-job drafts, uploads, sbatch (docs/hpc/; M0-gated, submits nothing yet)
 algo-app/                its UI: 8-bit console shell (src/console/): 01 /flow React Flow editor, 02 /train, 03 /console
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
@@ -95,6 +96,9 @@ has hidden Linux failures before.
   `Ingest.handle`; no transport skips the signature, replay rule or
   occupancy. Only an accepted packet may set a node's route or earn an ACK,
   and a direct node's closed session is "no route", never a UDP fallback.
+- **Module 02 never touches HKU before M0.** No PIN, OTP or HPC password is
+  accepted, stored or logged; `config/hpc.json` refuses any backend but
+  `"none"`. docs/hpc/HANDOVER.md rules 1-7 apply to every change there.
 - **The node listener is not a web surface.** `/tmnode`, `/fw/<id>.bin` (grant
   only) and `/healthz`; nothing a person could read. It binds to loopback.
 

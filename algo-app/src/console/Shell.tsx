@@ -4,14 +4,17 @@
  * the edge's debug console (formerly console.hkumyseat.com), each under the
  * console's top bar; nothing inside either changed.
  */
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Root as FlowApp } from '../App.tsx';
 import { Home } from './Home.tsx';
 import { Login } from './Login.tsx';
 import { Nav, Toast, useToast } from './parts.tsx';
 import { navigate, screenOf, toLogin, usePath } from './router.ts';
-import { Train } from './Train.tsx';
 import './console.css';
+
+// The editor (CodeMirror) is most of module 02's weight; sign-in and the
+// home screen should not wait for it.
+const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
 
 export function Shell() {
   const path = usePath();
@@ -83,7 +86,7 @@ export function Shell() {
     <div className="cx cx-page">
       <Backdrop />
       <Nav user={user} crumb={screen === 'train' ? 'ml-training' : undefined} onSignOut={signOut} />
-      {screen === 'train' ? <Train /> : <Home user={user} />}
+      {screen === 'train' ? <Suspense fallback={null}><Train /></Suspense> : <Home user={user} />}
       <Toast text={toast} />
     </div>
   );

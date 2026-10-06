@@ -1,0 +1,15 @@
+{
+  "verified": false,
+  "source": "Placeholders until M0: replace partitions with `sinfo -s` and modules with `module avail` on hpc2021.hku.hk, then set verified to true (docs/hpc/m0-checklist.md S7).",
+  "backend": "none",
+  "partitions": [
+    { "name": "intel", "maxTime": "1-00:00:00", "gpu": false },
+    { "name": "amd", "maxTime": "1-00:00:00", "gpu": false },
+    { "name": "gpu", "maxTime": "1-00:00:00", "gpu": true, "maxGpus": 2 }
+  ],
+  "defaultPartition": "intel",
+  "modules": ["python", "cuda", "anaconda3"],
+  "maxUploadMb": 95,
+  "maxUnpackedMb": 1024,
+  "quotaMb": 2048
+}
