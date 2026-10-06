@@ -38,3 +38,10 @@ echo "hpc.fakehku.test $(cut -d' ' -f1,2 "$WORK/certs/hpc_host_ed25519.pub")" > 
 export HPC_STACK_KNOWN_HOSTS="$WORK/known_hosts"
 cd "$REPO"
 node --test --test-concurrency=1 ${HPC_STACK_ONLY:+--test-name-pattern="$HPC_STACK_ONLY"} dist/test/hpcstack.test.js
+
+# The admin tool that pins HPC2021's host keys, typed into like a terminal.
+node -e "
+const c = JSON.parse(require('fs').readFileSync('config/hpc.json', 'utf8'));
+c.planA = { ...c.planA, vpnHost: process.env.HPC_STACK_VPN, vpnServerCert: process.env.HPC_STACK_CERT, submitHost: 'hpc.fakehku.test', knownHosts: process.argv[1] + '/pinned' };
+require('fs').writeFileSync(process.argv[1] + '/hpc.json', JSON.stringify(c));" "$WORK"
+python3 "$HERE/hostkeys-pty.py" "$WORK/hpc.json" "$WORK/data" "$WORK/pinned" "$WORK/certs/hpc_host_ed25519.pub"
