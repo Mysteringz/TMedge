@@ -10,10 +10,10 @@
  */
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { writeHeapSnapshot } from 'node:v8';
 import { after, describe, test } from 'node:test';
 import { AlgoUsers, loadAlgoAuthConfig } from '../src/algo/auth.js';
@@ -215,6 +215,11 @@ describe('Plan A against a fake HKU', { skip }, () => {
     const id = await draft(c, c.alice, 'tunnel_proof',
       'import os, getpass\nprint("client", os.environ.get("SSH_CONNECTION", "?").split()[0])\nprint("user", getpass.getuser())\nprint("epoch 01/01 ok")\n');
     assert.equal((await call(c, c.alice, 'POST', `/jobs/${id}/submit`, {})).status, 428, 'no session: it asks for HKU credentials');
+    // What production had on 2026-10-07: the askpass wrapper left by a release
+    // that has since been deleted. A login must repair it, not fail on it.
+    const wrapper = join(c.dataDir, 'algo', 'train', 'run', 'askpass.sh');
+    mkdirSync(dirname(wrapper), { recursive: true, mode: 0o700 });
+    writeFileSync(wrapper, '#!/bin/sh\nexec /usr/local/bin/node /opt/tmedge-releases/20261006T112927Z-6ce22a67c8bc/dist/src/algo/train/hpc/askpass.js "$@"\n', { mode: 0o700 });
 
     const stop = watchProcs([canary()]);
     const r = await act(c, c.alice, 'submit', id, await sealed(c, c.alice, 'submit', id, 'tmchan'));
@@ -223,6 +228,7 @@ describe('Plan A against a fake HKU', { skip }, () => {
     assert.deepEqual(r.events.map((e) => e.type),
       ['vpn_auth', 'vpn_connect', 'vpn_up', 'ssh_auth', 'ssh_up', 'uploading', 'submitting', 'submitted', 'done'], JSON.stringify(r.events));
     assert.deepEqual(procHits, [], 'the PIN never appears in any process\'s arguments or environment');
+    assert.doesNotMatch(readFileSync(wrapper, 'utf8'), /20261006T112927Z/, 'the stale wrapper was rewritten for this release');
 
     const done = await until(c, c.alice, id, ['COMPLETED', 'FAILED']);
     assert.equal(done.status, 'COMPLETED', JSON.stringify(done));

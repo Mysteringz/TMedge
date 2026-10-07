@@ -332,3 +332,17 @@ describe('terminal frames', () => {
     assert.deepEqual(sent.map((f) => counterOf(f.subarray(0, 12)).counter), [0, 1, 2, 3], 'every frame, in sequence: none skipped');
   });
 });
+
+describe('why an SSH login failed', () => {
+  test('"Permission denied" is a wrong password only if the password was actually handed to ssh', async () => {
+    const { classifySshFailure } = await import('../src/algo/train/hpc/ssh.js');
+    const denied = 'ing@10.21.36.12: Permission denied (publickey,password,keyboard-interactive).';
+    assert.equal(classifySshFailure(denied, ['(ing@10.21.36.12) Password:'], 1).code, 'bad_password');
+    assert.equal(classifySshFailure(denied, [], 0).code, 'helper', 'askpass never ran: a server fault, not the person\'s password');
+    assert.match(classifySshFailure(denied, [], 0).message, /your password was not sent/);
+    assert.equal(classifySshFailure('Permission denied (publickey).', [], 0).code, 'unsupported', 'a keys-only server never asks for one');
+    assert.equal(classifySshFailure('', ['Verification code:'], 0).code, 'unsupported');
+    assert.equal(classifySshFailure('Host key verification failed.', [], 0).code, 'host_key');
+    assert.equal(classifySshFailure('kex_exchange_identification: Connection closed by remote host', [], 0).code, 'unreachable');
+  });
+});
