@@ -14,7 +14,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const SOCKS_HELPER = join(HERE, 'socks-connect.js');
 export const ASKPASS_HELPER = join(HERE, 'askpass.js');
 
-export type SshFailure = 'bad_password' | 'host_key' | 'unreachable' | 'timeout' | 'unsupported';
+export type SshFailure = 'bad_password' | 'host_key' | 'unreachable' | 'timeout' | 'unsupported' | 'helper';
 export class SshFailed extends Error {
   constructor(readonly code: SshFailure, message: string) { super(message); }
 }
@@ -36,7 +36,29 @@ export const SSH_MESSAGES: Record<SshFailure, string> = {
   unreachable: 'The VPN is up but the cluster did not answer on SSH.',
   timeout: 'The cluster did not finish the SSH login in time.',
   unsupported: 'The cluster asked for something other than a password (see docs/hpc/m0-checklist.md).',
+  helper: 'The console could not hand the password to ssh, so your password was not sent. This is a fault on the server, not your password: tell whoever runs the console.',
 };
+
+/**
+ * Why an SSH login failed, from ssh's stderr, the prompts askpass was shown,
+ * and whether the password was actually handed over. "Permission denied"
+ * alone is not proof of a wrong password: if ssh never got it (askpass did
+ * not run), saying so would send the person hunting for a typo that is not
+ * there -- and count a server fault toward their lockout.
+ */
+export function classifySshFailure(err: string, prompts: string[], answered: number): SshFailed {
+  if (/host key verification failed|remote host identification has changed|no \S+ host key is known|host key for .* has changed/i.test(err)) {
+    return new SshFailed('host_key', SSH_MESSAGES.host_key);
+  }
+  if (prompts.length > 0 && !prompts.some((p) => /password|passcode|\bpin\b/i.test(p))) return new SshFailed('unsupported', SSH_MESSAGES.unsupported);
+  if (/permission denied|too many authentication failures/i.test(err)) {
+    if (answered > 0) return new SshFailed('bad_password', SSH_MESSAGES.bad_password);
+    // The server would take only keys: no password was ever going to be asked for.
+    if (/permission denied \(publickey\)/i.test(err)) return new SshFailed('unsupported', SSH_MESSAGES.unsupported);
+    return new SshFailed('helper', SSH_MESSAGES.helper);
+  }
+  return new SshFailed('unreachable', SSH_MESSAGES.unreachable);
+}
 
 /** Paths that go into a ProxyCommand line or a script: nothing a shell would reinterpret. */
 const SAFE_PATH = /^\/[A-Za-z0-9._/-]+$/;
@@ -101,9 +123,17 @@ export class SshLink implements SshLike {
     const sock = join(this.o.runDir, `a-${randomBytes(6).toString('hex')}`);
     const wrapper = join(this.o.runDir, 'askpass.sh');
     const node = this.o.nodeBin ?? process.execPath;
-    if (!existsSync(wrapper)) {
-      // SSH_ASKPASS must be a program; this one only knows where to ask.
-      writeFileSync(wrapper, `#!/bin/sh\nexec ${node} ${ASKPASS_HELPER} "$@"\n`, { mode: 0o700 });
+    // SSH_ASKPASS must be a program; this one only knows where to ask. It
+    // names this release's helper, and releases are deleted as new ones
+    // arrive, so it is rewritten whenever it is not exactly what this
+    // process would write -- never trusted because it merely exists.
+    const want = `#!/bin/sh\nexec ${node} ${ASKPASS_HELPER} "$@"\n`;
+    let have = '';
+    try { have = readFileSync(wrapper, 'utf8'); } catch { /* not there yet */ }
+    if (have !== want) {
+      const tmp = `${wrapper}.${randomBytes(4).toString('hex')}`;
+      writeFileSync(tmp, want, { mode: 0o700 });
+      renameSync(tmp, wrapper);
     }
     const prompts: string[] = [];
     let answered = 0;
@@ -144,7 +174,7 @@ export class SshLink implements SshLike {
       for (;;) {
         if (!this.alive) {
           await exited;
-          throw this.classify(err, prompts);
+          throw classifySshFailure(err, prompts, answered);
         }
         if (await this.check()) return;
         if (Date.now() > deadline) throw new SshFailed('timeout', SSH_MESSAGES.timeout);
@@ -157,16 +187,6 @@ export class SshLink implements SshLike {
       server.close();
       rmSync(sock, { force: true });
     }
-  }
-
-  private classify(err: string, prompts: string[]): SshFailed {
-    if (/host key verification failed|remote host identification has changed|no \S+ host key is known|host key for .* has changed/i.test(err)) {
-      return new SshFailed('host_key', SSH_MESSAGES.host_key);
-    }
-    if (prompts.length > 0 && !prompts.some((p) => /password|passcode|\bpin\b/i.test(p))) return new SshFailed('unsupported', SSH_MESSAGES.unsupported);
-    if (/permission denied|too many authentication failures/i.test(err)) return new SshFailed('bad_password', SSH_MESSAGES.bad_password);
-    if (/connection (?:timed out|refused|closed)|could not resolve|kex_exchange|banner exchange|proxy/i.test(err)) return new SshFailed('unreachable', SSH_MESSAGES.unreachable);
-    return new SshFailed('unreachable', SSH_MESSAGES.unreachable);
   }
 
   private check(): Promise<boolean> {
