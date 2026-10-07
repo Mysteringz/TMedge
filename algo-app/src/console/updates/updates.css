@@ -32,7 +32,7 @@
 .cx-up-plan { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px; border-left: 2px solid var(--color-accent); background: color-mix(in srgb, var(--color-accent) 5%, transparent); }
 .cx .cx-up-plan p { margin: 0; font-size: 13px; color: var(--color-neutral-300); }
 .cx-up-plan strong { color: var(--color-text); font-weight: 500; }
-.cx .cx-up-start { min-height: 42px; justify-content: space-between; }
+.cx .cx-up-start { min-height: 44px; justify-content: space-between; }
 .cx-up-empty { display: flex; flex-direction: column; gap: 8px; padding: 22px 4px; color: var(--color-neutral-300); }
 .cx .cx-up-empty p { margin: 0; font-size: 13px; color: var(--color-neutral-500); }
 .cx-up-rollout-head, .cx-up-node-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -59,6 +59,8 @@
 .cx-up-confirm::backdrop { background: rgba(8, 9, 16, .72); backdrop-filter: blur(3px); }
 .cx-up-confirm .cx-kicker { margin: 0; }
 .cx-up-confirm .cx-up-actions { justify-content: space-between; }
+.cx .cx-up-confirm { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.cx-up-history > div { min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 960px) { .cx-up-cols { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 560px) {
   .cx-updates { padding-top: 16px; }

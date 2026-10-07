@@ -116,7 +116,7 @@
 .cx-login { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-wrap: wrap; }
 .cx-login-left {
   flex: 1 1 480px; display: flex; flex-direction: column; justify-content: space-between; gap: 48px;
-  padding: 40px clamp(24px, 6vw, 88px);
+  padding: 40px clamp(24px, 6vw, 88px); min-width: 0;
 }
 .cx-row { display: flex; align-items: center; gap: 12px; }
 .cx-team { font: 400 13px var(--pixel); color: var(--color-neutral-400); }
@@ -211,6 +211,9 @@
 
 /* — module 02: ML training — */
 .cx-train { position: relative; z-index: 1; padding: 8px 28px 48px; display: flex; flex-direction: column; gap: 20px; }
+/* A dialog inside this stacking context must cover the nav and scanlines,
+   especially when its close button is near the top of a short phone screen. */
+.cx-train:has(.cx-modal-back) { z-index: 30; }
 .cx-train-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .cx-train-head .cx-kicker { margin-bottom: 8px; font-size: 11px; }
 .cx-h2 { font-size: 30px !important; letter-spacing: -.02em; white-space: nowrap; }
@@ -259,6 +262,8 @@
 .cx-metric > span:first-child { font-size: 11px; color: var(--color-neutral-500); }
 .cx-metric > span:last-child { font: 400 18px/1.25 var(--pixel); overflow-wrap: anywhere; }
 .cx-jobs tbody tr { cursor: pointer; }
+.cx-table-scroll { min-width: 0; max-width: 100%; overflow-x: auto; }
+.cx-jobs { min-width: 400px; }
 .cx-jobs .cx-sel { display: block; width: 8px; height: 8px; outline: 1px solid var(--color-neutral-600); }
 .cx-jobs tr.is-on .cx-sel { background: var(--color-accent); }
 .cx-jobs tr.is-on .cx-job-name { color: var(--color-accent); }
@@ -338,12 +343,36 @@
 .cx-sq { width: 8px; height: 8px; background: var(--color-accent); flex: none; }
 
 /* — module 01: the debugger under the console's bar — */
-.cx-flow { display: flex; flex-direction: column; height: 100vh; background: var(--bg); }
+.cx-flow { display: flex; flex-direction: column; height: 100vh; height: 100dvh; background: var(--bg); }
+.cx-flow-bar { flex-shrink: 0; }
 .cx-flow-bar { background: #161826; border-bottom: 1px solid var(--line); }
 .cx-flow-bar .cx-nav { padding: 8px 14px; }
 /* App.tsx's .app is 100vh on its own; here it shares the screen with the bar. */
 .cx-frame { flex: 1; min-height: 0; width: 100%; border: 0; display: block; background: #0f1115; }
 .cx-flow > .app { flex: 1; min-height: 0; height: auto; }
+
+/* Touch controls share the existing outlines and type hierarchy. Text fields
+   stay at 16px so focusing them does not zoom the viewport on iOS. */
+@media (max-width: 900px) {
+  .cx .btn, .cx .seg-opt, .cx-home { min-height: 44px; }
+  .cx .cx-icon, .cx-jobs .cx-icon, .cx-eye { width: 44px; height: 44px; }
+  .cx-eye { top: 0; right: 0; }
+  .cx .input, .cx .cx-card .input { min-height: 44px; font-size: 16px; min-width: 0; }
+  .cx .cx-code .cm-editor { font-size: 16px; }
+  .cx .cx-code .cm-scroller { line-height: 24px; }
+  .cx-pw .input { padding-right: 48px; }
+  .cx-check { min-height: 44px; }
+  .cx-check input { width: 20px; height: 20px; }
+  .cx-card-head, .cx-head-right { flex-wrap: wrap; }
+  .cx .cx-console .cx-tabs .seg-opt { max-width: 100%; }
+  .cx .cx-tabs { max-width: 100%; min-width: 0; }
+  .cx-progress { grid-template-columns: repeat(20, minmax(0, 8px)); max-width: 100%; }
+  .cx .cx-modal { max-height: calc(100dvh - 32px); }
+  .cx-modal-actions { flex-wrap: wrap; }
+  .cx .cx-chip { white-space: normal; overflow-wrap: anywhere; }
+  .cx-toast { overflow-wrap: anywhere; bottom: max(24px, env(safe-area-inset-bottom)); }
+  .cx-nav { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+}
 
 /* — phones — */
 @media (max-width: 560px) {
@@ -369,4 +398,10 @@
   .cx-file > .cx-dim { display: none; }
   .cx-editor { height: 360px; }
   .cx-toast { left: 16px; max-width: calc(100vw - 32px); }
+  .cx-fields { grid-template-columns: minmax(0, 1fr); }
+  .cx-fields-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cx .cx-h2 { font-size: 27px !important; white-space: normal; }
+  .cx-term-gate { padding: 20px 16px; }
 }
+/* Turnstile's flexible widget has a 300px minimum. */
+@media (max-width: 359px) { .cx-login-left { padding-inline: 10px; } }

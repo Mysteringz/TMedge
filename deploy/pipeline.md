@@ -14,6 +14,8 @@ npm run typecheck
 npm test
 npm run crosscheck
 npm run build
+npx playwright install --with-deps chromium webkit
+npm run test:algo-mobile
 python3 deploy/test-release.py
 deploy/test-deploy.sh
 ```
@@ -25,8 +27,9 @@ protocol changes. Manual CI can override `tmsense_ref` to test an unmerged
 firmware change; those runs cannot produce a production artifact.
 
 The required `check` job runs typechecks, unit/integration tests, both protocol
-crosschecks, archive security tests, the complete build, and a local deployment
-rehearsal. The required `container` job checks the documented Docker build.
+crosschecks, archive security tests, the complete build, mobile browser
+regressions, and a local deployment rehearsal. The required `container` job
+checks the documented Docker build.
 PR jobs have read-only tokens and no production secrets. Actions are pinned to
 commit SHAs; Dependabot proposes dependency and action updates weekly.
 

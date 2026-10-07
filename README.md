@@ -173,3 +173,12 @@ npm test          # geometry, config, replay/auth, occupancy, web and algo behav
 npm run crosscheck  # parses bytes from TMnode's own C serializer, and vice versa for commands
 npm run typecheck
 ```
+
+The algorithm console also has browser regressions for phone, tablet, and
+desktop widths in Chromium and WebKit:
+
+```bash
+npm run build
+npx playwright install --with-deps chromium webkit
+npm run test:algo-mobile
+```

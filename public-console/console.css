@@ -149,3 +149,32 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
 }
 .join-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .join-actions button:hover { filter: brightness(1.1); }
+
+/* The embedded console scrolls within the shell on phones. Its wide node
+   table keeps its own scrollbar, while each instrument fills the panel. */
+@media (max-width: 900px) {
+  button, .tabs button, .join-actions button { min-height: 44px; }
+  .params input { min-height: 44px; font-size: 16px; min-width: 0; }
+  .toggles label { min-height: 44px; }
+  .toggles input { width: 20px; height: 20px; }
+  .tabs { max-width: 100%; overflow-x: auto; }
+  .tabs button { flex-shrink: 0; }
+  .cols { grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); }
+  .join-dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
+  .join-actions { flex-wrap: wrap; }
+  .bar { flex-wrap: wrap; gap: 6px 12px; }
+  #edge-id { min-width: 0; overflow-wrap: anywhere; }
+  .thumb .cap { flex-wrap: wrap; overflow-wrap: anywhere; }
+}
+@media (max-width: 560px) {
+  .bar, .health { padding-inline: 12px; }
+  .bar > .grow { display: none; }
+  .bar > strong { margin-right: auto; }
+  #edge-id { order: 1; flex-basis: 100%; }
+  .health { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric { min-width: 0; overflow-wrap: anywhere; }
+  .grid { padding: 0 12px max(20px, env(safe-area-inset-bottom)); }
+  .demo-pair { grid-template-columns: minmax(0, 1fr); }
+  .kv { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .join-facts { grid-template-columns: minmax(0, 1fr); }
+}
