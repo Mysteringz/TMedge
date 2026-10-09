@@ -116,7 +116,12 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
     const browser = await browserType.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 320, height: 844 }, isMobile: true, hasTouch: true, colorScheme: 'dark' });
     const errors = [];
-    context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
+    // The spec's "ResizeObserver loop" notice means a resize was deferred to
+    // the next frame, not that anything failed. WebKit reports it as an error
+    // when React Flow re-measures during a viewport change, at random, and it
+    // blocked a deploy of unchanged code. Every other error still fails.
+    const benign = /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)\.?$/;
+    context.on('page', page => page.on('pageerror', error => { if (!benign.test(error.message)) errors.push(error.message); }));
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
     page.setDefaultNavigationTimeout(15_000);
