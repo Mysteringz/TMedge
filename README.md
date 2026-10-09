@@ -1,184 +1,91 @@
 # TMedge
 
-Security fixes, validation and deployment requirements are tracked in
-[the security specsheet](docs/SECURITY_BUG_SPEC.md). TMsense 1.7 encrypted
-telemetry and per-device/gateway/publisher credentials are documented in
-[the coordinated protocol and migration runbook](docs/ENCRYPTED_NODE_PROTOCOL.md).
+TMedge turns thermal sensor reports into live seat availability for HKUMySeat. It includes occupancy processing, a student dashboard with 3D floor maps and group-seat suggestions, and an authenticated console for diagnostics, algorithm tuning, firmware updates, and cluster training jobs.
 
-Turns reports from **TMnode** thermal sensors into live seat availability,
-and serves it to students.
+The edge and student web services run separately. The student service receives [occupancy snapshots](src/shared/types.ts) containing seat states and totals, without thermal pixels or person detections. Thermal frames and optional calibration camera images belong to privileged diagnostics and [training storage](docs/TRAINING_POSTGRES.md).
 
-```
-TMnode ×N ──UDP 5200 (signed)──► edge ──HTTPS push (seats only)──► web ──► students
- heat blobs                       │ ingest, geometry,                sign-in, floor plan,
-                                  │ de-duplication, seats            "N seats together"
-                                  └─► debug console (admin, :8090): raw thermal, health
-```
+## Interesting techniques
 
-Two services from one codebase:
+- **One sensor authority per table.** The [occupancy engine](src/edge/occupancy.ts) selects an owner or a healthy fallback sensor. This prevents overlapping views from counting the same people twice.
+- **Geometry-aware counting.** [Sensor projection](src/shared/geometry.ts) accounts for mounting height, rotation, and wide-angle optics. Heat is normalized by pixel floor area before estimating how many people a merged blob represents.
+- **Stable counts with explicit uncertainty.** Seat hysteresis and median zone counts reduce flicker. Missing sensors produce unknown seats, which are excluded from availability and group suggestions.
+- **Shared allocation rules.** The server and browser use the same [table allocation code](src/shared/allocate.ts), keeping recommendations consistent with the displayed floor plan.
+- **Bounded live updates.** [WebSocket broadcasting](src/shared/fanout.ts) skips updates when a client's outgoing queue is full. The [student feed](web-app/src/data.ts) reconnects with backoff and marks availability unknown when freshness is lost. See [MDN's WebSocket reference](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket).
+- **A reusable 3D custom element.** The [floor viewer](public-web/vendor/floor-viewer.js) loads models on demand, caches them, and updates markers without rebuilding the scene. It uses [custom elements](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_custom_elements), [ResizeObserver](https://developer.mozilla.org/en-US/docs/Web/API/ResizeObserver), and explicit graphics-resource cleanup.
+- **A preview backed by real firmware.** The [detector preview](src/algo/detector.ts) compiles the firmware's detector for the host. [Live parameter edits](src/algo/params.ts) revert after 15 minutes unless retained.
+- **Authentication before effects.** [Encrypted telemetry](src/edge/secure.ts) supports per-device AES-GCM keys. [Replay cursors](src/edge/replay.ts) persist before accepted packets can change routes or occupancy. Compatibility requirements are documented in the [protocol contract](docs/ENCRYPTED_NODE_PROTOCOL.md).
+- **Credentials sealed in the browser.** [Training credential handling](src/shared/hpcseal.ts) uses the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API) to bind encrypted credentials to one user, action, and job.
+- **Controlled firmware releases.** [Rollouts](src/edge/rollout.ts) prove one pilot node before updating the rest. Firmware builds run in an isolated worker, and the [deployment pipeline](deploy/pipeline.md) promotes checked artifacts with health checks and rollback.
 
-| Service | Runs on | Port | Sees |
-|---|---|---|---|
-| `edge` | a host on the sensor network | UDP 5200 in, 8090 console | everything, including raw thermal frames |
-| `web` | a local or cloud host | 8080 | seat states only |
+## Technologies and libraries
 
-**The privacy boundary is the edge.** Raw frames and detections stay on the
-edge and in its admin console. The only thing that leaves is the occupancy
-snapshot (`src/shared/types.ts`), which holds seat states and totals, with no
-pixels and no positions. So the web tier can move to the cloud without
-changing what the system knows about anyone.
+- **Application stack:** [TypeScript](https://www.typescriptlang.org/), [React](https://react.dev/), [React Router](https://reactrouter.com/), [Vite](https://vite.dev/), [Express](https://expressjs.com/), and [ws](https://github.com/websockets/ws).
+- **Visualization:** [Three.js](https://threejs.org/docs/) for floor models and [React Flow](https://reactflow.dev/) for the pipeline editor.
+- **Browser development tools:** [CodeMirror](https://codemirror.net/) with [Lezer highlighting](https://lezer.codemirror.net/docs/ref/) for Python editing, plus [xterm.js](https://xtermjs.org/) for the cluster terminal.
+- **Persistence:** [node-postgres](https://node-postgres.com/) and [TypeORM](https://typeorm.io/) for PostgreSQL storage and explicit migrations. The separate training worker uses [Psycopg](https://www.psycopg.org/psycopg3/docs/).
+- **Offline training:** [NumPy](https://numpy.org/doc/) and [OpenCV](https://docs.opencv.org/) process calibration samples outside the student application.
+- **Cluster integration:** [OpenConnect](https://www.infradead.org/openconnect/), [ocproxy](https://github.com/cernekee/ocproxy), and [Slurm](https://slurm.schedmd.com/documentation.html).
+- **Supporting tools:** [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/) for human verification, [PlatformIO](https://docs.platformio.org/en/latest/) for firmware builds, and [Playwright](https://playwright.dev/) for browser regressions.
 
-## Run it
+## Fonts and styling
 
-For PostgreSQL student accounts, Turnstile, and retained student interaction events, follow [student account setup](docs/student-accounts.md). It includes persistent local PostgreSQL, safe `users.json` import, migration, and recovery commands. Google sign-in is currently file-mode only; PostgreSQL mode hides the button and returns 404 from both OAuth endpoints pending verified PostgreSQL integration and recovery. Password signup is closed by default and must be explicitly enabled with `SIGNUP_OPEN=1`; the local setup helper enables it for development. Named admin accounts are deferred to a later MVP.
+The student interface uses [Archivo](https://fonts.google.com/specimen/Archivo). The algorithm console uses [IBM Plex Sans](https://fonts.google.com/specimen/IBM+Plex+Sans) and [IBM Plex Mono](https://fonts.google.com/specimen/IBM+Plex+Mono).
 
-Keep deployment credentials in the git-ignored `.env` file. Account details
-below are examples; use your own approved university account and password.
+The [student styles](web-app/src/tokens.css) use [CSS custom properties](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Cascading_variables/Using_custom_properties) and [color-mix()](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Values/color_value/color-mix) for consistent colors and spacing. Console animations respect [reduced-motion preferences](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-reduced-motion).
 
-```bash
-npm ci
-npm --prefix web-app ci
-npm --prefix algo-app ci
-cp .env.example .env        # fill in TM_KEY, WEB_PUSH_TOKEN, SESSION_SECRET, ADMIN_PASSWORD
-npm run build
-npm run web                 # http://localhost:8080
-npm run edge                # console http://localhost:8090 (user: anything, password: ADMIN_PASSWORD)
-npm run simulate -- --load 0.5          # virtual nodes for every "simulated": true node
-npm run user -- add you@connect.hku.hk "Your Name" "a long password"
-```
+## Project structure
 
-The simulator can also knock nodes out: `--kill 02:00:00:00:00:07@60`.
-`--truth file.json` writes the true seat states, for accuracy checks.
-
-## Configure a site
-
-- `config/site.json`: floors, zones, and tables in centimetres, origin
-  top-left. Seats are generated three per long side, and a table's capacity
-  can be anything from 1 to 20.
-- `config/nodes.json`: each node's **MAC**, the floor it's on, its **pose**
-  (`x`, `y`, `heightCm`, `yawDeg`, `mirror`) and the tables it **owns**.
-
-Loading is strict. The edge refuses to start on an unknown field, a table
-with two owners, or an owner whose pose can't see all of its table's seats.
-
-A new node appears in the console as *unregistered* as soon as it's powered
-up. Add its MAC to `nodes.json` to put it to work.
-
-## How counting works
-
-`src/edge/occupancy.ts` has the full reasoning. In short:
-
-1. **Project.** Each blob goes through the node's pose, using a 110° f-theta
-   lens model, to a plan point at seated-head height. The mounting height is
-   per node.
-2. **One authority per table.** Nodes overlap heavily, so each table is
-   counted by exactly one node: its owner if healthy, otherwise the nearest
-   healthy node that sees all of its seats (**fallback**), otherwise nobody.
-   A table nobody can see is **unknown**, never empty. It is greyed out, left
-   out of every free-seat number, and never suggested.
-3. **Seats.** People claim their nearest free seat. A blob with about twice
-   one person's heat (normalised by each pixel's floor area) claims two.
-4. **Smoothing.** A seat is taken after 3 of 5 frames and released 20 s
-   after it was last seen, so flicker doesn't flip it.
-
-Measured against the simulator's ground truth, over 10 tables and 60 seats
-with 55% load: **98.3%** seat-seconds correct, and **97.1%** with people
-walking the aisles. Most of the remaining errors are the intentional 20 s
-release delay.
-
-## Deploy
-
-- **NUC (edge):** `deploy/tmedge-edge.service` (systemd). Put the NUC on the
-  sensor network. `UDP_HOST` binds the uplink to that interface.
-- **Docker (any host, amd64 or arm64):** `docker compose up -d --build` runs
-  the edge and web tiers, with optional simulator and Cloudflare Tunnel
-  profiles. See **[DOCKER.md](DOCKER.md)** for installation and how the image
-  and stack work.
-- **EC2:** edge, web and simulator as
-  systemd units on one box, published through a Cloudflare Tunnel. Runbook:
-  **[deploy/aws-ec2.md](deploy/aws-ec2.md)**.
-- Sign-in is local accounts limited to university email domains, as a
-  stand-in for HKU SSO. Swap `UserStore` for OIDC before launch; sessions and
-  everything else stay as they are.
-
-### Updating the live box: `deploy/deploy.sh` only
-
-```sh
-deploy/deploy.sh              # checks, build, upload, switch, health-check
-deploy/deploy.sh list         # releases on the box, * = live
-deploy/deploy.sh rollback     # back to the previous release (or: rollback <id>)
+```text
+TMedge/
+├── .github/workflows/
+├── algo-app/src/console/
+│   ├── train/
+│   └── updates/
+├── ci/
+├── config/
+├── deploy/training/
+├── docker/
+│   ├── postgres-local/init/
+│   └── postgres-test/init/
+├── docs/hpc/
+├── public-console/
+├── public-web/
+│   ├── assets/
+│   │   ├── floors/
+│   │   └── images/
+│   └── vendor/three/
+├── rigs/intern-demo/
+├── src/
+│   ├── algo/train/hpc/
+│   ├── console-client/
+│   ├── edge/
+│   ├── infrastructure/
+│   │   ├── algo/
+│   │   ├── firmware-build/
+│   │   ├── http/
+│   │   ├── postgres/migrations/
+│   │   ├── provisioning/
+│   │   └── web/
+│   ├── modules/
+│   ├── shared/logging/
+│   ├── tools/
+│   └── web/
+├── test/
+│   ├── golden/train/
+│   └── hpc-stack/fake-slurm/
+├── tools/
+├── web-app/src/pages/
+├── Dockerfile
+├── Dockerfile.firmware-worker
+├── README.md
+└── package.json
 ```
 
-Merging a PR runs CI and packages an immutable release. GitHub then queues
-a production deployment for the repository owner to approve. The exact
-tested artifact is promoted, with no rebuild during deployment.
+- [src/edge/](src/edge/) owns telemetry, sensor authority, counting, and firmware operations. [src/web/](src/web/) serves student accounts and occupancy.
+- [src/modules/](src/modules/) separates application rules from the storage and process integrations in [src/infrastructure/](src/infrastructure/).
+- [web-app/](web-app/) contains the student interface; [algo-app/](algo-app/) contains the operator console.
+- [public-web/assets/floors/](public-web/assets/floors/) holds GLB floor models, while [public-web/assets/images/](public-web/assets/images/) holds campus photographs. [public-web/vendor/three/](public-web/vendor/three/) contains locally served Three.js modules.
+- [rigs/intern-demo/](rigs/intern-demo/) supports thermal/RGB calibration. [tools/](tools/) contains training and export utilities.
+- [test/](test/) covers protocol contracts, occupancy, authentication, persistence, and lifecycle behavior. [ci/](ci/) pins companion repository revisions.
 
-For a manual deployment, the script refuses uncommitted changes, re-runs
-typecheck, tests and the crosscheck,
-uploads a new release beside the live one, switches with one rename, and
-switches back by itself if the new release is unhealthy. Details, and the
-GitHub settings that go with CI, are in
-**[deploy/pipeline.md](deploy/pipeline.md)**.
-
-> **Never use the old rsync command on EC2** (`rsync -a --delete … ./
-> …:/opt/tmedge/`, from earlier versions of the runbook). Since 2026-09-24
-> `/opt/tmedge` is a symlink to the live release, not a plain directory, so
-> that rsync would write straight into the running release with no checks
-> and can corrupt the release or its shared-file links:
-> the units would then fail to start and the site would go down.
-> `.env` now lives in `/opt/tmedge-shared/`.
-
-## Firmware updates
-
-The console can build and roll out TMsense firmware without anyone visiting a
-ceiling. Open **04 Updates** (`/updates`) in the algorithm console, pick the TMsense project folder, and press
-*Upload and build*: the edge compiles it with PlatformIO's `tmflash`
-environment (the release build, which bakes in no Wi-Fi password or key) and
-keeps the image under its SHA-256.
-
-Then choose an image and a target — one node, one space, or every node — and
-press *Update*.
-
-**One node goes first.** The pilot has to come back running the new image,
-with a working sensor and a packet accepted by the edge, before any other node
-is touched. If it fails, the rollout stops and every other node keeps the
-firmware it has. The rest then follow a few at a time.
-
-How an image reaches a node that can only talk to its gateway:
-
-```
-console ──upload──► edge ──build──► image (sha256)
-                      │
-                      ├─ image in 32 kB frames ─► TMWAccess ─ serves http://<gw>:5282/fw/<id>.bin
-                      └─ signed OTA request ────► node ─ downloads, checks the hash, flashes,
-                                                          reboots, proves itself, confirms
-```
-
-The node trusts the hash, not the gateway: an image whose bytes do not match
-what the edge signed is thrown away before it can boot. A freshly flashed
-image is on probation for three minutes — if it cannot join Wi-Fi, read its
-sensor and get a packet accepted, the node puts the old image back and reboots.
-
-Builds run in a separate PlatformIO worker container with CPU, memory, process,
-filesystem, and time limits. In Docker Compose it starts with the edge. For a
-native `npm run edge`, set `FIRMWARE_BUILD_WORKER_URL` to a separately running
-worker service. The worker gets only the uploaded source tree; it receives no
-edge secrets or data volumes. TMWAccess 1.1+ is still required at each site. A
-node that talks to the edge directly downloads from the edge's own console
-port instead.
-## Tests
-
-```bash
-npm test          # geometry, config, replay/auth, occupancy, web and algo behavior
-npm run crosscheck  # parses bytes from TMnode's own C serializer, and vice versa for commands
-npm run typecheck
-```
-
-The algorithm console also has browser regressions for phone, tablet, and
-desktop widths in Chromium and WebKit:
-
-```bash
-npm run build
-npx playwright install --with-deps chromium webkit
-npm run test:algo-mobile
-```
+Further detail is available in the [algorithm console documentation](docs/ALGO_DASHBOARD.md), [student account documentation](docs/student-accounts.md), and [deployment pipeline](deploy/pipeline.md).
