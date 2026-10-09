@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium, webkit } from 'playwright';
@@ -84,7 +84,7 @@ async function shot(page, engine, name) {
 // Populate tables with long names and provide an available, disconnected
 // cluster. The sign-in dialog can be exercised without contacting HKU.
 async function trainingFixtures(page) {
-  await page.route('**/api/train/jobs', route => route.fulfill({ json: { jobs: [{
+  await page.route('**/api/train/jobs', route => route.request().method() !== 'GET' ? route.continue() : route.fulfill({ json: { jobs: [{
     id: 'mobile-draft', name: 'occupancy_training_with_a_long_project_name',
     status: 'SUBMIT_FAILED', partition: 'gpu', gpus: 1, code: { kind: 'py', filename: 'train.py' },
     slurmJobId: null, createdAt: Date.now(), updatedAt: Date.now(),
@@ -172,6 +172,67 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           }
         });
       }
+
+      await t.test('a new draft has a self-contained CPU example ready to save on a phone', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await trainingFixtures(page);
+        await page.goto(`${base}/train`);
+        await page.getByRole('button', { name: 'New draft', exact: true }).tap();
+        assert.equal(await page.getByLabel('Job name', { exact: true }).inputValue(), 'synthetic_demo');
+        assert.equal(await page.getByLabel('CPUs', { exact: true }).inputValue(), '1');
+        assert.equal(await page.getByLabel('Mem GB', { exact: true }).inputValue(), '1');
+        assert.equal(await page.getByLabel('GPUs', { exact: true }).inputValue(), '0');
+        assert.equal(await page.getByLabel('Time', { exact: true }).inputValue(), '0:02:00');
+        assert.equal(await page.getByLabel('Arguments', { exact: true }).inputValue(), '--epochs 20 --samples 1000 --seed 42');
+        assert.equal(await page.getByLabel('Conda env', { exact: true }).inputValue(), '');
+        assert.equal(await page.getByLabel('Environment', { exact: true }).inputValue(), '');
+        assert.equal(await page.locator('input[type="checkbox"]:checked').count(), 0);
+        await page.getByText('# TMedge synthetic training demo for the HKU SLURM cluster.', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Save draft', exact: true }).tap();
+        await page.getByText('Draft synthetic_demo saved', { exact: true }).waitFor();
+        const jobId = new URL(page.url()).searchParams.get('job');
+        assert.ok(jobId, 'the example is saved as a new job');
+        const savedScript = await context.request.get(`${base}/api/train/jobs/${jobId}/file?path=train.py`);
+        assert.equal(savedScript.status(), 200);
+        assert.equal(await savedScript.text(), readFileSync('algo-app/src/console/train/example.py', 'utf8'), 'saving keeps the same runnable example');
+        for (const colorScheme of ['dark', 'light']) {
+          await page.emulateMedia({ colorScheme });
+          await fits(page, 390);
+          await shot(page, engine, `example-draft-${colorScheme}`);
+        }
+        await page.emulateMedia({ colorScheme: 'dark' });
+      });
+
+      await t.test('waiting jobs show the scheduler reason and when it was last checked on a phone', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await trainingFixtures(page);
+        const job = {
+          id: 'pending-job', status: 'PENDING', slurmJobId: 324,
+          spec: { name: 'pending_training', partition: 'debug', cpusPerTask: 4, memGb: 16, gpus: 1,
+            timeLimit: '2:00:00', modules: [], condaEnv: null, entrypoint: 'train.py', args: [], env: {}, notifyEmail: false },
+          code: { kind: 'py', filename: 'train.py', bytes: 9, unpackedBytes: 9, fileCount: 1, py: ['train.py'] },
+          sbatch: '', createdAt: Date.now(), updatedAt: Date.now(), lastPolledAt: Date.now() - 2 * 60_000,
+          submittedAt: Date.now(), startedAt: null, endedAt: null, exitCode: null, remoteDir: '~/hpc-dash/jobs/pending-job',
+          slurmState: 'PENDING', slurmReason: 'ReqNodeNotAvail, UnavailableNodes:iw-g2', elapsedSeconds: 0, node: null, message: null,
+        };
+        await page.route('**/api/train/jobs', route => route.fulfill({ json: { jobs: [{
+          ...job, name: job.spec.name, partition: 'debug', gpus: 1,
+        }] } }));
+        await page.route('**/api/train/jobs/pending-job', route => route.fulfill({ json: { job } }));
+        await page.route('**/api/train/jobs/pending-job/file**', route => route.fulfill({ body: 'print(1)\n', contentType: 'text/plain' }));
+        await page.goto(`${base}/train`);
+        await page.locator('.cx-jobs').getByText(job.spec.name).tap();
+        await page.getByText(`SLURM reason: ${job.slurmReason}`, { exact: true }).waitFor();
+        await page.getByText('Last checked 2m ago · Sign in and refresh for the current state', { exact: true }).waitFor();
+        for (const colorScheme of ['dark', 'light']) {
+          await page.emulateMedia({ colorScheme });
+          await fits(page, 390);
+          await shot(page, engine, `pending-job-${colorScheme}`);
+        }
+        await page.emulateMedia({ colorScheme: 'dark' });
+      });
 
       await t.test('flow tabs preserve edits and desktop sizes across rotation', async () => {
         await page.unrouteAll({ behavior: 'wait' });

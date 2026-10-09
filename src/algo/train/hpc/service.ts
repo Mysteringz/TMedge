@@ -215,7 +215,8 @@ export class HpcService {
     const now = Date.now();
     const terminal = !ACTIVE.includes(st.status) && st.status !== 'SUBMITTED';
     const next: TrainJob = {
-      ...job, status: st.status, slurmState: st.raw, exitCode: st.exitCode, elapsedSeconds: st.elapsedSeconds,
+      ...job, status: st.status, slurmState: st.raw, slurmReason: st.reason, exitCode: st.exitCode, elapsedSeconds: st.elapsedSeconds,
+      message: null,
       node: st.node, lastPolledAt: now, updatedAt: now,
       startedAt: job.startedAt ?? (st.status === 'RUNNING' || terminal ? now - (st.elapsedSeconds ?? 0) * 1000 : null),
       endedAt: terminal ? job.endedAt ?? now : null,
@@ -225,15 +226,28 @@ export class HpcService {
   }
 
   private async refreshJobs(s: Session, jobs: TrainJob[]): Promise<TrainJob[]> {
-    const withIds = jobs.filter((j) => j.slurmJobId !== null);
+    const ssh = s.ssh;
+    if (!ssh) throw new GatewayBusy('Your cluster connection has ended; sign in again.');
+    const withIds = jobs.flatMap((job) => job.slurmJobId === null ? [] : [{ job, id: job.slurmJobId }]);
     if (withIds.length === 0) return [];
-    const states = await slurm.status(s.ssh!, withIds.map((j) => j.slurmJobId!));
+    const states = await slurm.status(ssh, withIds.map(({ id }) => id));
     const out: TrainJob[] = [];
-    for (const j of withIds) {
-      const st = states.get(j.slurmJobId!);
-      // sacct can lag a fresh submission by a few seconds: keep what we know.
+    for (const { job: j, id } of withIds) {
+      const st = states.get(id) ?? await slurm.completion(ssh, j.id, id);
       const current = this.store.byId(j.id);
       if (st && current) out.push(this.apply(current, st));
+      else if (current && ACTIVE.includes(current.status)) {
+        // A vanished job is not still pending. Without accounting or a
+        // receipt (older scripts), its result cannot be guessed from silence.
+        const now = Date.now();
+        const next: TrainJob = {
+          ...current, status: 'UNKNOWN', slurmState: null, slurmReason: null, exitCode: null,
+          lastPolledAt: now, updatedAt: now,
+          message: 'Could not confirm this job\'s state from SLURM and no saved exit result was found. Open Log and Stderr to inspect what happened, then refresh again.',
+        };
+        this.store.update(next);
+        out.push(next);
+      }
     }
     return out;
   }

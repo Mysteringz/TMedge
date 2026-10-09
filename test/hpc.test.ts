@@ -14,7 +14,7 @@ import { parseHpcConfig } from '../src/algo/train/config.js';
 import { Gateway, GatewayBusy, LockedOut, type GatewayDeps } from '../src/algo/train/hpc/gateway.js';
 import { AuthFailed, authenticate, parseAuthOutput, type AuthResult } from '../src/algo/train/hpc/openconnect.js';
 import { Credentials, SealedInbox, SealError } from '../src/algo/train/hpc/sealed.js';
-import { mapState, parseElapsed, parseSacct, parseSbatch, parseSqueue } from '../src/algo/train/hpc/slurm.js';
+import { mapState, parseElapsed, parseSacct, parseSbatch, parseSqueue, status } from '../src/algo/train/hpc/slurm.js';
 import { SshFailed, type SshLike } from '../src/algo/train/hpc/ssh.js';
 import { packCredentials, sealCredentials } from '../src/shared/hpcseal.js';
 
@@ -134,6 +134,76 @@ describe('openconnect: one attempt, and the code only when asked for', () => {
 });
 
 describe('SLURM parsing (HANDOVER §6.5)', () => {
+  test('squeue preserves why a job is waiting, elapsed time and the allocated node', () => {
+    const states = parseSqueue([
+      '324|PENDING|ReqNodeNotAvail, UnavailableNodes:iw-g2|0:00|(null)',
+      '325|RUNNING|None|02:01|iw-g2',
+      '326|PENDING|Resources|0:00|',
+      'garbage',
+    ].join('\n'));
+    assert.deepEqual(states.get(324), {
+      status: 'PENDING', raw: 'PENDING', reason: 'ReqNodeNotAvail, UnavailableNodes:iw-g2',
+      exitCode: null, elapsedSeconds: 0, node: null,
+    });
+    assert.deepEqual(states.get(325), {
+      status: 'RUNNING', raw: 'RUNNING', reason: null, exitCode: null, elapsedSeconds: 121, node: 'iw-g2',
+    });
+    assert.deepEqual(states.get(326), {
+      status: 'PENDING', raw: 'PENDING', reason: 'Resources', exitCode: null, elapsedSeconds: 0, node: null,
+    });
+    assert.equal(states.size, 3);
+  });
+
+  const sshWith = (sacct: string, squeue: string, accountingCode = 0, queueCode = 0) => {
+    const commands: string[] = [];
+    const ssh: SshLike = {
+      alive: true, open: async () => undefined, close: async () => undefined,
+      shellCommand: () => ({ bin: '/bin/true', args: [], home: '/tmp', target: 'test@cluster.test' }),
+      run: async (command) => {
+        commands.push(command);
+        const accounting = command.startsWith('sacct ');
+        return { code: accounting ? accountingCode : queueCode, stdout: Buffer.from(accounting ? sacct : squeue), stderr: '' };
+      },
+    };
+    return { ssh, commands };
+  };
+
+  test('a complete sacct response still reads the live queue reason', async () => {
+    const { ssh, commands } = sshWith('324|PENDING|0:0|00:00:00|Unknown|Unknown|None assigned\n',
+      '324|PENDING|Resources|0:00|(null)\n');
+    assert.deepEqual((await status(ssh, [324])).get(324), {
+      status: 'PENDING', raw: 'PENDING', reason: 'Resources', exitCode: null, elapsedSeconds: 0, node: null,
+    });
+    assert.ok(commands.some((command) => command.includes("-o '%i|%T|%r|%M|%N'")), 'ask SLURM for its reason');
+  });
+
+  test('the live queue takes precedence over lagging accounting', async () => {
+    const { ssh } = sshWith('324|PENDING|0:0|00:00:00|Unknown|Unknown|None assigned\n',
+      '324|RUNNING|None|01:05|iw-g2\n');
+    assert.deepEqual((await status(ssh, [324])).get(324), {
+      status: 'RUNNING', raw: 'RUNNING', reason: null, exitCode: null, elapsedSeconds: 65, node: 'iw-g2',
+    });
+  });
+
+  test('without accounting the queue still explains pending jobs', async () => {
+    const { ssh } = sshWith('', '324|PENDING|QOSMaxGRESPerUser|0:00|(null)\n', 1);
+    assert.deepEqual((await status(ssh, [324])).get(324), {
+      status: 'PENDING', raw: 'PENDING', reason: 'QOSMaxGRESPerUser', exitCode: null, elapsedSeconds: 0, node: null,
+    });
+  });
+
+  test('finished jobs retain accounting and a failed queue query does not erase it', async () => {
+    for (const queueCode of [0, 1]) {
+      const { ssh } = sshWith('324|FAILED|2:0|00:00:03|x|x|iw-g2\n', '', 0, queueCode);
+      assert.deepEqual((await status(ssh, [324])).get(324), {
+        status: 'FAILED', raw: 'FAILED', reason: null, exitCode: 2, elapsedSeconds: 3, node: 'iw-g2',
+      });
+    }
+    const { ssh, commands } = sshWith('', '');
+    assert.equal((await status(ssh, [])).size, 0);
+    assert.deepEqual(commands, []);
+  });
+
   test('sacct: steps ignored, CANCELLED by <uid>, exit codes, elapsed', () => {
     const out = [
       '4101|COMPLETED|0:0|00:01:05|2026-10-06T15:00:00|2026-10-06T15:01:05|gpu-a10-1',
@@ -150,7 +220,7 @@ describe('SLURM parsing (HANDOVER §6.5)', () => {
     ].join('\n');
     const s = parseSacct(out);
     assert.deepEqual([...s.keys()], [4101, 4102, 4103, 4104, 4105, 4106, 4107]);
-    assert.deepEqual(s.get(4101), { status: 'COMPLETED', raw: 'COMPLETED', exitCode: 0, elapsedSeconds: 65, node: 'gpu-a10-1' });
+    assert.deepEqual(s.get(4101), { status: 'COMPLETED', raw: 'COMPLETED', reason: null, exitCode: 0, elapsedSeconds: 65, node: 'gpu-a10-1' });
     assert.equal(s.get(4102)?.status, 'CANCELLED');
     assert.equal(s.get(4102)?.raw, 'CANCELLED by 12345');
     assert.equal(s.get(4102)?.elapsedSeconds, 93784);

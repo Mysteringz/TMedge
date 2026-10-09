@@ -20,49 +20,11 @@ import { train, TrainError, type HpcState, type Job, type JobSpec, type JobSumma
 import { HostKeyPrompt } from './train/HostKey.tsx';
 import { ClusterTerminal } from './train/Terminal.tsx';
 import { installCspShims } from './train/csp.ts';
+import DEFAULT_SCRIPT from './train/example.py?raw';
 
 // Before CodeMirror or xterm.js draw anything (train/csp.ts).
 installCspShims();
 import { SignIn } from './train/SignIn.tsx';
-
-const DEFAULT_SCRIPT = `# algo.hkumyseat.com — training job for the HKU cluster (SLURM)
-# Runs on a compute node as: srun python train.py <arguments>
-# Data is not uploaded from here: --data is a path on HPC storage.
-import argparse
-import os
-
-import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, f1_score, log_loss
-from sklearn.model_selection import train_test_split
-
-FEATURES = ["hour", "weekday", "temp_c", "noise_db", "wifi_clients"]
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--data", required=True, help="parquet file on HPC storage")
-    ap.add_argument("--epochs", type=int, default=10)
-    ap.add_argument("--lr", type=float, default=0.05)
-    args = ap.parse_args()
-
-    # Arguments arrive exactly as typed, so ~ is expanded here, not by a shell.
-    df = pd.read_parquet(os.path.expanduser(args.data)).dropna()
-    X, y = df[FEATURES], df["occupied"].astype(int)
-    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    model = GradientBoostingClassifier(n_estimators=args.epochs * 20, learning_rate=args.lr, verbose=1)
-    model.fit(X_tr, y_tr)
-
-    pred = model.predict(X_te)
-    print(f"accuracy {accuracy_score(y_te, pred):.4f}", flush=True)
-    print(f"f1       {f1_score(y_te, pred):.4f}", flush=True)
-    print(f"val_loss {log_loss(y_te, model.predict_proba(X_te)):.4f}", flush=True)
-
-
-if __name__ == "__main__":
-    main()
-`;
 
 /** Per-viewer convenience: an unsaved script survives a reload. Never needed for correctness. */
 const STORE_KEY = 'algo_train_v1';
@@ -136,8 +98,8 @@ function keepScript(s: Source): void {
 
 function defaultForm(cfg: TrainConfig, entrypoint: string): Form {
   return {
-    name: 'occupancy_gbc', partition: cfg.defaultPartition, cpus: '4', mem: '16', gpus: '0', time: '2:00:00',
-    modules: [], conda: '', entrypoint, args: '--data ~/myseat/seat_occupancy_2026Q3.parquet --epochs 10', env: 'OMP_NUM_THREADS=4',
+    name: 'synthetic_demo', partition: cfg.defaultPartition, cpus: '1', mem: '1', gpus: '0', time: '0:02:00',
+    modules: [], conda: '', entrypoint, args: '--epochs 20 --samples 1000 --seed 42', env: '',
   };
 }
 
@@ -651,6 +613,13 @@ export function Train() {
               <Metric label="Exit" value={job?.exitCode != null ? String(job.exitCode) : '—'} />
             </div>
             {job?.message && <div className="cx-hint is-err">! {job.message}</div>}
+            {job?.slurmReason && <div className="cx-hint">SLURM reason: {job.slurmReason}</div>}
+            {job?.slurmJobId != null && (
+              <div className="cx-hint">
+                {job.lastPolledAt ? `Last checked ${ago(job.lastPolledAt)}` : 'Waiting for the first cluster status check'}
+                {!signedIn && ' · Sign in and refresh for the current state'}
+              </div>
+            )}
             <div className="cx-hint">
               {job?.slurmState && job.slurmState !== job.status ? `${job.slurmState} · ` : ''}
               {job?.node ? `${job.node} · ` : ''}
@@ -715,7 +684,7 @@ export function Train() {
             <div className="cx-fields">
               <Field label="Job name" id="f-name" bad={bad.has('name')}>
                 <input id="f-name" className={`input ${bad.has('name') ? 'is-bad' : ''}`} value={form.name} maxLength={40}
-                  spellCheck={false} onChange={(e) => edit({ name: e.target.value })} placeholder="occupancy_gbc" />
+                  spellCheck={false} onChange={(e) => edit({ name: e.target.value })} placeholder="synthetic_demo" />
               </Field>
               <Field label="Entrypoint" id="f-entry" bad={bad.has('entrypoint')}>
                 {source.kind === 'script'
@@ -778,7 +747,7 @@ export function Train() {
               </Field>
             </div>
             <Field label="Arguments" id="f-args" bad={bad.has('args')} hint="split on spaces · each reaches python exactly as typed: no ~ or $VAR expansion">
-              <input id="f-args" className={`input ${bad.has('args') ? 'is-bad' : ''}`} value={form.args} placeholder="--epochs 10"
+              <input id="f-args" className={`input ${bad.has('args') ? 'is-bad' : ''}`} value={form.args} placeholder="--epochs 20 --samples 1000 --seed 42"
                 spellCheck={false} onChange={(e) => edit({ args: e.target.value })} />
             </Field>
             <Field label="Environment" id="f-env" bad={bad.has('env')} hint="one NAME=value per line">

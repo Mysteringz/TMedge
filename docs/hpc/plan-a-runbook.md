@@ -74,7 +74,21 @@ it printed in `docs/hpc/feasibility-results.md`.
 
 ## The first job
 
-Sign in at algo.hkumyseat.com → **02 ML Training** → write or upload a script
+The **New draft** button starts `synthetic_demo`, a small classifier trained
+on generated data using only Python 3's standard library. No dataset,
+packages, modules, conda environment or GPU are needed. The same script is
+available at [example.py](../../algo-app/src/console/train/example.py) for
+uploading to an existing dashboard.
+
+Use the default partition, **1 CPU**, **1 GB**, **0 GPUs**, **0:02:00** and
+arguments `--epochs 20 --samples 1000 --seed 42`; leave modules, conda and
+environment empty. The log shows 20 epochs, validation loss and accuracy,
+then `TMEDGE_EXAMPLE_OK`. These metrics describe the synthetic demo and do
+not measure real seat occupancy. The Python 3 batch-launcher fix must be
+deployed before sending this example through the dashboard on a node that
+does not have `python`.
+
+Sign in at algo.hkumyseat.com → **02 ML Training** → use the example or upload a script
 → **SEND JOB TO TRAIN** → UID, PIN, code, and the `ing` password. The console shows each step (VPN,
 tunnel, SSH, upload, sbatch) and the SLURM job id. Then **REFRESH**,
 **LOG** and **CANCEL JOB** work without a new code for 10 minutes.
@@ -97,3 +111,28 @@ tunnel, SSH, upload, sbatch) and the SLURM job id. Then **REFRESH**,
 Set `"backend": "none"` and remove `planA` in `config/hpc.json`, then deploy.
 Drafts keep working. Live sessions end when the edge restarts.
 To end every session at once without a deploy: `sudo systemctl restart tmedge-edge`.
+
+## A job ID was returned, but the job never appears to run
+
+A job ID means SLURM accepted the submission. Click **Refresh**, then read
+**Log** and **Stderr**. The job card shows the scheduler's reason while the
+job is queued and the time of the last check. Status polling ends with the
+HKU session; sign in and refresh to get current information.
+
+On `ing@10.21.36.12`, `sacct` reports **Slurm accounting storage is disabled**.
+Completed jobs eventually disappear from `squeue`, so an old `PENDING`
+record cannot establish that a job is still waiting. New batch scripts save
+their exit code and elapsed seconds in the submit directory as
+`.tmedge-exit-<SLURM id>`. Refresh uses this result when SLURM no longer has
+the job. Older jobs without a result show `UNKNOWN` and point to their logs.
+A hard kill can prevent the shell from writing a result; absent evidence
+also remains `UNKNOWN`.
+
+The batch launcher prefers the active environment's `python`, falls back to
+`python3`, and explicitly runs one task. The old `occupancy_gbc` example
+used by job 324 requires **pandas, scikit-learn and pyarrow**, plus a real parquet file with
+`hour`, `weekday`, `temp_c`, `noise_db`, `wifi_clients` and `occupied`
+columns. Its example `--data` path is not uploaded or provisioned by the
+dashboard. Select an environment containing those packages and replace the
+path with your dataset to use that old script. New drafts use the
+self-contained synthetic example described above.
