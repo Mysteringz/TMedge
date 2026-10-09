@@ -5,12 +5,16 @@ import { AuthError, parseCookies, RateLimiter, Sessions, studentSessionVersion, 
 import { asyncHandler } from '../../../infrastructure/http/errors.js';
 import type { StudentActivityLog } from '../application/student-activity-log.js';
 import type { StudentActivityAction, StudentActivityOutcome } from '../repositories/student-activity-repository.js';
+import { createRequireStudent, studentCredential } from './student-request-auth.js';
+
+export { createRequireStudent } from './student-request-auth.js';
 
 const COOKIE = 'tm_session';
 
 export interface StudentAuthRouterDependencies {
   accounts: IStudentAccountRepository;
   sessions: Sessions;
+  accessTokens?: Sessions;
   allowedDomains: readonly string[];
   signupOpen: boolean;
   cookieSecure: boolean;
@@ -27,6 +31,22 @@ export function createStudentAuthRouter(dependencies: StudentAuthRouterDependenc
   const body = [express.json({ limit: '8kb' }), express.urlencoded({ extended: false, limit: '8kb' })];
   const requireUser = createRequireStudent(dependencies);
   router.post('/login', body, sameOrigin, createLoginHandler(dependencies, limiter));
+  if (dependencies.accessTokens) {
+    router.use('/api/auth/token', (_req, res, next) => {
+      dependencies.noStore(res);
+      res.set('Pragma', 'no-cache');
+      next();
+    });
+    router.post('/api/auth/token', body, sameOrigin, createLoginHandler(dependencies, limiter, true));
+    router.delete('/api/auth/token', requireUser, asyncHandler(async (req, res) => {
+      const credential = studentCredential(req);
+      if (credential.kind !== 'bearer') return res.status(400).json({ error: 'a Bearer token is required' });
+      dependencies.accessTokens?.revoke(credential.token);
+      const userId: unknown = res.locals.studentUserId;
+      recordActivity(dependencies, 'logout', 'succeeded', typeof userId === 'string' ? userId : undefined);
+      return res.status(204).end();
+    }));
+  }
   router.post('/signup', body, sameOrigin, createSignupHandler(dependencies, limiter));
   router.post('/logout', body, sameOrigin, asyncHandler(async (req: Request, res: Response) => {
     const token = parseCookies(req.headers.cookie)[COOKIE];
@@ -39,28 +59,10 @@ export function createStudentAuthRouter(dependencies: StudentAuthRouterDependenc
     recordActivity(dependencies, 'logout', 'succeeded', user?.id);
     res.json({ redirect: '/login/' });
   }));
-  router.get('/api/me', requireUser, asyncHandler(async (req, res) => {
-    const user = await dependencies.accounts.get(userOf(req, dependencies.sessions) ?? '');
-    res.json({ email: user?.email, name: user?.name });
-  }));
-  return router;
-}
-
-/** Builds the shared browser/API session guard while preserving cookie renewal. */
-export function createRequireStudent(dependencies: StudentAuthRouterDependencies): RequestHandler {
-  return asyncHandler(async (req, res, next) => {
-    dependencies.noStore(res);
-    const detail = dependencies.sessions.detail(parseCookies(req.headers.cookie)[COOKIE]);
-    const user = detail ? await dependencies.accounts.get(detail.email) : undefined;
-    if (detail && user && detail.version === studentSessionVersion(user)) {
-      res.locals.studentUserId = user.id;
-      if (detail.expiresAt - Date.now() < dependencies.sessions.ttl / 2) await setSession(req, res, detail.email, dependencies);
-      return next();
-    }
-    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'sign in first' });
-    dependencies.noStore(res);
-    return res.redirect(`/login/?next=${encodeURIComponent(req.originalUrl)}`);
+  router.get('/api/me', requireUser, (_req, res) => {
+    res.json({ email: res.locals.studentEmail, name: res.locals.studentName });
   });
+  return router;
 }
 
 /** Resolves a session cookie to its account email. */
@@ -68,7 +70,7 @@ export function userOf(req: Request, sessions: Sessions): string | null {
   return sessions.read(parseCookies(req.headers.cookie)[COOKIE]);
 }
 
-function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLimiter): RequestHandler {
+function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLimiter, bearer = false): RequestHandler {
   return asyncHandler(async (req, res) => {
     deps.noStore(res);
     const input = authInput(req.body);
@@ -92,6 +94,13 @@ function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLi
       return res.status(401).json({ error: 'That UID and PIN do not match.' });
     }
     recordActivity(deps, 'login', 'succeeded', user.id);
+    if (bearer && deps.accessTokens) {
+      res.set('Pragma', 'no-cache');
+      return res.json({
+        access_token: deps.accessTokens.issue(user.email, Date.now(), studentSessionVersion(user)),
+        token_type: 'Bearer', expires_in: deps.accessTokens.ttl / 1000,
+      });
+    }
     await setSession(req, res, user.email, deps);
     return res.json({ redirect: safeNext(next) });
   });

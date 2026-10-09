@@ -1,5 +1,5 @@
 /** The web composition root: configuration, dependencies, static files and server lifecycle. */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
@@ -117,15 +117,20 @@ export function createWebApp(cfg: WebConfig, options: {
   if (cfg.studentPersistenceMode === 'postgres' && !options.accounts) throw new Error('PostgreSQL student accounts must be initialized before creating the web app');
   const accounts = options.accounts ?? new JsonStudentAccountRepository(cfg.usersPath, cfg.allowedDomains);
   const sessions = new Sessions(cfg.sessionSecret, undefined, join(dirname(cfg.usersPath), 'session-revocations.json'));
+  // Purpose separation prevents cookie, algo and edge credentials from being used as student access tokens.
+  const accessTokens = new Sessions(
+    createHmac('sha256', cfg.sessionSecret).update('tmedge-student-access-v1').digest(),
+    15 * 60_000, join(dirname(cfg.usersPath), 'student-token-revocations.json'),
+  );
   let sockets!: OccupancyWebSocketLifecycle;
   // Google identities are intentionally unavailable with PostgreSQL-backed
   // student accounts until that storage path has its own verified rollout.
   const googleEnabled = cfg.studentPersistenceMode !== 'postgres' && !!cfg.google;
   const google = googleEnabled && cfg.google ? new GoogleLogin(cfg.google, cfg.sessionSecret) : null;
   const store = new SnapshotStore(cfg.staleMs);
-  const noStore = (res: Response) => res.set('Cache-Control', 'no-store').set('Vary', 'Cookie');
+  const noStore = (res: Response) => res.set('Cache-Control', 'no-store').vary('Cookie').vary('Authorization');
   const authDependencies = {
-    accounts, sessions, allowedDomains: cfg.allowedDomains, signupOpen: cfg.signupOpen,
+    accounts, sessions, accessTokens, allowedDomains: cfg.allowedDomains, signupOpen: cfg.signupOpen,
     cookieSecure: cfg.cookieSecure, noStore,
     humanCheck: cfg.turnstile ? cfg.turnstile.check ?? turnstileCheck(cfg.turnstile.secretKey, cfg.turnstile.hostnames) : null,
     onLogout: (token: string | undefined) => sockets?.closeSession(token),

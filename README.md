@@ -1,5 +1,9 @@
 # TMedge
 
+Student HTTP APIs support bearer access for external apps alongside browser
+cookie sessions. See [student token authentication](docs/student-token-auth.md)
+for token login, expiry, revocation, and integration examples.
+
 Security fixes, validation and deployment requirements are tracked in
 [the security specsheet](docs/SECURITY_BUG_SPEC.md). TMsense 1.7 encrypted
 telemetry and per-device/gateway/publisher credentials are documented in

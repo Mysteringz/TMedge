@@ -12,7 +12,9 @@ export function studentHttpErrorHandler(activity?: StudentActivityLog): ErrorReq
     else if (type === 'entity.too.large') status = 413;
     else if (type === 'encoding.unsupported' || type === 'charset.unsupported') status = 415;
     if (status) {
-      if (req.path === '/login' || req.path === '/signup') activity?.record(req.path === '/login' ? 'login' : 'signup', 'failed', null, randomUUID());
+      if (req.path === '/login' || req.path === '/signup' || req.path === '/api/auth/token') {
+        activity?.record(req.path === '/signup' ? 'signup' : 'login', 'failed', null, randomUUID());
+      }
       res.status(status).json({ error: status === 413 ? 'request body too large' : status === 415 ? 'unsupported body encoding' : 'invalid request body' });
       return;
     }
