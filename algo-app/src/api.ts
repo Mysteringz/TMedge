@@ -105,11 +105,14 @@ export const api = {
   wsToken: () => fetch('/api/ws-token').then(json<{ token: string }>),
   pairs: () => fetch('/api/pairs').then(json<{
     samples: number; withPeople: number; bytes: number; oldest: number | null; newest: number | null;
-    recording: boolean; lastSkipped: string | null; rgbNodes: string[];
+    recording: boolean; mode: RecordMode; capturing: boolean; lastSkipped: string | null; rgbNodes: string[];
   }>),
-  record: (on: boolean) => fetch('/api/pairs/record', { method: 'POST', headers: write, body: JSON.stringify({ on }) })
-    .then(json<{ ok: boolean; samples: number; recording: boolean }>),
+  record: (mode: RecordMode) => fetch('/api/pairs/record', { method: 'POST', headers: write, body: JSON.stringify({ mode }) })
+    .then(json<{ ok: boolean; samples: number; recording: boolean; mode: RecordMode; capturing: boolean }>),
 };
+
+/** Mirrors src/algo/autorecord.ts: never, while a person is detected, or always. */
+export type RecordMode = 'off' | 'auto' | 'on';
 
 /** base64 plane -> bytes, for the canvas viewers. */
 export function unpack(b64: string): Uint8Array | null {

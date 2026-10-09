@@ -5,10 +5,12 @@ Production storage is `crowdaware_training` on PostgreSQL 18 in Proxmox LXC
 was expanded from 4 GB to 32 GB. No model training runs on the edge or guest.
 
 `TRAINING_STORAGE=postgres` selects the private disk outbox in
-`/var/lib/tmedge/training`. The existing Record switch controls collection and
-persists across releases. Every accepted RAW from a real node and every RGB
-frame from an eligible rig is retained while recording is enabled, including
-unmatched frames. The legacy 2-second/empty-frame sampling and 400 MB corpus
+`/var/lib/tmedge/training`. The Record switch (Off / Auto / Always, persisted
+in `algo/pairs/recording.mode`) controls collection and persists across
+releases. In Auto, the default, a real node's RAW and RGB frames are retained
+from 5 s before the detector reports a person until 10 s after the last one;
+in Always every accepted RAW and every RGB frame from an eligible rig is
+retained. Both include unmatched frames. The legacy 2-second/empty-frame sampling and 400 MB corpus
 budget do not apply to this backend. No public HTTP/WS schema changes.
 
 `tmedge-training.service` transfers the outbox every 10 seconds using an

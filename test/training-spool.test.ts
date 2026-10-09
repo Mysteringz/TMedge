@@ -31,7 +31,7 @@ test('PostgreSQL outbox preserves sensor bytes and timestamps, including unmatch
     assert.equal(rows.find((r) => r.at === 2000)?.thermalId, null);
     assert.equal(spool.prune(), 0);
     assert.equal(readdirSync(dir).filter((f) => f.endsWith('.json')).length, 3);
-    spool.setRecording(false);
+    spool.setMode('off');
     spool.raw({ ...msg, frame: 43 }, {});
     assert.equal(readdirSync(dir).filter((f) => f.endsWith('.json')).length, 3);
     assert.equal(new TrainingSpool(dir, flag).recording, false);

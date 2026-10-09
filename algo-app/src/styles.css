@@ -204,7 +204,10 @@ button, input, select { font: inherit; color: inherit; letter-spacing: inherit; 
 .training { border-top: 1px solid var(--border-subtle-01); padding-top: 12px; }
 .counts div { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary); padding: 2px 0; }
 .counts b { color: var(--text-primary); font-family: var(--font-mono); font-weight: 400; }
-.training .btn { width: 100%; margin-top: 8px; }
+.record-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin-top: 8px; }
+.record-modes .btn { justify-content: center; padding-inline: 4px; }
+.record-status { margin: 8px 0 0; font-size: 12px; letter-spacing: .32px; color: var(--text-secondary); }
+.record-status.is-live { color: var(--interactive); }
 .rgbview { display: block; width: 400px; max-width: 42vw; border: 1px solid var(--border-subtle-01); background: #0b0b0b; }
 .livenow { color: #ff8389; }
 
