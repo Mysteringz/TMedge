@@ -28,8 +28,8 @@ export interface EdgeConfig {
   adminPassword: string | null;
   /**
    * Secret TMflash presents to queue a node join request. Null disables
-   * provisioning outright -- an edge that is not being commissioned has no
-   * reason to accept these at all.
+   * this legacy token. Algo account sign-in issues bounded, revocable
+   * native sessions instead; neither credential can approve devices.
    */
   flashToken: string | null;
   pushUrls: string[];
@@ -119,7 +119,9 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
   const flashToken = env.TMFLASH_TOKEN ? env.TMFLASH_TOKEN : null;
   // Short enough to brute-force is the same as absent, and this one decides
   // whose requests reach an admin's screen.
-  if (flashToken !== null && flashToken.length < 24) throw new EnvError('TMFLASH_TOKEN must be 24+ chars');
+  if (flashToken !== null && (flashToken.length < 24 || !/^[\x21-\x7e]+$/.test(flashToken) || flashToken.includes(','))) {
+    throw new EnvError('TMFLASH_TOKEN must be 24+ printable ASCII chars without spaces, commas or line breaks');
+  }
   if (flashToken !== null && adminPassword === null) {
     throw new EnvError('TMFLASH_TOKEN needs ADMIN_PASSWORD: a join request is approved from the console, which must be protected.');
   }

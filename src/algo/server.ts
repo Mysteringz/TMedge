@@ -14,6 +14,9 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import type { ConsoleCore } from '../edge/console.js';
+import { flasherLogin } from './flasher-login.js';
+import { applicationErrorHandler } from '../infrastructure/http/errors.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
@@ -37,12 +40,6 @@ import { validate } from './graph.js';
 import { NODE_SPECS, specOf } from './nodes.js';
 
 export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
-interface ConsoleCore {
-  ui: express.Router;
-  upgrade(req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
-  closeSessions(binding: string): void;
-  dispose(): Promise<void>;
-}
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
 
@@ -185,6 +182,11 @@ export function startAlgo(
 
   // --- before sign-in: the form, the endpoints it posts to, the bundle -----
   app.use(auth.router);
+  const nativeLogin = consoleCore ? flasherLogin(auth, consoleCore) : null;
+  if (nativeLogin) app.use('/api/tmflash', express.json({ limit: '4kb' }), nativeLogin.machine);
+  // TMflash is a machine, with its own scoped credential. Mount only its
+  // provisioning API before the human sign-in; no imagery or admin writes.
+  if (consoleCore) app.use('/api/provision', express.json({ limit: '4kb' }), consoleCore.provisioningTool);
   app.get(['/login', '/login/'], (req, res) => {
     if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
     return sendShell(res);
@@ -228,6 +230,8 @@ export function startAlgo(
     if (req.get('x-tm-algo') !== '1') return res.status(403).json({ error: 'missing x-tm-algo header' });
     return next();
   };
+  if (consoleCore) app.use('/api/adoption', consoleCore.adoption);
+  if (nativeLogin) app.use('/api/tmflash', nativeLogin.browser);
 
   // Module 02: training jobs for HKU HPC2021 (src/algo/train/, docs/hpc/).
   const train = createTrain({
@@ -448,7 +452,8 @@ export function startAlgo(
     res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(`${exp}:${auth.sessionToken(req)}`).digest('hex')}` });
   });
 
-  // Home, /flow, /train, /console, /updates: routed in the browser.
+  app.use(applicationErrorHandler);
+  // Home and modules, including /adoption: routed in the browser.
   app.get('/{*splat}', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'no such endpoint' });
     return sendShell(res);

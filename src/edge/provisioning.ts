@@ -20,8 +20,8 @@
  * how a node ends up counting a room it has never seen.
  */
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { accessSync, constants, appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type { NodeDef, Registry } from './registry.js';
 import { ApplicationError } from '../modules/shared/application/contracts.js';
 import { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
@@ -67,6 +67,26 @@ export class Provisioning {
 
   constructor(private readonly reg: Registry, private readonly opts: ProvisioningOptions) {
     this.now = opts.now ?? Date.now;
+    // Keep the same request and matching code across a restart or deploy.
+    // An absent in-memory row used to look like a human rejection to TMflash.
+    const path = this.pendingPath();
+    if (existsSync(path)) {
+      const file = statSync(path);
+      if (!file.isFile() || file.size > 128 * 1024 || (file.mode & 0o077)) throw new Error('unsafe pending adoption storage');
+      const rows: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      if (!Array.isArray(rows) || rows.length > MAX_PENDING) throw new Error('invalid pending adoption storage');
+      for (const value of rows as unknown[]) {
+        if (!value || typeof value !== 'object') throw new Error('invalid pending adoption request');
+        const row = value as Partial<JoinRequest>;
+        if (typeof row.id !== 'string' || !/^[0-9a-f-]{36}$/.test(row.id) || typeof row.uid !== 'string' || !UID_RE.test(row.uid) ||
+            typeof row.label !== 'string' || !LABEL_RE.test(row.label) || (row.firmware !== null && (typeof row.firmware !== 'string' || row.firmware.length > 40)) ||
+            typeof row.from !== 'string' || row.from.length > 100 || typeof row.at !== 'number' || !Number.isSafeInteger(row.at) ||
+            typeof row.expiresAt !== 'number' || !Number.isSafeInteger(row.expiresAt) || row.expiresAt - row.at !== REQUEST_TTL_MS) {
+          throw new Error('invalid pending adoption request');
+        }
+        if (row.expiresAt > this.now() && !reg.nodes.has(row.uid)) this.pending.set(row.id, row as JoinRequest);
+      }
+    }
   }
 
   get enabled(): boolean {
@@ -82,6 +102,17 @@ export class Provisioning {
     const want = this.opts.token;
     if (want === null || presented === null) return false;
     return safeEqual(presented, want);
+  }
+
+  ready(): void {
+    accessSync(this.opts.nodesPath, constants.W_OK);
+    accessSync(dirname(this.opts.nodesPath), constants.W_OK);
+    const real = realpathSync(this.opts.nodesPath);
+    if (/[/\\]tmedge-releases[/\\]/.test(real) || real.startsWith(resolve(process.cwd()) + '/config/')) {
+      throw new Error('registration must survive a release');
+    }
+    const doc = JSON.parse(readFileSync(real, 'utf8')) as { nodes?: unknown };
+    if (!Array.isArray(doc.nodes)) throw new Error('invalid registration file');
   }
 
   requests(): JoinRequest[] {
@@ -117,6 +148,7 @@ export class Provisioning {
       at,
       expiresAt: at + REQUEST_TTL_MS,
     };
+    this.persistPending([...this.pending.values(), req]);
     this.pending.set(req.id, req);
     this.log({ action: 'request', at, uid, label: req.label, by: from, id: req.id });
     return { status: 'pending', request: req };
@@ -163,13 +195,18 @@ export class Provisioning {
     this.appendToNodesFile(node);
     this.reg.nodes.set(node.uid, node);
     this.pending.delete(id);
+    // Registration has committed. A stale pending file is harmless: loading
+    // filters registered identities, and status still reports registered.
+    try { this.persistPending([...this.pending.values()]); } catch { /* reconcile on the next queue write */ }
     this.log({ action: 'approve', at: this.now(), uid: node.uid, label: node.label, by, id });
     return node;
   }
 
   deny(id: string, by: string): JoinRequest {
+    this.expire();
     const req = this.pending.get(id);
     if (!req) throw new ApplicationError('not-found', 'no such request (it may have expired)');
+    this.persistPending([...this.pending.values()].filter(item => item.id !== id));
     this.pending.delete(id);
     this.log({ action: 'deny', at: this.now(), uid: req.uid, label: req.label, by, id });
     return req;
@@ -206,6 +243,16 @@ export class Provisioning {
   private expire(): void {
     const now = this.now();
     for (const [id, r] of [...this.pending]) if (r.expiresAt <= now) this.pending.delete(id);
+  }
+
+  private pendingPath(): string { return this.opts.nodesPath + '.pending.json'; }
+
+  private persistPending(rows: JoinRequest[]): void {
+    try {
+      const path = this.pendingPath(), temporary = `${path}.${randomUUID()}.tmp`;
+      writeFileSync(temporary, JSON.stringify(rows) + '\n', { mode: 0o600, flag: 'wx' });
+      renameSync(temporary, path);
+    } catch { throw new ApplicationError('unavailable', 'provisioning storage is unavailable'); }
   }
 
   private log(e: Record<string, unknown>): void {

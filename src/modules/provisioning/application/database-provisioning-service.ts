@@ -41,6 +41,8 @@ export class DatabaseProvisioningService implements ProvisioningService {
     return a.length === b.length && timingSafeEqual(a, b);
   }
 
+  async ready(): Promise<void> { await this.requests(); }
+
   async request(input: unknown, from: string): Promise<JoinRequestResult> {
     const normalized = validateRequest(input);
     const id = this.requestId();
