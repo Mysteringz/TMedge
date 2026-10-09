@@ -1,26 +1,29 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RawFrameMessage } from '../shared/types.js';
 import type { FrameStore } from './frames.js';
 import { MAX_SKEW_MS, type PairStats } from './pairs.js';
+import { RecordSwitch, type RecordMode } from './autorecord.js';
 
 /** Disk is an outbox: only the worker removes a record after database verification. */
 export class TrainingSpool {
-  recording = false;
+  readonly switch: RecordSwitch;
   private lastError: string | null = null;
   private thermalIds = new Map<string, string>();
   private budget = { at: 0, bytes: 0, files: 0 };
 
-  constructor(private readonly dir: string, private readonly recordingFile: string) {
+  constructor(private readonly dir: string, recordingFile: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    if (existsSync(recordingFile)) this.recording = readFileSync(recordingFile, 'utf8').trim() === '1';
+    this.switch = new RecordSwitch(recordingFile);
   }
 
-  setRecording(on: boolean): void {
-    writeFileSync(this.recordingFile, on ? '1' : '0');
-    this.recording = on;
-  }
+  /** Anything but off: frames may be kept, so the transfer has to be healthy. */
+  get recording(): boolean { return this.switch.mode !== 'off'; }
+
+  setMode(mode: RecordMode): void { this.switch.setMode(mode); }
+
+  presence(uid: string, people: number): void { this.switch.presence(uid, people); }
 
   stats(): PairStats {
     let transferError: string | null = null;
@@ -41,11 +44,15 @@ export class TrainingSpool {
     } catch {
       if (this.recording) transferError = 'Waiting for the PostgreSQL transfer worker';
     }
-    return { ...counts, recording: this.recording, lastSkipped: this.lastError ?? transferError };
+    return { ...counts, recording: this.recording, mode: this.switch.mode, capturing: this.switch.capturing(),
+      lastSkipped: this.lastError ?? transferError };
   }
 
   raw(msg: RawFrameMessage, metadata: unknown): void {
-    if (!this.recording) return;
+    this.switch.gate(msg.uid, () => this.writeRaw(msg, metadata));
+  }
+
+  private writeRaw(msg: RawFrameMessage, metadata: unknown): void {
     const id = createHash('sha256').update(`${msg.uid}:${msg.receivedAt}:${msg.frame}`).digest('hex');
     if (this.write({ version: 1, id, kind: 'thermal', ...msg,
       pixels: Buffer.from(msg.pixels).toString('base64'), metadata })) {
@@ -58,8 +65,12 @@ export class TrainingSpool {
   }
 
   offer(uid: string, jpeg: Buffer, at: number, frames: FrameStore, mirror: boolean): void {
-    if (!this.recording) return;
+    // Received now, even if the pre-roll writes it a few seconds later.
     const receivedAt = Date.now();
+    this.switch.gate(uid, () => this.writeRgb(uid, jpeg, at, receivedAt, frames, mirror));
+  }
+
+  private writeRgb(uid: string, jpeg: Buffer, at: number, receivedAt: number, frames: FrameStore, mirror: boolean): void {
     const nearest = frames.list(uid).reduce<ReturnType<FrameStore['latest']>>((best, f) =>
       !best || Math.abs(f.receivedAt - at) < Math.abs(best.receivedAt - at) ? f : best, null);
     const skew = nearest ? Math.abs(nearest.receivedAt - at) : null;

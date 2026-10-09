@@ -131,8 +131,12 @@ pieces:
    person walks 55 cm in that, about a seat's width. Every other second, so
    1 Hz cameras cost half the disk. It keeps every frame where the sensor saw
    somebody and one in six of the empty ones, since a detector trained only on
-   people learns to answer "person". Off unless switched on: it writes
-   pictures of a room to disk, which is not what this system normally keeps.
+   people learns to answer "person". The switch has three settings
+   (`src/algo/autorecord.ts`): **Auto**, the default, keeps frames only while
+   the detector reports a person at that sensor, with 5 s of pre-roll and a
+   10 s hold, so nobody has to press record and an empty room overnight is not
+   stored; **Always** keeps everything (for deliberate empty-room negatives);
+   **Off** keeps nothing. Simulated nodes never record.
 2. **The trainer** (`tools/train_human_location.py`) runs off the box, where
    numpy and OpenCV live. People are found by background subtraction against a
    median of the scene — a fixed overhead camera makes that reliable, where a

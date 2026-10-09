@@ -25,6 +25,7 @@ import { createAlgoRouter } from './routes.js';
 import { defaultPipeline } from './nodes.js';
 import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
+import { recordModeOf } from './autorecord.js';
 import { createTrain, trainRoot } from './train/routes.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
@@ -67,8 +68,9 @@ export function startAlgo(
   const dataDir = options.dataDir ?? process.env.DATA_DIR ?? join(ROOT, 'data');
   const dir = join(dataDir, 'algo', 'pipelines');
   mkdirSync(dir, { recursive: true });
-  // Training data for the ML locator. Off by default: it writes to disk and
-  // holds pictures of a room, so somebody has to ask for it.
+  // Training data for the ML locator. It holds pictures of a room, so by
+  // default it is kept only while the detector says somebody is in it
+  // (autorecord.ts); "on" keeps everything, "off" nothing.
   const pairsDir = join(dataDir, 'algo', 'pairs');
   if (process.env.TRAINING_STORAGE && !['postgres', 'files'].includes(process.env.TRAINING_STORAGE)) {
     throw new Error('TRAINING_STORAGE must be postgres or files');
@@ -79,7 +81,7 @@ export function startAlgo(
   const pairs = spool ?? new PairRecorder({ dir: pairsDir });
   // The env var forces it on; otherwise the recorder remembers what it was
   // last told, so a deploy does not quietly stop a collection run.
-  if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setRecording(true);
+  if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setMode('on');
 
   /**
    * Which sensor the debugger opens on. A node that is sending pictures beats
@@ -134,6 +136,8 @@ export function startAlgo(
     // of the pairing is to know when it did.
     const report = rt.lastReport(uid);
     if (report) algo.frames.addReport(uid, report.frame, dets, report.flags, report.boot);
+    // Simulated people are not training data (onRaw keeps their frames out too).
+    if (!rt.reg.nodes.get(uid)?.simulated) pairs.presence(uid, dets.reduce((n, d) => n + d.persons, 0));
   };
   rt.on('report', onReport);
 
@@ -426,10 +430,11 @@ export function startAlgo(
   }));
 
   app.post('/api/pairs/record', mutating, (req, res) => {
-    const on = (req.body as { on?: boolean }).on === true;
+    const mode = recordModeOf(req.body);
+    if (!mode) return res.status(400).json({ error: 'mode must be off, auto or on' });
     const rgb = [...rt.reg.nodes.values()].filter((n) => n.rgb);
-    if (on && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
-    pairs.setRecording(on);
+    if (mode !== 'off' && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
+    pairs.setMode(mode);
     return res.json({ ok: true, ...pairs.stats() });
   });
 

@@ -18,8 +18,9 @@
  * with the thermal frame nearest it in time, and only when that is close
  * enough that a walking person cannot have moved far between them.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { RecordSwitch, type RecordMode } from './autorecord.js';
 import type { FrameStore } from './frames.js';
 import type { DeviceDetection } from './types.js';
 
@@ -66,7 +67,11 @@ export interface PairStats {
   bytes: number;
   oldest: number | null;
   newest: number | null;
+  /** Mode is not off. */
   recording: boolean;
+  mode: RecordMode;
+  /** Frames are being kept right now: always in "on", around a detection in "auto". */
+  capturing: boolean;
   lastSkipped: string | null;
 }
 
@@ -76,7 +81,7 @@ export class PairRecorder {
   private emptySeen = 0;
   private counted = { samples: 0, withPeople: 0, bytes: 0, oldest: null as number | null, newest: null as number | null };
   private lastSkipped: string | null = null;
-  recording = false;
+  readonly switch: RecordSwitch;
 
   constructor(cfg: Partial<PairConfig> & { dir: string }) {
     this.cfg = { ...DEFAULT_PAIRS, ...cfg };
@@ -85,23 +90,15 @@ export class PairRecorder {
     // Collecting a training set takes days, and a deploy restarts the edge
     // several times an afternoon. Asking for it once should mean it is still
     // running tomorrow, so the answer is remembered rather than reset.
-    try {
-      const f = join(this.cfg.dir, 'recording.on');
-      if (existsSync(f)) this.recording = readFileSync(f, 'utf8').trim() === '1';
-    } catch {
-      /* not being able to read it is the same as off */
-    }
+    this.switch = new RecordSwitch(join(this.cfg.dir, 'recording.on'));
   }
 
-  /** Turn recording on or off, and remember which across restarts. */
-  setRecording(on: boolean): void {
-    this.recording = on;
-    try {
-      writeFileSync(join(this.cfg.dir, 'recording.on'), on ? '1' : '0');
-    } catch {
-      /* it still applies to this process; it just will not survive a restart */
-    }
-  }
+  get recording(): boolean { return this.switch.mode !== 'off'; }
+
+  /** Choose off, auto or on, and remember which across restarts. */
+  setMode(mode: RecordMode): void { this.switch.setMode(mode); }
+
+  presence(uid: string, people: number): void { this.switch.presence(uid, people); }
 
   /** Count what is already on disk, so a restart does not lose the budget. */
   rescan(): void {
@@ -130,7 +127,8 @@ export class PairRecorder {
   }
 
   stats(): PairStats {
-    return { ...this.counted, recording: this.recording, lastSkipped: this.lastSkipped };
+    return { ...this.counted, recording: this.recording, mode: this.switch.mode,
+      capturing: this.switch.capturing(), lastSkipped: this.lastSkipped };
   }
 
   /**
@@ -138,7 +136,12 @@ export class PairRecorder {
    * enough in time, and only every MIN_GAP_MS.
    */
   offer(uid: string, jpeg: Buffer, at: number, frames: FrameStore, mirror: boolean): PairSample | null {
-    if (!this.recording) return null;
+    let sample: PairSample | null = null;
+    this.switch.gate(uid, () => { sample = this.keep(uid, jpeg, at, frames, mirror); });
+    return sample;
+  }
+
+  private keep(uid: string, jpeg: Buffer, at: number, frames: FrameStore, mirror: boolean): PairSample | null {
     const since = at - (this.lastAt.get(uid) ?? 0);
     if (since < MIN_GAP_MS) return null;
     if (this.counted.bytes >= this.cfg.budgetBytes) {
