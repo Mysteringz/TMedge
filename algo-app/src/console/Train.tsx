@@ -26,7 +26,8 @@ installCspShims();
 import { SignIn } from './train/SignIn.tsx';
 
 const DEFAULT_SCRIPT = `# algo.hkumyseat.com — training job for the HKU cluster (SLURM)
-# Runs on a compute node as: srun python train.py <arguments>
+# Runs on a compute node using the selected environment's Python, or python3.
+# Requires pandas, scikit-learn and pyarrow, plus an existing --data file.
 # Data is not uploaded from here: --data is a path on HPC storage.
 import argparse
 import os
@@ -651,6 +652,13 @@ export function Train() {
               <Metric label="Exit" value={job?.exitCode != null ? String(job.exitCode) : '—'} />
             </div>
             {job?.message && <div className="cx-hint is-err">! {job.message}</div>}
+            {job?.slurmReason && <div className="cx-hint">SLURM reason: {job.slurmReason}</div>}
+            {job?.slurmJobId != null && (
+              <div className="cx-hint">
+                {job.lastPolledAt ? `Last checked ${ago(job.lastPolledAt)}` : 'Waiting for the first cluster status check'}
+                {!signedIn && ' · Sign in and refresh for the current state'}
+              </div>
+            )}
             <div className="cx-hint">
               {job?.slurmState && job.slurmState !== job.status ? `${job.slurmState} · ` : ''}
               {job?.node ? `${job.node} · ` : ''}

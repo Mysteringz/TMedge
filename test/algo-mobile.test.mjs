@@ -173,6 +173,36 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         });
       }
 
+      await t.test('waiting jobs show the scheduler reason and when it was last checked on a phone', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await trainingFixtures(page);
+        const job = {
+          id: 'pending-job', status: 'PENDING', slurmJobId: 324,
+          spec: { name: 'pending_training', partition: 'debug', cpusPerTask: 4, memGb: 16, gpus: 1,
+            timeLimit: '2:00:00', modules: [], condaEnv: null, entrypoint: 'train.py', args: [], env: {}, notifyEmail: false },
+          code: { kind: 'py', filename: 'train.py', bytes: 9, unpackedBytes: 9, fileCount: 1, py: ['train.py'] },
+          sbatch: '', createdAt: Date.now(), updatedAt: Date.now(), lastPolledAt: Date.now() - 2 * 60_000,
+          submittedAt: Date.now(), startedAt: null, endedAt: null, exitCode: null, remoteDir: '~/hpc-dash/jobs/pending-job',
+          slurmState: 'PENDING', slurmReason: 'ReqNodeNotAvail, UnavailableNodes:iw-g2', elapsedSeconds: 0, node: null, message: null,
+        };
+        await page.route('**/api/train/jobs', route => route.fulfill({ json: { jobs: [{
+          ...job, name: job.spec.name, partition: 'debug', gpus: 1,
+        }] } }));
+        await page.route('**/api/train/jobs/pending-job', route => route.fulfill({ json: { job } }));
+        await page.route('**/api/train/jobs/pending-job/file**', route => route.fulfill({ body: 'print(1)\n', contentType: 'text/plain' }));
+        await page.goto(`${base}/train`);
+        await page.locator('.cx-jobs').getByText(job.spec.name).tap();
+        await page.getByText(`SLURM reason: ${job.slurmReason}`, { exact: true }).waitFor();
+        await page.getByText('Last checked 2m ago · Sign in and refresh for the current state', { exact: true }).waitFor();
+        for (const colorScheme of ['dark', 'light']) {
+          await page.emulateMedia({ colorScheme });
+          await fits(page, 390);
+          await shot(page, engine, `pending-job-${colorScheme}`);
+        }
+        await page.emulateMedia({ colorScheme: 'dark' });
+      });
+
       await t.test('flow tabs preserve edits and desktop sizes across rotation', async () => {
         await page.unrouteAll({ behavior: 'wait' });
         await page.setViewportSize({ width: 390, height: 844 });

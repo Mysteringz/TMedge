@@ -58,6 +58,7 @@ export interface TrainJob {
   lastPolledAt: number | null;
   /** SLURM's own words for the state, e.g. "CANCELLED by 12345". */
   slurmState: string | null;
+  slurmReason: string | null;
   elapsedSeconds: number | null;
   node: string | null;
   /** Why the last attempt failed, in words for the person; never a credential. */
@@ -66,7 +67,7 @@ export interface TrainJob {
 
 /** Records written before a field existed read as null, not undefined. */
 function normalise(j: TrainJob): TrainJob {
-  return { ...j, slurmState: j.slurmState ?? null, elapsedSeconds: j.elapsedSeconds ?? null, node: j.node ?? null, message: j.message ?? null };
+  return { ...j, slurmState: j.slurmState ?? null, slurmReason: j.slurmReason ?? null, elapsedSeconds: j.elapsedSeconds ?? null, node: j.node ?? null, message: j.message ?? null };
 }
 
 /** Jobs SLURM might still change. */

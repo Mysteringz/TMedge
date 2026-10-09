@@ -22,6 +22,8 @@ export interface SlurmState {
   status: JobStatus;
   /** The raw state, e.g. "CANCELLED by 12345", for the person to read. */
   raw: string;
+  /** The scheduler's reason for waiting, when the job is still in squeue. */
+  reason: string | null;
   exitCode: number | null;
   elapsedSeconds: number | null;
   node: string | null;
@@ -83,7 +85,7 @@ export function parseSacct(out: string): Map<number, SlurmState> {
     const exit = /^(\d+):(\d+)$/.exec(f[2]!);
     const node = f[6]!.trim();
     states.set(id, {
-      status: mapState(f[1]!), raw: f[1]!.trim(),
+      status: mapState(f[1]!), raw: f[1]!.trim(), reason: null,
       exitCode: exit ? Number(exit[1]) : null,
       elapsedSeconds: parseElapsed(f[3]!),
       node: node && node !== 'None' && node !== 'None assigned' ? node : null,
@@ -92,12 +94,22 @@ export function parseSacct(out: string): Map<number, SlurmState> {
   return states;
 }
 
-/** `squeue -h -j <ids> -o '%i|%T'`, for when sacct is not there. */
+const present = (value: string | undefined): string | null => {
+  const text = value?.trim() ?? '';
+  return text && !['None', 'None assigned', '(null)', 'N/A'].includes(text) ? text : null;
+};
+
+/** `squeue -h -j <ids> -o '%i|%T|%r|%M|%N'`; reasons can contain spaces. */
 export function parseSqueue(out: string): Map<number, SlurmState> {
   const states = new Map<number, SlurmState>();
   for (const line of out.split('\n')) {
-    const m = /^(\d+)\|(\S+)/.exec(line.trim());
-    if (m) states.set(Number(m[1]), { status: mapState(m[2]!), raw: m[2]!, exitCode: null, elapsedSeconds: null, node: null });
+    const f = line.trim().split('|');
+    if (f.length < 2 || !/^\d+$/.test(f[0]!)) continue;
+    const raw = f[1]!.trim();
+    states.set(Number(f[0]), {
+      status: mapState(raw), raw, reason: present(f[2]), exitCode: null,
+      elapsedSeconds: parseElapsed(f[3] ?? ''), node: present(f[4]),
+    });
   }
   return states;
 }
@@ -129,17 +141,33 @@ export async function submit(ssh: SshLike, jobId: string): Promise<number> {
   return id;
 }
 
-/** Current states; sacct first, squeue if sacct is missing or says nothing. */
+/** The live queue wins over lagging accounting, and carries pending reasons. */
 export async function status(ssh: SshLike, ids: number[]): Promise<Map<number, SlurmState>> {
   if (ids.length === 0) return new Map();
   const list = ids.map(slurmId).join(',');
   const r = await ssh.run(`sacct -j ${list} --format=JobID,State,ExitCode,Elapsed,Start,End,NodeList --parsable2 --noheader`);
   const fromSacct = r.code === 0 ? parseSacct(r.stdout.toString('utf8')) : new Map<number, SlurmState>();
-  if (fromSacct.size === ids.length) return fromSacct;
-  const q = await ssh.run(`squeue -h -j ${list} -o '%i|%T'`);
+  const q = await ssh.run(`squeue -h -j ${list} -o '%i|%T|%r|%M|%N'`);
   const fromSqueue = q.code === 0 ? parseSqueue(q.stdout.toString('utf8')) : new Map<number, SlurmState>();
-  for (const [id, s] of fromSqueue) if (!fromSacct.has(id)) fromSacct.set(id, s);
+  for (const [id, s] of fromSqueue) fromSacct.set(id, s);
   return fromSacct;
+}
+
+/** A batch script's own result, used only after both scheduler queries have no record. */
+export function parseExitReport(out: string, id: number): SlurmState | null {
+  const match = /^TMEDGE_EXIT_V1\|(\d+)\|(\d{1,3})\|(\d+)\s*$/.exec(out);
+  if (!match || match[1] !== slurmId(id)) return null;
+  const exitCode = Number(match[2]);
+  const elapsedSeconds = Number(match[3]);
+  if (exitCode > 255 || !Number.isSafeInteger(elapsedSeconds)) return null;
+  const status = exitCode === 0 ? 'COMPLETED' : 'FAILED';
+  return { status, raw: status, reason: null, exitCode, elapsedSeconds, node: null };
+}
+
+export async function completion(ssh: SshLike, jobId: string, id: number): Promise<SlurmState | null> {
+  const file = `${remoteDir(jobId)}/.tmedge-exit-${slurmId(id)}`;
+  const r = await ssh.run(`if test -f ${file}; then head -c 256 ${file}; fi`, { maxBytes: 1024 });
+  return r.code === 0 ? parseExitReport(r.stdout.toString('utf8'), id) : null;
 }
 
 /** The last `maxBytes` of slurm-<id>.out or .err; empty when it does not exist yet. */

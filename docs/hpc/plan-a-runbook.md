@@ -97,3 +97,28 @@ tunnel, SSH, upload, sbatch) and the SLURM job id. Then **REFRESH**,
 Set `"backend": "none"` and remove `planA` in `config/hpc.json`, then deploy.
 Drafts keep working. Live sessions end when the edge restarts.
 To end every session at once without a deploy: `sudo systemctl restart tmedge-edge`.
+
+## A job ID was returned, but the job never appears to run
+
+A job ID means SLURM accepted the submission. Click **Refresh**, then read
+**Log** and **Stderr**. The job card shows the scheduler's reason while the
+job is queued and the time of the last check. Status polling ends with the
+HKU session; sign in and refresh to get current information.
+
+On `ing@10.21.36.12`, `sacct` reports **Slurm accounting storage is disabled**.
+Completed jobs eventually disappear from `squeue`, so an old `PENDING`
+record cannot establish that a job is still waiting. New batch scripts save
+their exit code and elapsed seconds in the submit directory as
+`.tmedge-exit-<SLURM id>`. Refresh uses this result when SLURM no longer has
+the job. Older jobs without a result show `UNKNOWN` and point to their logs.
+A hard kill can prevent the shell from writing a result; absent evidence
+also remains `UNKNOWN`.
+
+The script prefers the active environment's `python`, falls back to
+`python3`, and explicitly runs one task. The bundled `occupancy_gbc` example
+requires **pandas, scikit-learn and pyarrow**, plus a real parquet file with
+`hour`, `weekday`, `temp_c`, `noise_db`, `wifi_clients` and `occupied`
+columns. Its example `--data` path is not uploaded or provisioned by the
+dashboard. Select an environment containing those packages and replace the
+path with your dataset; scikit-learn's `GradientBoostingClassifier` needs
+no GPU.

@@ -1,10 +1,13 @@
 #!/bin/bash
-# Fake squeue: `-h -j ids -o "%i|%T"` for jobs not yet finished.
+# Fake squeue: `-h -j ids -o "%i|%T|%r|%M|%N"` for jobs not yet finished.
 ids=
 while [ $# -gt 0 ]; do case "$1" in -j) ids=$2; shift 2 ;; *) shift ;; esac; done
 IFS=, read -ra list <<<"$ids"
 for id in "${list[@]}"; do
   f="$HOME/.fakeslurm/$id"; [ -f "$f" ] || continue
-  IFS='|' read -r st _ < "$f"
-  case "$st" in PENDING|RUNNING) echo "$id|$st" ;; esac
+  IFS='|' read -r st code start end pid < "$f"
+  case "$st" in
+    PENDING) echo "$id|$st|Resources|0:00|(null)" ;;
+    RUNNING) elapsed=$(( $(date +%s) - start )); printf '%s|%s|None|%02d:%02d:%02d|fake-node1\n' "$id" "$st" $((elapsed/3600)) $((elapsed%3600/60)) $((elapsed%60)) ;;
+  esac
 done

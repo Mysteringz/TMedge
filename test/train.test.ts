@@ -242,7 +242,7 @@ describe('injection: user strings reach the program byte for byte (T4-7)', () =>
       // user typed may add or change one there.
       const header = script.split('\n').slice(1, script.split('\n').findIndex((l) => l.trim() !== '' && !l.startsWith('#')));
       for (const line of header.filter((l) => l.startsWith('#SBATCH'))) {
-        assert.match(line, /^#SBATCH --(job-name=[A-Za-z0-9_-]+|partition=(cpu|gpu)|time=[0-9:-]+|cpus-per-task=\d+|mem=\d+G|gres=gpu:\d|output=slurm-%j\.out|error=slurm-%j\.err)$/, line);
+        assert.match(line, /^#SBATCH --(job-name=[A-Za-z0-9_-]+|partition=(cpu|gpu)|time=[0-9:-]+|nodes=1|ntasks=1|cpus-per-task=\d+|mem=\d+G|gres=gpu:\d|output=slurm-%j\.out|error=slurm-%j\.err)$/, line);
       }
       const scriptPath = join(work, 'job.sbatch');
       const out = join(work, 'calls');
@@ -251,7 +251,7 @@ describe('injection: user strings reach the program byte for byte (T4-7)', () =>
       writeFileSync(out, '');
       writeFileSync(envOut, '');
       execFileSync('bash', ['-c', stubs], {
-        env: { PATH: process.env.PATH, SLURM_SUBMIT_DIR: work, STUB_CONDA: join(work, 'conda'), SCRIPT: scriptPath,
+        env: { PATH: process.env.PATH, SLURM_SUBMIT_DIR: work, SLURM_JOB_ID: '324', STUB_CONDA: join(work, 'conda'), SCRIPT: scriptPath,
           OUT: out, ENVOUT: envOut, KEYS: Object.keys(v.spec.env).join(' ') },
       });
       const fields = readFileSync(out, 'utf8').split('\0');
@@ -265,7 +265,7 @@ describe('injection: user strings reach the program byte for byte (T4-7)', () =>
       const expected = [
         ...(v.spec.modules.length ? [['module', 'purge'], ...v.spec.modules.map((m) => ['module', 'load', m])] : []),
         ...(v.spec.condaEnv ? [['conda', 'activate', v.spec.condaEnv]] : []),
-        ['srun', 'python', v.spec.entrypoint, ...v.spec.args],
+        ['srun', '--ntasks=1', execFileSync('bash', ['-c', 'command -v python || command -v python3']).toString('utf8').trim(), '-u', v.spec.entrypoint, ...v.spec.args],
       ];
       assert.deepEqual(calls, expected, `seed case ${i}: ${JSON.stringify(v.spec)}`);
       const envValues = readFileSync(envOut, 'utf8').split('\0').slice(0, -1);
