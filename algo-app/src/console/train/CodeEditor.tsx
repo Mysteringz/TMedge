@@ -22,30 +22,32 @@ const pythonWithDecorators = new LanguageSupport(
   python().support,
 );
 
+// Bluegrid's Gray 100 syntax colours, with keywords in the console's accent.
 const colours = HighlightStyle.define([
-  { tag: [t.keyword, t.controlKeyword, t.definitionKeyword, t.moduleKeyword, t.operatorKeyword, t.bool, t.null], color: 'var(--color-accent)' },
-  { tag: [t.function(t.definition(t.variableName)), t.definition(t.className)], color: 'var(--color-neutral-100)' },
-  { tag: [t.string, t.special(t.string)], color: 'var(--color-accent-300)' },
-  { tag: t.number, color: 'var(--color-accent-200)' },
-  { tag: t.meta, color: 'var(--color-accent-400)' },
-  { tag: t.self, color: 'var(--color-neutral-400)' },
-  { tag: [t.comment, t.lineComment], color: 'var(--color-neutral-600)', fontStyle: 'italic' },
+  { tag: [t.keyword, t.controlKeyword, t.definitionKeyword, t.moduleKeyword, t.operatorKeyword, t.bool, t.null], color: 'var(--orange-40)' },
+  { tag: [t.function(t.definition(t.variableName)), t.definition(t.className)], color: '#82cfff' },
+  { tag: [t.string, t.special(t.string)], color: '#3ddbd9' },
+  { tag: t.number, color: '#ff7eb6' },
+  { tag: t.meta, color: '#78a9ff' },
+  { tag: t.self, color: 'var(--text-secondary)' },
+  { tag: [t.comment, t.lineComment], color: 'var(--text-helper)', fontStyle: 'italic' },
 ]);
 
-const ground = 'color-mix(in srgb, var(--color-bg) 70%, var(--color-surface))';
+const ground = 'var(--background)';
 const theme = EditorView.theme({
-  '&': { height: '100%', backgroundColor: ground, color: 'var(--color-neutral-300)', fontSize: '13px' },
+  '&': { height: '100%', backgroundColor: ground, color: 'var(--text-secondary)', fontSize: '13px' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '20px' },
-  '.cm-content': { padding: '12px 0', caretColor: 'var(--color-accent)' },
+  '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '20px' },
+  '.cm-content': { padding: '12px 0', caretColor: 'var(--orange-40)' },
   '.cm-line': { padding: '0 24px 0 6px' },
-  '.cm-gutters': { backgroundColor: ground, color: 'var(--color-neutral-700)', border: 'none', paddingLeft: '14px' },
+  '.cm-gutters': { backgroundColor: ground, color: 'var(--border-strong-01)', border: 'none', paddingLeft: '14px' },
   '.cm-lineNumbers .cm-gutterElement': { padding: '0 10px 0 0', minWidth: '2ch' },
-  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--color-neutral-500)' },
-  '.cm-cursor, .cm-dropCursor': { borderLeft: '2px solid var(--color-accent)' },
+  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text-helper)' },
+  '.cm-activeLine': { backgroundColor: 'rgba(141, 141, 141, .08)' },
+  '.cm-cursor, .cm-dropCursor': { borderLeft: '2px solid var(--orange-40)' },
   '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection':
-    { backgroundColor: 'color-mix(in srgb, var(--color-accent) 26%, transparent)' },
-  '.cm-matchingBracket': { backgroundColor: 'color-mix(in srgb, var(--color-accent) 18%, transparent)', color: 'inherit' },
+    { backgroundColor: 'color-mix(in srgb, var(--orange-40) 28%, transparent)' },
+  '.cm-matchingBracket': { backgroundColor: 'color-mix(in srgb, var(--orange-40) 20%, transparent)', color: 'inherit' },
 }, { dark: true });
 
 /**

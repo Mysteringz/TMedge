@@ -156,7 +156,12 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   // ALGO_PORT=0, where this document is the only admin UI available.
   ui.get(['/', '/index.html'], (_req, res) => {
     let html = readFileSync(join(ROOT, 'public-console', 'index.html'), 'utf8');
-    if (res.locals.embeddedConsole) html = html.replace(/<!-- firmware:start -->[\s\S]*?<!-- firmware:end -->/, '');
+    if (res.locals.embeddedConsole) {
+      html = html.replace(/<!-- firmware:start -->[\s\S]*?<!-- firmware:end -->/, '');
+      // The algo console around it is Gray 100 only; a frame that followed a
+      // light system setting would be a white slab under a dark header.
+      html = html.replace('<html lang="en">', '<html lang="en" data-theme="dark">');
+    }
     res.set('Cache-Control', 'no-store').type('html').send(html);
   });
   // Never cached. Express would send max-age=0 with an ETag, which is correct

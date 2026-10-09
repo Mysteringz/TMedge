@@ -31,7 +31,7 @@ Date: 2026-10-04. Includes tracked and newly added review-branch files. Reposito
 - `algo-app/src/console/icons.tsx`
 - `algo-app/src/console/parts.tsx`
 - `algo-app/src/console/router.ts`
-- `algo-app/src/console/snake.ts`
+- `algo-app/src/console/dotwave.ts`
 - `algo-app/src/css.d.ts`
 - `algo-app/src/main.tsx`
 - `algo-app/src/panes.tsx`

@@ -25,7 +25,7 @@ src/algo/                algo console: node-graph over the real pipeline (docs/A
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: 8-bit console shell (src/console/): 01 /flow React Flow editor, 02 /train, 03 /console, 04 /updates
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow React Flow editor, 02 /train, 03 /console, 04 /updates
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
 ```

@@ -89,6 +89,7 @@ test('signed in, the console page, its API and its live feed all work under /con
   const html = await page.text();
   assert.ok(!html.includes('id="firmware"'), 'OTA belongs to module 04, not the embedded debug page');
   assert.ok(html.includes('id="fusion"') && html.includes('id="controls"'), 'debug views and node commands remain');
+  assert.ok(html.includes('<html lang="en" data-theme="dark">'), 'inside the dark algo console the frame is dark too');
   // The page itself only exists after a build; the headers are the claim here.
   const csp = page.headers.get('content-security-policy') ?? '';
   assert.match(csp, /frame-ancestors 'self'/, 'only the algo console may frame it');

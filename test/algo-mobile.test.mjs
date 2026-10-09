@@ -122,7 +122,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
     page.setDefaultNavigationTimeout(15_000);
     try {
       await page.goto(`${base}/login`);
-      await page.getByLabel('USERNAME').waitFor();
+      await page.getByLabel('Username').waitFor();
       await fits(page, 320);
       // Exercise the minimum width of Turnstile without relying on a third
       // party network challenge or changing production authentication.
@@ -132,9 +132,9 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         form.appendChild(widget);
       });
       assert.ok(await page.locator('.cx-form').evaluate(form => form.scrollWidth <= form.clientWidth));
-      await page.getByLabel('USERNAME').fill('mobiletest');
-      await page.getByLabel('PASSWORD', { exact: true }).fill('local browser test password');
-      await page.getByRole('button', { name: 'SIGN IN', exact: true }).tap();
+      await page.getByLabel('Username').fill('mobiletest');
+      await page.getByLabel('Password', { exact: true }).fill('local browser test password');
+      await page.getByRole('button', { name: 'Sign in', exact: true }).tap();
       await page.getByText('Welcome back, mobiletest.').waitFor();
 
       for (const viewport of [
@@ -149,7 +149,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
             if (path === '/train') await trainingFixtures(page);
             if (path === '/updates') await updatesFixtures(page);
             await page.goto(`${base}${path}`);
-            await page.locator('.cx-nav').waitFor();
+            await page.locator('.cx-header').waitFor();
             if (path === '/flow') {
               await page.locator('.react-flow__node').first().waitFor();
               const graph = await page.locator('.canvas').boundingBox();
@@ -158,7 +158,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
                 document.querySelector('.react-flow__node[data-id="bg-1"]')?.getBoundingClientRect().width >= 155);
             }
             if (path === '/train') await page.locator('.cx-jobs').getByText('SUBMIT_FAILED').waitFor();
-            if (path === '/updates') await page.getByText('CONNECTED TO EDGE', { exact: false }).waitFor();
+            if (path === '/updates') await page.getByText('Connected to edge', { exact: false }).waitFor();
             await fits(page, viewport.width);
             if (path === '/console') {
               await page.frameLocator('.cx-frame').locator('#conn.good').waitFor();
@@ -238,7 +238,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await dialog.waitFor();
         await fits(page, 320);
         assert.ok((await dialog.boundingBox()).height <= 536);
-        await dialog.getByRole('button', { name: 'SIGN IN', exact: true }).scrollIntoViewIfNeeded();
+        await dialog.getByRole('button', { name: 'Sign in', exact: true }).scrollIntoViewIfNeeded();
         await shot(page, engine, 'hku-sign-in');
         await dialog.getByRole('button', { name: 'Close', exact: true }).tap();
         await dialog.waitFor({ state: 'detached' });

@@ -11,11 +11,11 @@ import { T_DATA, T_EXIT, T_RESIZE, TermChannel, TermSender, type TermTicket } fr
 import { installCspShims } from './csp.ts';
 
 const THEME = {
-  background: '#1a1c2a', foreground: '#cfd3e5', cursor: '#f28c38', cursorAccent: '#161826',
-  selectionBackground: 'rgba(242, 140, 56, .3)', black: '#292b31', brightBlack: '#75798c',
-  red: '#ffc9a3', brightRed: '#ffe3cf', green: '#7fd18b', brightGreen: '#a7e3b0', yellow: '#ffa865', brightYellow: '#ffe3cf',
-  blue: '#9397ab', brightBlue: '#b2b6ca', magenta: '#f28c38', brightMagenta: '#ffa865', cyan: '#b2b6ca', brightCyan: '#e4e7f5',
-  white: '#cfd3e5', brightWhite: '#f3f5fe',
+  background: '#161616', foreground: '#c6c6c6', cursor: '#ff832b', cursorAccent: '#161616',
+  selectionBackground: 'rgba(255, 131, 43, .3)', black: '#393939', brightBlack: '#8d8d8d',
+  red: '#ff8389', brightRed: '#ffb3b8', green: '#42be65', brightGreen: '#6fdc8c', yellow: '#f1c21b', brightYellow: '#fddc69',
+  blue: '#78a9ff', brightBlue: '#a6c8ff', magenta: '#ff832b', brightMagenta: '#ffb784', cyan: '#3ddbd9', brightCyan: '#9ef0f0',
+  white: '#c6c6c6', brightWhite: '#f4f4f4',
 };
 
 export interface TerminalProps {

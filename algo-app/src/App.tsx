@@ -23,8 +23,8 @@ import { Divider, useCompactLayout, usePaneSize } from './panes.tsx';
 import { GridView, Histogram, Json, Plane, PlanView, Table, type HeatJson } from './viewers.tsx';
 
 const PORT_COLOUR: Record<string, string> = {
-  thermal: '#eb7828', mask: '#0b8b7a', detections: '#ffd166', points: '#7bd0ff',
-  heatmap: '#c58cff', tables: '#9b9797', occupancy: '#7ee081', json: '#6b6b73',
+  thermal: '#ff832b', mask: '#08bdba', detections: '#f1c21b', points: '#33b1ff',
+  heatmap: '#a56eff', tables: '#a8a8a8', occupancy: '#42be65', json: '#6f6f6f',
 };
 
 interface FlowData extends Record<string, unknown> {
@@ -322,7 +322,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="bar">
-        <div className="brand"><span className="mark" /> ALGO DEBUGGER</div>
+        <div className="brand"><span className="mark" /> Algo debugger</div>
         <div className="source">
           <select aria-label="Sensor source" value={pipeline?.uid ?? ''} onChange={(e) => {
             if (!pipeline) return;
@@ -432,7 +432,7 @@ export default function App() {
             }}
             minZoom={compact ? 0.1 : 0.5} fitView proOptions={{ hideAttribution: true }}
           >
-            <Background color="#2a2a30" gap={18} />
+            <Background color="#393939" gap={16} />
             <Controls showInteractive={false} />
           </ReactFlow>
         </main>

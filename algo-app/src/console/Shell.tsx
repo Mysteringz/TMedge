@@ -66,7 +66,7 @@ export function Shell() {
   if (screen === 'console') {
     return (
       <div className="cx-flow">
-        <div className="cx cx-flow-bar"><Nav user={user} crumb="debug-console" onSignOut={signOut} /></div>
+        <div className="cx cx-flow-bar"><Nav user={user} onSignOut={signOut} /></div>
         {/* Its own document: the console's global stylesheet and run-once
             module stay out of this app (see src/algo/server.ts). */}
         <iframe className="cx-frame" src="/console-app/" title="Debug console" />
@@ -77,7 +77,7 @@ export function Shell() {
   if (screen === 'flow') {
     return (
       <div className="cx-flow">
-        <div className="cx cx-flow-bar"><Nav user={user} crumb="algorithm-flow" onSignOut={signOut} /></div>
+        <div className="cx cx-flow-bar"><Nav user={user} onSignOut={signOut} /></div>
         <FlowApp />
       </div>
     );
@@ -86,7 +86,7 @@ export function Shell() {
   return (
     <div className="cx cx-page">
       <Backdrop />
-      <Nav user={user} crumb={screen === 'train' ? 'ml-training' : screen === 'updates' ? 'updates' : undefined} onSignOut={signOut} />
+      <Nav user={user} onSignOut={signOut} />
       {screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
           : <Home user={user} />}
@@ -95,7 +95,7 @@ export function Shell() {
   );
 }
 
-/** The faint grid and CRT scanlines from the design. Decoration only. */
+/** The faint 2x Grid behind the page. Decoration only. */
 function Backdrop() {
-  return <><div className="cx-grid" aria-hidden="true" /><div className="cx-scan" aria-hidden="true" /></>;
+  return <div className="cx-grid" aria-hidden="true" />;
 }

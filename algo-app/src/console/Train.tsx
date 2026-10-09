@@ -558,15 +558,15 @@ export function Train() {
               <input ref={fileInput} type="file" accept=".py,.zip" hidden onChange={pickFile} />
               <button className="btn btn-secondary cx-btn-px" onClick={() => fileInput.current?.click()} disabled={!!busy}
                 title={`a .py (≤ ${cfg.limits.maxPyMb} MB) or a .zip of your project (≤ ${cfg.limits.maxUploadMb} MB)`}>
-                <UploadSimple />UPLOAD
+                <UploadSimple />Upload
               </button>
               <button className="btn btn-secondary cx-btn-px" onClick={() => void save()} disabled={!!busy || !!acting}
                 title={sent ? 'This job was sent: saving starts a new draft' : 'Save draft (Ctrl/⌘ S)'}>
-                <FloppyDisk />{busy === 'save' ? 'SAVING…' : sent ? 'SAVE AS NEW' : 'SAVE DRAFT'}
+                <FloppyDisk />{busy === 'save' ? 'Saving…' : sent ? 'Save as new' : 'Save draft'}
               </button>
               <button className="btn btn-primary cx-btn-px" disabled={!canSend} aria-describedby="cx-hpc-why" onClick={() => void send()}
                 title={ready ? 'Save if needed, sign in as yourself, and send to the cluster' : hpc?.reason ?? cfg.hpc.reason ?? undefined}>
-                <PaperPlaneRight />{acting === 'submit' ? 'SENDING…' : 'SEND JOB TO TRAIN'}
+                <PaperPlaneRight />{acting === 'submit' ? 'Sending…' : 'Send job to train'}
               </button>
             </div>
             <div className="cx-editor">
@@ -593,7 +593,7 @@ export function Train() {
 
           <div className={`card elev-sm cx-panel cx-console ${consoleMode === 'ssh' ? 'is-ssh' : ''}`}>
             <div className="cx-bar">
-              <span className="cx-label">CONSOLE</span>
+              <span className="cx-label">Console</span>
               <div className="seg cx-tabs" role="tablist" aria-label="Console">
                 <label className="seg-opt"><input type="radio" name="console" checked={consoleMode === 'log'} onChange={() => setConsoleMode('log')} />log</label>
                 <label className="seg-opt" title={`A shell on ${target}, through your own HKU session`}>
@@ -608,7 +608,7 @@ export function Train() {
                 <span className="cx-pct">{Math.round(progress * 100)}%</span>
               </>}
               {consoleMode === 'ssh' && signedIn && termKey > 0 && (
-                <button className="btn btn-ghost cx-btn-px" onClick={() => setTermKey((k) => k + 1)} title="Close this shell and open a new one">NEW SHELL</button>
+                <button className="btn btn-ghost cx-btn-px" onClick={() => setTermKey((k) => k + 1)} title="Close this shell and open a new one">New shell</button>
               )}
             </div>
             <div className="cx-log" ref={logEl} role="log" aria-live="polite" hidden={consoleMode !== 'log'}>
@@ -621,12 +621,12 @@ export function Train() {
                   onClosed={(why) => { say(`[ssh]    shell closed: ${why}`, 'muted'); void loadHpc(); }} />
               : (
                 <div className="cx-term-gate">
-                  <div className="cx-kicker" style={{ margin: 0 }}>&gt; SSH {target.toUpperCase()}</div>
+                  <div className="cx-kicker" style={{ margin: 0 }}>SSH {target}</div>
                   <p>{!ready ? (hpc?.reason ?? cfg.hpc.reason) : signedIn
                     ? 'You are signed in to HKU. Open a shell on the cluster as your session.'
                     : 'A shell on the cluster, through your own HKUVPN login. Sign in with your UID, Portal PIN, a fresh code and the cluster password.'}</p>
                   <button className="btn btn-primary cx-btn-px" disabled={!ready || !!acting} onClick={() => void openShell()}>
-                    {acting === 'connect' ? 'SIGNING IN…' : signedIn ? 'OPEN SHELL' : 'SIGN IN & OPEN SHELL'}
+                    {acting === 'connect' ? 'Signing in…' : signedIn ? 'Open shell' : 'Sign in and open shell'}
                   </button>
                 </div>
               ))}
@@ -638,7 +638,7 @@ export function Train() {
         <section className="cx-train-right">
           <div className="card elev-sm cx-card">
             <div className="cx-card-head">
-              <span className="cx-label">JOB</span>
+              <span className="cx-label">Job</span>
               <span className="cx-head-right">
                 <span className="cx-hint">{job ? `${job.spec.name} · ${job.id.slice(0, 8)}` : 'new draft · not saved'}</span>
                 <button className="btn btn-ghost cx-icon" onClick={() => startNew()} title="New draft" aria-label="New draft"><Plus /></button>
@@ -659,14 +659,14 @@ export function Train() {
             {job?.slurmJobId != null && (
               <div className="cx-job-actions">
                 <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void runOp('refresh', job.id, job.spec.name)}>
-                  {acting === 'refresh' ? 'REFRESHING…' : 'REFRESH'}
+                  {acting === 'refresh' ? 'Refreshing…' : 'Refresh'}
                 </button>
-                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('out')}>LOG</button>
-                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('err')}>STDERR</button>
+                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('out')}>Log</button>
+                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('err')}>Stderr</button>
                 {ACTIVE.has(job.status) && (
                   <button className="btn btn-ghost cx-btn-px cx-danger" disabled={!!acting}
                     onClick={() => { if (window.confirm(`Cancel ${job.spec.name} (SLURM ${job.slurmJobId}) on the cluster?`)) void runOp('cancel', job.id, job.spec.name); }}>
-                    {acting === 'cancel' ? 'CANCELLING…' : 'CANCEL JOB'}
+                    {acting === 'cancel' ? 'Cancelling…' : 'Cancel job'}
                   </button>
                 )}
               </div>
@@ -675,7 +675,7 @@ export function Train() {
               <div className="cx-session">
                 <span className="cx-online" />
                 <span>signed in to HKU as <b>{session.uid}</b> · {Math.max(1, Math.round((session.expiresInSeconds ?? 0) / 60))} min left</span>
-                <button className="btn btn-ghost cx-btn-px" onClick={() => void signOutHku()}>SIGN OUT OF HKU</button>
+                <button className="btn btn-ghost cx-btn-px" onClick={() => void signOutHku()}>Sign out of HKU</button>
               </div>
             )}
             <div className="cx-table-scroll" tabIndex={0} role="region" aria-label="Training jobs">
@@ -709,7 +709,7 @@ export function Train() {
 
           <div className="card elev-sm cx-card">
             <div className="cx-card-head">
-              <span className="cx-label">JOB SPEC</span>
+              <span className="cx-label">Job spec</span>
               {!cfg.verified && <span className="tag tag-accent cx-mono" title={cfg.source}>placeholders · M0</span>}
             </div>
             <div className="cx-fields">
@@ -825,13 +825,13 @@ export function Train() {
 
 function Head({ status, hpc }: { status: string; hpc: HpcState | null }) {
   const up = hpc?.session.state === 'up';
-  const label = !hpc ? null : !hpc.available ? 'NOT READY' : up ? `SIGNED IN · ${Math.max(1, Math.round((hpc.session.expiresInSeconds ?? 0) / 60))}M`
-    : hpc.session.state === 'opening' ? 'SIGNING IN…' : 'SIGNED OUT';
+  const label = !hpc ? null : !hpc.available ? 'Not ready' : up ? `Signed in · ${Math.max(1, Math.round((hpc.session.expiresInSeconds ?? 0) / 60))} min`
+    : hpc.session.state === 'opening' ? 'Signing in…' : 'Signed out';
   return (
     <header className="cx-train-head">
       <div>
-        <div className="cx-kicker">&gt; MODULE 02</div>
-        <h2 className="cx-h2">ML Training</h2>
+        <div className="cx-kicker">Module 02 · Training</div>
+        <h2 className="cx-h2">ML training</h2>
       </div>
       <div className="cx-job">
         {hpc && <>

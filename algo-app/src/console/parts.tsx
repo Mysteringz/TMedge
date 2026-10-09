@@ -1,34 +1,45 @@
 /** Pieces every console screen shares: the brand, the top bar, the toast. */
 import { useCallback, useRef, useState } from 'react';
-import { navigate } from './router.ts';
+import { navigate, screenOf, usePath } from './router.ts';
 import { SignOut } from './icons.tsx';
 
-/** The 5x5 pixel "a". */
-const BRAND = ['.###.', '....#', '.####', '#...#', '.####'].join('');
+export const MODULES = [
+  { n: '01', title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
+  { n: '02', title: 'ML training', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
+  { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands, and admitting nodes.' },
+  { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
+] as const;
 
-export function BrandMark({ px }: { px: number }) {
-  return (
-    <span className="cx-mark" style={{ gridTemplateColumns: `repeat(5, ${px}px)` }} aria-hidden="true">
-      {BRAND.split('').map((c, i) => <span key={i} style={{ width: px, height: px, background: c === '#' ? 'var(--color-accent)' : 'transparent' }} />)}
-    </span>
-  );
+/** A square of the accent with the letter in it: the console's only logo. */
+export function BrandMark({ size = 24 }: { size?: number }) {
+  return <span className="cx-mark" style={{ width: size, height: size, fontSize: size * 0.62 }} aria-hidden="true">a</span>;
 }
 
 export function Wordmark() {
-  return <span className="cx-word">algo<span className="cx-dot">.</span>hkumyseat</span>;
+  return <span className="cx-word"><b>algo</b>.hkumyseat</span>;
 }
 
-export function Nav({ user, crumb, onSignOut }: { user: string; crumb?: string; onSignOut(): void }) {
+/** Carbon's UI shell header: the name, the modules, the person. */
+export function Nav({ user, onSignOut }: { user: string; onSignOut(): void }) {
+  const path = usePath();
+  const screen = screenOf(path);
+  const here = MODULES.find((m) => screenOf(m.path) === screen);
   return (
-    <nav className="cx-nav">
+    <header className="cx-header" aria-label="algo.hkumyseat">
       <button className="cx-home" onClick={() => navigate('/')} aria-label="Home">
-        <BrandMark px={4} />
+        <BrandMark size={20} />
         <Wordmark />
-        {crumb && <span className="cx-crumb"><span>/</span><span className="cx-accent">{crumb}</span></span>}
       </button>
-      <span className="tag tag-neutral cx-who"><span className="cx-online" />{user}@team</span>
-      <button className="btn btn-secondary cx-out" onClick={onSignOut}><SignOut />Sign out</button>
-    </nav>
+      <nav className="cx-header-nav" aria-label="Modules">
+        {MODULES.map((m) => (
+          <a key={m.n} className="cx-header-item" href={m.path} aria-current={here === m ? 'page' : undefined}
+            onClick={(e) => { e.preventDefault(); navigate(m.path); }}>{m.title}</a>
+        ))}
+      </nav>
+      {here && <span className="cx-crumb">{here.title}</span>}
+      <span className="cx-who"><span className="cx-online" />{user}@team</span>
+      <button className="cx-header-action cx-out" onClick={onSignOut} aria-label="Sign out" title="Sign out"><SignOut /></button>
+    </header>
   );
 }
 

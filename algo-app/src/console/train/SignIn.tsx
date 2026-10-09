@@ -21,7 +21,7 @@ export interface SignInProps {
   onSealed(body: { sealed: Sealed; profile: { hkuUid: string; vpnDomain: string }; passwordChanged: boolean }): void;
 }
 
-const VERB: Record<SignInAction, string> = { submit: 'SIGN IN & SEND', refresh: 'SIGN IN & REFRESH', cancel: 'SIGN IN & CANCEL', connect: 'SIGN IN' };
+const VERB: Record<SignInAction, string> = { submit: 'Sign in and send', refresh: 'Sign in and refresh', cancel: 'Sign in and cancel', connect: 'Sign in' };
 
 export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: SignInProps) {
   const [uid, setUid] = useState(hpc.profile?.hkuUid ?? '');
@@ -77,7 +77,7 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
     <div className="cx-modal-back" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
       <form className="card cx-modal" role="dialog" aria-modal="true" aria-labelledby="hku-title" onSubmit={submit} autoComplete="off">
         <div className="cx-card-head">
-          <span id="hku-title" className="cx-kicker" style={{ margin: 0 }}>&gt; HKU SIGN-IN</span>
+          <span id="hku-title" className="cx-kicker" style={{ margin: 0 }}>HKU sign-in</span>
           <button type="button" className="btn btn-ghost cx-icon" onClick={onCancel} aria-label="Close"><XMark /></button>
         </div>
         <p className="cx-modal-lede">
@@ -150,9 +150,9 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
         {locked && <div className="cx-error">! sign-ins paused for {Math.ceil(hpc.lockedForSeconds / 60)} min after three failures</div>}
         {error && <div className="cx-error" role="alert">! {error}</div>}
         <div className="cx-modal-actions">
-          <button type="button" className="btn btn-secondary cx-btn-px" onClick={onCancel}>CANCEL</button>
+          <button type="button" className="btn btn-secondary cx-btn-px" onClick={onCancel}>Cancel</button>
           <button type="submit" className="btn btn-primary cx-btn-px" disabled={busy || locked}>
-            {busy ? 'SEALING…' : VERB[action]}<ArrowRight />
+            {busy ? 'Sealing…' : VERB[action]}<ArrowRight />
           </button>
         </div>
       </form>

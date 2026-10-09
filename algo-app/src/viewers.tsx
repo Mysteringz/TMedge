@@ -83,10 +83,10 @@ export function GridView({ pixels, colour = 'heat', blobs, observed, scale = 16,
     }
     for (const b of blobs ?? []) {
       const r = Math.max(1.2, Math.sqrt(b.area / Math.PI));
-      ctx.strokeStyle = '#0b8b7a';
+      ctx.strokeStyle = '#08bdba';
       ctx.lineWidth = 2;
       ctx.strokeRect((b.x - r) * scale, (b.y - r) * scale, r * 2 * scale, r * 2 * scale);
-      ctx.fillStyle = '#0b8b7a';
+      ctx.fillStyle = '#08bdba';
       ctx.beginPath();
       ctx.arc(b.x * scale, b.y * scale, 3, 0, Math.PI * 2);
       ctx.fill();
@@ -94,8 +94,8 @@ export function GridView({ pixels, colour = 'heat', blobs, observed, scale = 16,
         // Text must not be mirrored with the picture it labels.
         ctx.save();
         if (mirror) { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
-        ctx.fillStyle = '#e9e7e4';
-        ctx.font = '11px ui-monospace, monospace';
+        ctx.fillStyle = '#f4f4f4';
+        ctx.font = '11px "IBM Plex Mono", ui-monospace, monospace';
         const lx = mirror ? c.width - (b.x + r) * scale - 22 : (b.x + r) * scale + 3;
         ctx.fillText(`#${b.id}`, lx, b.y * scale);
         ctx.restore();
@@ -167,7 +167,7 @@ export function PlanView({ heat, tables, candidates, points, width, height, clus
     const c = ref.current;
     const ctx = c?.getContext('2d');
     if (!c || !ctx) return;
-    ctx.fillStyle = '#16161a';
+    ctx.fillStyle = '#161616';
     ctx.fillRect(0, 0, c.width, c.height);
     if (heat && heat.max > 0) {
       for (let r = 0; r < heat.rows; r++) {
@@ -181,23 +181,23 @@ export function PlanView({ heat, tables, candidates, points, width, height, clus
       }
     }
     for (const t of tables ?? []) {
-      ctx.strokeStyle = t.status === 'unknown' ? '#6b6b73' : '#9b9797';
+      ctx.strokeStyle = t.status === 'unknown' ? '#6f6f6f' : '#a8a8a8';
       ctx.setLineDash(t.status === 'unknown' ? [4, 3] : []);
       ctx.lineWidth = 1.5;
       ctx.strokeRect(t.x * scale, t.y * scale, t.width * scale, t.height * scale);
       ctx.setLineDash([]);
-      ctx.fillStyle = '#c9c6c2';
-      ctx.font = '11px ui-monospace, monospace';
+      ctx.fillStyle = '#c6c6c6';
+      ctx.font = '11px "IBM Plex Mono", ui-monospace, monospace';
       ctx.fillText(t.id, t.x * scale + 3, t.y * scale + 13);
     }
     for (const d of candidates ?? []) {
-      ctx.strokeStyle = d.selected ? '#0b8b7a' : 'rgba(235,120,40,0.7)';
+      ctx.strokeStyle = d.selected ? '#08bdba' : 'rgba(255,131,43,0.75)';
       ctx.setLineDash(d.selected ? [] : [5, 4]);
       ctx.lineWidth = 2;
       ctx.strokeRect(d.x * scale, d.y * scale, d.width * scale, d.height * scale);
       ctx.setLineDash([]);
-      ctx.fillStyle = d.selected ? '#0b8b7a' : 'rgba(235,120,40,0.9)';
-      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillStyle = d.selected ? '#08bdba' : 'rgba(255,131,43,0.9)';
+      ctx.font = '10px "IBM Plex Mono", ui-monospace, monospace';
       ctx.fillText(`${d.id} ${d.confidence.toFixed(2)}`, d.x * scale + 2, d.y * scale - 3);
     }
     for (const cl of clusters ?? []) {
@@ -207,11 +207,11 @@ export function PlanView({ heat, tables, candidates, points, width, height, clus
       ctx.fill();
     }
     for (const p of points ?? []) {
-      ctx.fillStyle = '#ffd166';
+      ctx.fillStyle = '#f1c21b';
       ctx.beginPath();
       ctx.arc(p.x * scale, p.y * scale, 6, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#1b1b1f';
+      ctx.strokeStyle = '#161616';
       ctx.lineWidth = 2;
       ctx.stroke();
     }
