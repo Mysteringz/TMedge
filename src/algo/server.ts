@@ -17,6 +17,9 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
+import { createHealthRouter } from '../modules/algo-admin/controllers/health-controller.js';
+import { ReadOperationalHealth } from '../modules/algo-admin/use-cases/read-operational-health.js';
+import { RuntimeOperationalQueries } from '../infrastructure/algo-admin/runtime-operational-queries.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
 import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
 import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
@@ -37,6 +40,7 @@ import { NODE_SPECS, specOf } from './nodes.js';
 
 export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
 interface ConsoleCore {
+  firmwareHealth?(): Promise<unknown>;
   ui: express.Router;
   upgrade(req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
   closeSessions(binding: string): void;
@@ -241,6 +245,7 @@ export function startAlgo(
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
+  app.use('/api/admin/health', createHealthRouter(new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
 
   app.get('/api/catalogue', (_req, res) => res.json({
     nodes: NODE_SPECS,

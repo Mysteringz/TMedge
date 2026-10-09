@@ -157,6 +157,8 @@ export interface NodeHealth {
   owns: string[];
   pose: NodePose | null;
   online: boolean;
+  /** Accepted REPORT observation, independent of transport/RAW traffic. */
+  reportReceivedAt?: number | null;
   address: string | null;
   /** How downlinks reach it, from its last accepted packet; null = no route (a direct session that closed). */
   transport: 'udp' | 'gateway' | 'direct' | null;

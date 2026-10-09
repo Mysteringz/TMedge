@@ -73,7 +73,7 @@ function readCode(dir: string, py: readonly string[], path: unknown): { text: st
   return { text: readFileSync(file, 'utf8') };
 }
 
-export function createTrain(opts: TrainOptions): { router: Router; error: string | null; stop(): void; sockets: TrainSockets | null } {
+export function createTrain(opts: TrainOptions): { router: Router; error: string | null; stop(): void; sockets: TrainSockets | null; listJobs(user: string): TrainJob[] | null } {
   const router = express.Router();
   const bindings = new Map<string, { user: string; req: { headers: { cookie?: string } } }>();
   let invalidateUser: (user: string) => void = () => undefined;
@@ -105,7 +105,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
   // rest of the algo console starts, and this answers 503 with the reason.
   if (!cfg) {
     router.use((_req, res) => res.status(503).json({ error }));
-    return { router, error, stop: () => undefined, sockets: null };
+    return { router, error, stop: () => undefined, sockets: null, listJobs: () => null };
   }
   const config = cfg;
   const store = new JobStore(opts.root);
@@ -304,6 +304,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
 
   return {
     router, error,
+    listJobs: (user) => store.list(user),
     stop: () => { clearInterval(authorityTimer); clearInterval(sweeper); terminals?.closeAll(); void service.stop(); },
     sockets: terminals ? {
       upgrade: (req, socket, head, url, user, binding) => terminals.upgrade(req, socket, head, url, user, binding),

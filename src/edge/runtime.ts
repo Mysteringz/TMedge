@@ -292,6 +292,7 @@ export class EdgeRuntime extends EventEmitter {
         owns: def?.owns ?? [],
         pose: def?.pose ?? null,
         online: !!i?.lastReportAt && now - i.lastReportAt < 10_000,
+        reportReceivedAt: i?.lastReportAt ?? null,
         address: link?.address ?? null,
         transport: link ? (link.route?.kind ?? null) : null,
         direct: this.directInfo(uid),

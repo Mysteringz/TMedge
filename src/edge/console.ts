@@ -55,6 +55,8 @@ const MAX_SUBSCRIPTIONS = 64;
 export interface ConsoleCore {
   machine: Router;
   ui: Router;
+  /** Read-only build observation; never starts a worker. */
+  firmwareHealth(): Promise<unknown>;
   upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
   closeSessions(binding: string): void;
   dispose(): Promise<void>;
@@ -265,6 +267,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   return {
     machine,
     ui,
+    firmwareHealth: () => Promise.resolve(firmwareBuildJobs.status()),
     upgrade(req, socket, head, path, access) {
       socket.on('error', () => socket.destroy());
       const url = requestUrl(req.url);
