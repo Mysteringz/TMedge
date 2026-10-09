@@ -1,6 +1,8 @@
-import type { NotificationCandidate } from '../domain/operation-notification.js';
+import type { NotificationRead } from '../domain/operation-notification.js';
 
 export interface NotificationQueries {
-  training(owner: string): Promise<NotificationCandidate[] | null> | NotificationCandidate[] | null;
-  firmware(): Promise<NotificationCandidate[] | null> | NotificationCandidate[] | null;
+  training(owner: string, now?: number): Promise<NotificationRead> | NotificationRead;
+  firmware(now?: number): Promise<NotificationRead> | NotificationRead;
+  sensor?(now: number): Promise<NotificationRead> | NotificationRead;
+  parameter?(now: number): Promise<NotificationRead> | NotificationRead;
 }

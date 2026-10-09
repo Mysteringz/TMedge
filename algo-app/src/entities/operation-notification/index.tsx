@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { WINDOW_MS, markNotificationsRead, mergeSeen, notificationStorageKey, pruneSeen, type NotificationItem, type NotificationSnapshot, type SeenNotification } from './model.ts';
+import { KINDS, WINDOW_MS, markNotificationsRead, mergeSeen, notificationStorageKey, pruneSeen, type NotificationItem, type NotificationSnapshot, type SeenNotification } from './model.ts';
 
 interface Feed {
   items: NotificationItem[]; unread: number | null; open: boolean; loading: boolean; error: string; updatedAt: number | null; storageFailed: boolean; unavailable: boolean;
+  sources: NotificationSnapshot['sources']; summaries: NotificationSnapshot['summaries']; omittedCount: number;
   toggle(): void; close(): void; retry(): void; markRead(ids: string[]): void; isRead(id: string): boolean;
 }
 const Context = createContext<Feed | null>(null);
@@ -19,7 +20,8 @@ export function NotificationProvider({ owner, scope, announce, clearNotice, chil
     if (!owner) { setState({ scope, snapshot: null, loading: false, error: '', entries: [], storageFailed: false }); return; }
     const controller = new AbortController(), key = notificationStorageKey(owner);
     let alive = true, busy = false, entries: SeenNotification[] = [], storageFailed = false, snapshot: NotificationSnapshot | null = null;
-    const baseline = { training: false, firmware: false };
+    const baseline: Partial<Record<NotificationItem['kind'], boolean>> = {};
+    const mountedIds = new Map<NotificationItem['kind'], Set<string>>();
     try { const raw = localStorage.getItem(key); if (raw && raw.length <= 100_000) { try { entries = pruneSeen(JSON.parse(raw), Date.now()); } catch { entries = []; } } } catch { storageFailed = true; }
     const persist = () => { try { localStorage.setItem(key, JSON.stringify(entries)); } catch { storageFailed = true; } };
     setState({ scope, snapshot: null, loading: true, error: '', entries, storageFailed });
@@ -37,11 +39,11 @@ export function NotificationProvider({ owner, scope, announce, clearNotice, chil
         if (!alive || !body.data || !Array.isArray(body.data.items) || body.data.items.length > 100) return;
         const next = body.data;
         // Keep a failed source's last rows explicitly labelled as unavailable; forbidden rows are removed.
-        next.items = [...next.items, ...(snapshot?.items.filter((item) => next.sources[item.kind] === 'unavailable' && (item.occurredAt ?? entries.find((entry) => entry.id === item.id)?.at ?? 0) >= Date.now() - WINDOW_MS && !next.items.some((row) => row.id === item.id)) ?? [])].slice(0, 100);
-        const merged = mergeSeen(entries, next.items, Date.now()); entries = merged.entries; persist();
-        const fresh = merged.fresh.filter((item) => baseline[item.kind] && next.sources[item.kind] === 'available');
+        next.items = [...next.items, ...(snapshot?.items.filter((item) => next.sources[item.kind] === 'unavailable' && (item.classification === 'active' || (item.occurredAt ?? entries.find((entry) => entry.id === item.id)?.at ?? 0) >= Date.now() - WINDOW_MS) && !next.items.some((row) => row.id === item.id)) ?? [])].slice(0, 100);
+        const merged = mergeSeen(entries, next.items, Date.now(), new Set(KINDS.filter((kind) => next.sources[kind] === 'available'))); entries = merged.entries; persist();
+        const fresh = merged.fresh.filter((item) => baseline[item.kind] && next.sources[item.kind] === 'available' && !mountedIds.get(item.kind)?.has(item.id));
         if (fresh.length) announce(fresh.length === 1 ? `${fresh[0]!.label}: ${fresh[0]!.outcome}` : `${fresh.length} new operation outcomes.`);
-        for (const kind of ['training', 'firmware'] as const) { if (next.sources[kind] === 'available') baseline[kind] = true; else if (next.sources[kind] === 'forbidden') baseline[kind] = false; }
+        for (const kind of KINDS) { if (next.sources[kind] === 'available') { baseline[kind] = true; mountedIds.set(kind, new Set(next.items.filter((item) => item.kind === kind).map((item) => item.id))); } else if (next.sources[kind] === 'forbidden') { baseline[kind] = false; mountedIds.delete(kind); } }
         snapshot = next;
         setState({ scope, snapshot, loading: false, error: '', entries, storageFailed });
       } catch { if (alive && !controller.signal.aborted) setState({ scope, snapshot, loading: false, error: 'Could not refresh notifications.', entries, storageFailed }); }
@@ -56,7 +58,8 @@ export function NotificationProvider({ owner, scope, announce, clearNotice, chil
   const current = state.scope === scope && owner ? state : null;
   const read = new Set(current?.entries.filter((entry) => entry.read).map((entry) => entry.id));
   const items = current?.snapshot?.items ?? [];
-  const value: Feed | null = owner ? { items, unread: current?.snapshot ? items.filter((item) => !read.has(item.id)).length : null, open, loading: current?.loading ?? true, error: current?.error ?? '', updatedAt: current?.snapshot?.generatedAt ?? null, storageFailed: current?.storageFailed ?? false, unavailable: !!current?.snapshot && Object.values(current.snapshot.sources).includes('unavailable'),
+  const countKnown = !!current?.snapshot && !current.error && !Object.values(current.snapshot.sources).includes('unavailable');
+  const value: Feed | null = owner ? { items, sources: current?.snapshot?.sources ?? {}, summaries: current?.snapshot?.summaries, omittedCount: current?.snapshot?.omittedCount ?? 0, unread: countKnown ? items.filter((item) => !read.has(item.id)).length : null, open, loading: current?.loading ?? true, error: current?.error ?? '', updatedAt: current?.snapshot?.generatedAt ?? null, storageFailed: current?.storageFailed ?? false, unavailable: !!current?.snapshot && Object.values(current.snapshot.sources).includes('unavailable'),
     toggle: () => setOpen((value) => !value), close: () => setOpen(false), retry: () => void refreshRef.current?.(), markRead: (ids) => writeRef.current?.(ids), isRead: (id) => read.has(id) } : null;
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

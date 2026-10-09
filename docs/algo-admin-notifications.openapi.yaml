@@ -1,11 +1,11 @@
 openapi: 3.0.3
-info: { title: Algo derived outcome notifications, version: 1.0.0 }
+info: { title: Algo derived status notifications, version: 1.1.0 }
 security: [{ algoCookie: [] }]
 paths:
   /api/admin/notifications:
     get:
-      summary: Recent owner training and permitted shared firmware outcomes
-      description: 'Current algo.read authority; training.read selects full principal-owned jobs, firmware.read selects shared retained rollout current/history. No owner override. Maximum100 newest items from7days. IDs use stable outcome times/keys, never generatedAt. Read status is per-browser and is not written to this API. No historical delivery guarantee.'
+      summary: Operational concerns and recent owner training/shared firmware outcomes
+      description: 'Current algo.read authority; training.read selects full principal-owned jobs, firmware.read selects shared retained rollout current/history/build state. Sensor issues and pending parameter reversions are safe read projections. No owner override. Maximum100 combined items, active concerns first; active concerns are exempt from the7day historical window. IDs use original semantic state boundaries, never age, progress or generatedAt. Each source queried once with bounded timeout and no accumulating hung work. Read status remains per-browser. No historical delivery guarantee.'
       responses:
         '200':
           description: Snapshot, independently unavailable/forbidden sources disclosed
@@ -22,11 +22,17 @@ paths:
                     properties:
                       generatedAt: { type: number, description: Epoch milliseconds }
                       historyLimited: { type: boolean, enum: [true] }
+                      omittedCount: { type: integer, minimum: 0 }
+                      summaries:
+                        type: object
+                        additionalProperties: { $ref: '#/components/schemas/SourceSummary' }
                       sources:
                         type: object
                         properties:
                           training: { $ref: '#/components/schemas/SourceState' }
                           firmware: { $ref: '#/components/schemas/SourceState' }
+                          sensor: { $ref: '#/components/schemas/SourceState' }
+                          parameter: { $ref: '#/components/schemas/SourceState' }
                       items:
                         type: array
                         maxItems: 100
@@ -36,10 +42,13 @@ paths:
                           required: [id, kind, resourceId, label, outcome, occurredAt, href]
                           properties:
                             id: { type: string, description: Stable kind/resource/outcome/time key }
-                            kind: { type: string, enum: [training, firmware] }
+                            kind: { type: string, enum: [sensor, training, firmware, parameter] }
                             resourceId: { type: string }
                             label: { type: string, maxLength: 324 }
-                            outcome: { type: string, enum: [Completed, Failed, Timed out, Out of memory, Submission failed, Cancelled, Unknown, Stopped, Uncertain] }
+                            outcome: { type: string, description: Safe meaningful operation or active concern state }
+                            classification: { type: string, enum: [active, outcome] }
+                            detail: { type: string }
+                            deadlineAt: { type: number, nullable: true }
                             occurredAt: { type: number, nullable: true, description: Original stable event time; unknown is null }
                             href: { type: string, description: Existing protected training job/updates screen }
         default:
@@ -59,4 +68,14 @@ components:
   securitySchemes:
     algoCookie: { type: apiKey, in: cookie, name: tm_algo }
   schemas:
-    SourceState: { type: string, enum: [available, unavailable, forbidden] }
+    SourceState: { type: string, enum: [available, unavailable, disabled, forbidden] }
+    SourceSummary:
+      type: object
+      properties:
+        total: { type: integer }
+        issues: { type: integer }
+        active: { type: integer }
+        progress: { type: number }
+        status: { type: string }
+        observedAt: { type: number, nullable: true }
+        stale: { type: boolean }

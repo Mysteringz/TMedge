@@ -1,6 +1,5 @@
 /** Module select: where an engineer lands after signing in. */
 import { useEffect, useRef, useState } from 'react';
-import { HealthOverview } from '../widgets/health-overview/index.ts';
 import { donutFrame } from './donut.ts';
 import { ArrowRight } from './icons.tsx';
 import { MODULES } from './parts.tsx';
@@ -34,7 +33,6 @@ export function Home({ user }: { user: string }) {
     <main className="cx-home-main">
       <section className="cx-home-left">
         <h1 className="cx-welcome">Welcome back, {user}.</h1>
-        <HealthOverview user={user} />
         <p className="cx-eyebrow">Select module</p>
         <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>4</kbd>.</p>
         <div className="cx-modules">

@@ -255,7 +255,7 @@ export function startAlgo(
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
   app.use('/api/admin/health', createHealthRouter(new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
-  notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService))));
+  notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth }))));
 
   app.get('/api/catalogue', (_req, res) => res.json({
     nodes: NODE_SPECS,

@@ -44,7 +44,7 @@ export function Wordmark() {
 
 /** Carbon's UI shell header: the name, the modules, the person. */
 
-export function Nav({ user, onSignOut, notificationToggle }: { user: string; onSignOut(): void; notificationToggle?: ReactNode }) {
+export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: { user: string; onSignOut(): void; notificationToggle?: ReactNode; notificationPanel?: ReactNode }) {
 
   const session = useAdminSession();
 
@@ -82,10 +82,12 @@ export function Nav({ user, onSignOut, notificationToggle }: { user: string; onS
 
       {(here || screen === 'accounts') && <span className={screen === 'accounts' ? 'cx-crumb cx-account-crumb' : 'cx-crumb'}>{here?.title ?? 'Accounts'}</span>}
 
-      <span className="cx-who"><span className="cx-online" />{user}@team <span className="tag tag-neutral">{session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator'}</span></span>
-
-      <button className="cx-header-action cx-out" onClick={onSignOut} aria-label="Sign out" title="Sign out"><SignOut /></button>
-      {notificationToggle}
+      <div className="cx-identity-actions">
+        <span className="cx-who"><span className="cx-online" />{user}@team <span className="tag tag-neutral">{session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator'}</span></span>
+        {notificationToggle}
+        <button className="cx-header-action cx-out" onClick={onSignOut} aria-label="Sign out" title="Sign out"><SignOut /></button>
+        {notificationPanel}
+      </div>
 
     </header>
 

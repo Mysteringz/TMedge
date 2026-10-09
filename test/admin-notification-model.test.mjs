@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { WINDOW_MS, mergeSeen, markNotificationsRead, notificationStorageKey, pruneSeen } from '../algo-app/src/entities/operation-notification/model.ts';
 
+test('active read state renews without new alert; failed-source bookkeeping never renews event records', () => {
+  const now = WINDOW_MS + 1000, active = { id: 'sensor:offline:100', kind: 'sensor', classification: 'active', label: 'Sensor', outcome: 'Offline', resourceId: 's', occurredAt: 100, href: '/console' };
+  const old = [{ id: active.id, at: 10, read: true }];
+  const merged = mergeSeen(old, [active], now); assert.equal(merged.entries[0].read, true); assert.equal(merged.entries[0].at, now); assert.equal(merged.fresh.length, 0);
+  const failed = mergeSeen(old, [active], now, new Set(['training'])); assert.ok(!failed.entries.some((row) => row.read));
+});
+
 test('username scoped bounded7day read/seen records validate and prune corrupt storage', () => {
   const now = WINDOW_MS + 1000;
   assert.notEqual(notificationStorageKey('alice'), notificationStorageKey('bob'));

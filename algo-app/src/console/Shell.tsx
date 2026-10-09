@@ -147,5 +147,5 @@ function Backdrop() {
 }
 
 function ShellNavigation({ user, onSignOut }: { user: string; onSignOut(): void }) {
-  return <><Nav user={user} onSignOut={onSignOut} notificationToggle={<NotificationToggle />} /><NotificationCenter /></>;
+  return <Nav user={user} onSignOut={onSignOut} notificationToggle={<NotificationToggle />} notificationPanel={<NotificationCenter />} />;
 }

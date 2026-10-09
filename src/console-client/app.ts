@@ -732,7 +732,7 @@ async function start(): Promise<void> {
   const me = await identity.json() as { capabilities?: string[] };
   if (!Array.isArray(me.capabilities)) throw new Error('Access information is unavailable.');
   capabilities = me.capabilities;
-  const message = document.createElement('p'); message.setAttribute('role', 'status');
+  const message = document.createElement('p'); message.className = 'console-access-notice'; message.setAttribute('role', 'status');
   message.textContent = can('nodes.admin') ? '' : can('nodes.write') ? 'Admin access required for firmware and provisioning.' : 'Read-only access. An engineer can change parameters and run training.';
   document.body.prepend(message);
   document.querySelectorAll<HTMLButtonElement>('#controls button[data-op]').forEach((button) => { button.disabled = !can(button.dataset.op === 'reboot' ? 'nodes.admin' : 'nodes.write'); });
