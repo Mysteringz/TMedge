@@ -1,0 +1,53 @@
+openapi: 3.0.3
+info:
+  title: Algo admin identity additions
+  version: 1.0.0
+paths:
+  /api/me:
+    get:
+      summary: Current algo identity and server capabilities
+      security:
+        - algoCookie: []
+      responses:
+        '200':
+          description: Additive identity response, including trusted local mode
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Identity'
+        '401':
+          description: Cookie expired, disabled, revoked or invalid
+  /console-app/api/me:
+    get:
+      summary: Current embedded debug-console identity
+      security:
+        - algoCookie: []
+      responses:
+        '200':
+          description: Same identity capabilities as the parent algo session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Identity'
+        '401':
+          description: Invalid or unavailable account session
+components:
+  securitySchemes:
+    algoCookie:
+      type: apiKey
+      in: cookie
+      name: tm_algo
+  schemas:
+    Identity:
+      type: object
+      required: [user, auth, role, capabilities, namedAccount]
+      properties:
+        user: { type: string }
+        auth: { type: boolean }
+        role: { type: string, enum: [viewer, engineer, admin] }
+        namedAccount: { type: boolean }
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [algo.read, algo.write, training.read, training.write, firmware.read, firmware.write, nodes.write, nodes.admin, accounts.manage]

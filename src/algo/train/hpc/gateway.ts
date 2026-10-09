@@ -41,6 +41,7 @@ export interface GatewayDeps {
 
 /** How a login reports progress, and asks the person to trust a host key nobody has pinned yet. */
 export interface OpenOptions {
+  authorized?: () => boolean;
   onStep?: (s: Step) => void;
   confirmHostKey?: (host: string, keys: HostKey[]) => Promise<boolean>;
 }
@@ -162,9 +163,11 @@ export class Gateway {
     const now = this.deps.now();
     const session: Session = { user, uid, port: 0, state: 'opening', openedAt: now, lastUsed: now, tunnel: null, ssh: null, busy: 0 };
     this.sessions.set(user, session);
+    const checkAuthority = () => { if (this.sessions.get(user) !== session || session.state !== 'opening' || opts.authorized?.() === false) throw new GatewayBusy('Your admin session ended during HKU sign-in.'); };
     let auth: AuthResult | null = null;
     try {
       session.port = await this.pickPort();
+      checkAuthority();
       onStep('vpn_auth');
       try {
         auth = await this.deps.authenticate({
@@ -175,8 +178,10 @@ export class Gateway {
         if (err instanceof AuthFailed && (err.code === 'bad_credentials' || err.code === 'bad_otp')) this.fail(user, uid);
         throw err;
       }
+      checkAuthority();
       onStep('vpn_connect');
       session.tunnel = await this.deps.connectTunnel({ bin: this.cfg.tools.openconnect, ocproxy: this.cfg.tools.ocproxy, auth, port: session.port });
+      checkAuthority();
       auth.cookie.fill(0);
       auth = null;
       void session.tunnel.closed.then(() => { if (this.sessions.get(user) === session) void this.close(user); });
@@ -188,10 +193,12 @@ export class Gateway {
       if (!this.deps.hostKeys.isPinned(this.cfg.knownHosts, this.cfg.submitHost)) {
         onStep('host_key_scan');
         const keys = await this.deps.hostKeys.scan({ ssh: this.cfg.tools.ssh, host: this.cfg.submitHost, user: sshUser, socksPort: session.port, runDir: this.cfg.runDir });
+        checkAuthority();
         if (keys.length === 0) throw new SshFailed('unreachable', 'The VPN is up but the cluster did not answer on SSH.');
         if (!opts.confirmHostKey || !(await opts.confirmHostKey(this.cfg.submitHost, keys))) {
           throw new SshFailed('host_key', `The cluster's host key was not trusted, so nothing was pinned and no login happened.`);
         }
+        checkAuthority();
         this.deps.hostKeys.pin(this.cfg.knownHosts, this.cfg.submitHost, keys);
       }
       onStep('ssh_auth');
@@ -205,7 +212,9 @@ export class Gateway {
         if (err instanceof SshFailed && err.code === 'bad_password') this.fail(user, uid);
         throw err;
       }
+      checkAuthority();
       onStep('ssh_up');
+      checkAuthority();
       session.state = 'up';
       session.lastUsed = this.deps.now();
       this.failures.delete(`user:${user}`);
@@ -213,7 +222,8 @@ export class Gateway {
       return session;
     } catch (err) {
       auth?.cookie.fill(0);
-      await this.close(user);
+      if (this.sessions.get(user) === session) await this.close(user);
+      else { await session.ssh?.close(); await session.tunnel?.close(); }
       throw err;
     }
   }
@@ -236,9 +246,9 @@ export class Gateway {
     }
   }
 
-  async close(user: string): Promise<void> {
+  async close(user: string, expected?: Session): Promise<void> {
     const s = this.sessions.get(user);
-    if (!s || s.state === 'closing') return;
+    if (!s || (expected && s !== expected) || s.state === 'closing') return;
     s.state = 'closing';
     try {
       await s.ssh?.close();

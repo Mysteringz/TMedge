@@ -2,16 +2,16 @@ import { ApplicationError } from '../../shared/application/contracts.js';
 import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from '../../../edge/protocol.js';
 
 export type NodeCommand = { uid: string; opcode: number; argument: number; value: number };
-export type NodeCommandDispatch = (command: NodeCommand) => Promise<void>;
+export type NodeCommandDispatch = (command: NodeCommand, authorized?: () => boolean) => Promise<void>;
 
 /** Validates a console command and maps it to the existing node protocol. */
 export class ExecuteNodeCommand {
   constructor(private readonly dispatch: NodeCommandDispatch) {}
 
-  async execute(uid: string, input: unknown): Promise<void> {
+  async execute(uid: string, input: unknown, authorized?: () => boolean): Promise<void> {
     const command = makeCommand(uid, input);
     try {
-      await this.dispatch(command);
+      await this.dispatch(command, authorized);
     } catch (error: unknown) {
       if (error instanceof ApplicationError && error.kind === 'unavailable') throw error;
       throw new ApplicationError('conflict', error instanceof Error ? error.message : String(error));

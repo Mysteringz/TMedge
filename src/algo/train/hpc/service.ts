@@ -63,6 +63,17 @@ export function userMessage(err: unknown): { code: string; message: string } {
 }
 
 export class HpcService {
+  authorized: (user: string) => boolean = () => true;
+  private operationAuthority = new Map<string, () => boolean>();
+  bindAuthority(op: Op, valid: () => boolean): void { this.operationAuthority.set(op.id, valid); }
+  private checkAuthority(user: string, op?: Op): void { if (!this.authorized(user) || (op && this.operationAuthority.get(op.id)?.() === false)) throw new GatewayBusy('Your admin access has changed; sign in again.'); }
+  private credentials = new Map<string, Set<Credentials>>();
+  invalidate(user: string): void {
+    this.inbox.revoke(user);
+    for (const creds of this.credentials.get(user) ?? []) creds.wipe();
+    const op = this.ops.running(user);
+    if (op) this.hostKeyAnswers.get(op.id)?.(false);
+  }
   readonly inbox = new SealedInbox();
   readonly ops = new Ops();
   readonly gateway: Gateway | null;
@@ -79,9 +90,9 @@ export class HpcService {
     this.knownHosts = a?.knownHosts ?? join(root, 'known_hosts');
     this.fingerprintFile = join(root, 'ssh-password.json');
     this.tools = {
-      openconnect: findTool('openconnect', a?.tools.openconnect ?? null),
-      ocproxy: findTool('ocproxy', a?.tools.ocproxy ?? null),
-      ssh: findTool('ssh', a?.tools.ssh ?? null),
+      openconnect: deps === REAL_DEPS ? findTool('openconnect', a?.tools.openconnect ?? null) : a?.tools.openconnect ?? 'openconnect',
+      ocproxy: deps === REAL_DEPS ? findTool('ocproxy', a?.tools.ocproxy ?? null) : a?.tools.ocproxy ?? 'ocproxy',
+      ssh: deps === REAL_DEPS ? findTool('ssh', a?.tools.ssh ?? null) : a?.tools.ssh ?? 'ssh',
     };
     this.gateway = a ? new Gateway({
       vpnHost: a.vpnHost, vpnServerCert: a.vpnServerCert, vpnAuthGroup: a.vpnAuthGroup, submitHost: a.submitHost, sshUser: a.sshUser,
@@ -186,27 +197,41 @@ export class HpcService {
   /** The session to use: the live one, or a new login with `creds`, which are wiped either way. */
   private async session(op: Op, creds: Credentials | null, passwordChanged = false): Promise<Session> {
     const g = this.gateway!;
+    let createdSession: Session | null = null;
+    if (creds) { const active = this.credentials.get(op.user) ?? new Set<Credentials>(); active.add(creds); this.credentials.set(op.user, active); }
     try {
+      this.checkAuthority(op.user, op);
       const live = g.live(op.user);
       if (live) { op.emit('session_reused', { uid: live.uid }); return live; }
       if (!creds) throw new GatewayBusy('Your HKU session has ended; sign in again.');
       const profile = this.profiles.get(op.user);
       if (!profile) throw new GatewayBusy('Set your HKU UID first.');
       const record = await this.checkServerPassword(op.user, creds, passwordChanged);
+      this.checkAuthority(op.user, op);
       const s = await g.open(op.user, profile.hkuUid, this.vpnUser(profile), creds, {
+        authorized: () => this.authorized(op.user) && this.operationAuthority.get(op.id)?.() !== false,
         onStep: (step) => op.emit(step),
         confirmHostKey: (host, keys) => this.askHostKey(op, host, keys),
       });
+      createdSession = s;
+      this.checkAuthority(op.user, op);
       if (record) {
         // The cluster just accepted it: this is its fingerprint from now on.
-        saveFingerprint(this.fingerprintFile, await makeFingerprint(creds.sshPasswordGiven()!));
+        const fingerprint = await makeFingerprint(creds.sshPasswordGiven()!);
+        this.checkAuthority(op.user, op);
+        saveFingerprint(this.fingerprintFile, fingerprint);
         this.store.audit({ user: op.user, action: 'cluster_password', result: 'fingerprint recorded after a successful login' });
         op.emit('password_recorded');
       }
+      this.checkAuthority(op.user, op);
       return s;
+    } catch (error) {
+      if (createdSession) await g.close(op.user, createdSession);
+      throw error;
     } finally {
       // The login is over, one way or the other: nothing below needs a secret.
       creds?.wipe();
+      if (creds) { const active = this.credentials.get(op.user); active?.delete(creds); if (!active?.size) this.credentials.delete(op.user); }
     }
   }
 
@@ -242,10 +267,11 @@ export class HpcService {
   async connect(op: Op, creds: Credentials, passwordChanged: boolean): Promise<void> {
     try {
       const s = await this.session(op, creds, passwordChanged);
+      this.checkAuthority(op.user, op);
       op.finish('done', { status: 'CONNECTED', uid: s.uid });
     } catch (err) {
       op.finish('error', userMessage(err));
-    }
+    } finally { this.operationAuthority.delete(op.id); }
   }
 
   /** Submit a saved draft. The job is already SUBMITTING (routes.ts did that synchronously). */
@@ -253,12 +279,14 @@ export class HpcService {
     try {
       const s = await this.session(op, creds, passwordChanged);
       await this.gateway!.use(op.user, async () => {
+        this.checkAuthority(op.user, op);
         const v = validateSpec(job.spec, this.cfg, job.code.py);
         if (!v.ok) throw new slurm.SlurmError(`the job spec no longer passes: ${v.problems.map((p) => `${p.field}: ${p.message}`).join('; ')}`);
         const sbatch = renderSbatch(v.spec);
         writeFileSync(join(this.store.jobDir(job.id), 'job.sbatch'), sbatch, { mode: 0o600 });
         op.emit('uploading', { files: job.code.fileCount });
         await slurm.upload(s.ssh!, job.id, this.store.jobDir(job.id));
+        this.checkAuthority(op.user, op);
         op.emit('submitting');
         const id = await slurm.submit(s.ssh!, job.id);
         const now = Date.now();
@@ -279,23 +307,25 @@ export class HpcService {
       }
       this.store.audit({ user: op.user, action: 'submit', jobId: job.id, result: `failed ${m.code}` });
       op.finish('error', m);
-    }
+    } finally { this.operationAuthority.delete(op.id); }
   }
 
   async refresh(op: Op, job: TrainJob, creds: Credentials | null, passwordChanged = false): Promise<void> {
     try {
       const s = await this.session(op, creds, passwordChanged);
+      this.checkAuthority(op.user, op);
       const [updated] = await this.gateway!.use(op.user, () => this.refreshJobs(s, [job]));
       op.finish('done', { status: updated?.status ?? job.status });
     } catch (err) {
       op.finish('error', userMessage(err));
-    }
+    } finally { this.operationAuthority.delete(op.id); }
   }
 
   async cancel(op: Op, job: TrainJob, creds: Credentials | null, passwordChanged = false): Promise<void> {
     try {
       const s = await this.session(op, creds, passwordChanged);
       const [updated] = await this.gateway!.use(op.user, async () => {
+        this.checkAuthority(op.user, op);
         await slurm.cancel(s.ssh!, job.slurmJobId!);
         this.store.audit({ user: op.user, action: 'cancel', jobId: job.id, result: `ok slurm ${job.slurmJobId}` });
         return this.refreshJobs(s, [job]);
@@ -303,7 +333,7 @@ export class HpcService {
       op.finish('done', { status: updated?.status ?? job.status });
     } catch (err) {
       op.finish('error', userMessage(err));
-    }
+    } finally { this.operationAuthority.delete(op.id); }
   }
 
   /** Needs a live session: reading a log never asks for a code by itself. */
@@ -317,6 +347,7 @@ export class HpcService {
     if (!g) return;
     for (const user of g.users()) {
       const jobs = this.store.list(user).filter((j) => ACTIVE.includes(j.status) && j.slurmJobId !== null);
+      if (!this.authorized(user)) { this.inbox.revoke(user); await g.close(user); continue; }
       if (jobs.length === 0) continue;
       try {
         await g.use(user, (s) => this.refreshJobs(s, jobs), false);

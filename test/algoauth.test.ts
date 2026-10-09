@@ -116,7 +116,7 @@ test('a removed account is signed out on its next request, not when its cookie e
 test('resetting an engineer password invalidates earlier sessions', async () => {
   const { base, users } = await boot();
   const cookie = cookieOf(await post(base, '/auth/login', { username: 'alice', password: 'correct horse battery' }));
-  await new AlgoUsers(users.path).add('alice', 'new correct horse battery');
+  await new AlgoUsers(users.path).resetPassword('alice', 'new correct horse battery');
   assert.equal((await fetch(`${base}/api/catalogue`, { headers: { cookie } })).status, 401);
   assert.equal((await post(base, '/auth/login', { username: 'alice', password: 'correct horse battery' })).status, 401);
   assert.equal((await post(base, '/auth/login', { username: 'alice', password: 'new correct horse battery' })).status, 200);

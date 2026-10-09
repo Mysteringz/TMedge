@@ -1,3 +1,4 @@
+import { permissionChanged } from '../../entities/admin-session/index.tsx';
 /** Module 04 shares the console's authenticated OTA services and write header. */
 export interface FirmwareBuild {
   id: string; sha256: string; size: number; version: string;
@@ -28,6 +29,7 @@ const BASE = '/console-app/api';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, options);
+  permissionChanged(response.status);
   if (response.status === 401) {
     location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
     throw new Error('Your session ended. Sign in to continue.');

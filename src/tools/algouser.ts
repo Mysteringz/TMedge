@@ -8,6 +8,7 @@
  * The edge picks up changes without a restart; a removed account is signed
  * out on its next request.
  */
+import { isAdminRole } from '../modules/algo-admin/domain/permissions.js';
 import { createInterface } from 'node:readline';
 import { AlgoUsers, algoUsersPath, MIN_PASSWORD } from '../algo/auth.js';
 
@@ -34,20 +35,30 @@ async function readPassword(prompt: string): Promise<string> {
 }
 
 const users = new AlgoUsers(algoUsersPath(process.env));
-const [cmd, name] = process.argv.slice(2);
+const [cmd, name, selectedRole] = process.argv.slice(2);
 try {
   if (cmd === 'add' && name) {
     const pw = await readPassword(`password for ${name} (${MIN_PASSWORD}+ chars): `);
     if (process.stdin.isTTY && (await readPassword('again: ')) !== pw) throw new Error('the passwords differ');
-    const u = await users.add(name, pw);
+    const role = selectedRole ?? 'engineer';
+    if (!isAdminRole(role)) throw new Error('role must be viewer, engineer or admin');
+    const u = await users.add(name, pw, role);
     console.log(`added ${u.name} to ${users.path}`);
+  } else if (cmd === 'reset-password' && name) {
+    const pw = await readPassword(`new password for ${name}: `);
+    if (process.stdin.isTTY && (await readPassword('again: ')) !== pw) throw new Error('the passwords differ');
+    await users.resetPassword(name, pw);
+    process.stdout.write(`password reset for ${name}\n`);
+  } else if (cmd === 'role' && name && isAdminRole(selectedRole)) {
+    const u = users.update(name, { role: selectedRole });
+    process.stdout.write(`updated ${u.name}: ${u.role}\n`);
   } else if (cmd === 'remove' && name) {
     console.log(users.remove(name) ? `removed ${name}` : `no account called ${name}`);
   } else if (cmd === 'list') {
     const names = users.names();
     console.log(`${names.length} account(s) in ${users.path}${names.length ? `: ${names.join(', ')}` : ''}`);
   } else {
-    console.error('usage: npm run algo-user -- add <name> | remove <name> | list');
+    console.error('usage: npm run algo-user -- add <name> [viewer|engineer|admin] | reset-password <name> | role <name> <viewer|engineer|admin> | remove <name> | list');
     process.exit(1);
   }
 } catch (err) {

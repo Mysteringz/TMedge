@@ -19,6 +19,7 @@
  * form cannot send -- basic-auth credentials are attached by the browser
  * automatically, so without it any page the admin visits could reboot nodes.
  */
+import { principal, nodeCommandCapability, type AdminPrincipal } from '../modules/algo-admin/domain/permissions.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
@@ -116,6 +117,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
 
   const ui = express.Router();
   ui.use(express.json({ limit: '4kb' }));
+  ui.get('/api/me', (_req, res) => { const current: AdminPrincipal = res.locals.principal ?? principal('console', 'admin', false); return res.json({ user: current.name, auth: !!res.locals.embeddedConsole, role: current.role, capabilities: current.capabilities, namedAccount: current.namedAccount }); });
   ui.get('/api/state', (_req, res) => res.json(state(rt)));
   const secret = randomBytes(32);
   const feeds = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
@@ -161,6 +163,12 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
       // The algo console around it is Gray 100 only; a frame that followed a
       // light system setting would be a white slab under a dark header.
       html = html.replace('<html lang="en">', '<html lang="en" data-theme="dark">');
+      const current: AdminPrincipal | undefined = res.locals.principal;
+      html = html.replace(/<button\b[^>]*>/g, (tag) => {
+        if (/data-op=/.test(tag) && !current?.capabilities.includes(/data-op="reboot"/.test(tag) ? 'nodes.admin' : 'nodes.write')) return tag.replace('<button', '<button disabled');
+        if (/id="join-(?:approve|deny)"/.test(tag) && !current?.capabilities.includes('nodes.admin')) return tag.replace('<button', '<button disabled');
+        return tag;
+      });
     }
     res.set('Cache-Control', 'no-store').type('html').send(html);
   });
@@ -206,7 +214,9 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   }));
   const mutating = (req: Request, res: Response, next: NextFunction) => {
     if (req.get('x-tm-console') !== '1') return res.status(403).json({ error: 'missing x-tm-console header' });
-    return next();
+    const current: AdminPrincipal = res.locals.principal ?? principal('console', 'admin', false);
+    const capability = req.path.endsWith('/command') ? nodeCommandCapability(req.body) : 'nodes.admin';
+    return current.capabilities.includes(capability) ? next() : res.status(403).json({ error: 'Your access has changed. This action is unavailable.' });
   };
 
   ui.use('/api/nodes', createNodeRouter({
@@ -214,9 +224,9 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
       rgb: (uid) => rt.rgb.get(uid) ?? null,
       raw: (uid) => rt.lastRaw(uid),
     },
-    executeCommand: new ExecuteNodeCommand(({ uid, opcode, argument, value }) =>
+    executeCommand: new ExecuteNodeCommand(({ uid, opcode, argument, value }, authorized) =>
       rt.commandOutcomes
-        ? rt.commandOutcomes.send({ uid, opcode, argument, value }, { id: 'console', kind: 'console' })
+        ? rt.commandOutcomes.send({ uid, opcode, argument, value }, { id: 'console', kind: 'console' }, authorized)
         : rt.ingest.sendCommand(uid, opcode, argument, value).then(() => undefined)),
     resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursor(uid)),
     mutating,

@@ -38,6 +38,9 @@ export interface TrainOptions {
   mutating: RequestHandler;
   /** Tests replace openconnect and ssh with fakes. */
   gatewayDeps?: GatewayDeps;
+  accountEpoch?: (name: string) => string | null;
+  authenticated?: (req: { headers: { cookie?: string } }) => boolean;
+  authorized?: (req: { headers: { cookie?: string } }) => boolean;
   /** The console sign-in a request belongs to, so a terminal is bound to it. */
   bindingOf?: (req: { headers: { cookie?: string } }) => string;
 }
@@ -72,6 +75,24 @@ function readCode(dir: string, py: readonly string[], path: unknown): { text: st
 
 export function createTrain(opts: TrainOptions): { router: Router; error: string | null; stop(): void; sockets: TrainSockets | null } {
   const router = express.Router();
+  const bindings = new Map<string, { user: string; req: { headers: { cookie?: string } } }>();
+  let invalidateUser: (user: string) => void = () => undefined;
+  const epochs = new Map<string, string | null>();
+  const validateEpoch = (user: string) => {
+    const current = opts.accountEpoch?.(user) ?? null;
+    if (epochs.has(user) && epochs.get(user) !== current) invalidateUser(user);
+    epochs.set(user, current);
+  };
+  router.use((req, res, next) => {
+    validateEpoch(String(res.locals.user));
+    if (opts.authorized?.(req)) {
+      const binding = opts.bindingOf?.(req) ?? '';
+      if (!bindings.has(binding) && bindings.size >= 512) return void res.status(503).json({ error: 'too many live training bindings' });
+      bindings.set(binding, { user: String(res.locals.user), req: { headers: { cookie: req.headers.cookie } } });
+    }
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && opts.authorized && !opts.authorized(req)) return void res.status(403).json({ error: 'Engineer access required.' });
+    return next();
+  });
   let cfg: HpcConfig | null = null;
   let error: string | null = null;
   try {
@@ -102,6 +123,19 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
   const previewLimiter = new RateLimiter(1200, 10 * 60_000);
   /** Each of these may start an HKU login. */
   const hpcLimiter = new RateLimiter(60, 10 * 60_000);
+  service.authorized = (user) => !opts.authorized || ((opts.accountEpoch === undefined || epochs.get(user) === opts.accountEpoch(user)) && [...bindings.values()].some((entry) => entry.user === user && opts.authorized!(entry.req)));
+  invalidateUser = (user) => {
+    for (const [binding, entry] of bindings) if (entry.user === user) { terminals?.closeFor(binding); bindings.delete(binding); }
+    service.invalidate(user); void service.gateway?.close(user);
+  };
+  const authorityTimer = setInterval(() => {
+    for (const user of epochs.keys()) validateEpoch(user);
+    for (const [binding, entry] of bindings) if (opts.authorized && !opts.authorized(entry.req)) {
+      bindings.delete(binding); terminals?.closeFor(binding); service.invalidate(entry.user);
+      if (!service.authorized(entry.user)) void service.gateway?.close(entry.user);
+    }
+  }, 5000);
+  authorityTimer.unref();
   const userOf = (res: Response) => String(res.locals.user);
   const limit = (limiter: RateLimiter): RequestHandler => (_req, res, next) =>
     limiter.allow(userOf(res)) ? next() : void res.status(429).json({ error: 'too many changes; wait a few minutes' });
@@ -248,11 +282,11 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
     return res.json({ ok: true });
   });
 
-  mountHpc(router, { service, store, config, mutating: opts.mutating, limit: limit(hpcLimiter), userOf });
+  mountHpc(router, { service, store, config, mutating: opts.mutating, authorized: opts.authorized, authenticated: opts.authenticated, limit: limit(hpcLimiter), userOf });
 
   // The shell on the cluster (CONSOLE, "ssh" mode): a one-time ticket here,
   // then a WebSocket upgrade on /train-term that server.ts hands over.
-  const terminals = service.gateway ? new Terminals(service.gateway, (user, action, result) => store.audit({ user, action, result })) : null;
+  const terminals = service.gateway ? new Terminals(service.gateway, (user, action, result) => store.audit({ user, action, result }), 'python3', (req) => opts.authorized?.(req) ?? true) : null;
   router.post('/hpc/term', opts.mutating, limit(hpcLimiter), (req, res) => {
     const user = userOf(res);
     if (!terminals || !service.gateway?.live(user)) return res.status(428).json({ error: 'Sign in to HKU to open a terminal.', needs: 'credentials' });
@@ -270,7 +304,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
 
   return {
     router, error,
-    stop: () => { clearInterval(sweeper); terminals?.closeAll(); void service.stop(); },
+    stop: () => { clearInterval(authorityTimer); clearInterval(sweeper); terminals?.closeAll(); void service.stop(); },
     sockets: terminals ? {
       upgrade: (req, socket, head, url, user, binding) => terminals.upgrade(req, socket, head, url, user, binding),
       closeFor: (binding) => terminals.closeFor(binding),

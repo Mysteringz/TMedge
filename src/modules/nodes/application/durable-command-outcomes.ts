@@ -32,7 +32,7 @@ export class DurableCommandOutcomes {
     await this.repository.markInFlightUncertain?.(this.now());
   }
 
-  async send(command: NodeCommand, actor: Actor): Promise<void> {
+  async send(command: NodeCommand, actor: Actor, authorized: () => boolean = () => true): Promise<void> {
     if (this.disposed) throw new Error('command outcome service is stopping');
     if (this.pending.size >= MAX_PENDING) throw new Error('too many unacknowledged node commands');
     const id = randomUUID();
@@ -46,6 +46,7 @@ export class DurableCommandOutcomes {
     }
     let sequence: number;
     try {
+      if (!authorized()) throw new ApplicationError('conflict', 'admin access changed; no command was sent');
       sequence = await this.dispatch(command);
     } catch (error) {
       await this.recordOutcome(id, command.uid, description, actor, 'uncertain');

@@ -48,7 +48,7 @@ const listening = (s: import('node:http').Server) =>
 /** The edge as main.ts wires it: one console core, served by both ports. */
 async function boot() {
   const usersPath = join(mkdtempSync(join(tmpdir(), 'tmedge-algousers-')), 'users.json');
-  await new AlgoUsers(usersPath).add('alice', 'correct horse battery');
+  await new AlgoUsers(usersPath).add('alice', 'correct horse battery', 'admin');
   const rt = runtime();
   const core = createConsole(rt);
   const consoleServer = startConsole(rt, core, { uiMovedTo: consoleMovedTo(8091) });
@@ -243,7 +243,7 @@ test('a password reset ends existing debug streams without an edge restart', asy
   try {
     await new Promise<void>((resolve, reject) => { ws.once('message', () => resolve()); ws.once('error', reject); });
     const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()));
-    await new AlgoUsers(usersPath).add('alice', 'a different correct password');
+    await new AlgoUsers(usersPath).resetPassword('alice', 'a different correct password');
     await closed;
     assert.equal((await fetch(`${algoBase}/api/me`, { headers: { cookie } })).status, 401);
   } finally { ws.terminate(); }

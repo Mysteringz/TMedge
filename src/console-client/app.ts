@@ -6,6 +6,8 @@
 import type { ConsoleDetection, EdgeHealth, NodeHealth, NodePose, OccupancySnapshot, Point, RawFrameMessage } from '../shared/types.js';
 import { initFirmware, setFirmwareTargets } from './firmware.js';
 
+let capabilities: string[] = [];
+const can = (capability: string) => capabilities.includes(capability);
 const SVG = 'http://www.w3.org/2000/svg';
 const $ = <T extends Element = HTMLElement>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -493,7 +495,7 @@ function renderDetail(): void {
   const params = $('#params');
   if (s && params.dataset.uid !== n.uid) {
     params.dataset.uid = n.uid;
-    params.innerHTML = Object.entries(s.params).map(([k, v]) => `<label>${esc(k)}<input data-param="${esc(k)}" type="number" step="1" value="${esc(String(v))}"></label>`).join('');
+    params.innerHTML = Object.entries(s.params).map(([k, v]) => `<label>${esc(k)}<input data-param="${esc(k)}" type="number" ${can('nodes.write') ? '' : 'disabled'} step="1" value="${esc(String(v))}"></label>`).join('');
     params.querySelectorAll<HTMLInputElement>('input').forEach((inp) => inp.addEventListener('change', () => {
       void command({ op: 'set', param: inp.dataset.param, value: Number(inp.value) });
     }));
@@ -553,6 +555,7 @@ function showNextJoin(): void {
 }
 
 async function answerJoin(verdict: 'approve' | 'deny'): Promise<void> {
+  if (!can('nodes.admin')) return;
   const req = joinShowing;
   if (!req || joinBusy) return;
   joinBusy = true;
@@ -597,6 +600,7 @@ function initJoin(): void {
 }
 
 async function command(body: { op: string; param?: string | undefined; value?: number }): Promise<void> {
+  if (!can(['set', 'reset-bg', 'identify', 'save'].includes(body.op) ? 'nodes.write' : 'nodes.admin')) { $('#cmd-result').textContent = 'Your access has changed. This action is unavailable.'; return; }
   if (!selected) return;
   try {
     const res = await fetch(`api/nodes/${encodeURIComponent(selected)}/command`, {
@@ -695,9 +699,20 @@ async function connect(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  const identity = await fetch('api/me');
+  if (!identity.ok) throw new Error('Access information is unavailable.');
+  const me = await identity.json() as { capabilities?: string[] };
+  if (!Array.isArray(me.capabilities)) throw new Error('Access information is unavailable.');
+  capabilities = me.capabilities;
+  const message = document.createElement('p'); message.setAttribute('role', 'status');
+  message.textContent = can('nodes.admin') ? '' : can('nodes.write') ? 'Admin access required for firmware and provisioning.' : 'Read-only access. An engineer can change parameters and run training.';
+  document.body.prepend(message);
+  document.querySelectorAll<HTMLButtonElement>('#controls button[data-op]').forEach((button) => { button.disabled = !can(button.dataset.op === 'reboot' ? 'nodes.admin' : 'nodes.write'); });
+  for (const id of ['#join-approve', '#join-deny']) { const button = document.querySelector<HTMLButtonElement>(id); if (button) button.disabled = !can('nodes.admin'); }
+  setInterval(() => { void fetch('api/me').then(async (response) => { if (response.status === 401) { capabilities = []; location.reload(); return; } if (response.ok) { const current = await response.json() as { capabilities: string[] }; if (JSON.stringify(current.capabilities) !== JSON.stringify(capabilities)) location.reload(); } }).catch(() => { capabilities = []; }); }, 15000);
   layout = (await (await fetch('api/layout')).json()) as Layout;
   const hasFirmware = !!document.querySelector('#firmware');
-  if (hasFirmware) initFirmware();
+  if (hasFirmware && can('firmware.write')) initFirmware();
   initJoin();
   // Requests that arrived while nobody had the console open are still
   // waiting; a live WS event is not the only way one gets answered.

@@ -1,3 +1,4 @@
+import { nodeCommandCapability as importCommandCapability } from '../../algo-admin/domain/permissions.js';
 import { Router, type RequestHandler } from 'express';
 import type { ExecuteNodeCommand } from '../application/execute-node-command.js';
 import type { ResetNodeCursor } from '../application/reset-node-cursor.js';
@@ -27,7 +28,7 @@ export function createNodeRouter(dependencies: {
     return res.json(raw);
   });
   router.post('/:uid/command', dependencies.mutating, asyncHandler(async (req, res) => {
-    await dependencies.executeCommand.execute(routeParam(req.params, 'uid'), req.body);
+    await dependencies.executeCommand.execute(routeParam(req.params, 'uid'), req.body, () => res.locals.permits?.(importCommandCapability(req.body)) ?? true);
     return res.json({ sent: true, note: 'applied when the node acknowledges in its next STATUS (last_cmd)' });
   }));
   router.post('/:uid/reset-cursor', dependencies.mutating, (req, res) => {

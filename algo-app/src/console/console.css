@@ -415,7 +415,8 @@
 
 /* — phones — */
 @media (max-width: 672px) {
-  .cx .cx-who { display: none; }
+  .cx .cx-header { height: auto; min-height: 48px; flex-wrap: wrap; }
+  .cx .cx-who { display: flex; order: 1; flex: 1 1 100%; flex-wrap: wrap; white-space: normal; overflow-wrap: anywhere; padding: 8px 16px; }
   .cx-home { padding-left: 16px; }
   .cx-login-left { padding: 24px 16px; gap: 40px; flex-basis: 100%; }
   /* On a phone the form is the whole width; the wave lives below it. */

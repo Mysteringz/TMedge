@@ -212,15 +212,19 @@ export function startAlgo(
       res.set('Content-Security-Policy', consoleCsp);
       res.locals.wsBinding = auth.sessionToken(req);
       res.locals.embeddedConsole = true;
+      res.locals.principal = auth.principalOf(req);
+      res.locals.permits = (capability: import('../modules/algo-admin/domain/permissions.js').Capability) => !!auth.principalOf(req)?.capabilities.includes(capability);
       return next();
     }, consoleCore.ui);
   }
   app.use(express.json({ limit: '256kb' }));
 
-  app.get('/api/me', (_req, res) => res.json({ user: res.locals.user, auth: authCfg.enabled }));
+  app.get('/api/me', (_req, res) => { const current = res.locals.principal; return res.json({ user: res.locals.user, auth: authCfg.enabled, role: current.role, capabilities: current.capabilities, namedAccount: current.namedAccount }); });
 
   /** Writes need a header a cross-site form cannot send. */
   const mutating = (req: Request, res: Response, next: NextFunction) => {
+    const allowed = auth.principalOf(req)?.capabilities.includes(req.path.startsWith('/api/train') ? 'training.write' : 'algo.write');
+    if (!allowed) return res.status(403).json({ error: 'Your access has changed. This action is unavailable.' });
     if (req.get('x-tm-algo') !== '1') return res.status(403).json({ error: 'missing x-tm-algo header' });
     return next();
   };
@@ -231,6 +235,9 @@ export function startAlgo(
     configPath: process.env.HPC_CONFIG || join(ROOT, 'config', 'hpc.json'),
     mutating,
     bindingOf: (req) => auth.sessionToken(req),
+    accountEpoch: (name) => auth.accountEpoch(name),
+    authenticated: (req) => !!auth.userOf(req),
+    authorized: (req) => !!auth.principalOf(req)?.capabilities.includes('training.write'),
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
@@ -475,6 +482,7 @@ export function startAlgo(
     const binding = auth.sessionToken(req);
     // Module 02's shell on the cluster: its own one-time ticket, bound to this sign-in.
     if (url.pathname === '/train-term') {
+      if (!auth.principalOf(req)?.capabilities.includes('training.write')) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
       if (train.sockets?.upgrade(req, socket, head, url, auth.userOf(req)!, binding)) return;
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
@@ -503,6 +511,10 @@ export function startAlgo(
       ws.send(JSON.stringify({ type: 'pipeline_state', pipeline, live }));
     });
   });
+
+  const authorityTimer = setInterval(() => { for (const [ws, client] of clients) if (!auth.userOf(client.req)) ws.terminate(); }, 5000);
+  authorityTimer.unref();
+  server.on('close', () => clearInterval(authorityTimer));
 
   const send = (msg: unknown) => {
     const s = JSON.stringify(msg);

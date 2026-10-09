@@ -12,6 +12,7 @@
  * The design's results and export cards become the job's state and its
  * spec: this module shows what SLURM reports and makes no numbers up.
  */
+import { useCapability } from '../entities/admin-session/index.tsx';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { FilePy, FloppyDisk, PaperPlaneRight, Plus, UploadSimple, XMark } from './icons.tsx';
 import { Toast, useToast } from './parts.tsx';
@@ -190,6 +191,7 @@ function pickEntrypoint(py: string[]): string {
 }
 
 export function Train() {
+  const canWrite = useCapability('training.write');
   const [cfg, setCfg] = useState<TrainConfig | null>(null);
   const [loadError, setLoadError] = useState('');
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -305,7 +307,7 @@ export function Train() {
 
   // The live check: the server's own validator and renderer, a moment after typing stops.
   useEffect(() => {
-    if (!cfg || !form) return;
+    if (!canWrite || !cfg || !form) return;
     const { spec, local } = specOf(form);
     const seq = ++previewSeq.current;
     const t = setTimeout(() => {
@@ -315,7 +317,7 @@ export function Train() {
       }).catch(() => { /* keep the last answer; saving will say what is wrong */ });
     }, 250);
     return () => clearTimeout(t);
-  }, [cfg, form, pyKey]);
+  }, [canWrite, cfg, form, pyKey]);
 
   // A project is shown one file at a time: whichever is the entrypoint.
   useEffect(() => {
@@ -514,12 +516,14 @@ export function Train() {
   if (loadError) {
     return (
       <main className="cx-train">
+      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}
         <Head status="—" hpc={null} />
         <section className="card elev-sm cx-card"><div className="cx-error">! module 02 could not load: {loadError}</div></section>
       </main>
     );
   }
-  if (!cfg || !form) return <main className="cx-train"><Head status="…" hpc={null} /></main>;
+  if (!cfg || !form) return <main className="cx-train">
+      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}<Head status="…" hpc={null} /></main>;
 
   const status = job?.status ?? 'NEW';
   const partition = cfg.partitions.find((p) => p.name === form.partition);
@@ -532,13 +536,14 @@ export function Train() {
   const ready = hpc?.available ?? cfg.hpc.available;
   const target = hpc?.ssh ? `${hpc.ssh.user ?? hpc.profile?.hkuUid ?? 'you'}@${hpc.ssh.host}` : 'the cluster';
   const signedIn = hpc?.session.state === 'up';
-  const canSend = ready && !busy && !acting;
+  const canSend = canWrite && ready && !busy && !acting;
   const sent = !!job && !EDITABLE.has(job.status);
   const elapsed = job?.elapsedSeconds ?? (job?.startedAt ? Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000) : null);
   const session = hpc?.session.state === 'up' ? hpc.session : null;
 
   return (
     <main className="cx-train">
+      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}
       <Head status={status} hpc={hpc} />
 
       <div className="cx-train-cols">
@@ -556,15 +561,15 @@ export function Train() {
                 {logText !== null && <label className="seg-opt"><input type="radio" name="tab" checked={tab === 'log'} onChange={() => setTab('log')} />log</label>}
               </div>
               <input ref={fileInput} type="file" accept=".py,.zip" hidden onChange={pickFile} />
-              <button className="btn btn-secondary cx-btn-px" onClick={() => fileInput.current?.click()} disabled={!!busy}
+              <button className="btn btn-secondary cx-btn-px" onClick={() => fileInput.current?.click()} disabled={!canWrite || !!busy}
                 title={`a .py (≤ ${cfg.limits.maxPyMb} MB) or a .zip of your project (≤ ${cfg.limits.maxUploadMb} MB)`}>
                 <UploadSimple />Upload
               </button>
-              <button className="btn btn-secondary cx-btn-px" onClick={() => void save()} disabled={!!busy || !!acting}
+              <button className="btn btn-secondary cx-btn-px" onClick={() => void save()} disabled={!canWrite || !!busy || !!acting}
                 title={sent ? 'This job was sent: saving starts a new draft' : 'Save draft (Ctrl/⌘ S)'}>
                 <FloppyDisk />{busy === 'save' ? 'Saving…' : sent ? 'Save as new' : 'Save draft'}
               </button>
-              <button className="btn btn-primary cx-btn-px" disabled={!canSend} aria-describedby="cx-hpc-why" onClick={() => void send()}
+              <button className="btn btn-primary cx-btn-px" disabled={!canWrite || !canSend} aria-describedby="cx-hpc-why" onClick={() => void send()}
                 title={ready ? 'Save if needed, sign in as yourself, and send to the cluster' : hpc?.reason ?? cfg.hpc.reason ?? undefined}>
                 <PaperPlaneRight />{acting === 'submit' ? 'Sending…' : 'Send job to train'}
               </button>
@@ -572,7 +577,7 @@ export function Train() {
             <div className="cx-editor">
               <div hidden={tab !== 'code'} className="cx-editor-pane">
                 <CodeEditor
-                  value={editorText} language="python" readOnly={source.kind === 'zip'} label="Python training script"
+                  value={editorText} language="python" readOnly={!canWrite || source.kind === 'zip'} label="Python training script"
                   onChange={(text) => {
                     if (source.kind !== 'script') return;
                     setSource({ ...source, text, saved: false });
@@ -597,7 +602,7 @@ export function Train() {
               <div className="seg cx-tabs" role="tablist" aria-label="Console">
                 <label className="seg-opt"><input type="radio" name="console" checked={consoleMode === 'log'} onChange={() => setConsoleMode('log')} />log</label>
                 <label className="seg-opt" title={`A shell on ${target}, through your own HKU session`}>
-                  <input type="radio" name="console" checked={consoleMode === 'ssh'} onChange={() => void openShell()} />ssh {target}
+                  <input type="radio" name="console" checked={consoleMode === 'ssh'} disabled={!canWrite} onChange={() => void openShell()} />ssh {target}
                 </label>
               </div>
               <span style={{ marginLeft: 'auto' }} />
@@ -608,7 +613,7 @@ export function Train() {
                 <span className="cx-pct">{Math.round(progress * 100)}%</span>
               </>}
               {consoleMode === 'ssh' && signedIn && termKey > 0 && (
-                <button className="btn btn-ghost cx-btn-px" onClick={() => setTermKey((k) => k + 1)} title="Close this shell and open a new one">New shell</button>
+                <button disabled={!canWrite} className="btn btn-ghost cx-btn-px" onClick={() => setTermKey((k) => k + 1)} title="Close this shell and open a new one">New shell</button>
               )}
             </div>
             <div className="cx-log" ref={logEl} role="log" aria-live="polite" hidden={consoleMode !== 'log'}>
@@ -625,7 +630,7 @@ export function Train() {
                   <p>{!ready ? (hpc?.reason ?? cfg.hpc.reason) : signedIn
                     ? 'You are signed in to HKU. Open a shell on the cluster as your session.'
                     : 'A shell on the cluster, through your own HKUVPN login. Sign in with your UID, Portal PIN, a fresh code and the cluster password.'}</p>
-                  <button className="btn btn-primary cx-btn-px" disabled={!ready || !!acting} onClick={() => void openShell()}>
+                  <button className="btn btn-primary cx-btn-px" disabled={!canWrite || !ready || !!acting} onClick={() => void openShell()}>
                     {acting === 'connect' ? 'Signing in…' : signedIn ? 'Open shell' : 'Sign in and open shell'}
                   </button>
                 </div>
@@ -641,7 +646,7 @@ export function Train() {
               <span className="cx-label">Job</span>
               <span className="cx-head-right">
                 <span className="cx-hint">{job ? `${job.spec.name} · ${job.id.slice(0, 8)}` : 'new draft · not saved'}</span>
-                <button className="btn btn-ghost cx-icon" onClick={() => startNew()} title="New draft" aria-label="New draft"><Plus /></button>
+                <button disabled={!canWrite} className="btn btn-ghost cx-icon" onClick={() => startNew()} title="New draft" aria-label="New draft"><Plus /></button>
               </span>
             </div>
             <div className="cx-metrics">
@@ -658,13 +663,13 @@ export function Train() {
             </div>
             {job?.slurmJobId != null && (
               <div className="cx-job-actions">
-                <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void runOp('refresh', job.id, job.spec.name)}>
+                <button className="btn btn-secondary cx-btn-px" disabled={!canWrite || !!acting} onClick={() => void runOp('refresh', job.id, job.spec.name)}>
                   {acting === 'refresh' ? 'Refreshing…' : 'Refresh'}
                 </button>
                 <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('out')}>Log</button>
                 <button className="btn btn-secondary cx-btn-px" disabled={!!acting} onClick={() => void showLog('err')}>Stderr</button>
                 {ACTIVE.has(job.status) && (
-                  <button className="btn btn-ghost cx-btn-px cx-danger" disabled={!!acting}
+                  <button className="btn btn-ghost cx-btn-px cx-danger" disabled={!canWrite || !!acting}
                     onClick={() => { if (window.confirm(`Cancel ${job.spec.name} (SLURM ${job.slurmJobId}) on the cluster?`)) void runOp('cancel', job.id, job.spec.name); }}>
                     {acting === 'cancel' ? 'Cancelling…' : 'Cancel job'}
                   </button>
@@ -675,7 +680,7 @@ export function Train() {
               <div className="cx-session">
                 <span className="cx-online" />
                 <span>signed in to HKU as <b>{session.uid}</b> · {Math.max(1, Math.round((session.expiresInSeconds ?? 0) / 60))} min left</span>
-                <button className="btn btn-ghost cx-btn-px" onClick={() => void signOutHku()}>Sign out of HKU</button>
+                <button disabled={!canWrite} className="btn btn-ghost cx-btn-px" onClick={() => void signOutHku()}>Sign out of HKU</button>
               </div>
             )}
             <div className="cx-table-scroll" tabIndex={0} role="region" aria-label="Training jobs">
@@ -694,7 +699,7 @@ export function Train() {
                       <td className="cx-mono cx-dim2" style={{ textAlign: 'right' }}>{ago(j.updatedAt)}</td>
                       <td>
                         {EDITABLE.has(j.status) && (
-                          <button className="btn btn-ghost cx-icon" aria-label={`Delete ${j.name}`} title="Delete draft"
+                          <button disabled={!canWrite} className="btn btn-ghost cx-icon" aria-label={`Delete ${j.name}`} title="Delete draft"
                             onClick={(e) => { e.stopPropagation(); void remove(j); }}><XMark /></button>
                         )}
                       </td>
@@ -714,14 +719,14 @@ export function Train() {
             </div>
             <div className="cx-fields">
               <Field label="Job name" id="f-name" bad={bad.has('name')}>
-                <input id="f-name" className={`input ${bad.has('name') ? 'is-bad' : ''}`} value={form.name} maxLength={40}
+                <input disabled={!canWrite} id="f-name" className={`input ${bad.has('name') ? 'is-bad' : ''}`} value={form.name} maxLength={40}
                   spellCheck={false} onChange={(e) => edit({ name: e.target.value })} placeholder="occupancy_gbc" />
               </Field>
               <Field label="Entrypoint" id="f-entry" bad={bad.has('entrypoint')}>
                 {source.kind === 'script'
                   ? <div id="f-entry" className="input cx-static">{source.filename}</div>
                   : (
-                    <select id="f-entry" className={`input ${bad.has('entrypoint') ? 'is-bad' : ''}`} value={form.entrypoint}
+                    <select disabled={!canWrite} id="f-entry" className={`input ${bad.has('entrypoint') ? 'is-bad' : ''}`} value={form.entrypoint}
                       onChange={(e) => edit({ entrypoint: e.target.value })}>
                       {source.py.map((f) => <option key={f} value={f}>{f}</option>)}
                     </select>
@@ -734,7 +739,7 @@ export function Train() {
                 <div className="seg" role="radiogroup" aria-labelledby="f-part">
                   {cfg.partitions.map((p) => (
                     <label key={p.name} className="seg-opt">
-                      <input type="radio" name="partition" checked={form.partition === p.name}
+                      <input disabled={!canWrite} type="radio" name="partition" checked={form.partition === p.name}
                         onChange={() => edit({ partition: p.name, gpus: p.gpu ? (form.gpus === '0' ? '1' : form.gpus) : '0' })} />
                       {p.name}{p.gpu && !/gpu/i.test(p.name) ? ' · gpu' : ''}
                     </label>
@@ -745,17 +750,17 @@ export function Train() {
             </div>
             <div className="cx-fields cx-fields-4">
               <Field label="CPUs" id="f-cpu" bad={bad.has('cpusPerTask')}>
-                <input id="f-cpu" className={`input ${bad.has('cpusPerTask') ? 'is-bad' : ''}`} inputMode="numeric" value={form.cpus} onChange={(e) => edit({ cpus: e.target.value })} />
+                <input disabled={!canWrite} id="f-cpu" className={`input ${bad.has('cpusPerTask') ? 'is-bad' : ''}`} inputMode="numeric" value={form.cpus} onChange={(e) => edit({ cpus: e.target.value })} />
               </Field>
               <Field label="Mem GB" id="f-mem" bad={bad.has('memGb')}>
-                <input id="f-mem" className={`input ${bad.has('memGb') ? 'is-bad' : ''}`} inputMode="numeric" value={form.mem} onChange={(e) => edit({ mem: e.target.value })} />
+                <input disabled={!canWrite} id="f-mem" className={`input ${bad.has('memGb') ? 'is-bad' : ''}`} inputMode="numeric" value={form.mem} onChange={(e) => edit({ mem: e.target.value })} />
               </Field>
               <Field label="GPUs" id="f-gpu" bad={bad.has('gpus')}>
                 <input id="f-gpu" className={`input ${bad.has('gpus') ? 'is-bad' : ''}`} inputMode="numeric" value={form.gpus}
                   disabled={!partition?.gpu} onChange={(e) => edit({ gpus: e.target.value })} />
               </Field>
               <Field label="Time" id="f-time" bad={bad.has('timeLimit')}>
-                <input id="f-time" className={`input ${bad.has('timeLimit') ? 'is-bad' : ''}`} value={form.time} placeholder="H:MM:SS"
+                <input disabled={!canWrite} id="f-time" className={`input ${bad.has('timeLimit') ? 'is-bad' : ''}`} value={form.time} placeholder="H:MM:SS"
                   spellCheck={false} onChange={(e) => edit({ time: e.target.value })} />
               </Field>
             </div>
@@ -764,7 +769,7 @@ export function Train() {
               <div className="cx-chips" role="group" aria-labelledby="f-mods">
                 {cfg.modules.map((m) => (
                   <label key={m} className="seg-opt cx-chip">
-                    <input type="checkbox" checked={form.modules.includes(m)}
+                    <input disabled={!canWrite} type="checkbox" checked={form.modules.includes(m)}
                       onChange={(e) => edit({ modules: e.target.checked ? [...form.modules, m] : form.modules.filter((x) => x !== m) })} />
                     {m}
                   </label>
@@ -773,16 +778,16 @@ export function Train() {
             </div>}
             <div className="cx-fields">
               <Field label="Conda env" id="f-conda" bad={bad.has('condaEnv')}>
-                <input id="f-conda" className={`input ${bad.has('condaEnv') ? 'is-bad' : ''}`} value={form.conda} placeholder="(none)"
+                <input disabled={!canWrite} id="f-conda" className={`input ${bad.has('condaEnv') ? 'is-bad' : ''}`} value={form.conda} placeholder="(none)"
                   spellCheck={false} onChange={(e) => edit({ conda: e.target.value })} />
               </Field>
             </div>
             <Field label="Arguments" id="f-args" bad={bad.has('args')} hint="split on spaces · each reaches python exactly as typed: no ~ or $VAR expansion">
-              <input id="f-args" className={`input ${bad.has('args') ? 'is-bad' : ''}`} value={form.args} placeholder="--epochs 10"
+              <input disabled={!canWrite} id="f-args" className={`input ${bad.has('args') ? 'is-bad' : ''}`} value={form.args} placeholder="--epochs 10"
                 spellCheck={false} onChange={(e) => edit({ args: e.target.value })} />
             </Field>
             <Field label="Environment" id="f-env" bad={bad.has('env')} hint="one NAME=value per line">
-              <textarea id="f-env" className={`input cx-textarea ${bad.has('env') ? 'is-bad' : ''}`} rows={3} value={form.env}
+              <textarea disabled={!canWrite} id="f-env" className={`input cx-textarea ${bad.has('env') ? 'is-bad' : ''}`} rows={3} value={form.env}
                 placeholder="OMP_NUM_THREADS=4" spellCheck={false} onChange={(e) => edit({ env: e.target.value })} />
             </Field>
             <label className="cx-check" title="Needs M0 to show the cluster delivers SLURM mail">

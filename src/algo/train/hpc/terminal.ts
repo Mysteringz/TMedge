@@ -92,7 +92,7 @@ export class Terminals {
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
 
   constructor(private readonly gateway: Gateway, private readonly audit: (user: string, action: string, result: string) => void,
-    private readonly python = 'python3') {}
+    private readonly python = 'python3', private readonly authorized: (req: IncomingMessage) => boolean = () => true) {}
 
   /** A one-time key for one terminal, bound to this console sign-in. */
   issue(user: string, binding: string): TermTicket {
@@ -115,7 +115,7 @@ export class Terminals {
     const session = this.gateway.live(user);
     let keys: { c2s: Buffer; s2c: Buffer } | null = null;
     try {
-      if (!t || t.user !== user || t.binding !== binding || t.expires <= Date.now() || !session?.ssh) return false;
+      if (!this.authorized(req) || !t || t.user !== user || t.binding !== binding || t.expires <= Date.now() || !session?.ssh) return false;
       const shared = t.ecdh.computeSecret(Buffer.from(unb64u(url.searchParams.get('epk') ?? '')));
       const okm = Buffer.from(hkdfSync('sha256', shared, Buffer.from(unb64u(tid)), TERM_INFO, 64));
       shared.fill(0);
@@ -127,13 +127,13 @@ export class Terminals {
     const cols = Math.max(20, Math.min(400, Number(url.searchParams.get('cols')) || 100));
     const rows = Math.max(5, Math.min(200, Number(url.searchParams.get('rows')) || 30));
     const k = keys;
-    this.wss.handleUpgrade(req, socket, head, (ws) => this.attach(ws, tid, k, user, binding, cols, rows));
+    this.wss.handleUpgrade(req, socket, head, (ws) => this.attach(ws, req, tid, k, user, binding, cols, rows));
     return true;
   }
 
-  private attach(ws: WebSocket, tid: string, keys: { c2s: Buffer; s2c: Buffer }, user: string, binding: string, cols: number, rows: number): void {
+  private attach(ws: WebSocket, req: IncomingMessage, tid: string, keys: { c2s: Buffer; s2c: Buffer }, user: string, binding: string, cols: number, rows: number): void {
     const session = this.gateway.live(user);
-    if (!session?.ssh) { ws.close(1011, 'no session'); return; }
+    if (!this.authorized(req) || !session?.ssh) { ws.close(1011, 'no session'); return; }
     const shell = session.ssh.shellCommand();
     const bridge = spawn(this.python, ['-u', '-c', PTY_BRIDGE, String(cols), String(rows), shell.bin, ...shell.args], {
       stdio: ['pipe', 'pipe', 'ignore', 'pipe'],
@@ -182,7 +182,11 @@ export class Terminals {
     session.busy++;
     bump();
 
+    const authorityTimer = setInterval(() => { if (!this.authorized(req)) close(4001, 'session ended'); }, 5000);
+    authorityTimer.unref();
+    ws.on('close', () => clearInterval(authorityTimer));
     bridge.stdout!.on('data', (b: Buffer) => {
+      if (!this.authorized(req)) { b.fill(0); close(4001, 'session ended'); return; }
       if (ws.readyState !== ws.OPEN) return;
       ws.send(seal(T_DATA, b));
       b.fill(0);
@@ -203,6 +207,7 @@ export class Terminals {
     (bridge.stdio[3] as NodeJS.WritableStream).on('error', () => undefined);
 
     ws.on('message', (data: Buffer, isBinary: boolean) => {
+      if (!this.authorized(req)) { ws.terminate(); return; }
       if (!isBinary || data.length < 12 + 16 + 1) return close(1008, 'bad frame');
       const iv = data.subarray(0, 12);
       const { dir, counter } = counterOf(iv);

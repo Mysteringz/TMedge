@@ -8,6 +8,7 @@
  * things together -- what the sensor is running, what you have dialled in,
  * and when an uncommitted change will be put back by itself.
  */
+import { useCapability } from './entities/admin-session/index.tsx';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider,
@@ -78,6 +79,7 @@ const MOBILE_PANES = [
 type MobilePane = typeof MOBILE_PANES[number]['id'];
 
 export default function App() {
+  const canWrite = useCapability('algo.write');
   const [specs, setSpecs] = useState<NodeSpec[]>([]);
   const [revertMs, setRevertMs] = useState(15 * 60_000);
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
@@ -238,13 +240,14 @@ export default function App() {
   }, [live, setEdges]);
 
   const push = useCallback(async (next: Pipeline) => {
+    if (!canWrite) return;
     try {
       const out = await api.putPipeline(next);
       setPipeline(out.pipeline);
     } catch (e) {
       setNotice((e as Error).message);
     }
-  }, []);
+  }, [canWrite]);
 
   const onConnect = useCallback((c: Connection) => {
     if (!pipeline || !c.source || !c.target) return;
@@ -321,10 +324,11 @@ export default function App() {
 
   return (
     <div className="app">
+      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}
       <header className="bar">
         <div className="brand"><span className="mark" /> Algo debugger</div>
         <div className="source">
-          <select aria-label="Sensor source" value={pipeline?.uid ?? ''} onChange={(e) => {
+          <select disabled={!canWrite} aria-label="Sensor source" value={pipeline?.uid ?? ''} onChange={(e) => {
             if (!pipeline) return;
             void push({ ...pipeline, uid: e.target.value });
             void api.frames(e.target.value).then((f) => setFrames(f.frames)).catch((e: Error) => setNotice(e.message));
@@ -337,18 +341,18 @@ export default function App() {
           </select>
           {source?.published && <span className="badge badge-warn" title="students see this floor">public floor</span>}
           {source && source.rawEvery === 0 && (
-            <button className="btn" onClick={() => void applyParam('raw_every', 4)}>
+            <button disabled={!canWrite} className="btn" onClick={() => void applyParam('raw_every', 4)}>
               Turn on RAW (needed to see frames)
             </button>
           )}
         </div>
         <div className="modes">
-          <button className={`btn ${live ? 'on' : ''}`} onClick={() => void api.mode('live').then(() => setLive(true)).catch((e: Error) => setNotice(e.message))}>● Live</button>
-          <button className={`btn ${live ? '' : 'on'}`} onClick={() => void api.mode('pause', run?.frameId).then(() => setLive(false)).catch((e: Error) => setNotice(e.message))}>Pause</button>
-          <button className="btn" onClick={() => step(-1)}>◀ Prev</button>
-          <button className="btn" onClick={() => step(1)}>Next ▶</button>
-          <button className="btn" onClick={() => void api.resetPipeline().then((r) => setPipeline(r.pipeline)).catch((e: Error) => setNotice(e.message))}>Reset graph</button>
-          <button className="btn" onClick={() => {
+          <button disabled={!canWrite} className={`btn ${live ? 'on' : ''}`} onClick={() => void api.mode('live').then(() => setLive(true)).catch((e: Error) => setNotice(e.message))}>● Live</button>
+          <button disabled={!canWrite} className={`btn ${live ? '' : 'on'}`} onClick={() => void api.mode('pause', run?.frameId).then(() => setLive(false)).catch((e: Error) => setNotice(e.message))}>Pause</button>
+          <button disabled={!canWrite} className="btn" onClick={() => step(-1)}>◀ Prev</button>
+          <button disabled={!canWrite} className="btn" onClick={() => step(1)}>Next ▶</button>
+          <button disabled={!canWrite} className="btn" onClick={() => void api.resetPipeline().then((r) => setPipeline(r.pipeline)).catch((e: Error) => setNotice(e.message))}>Reset graph</button>
+          <button disabled={!canWrite} className="btn" onClick={() => {
             const name = prompt('Save this pipeline as:');
             if (name) void api.savePipeline(name).catch((e: Error) => setNotice(e.message));
           }}>Save</button>
@@ -423,6 +427,7 @@ export default function App() {
           role={compact ? 'tabpanel' : undefined} aria-labelledby={compact ? 'tab-graph' : undefined}>
           {compact && <div className="mobile-graph-hint">Pinch to zoom · Tap a stage to inspect</div>}
           <ReactFlow
+            nodesDraggable={canWrite} nodesConnectable={canWrite} edgesReconnectable={canWrite}
             nodes={nodes} edges={edges} nodeTypes={nodeTypes}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
             onNodeClick={(_, n) => { setSelected(n.id); if (compact) setMobilePane('inspector'); }}
@@ -470,9 +475,9 @@ export default function App() {
                       {p.unit && <span className="unit"> ({p.unit})</span>}
                     </label>
                     <div className="param-row">
-                      <input type="range" aria-label={p.label} min={p.min} max={p.max} step={p.step} value={value}
+                      <input disabled={!canWrite} type="range" aria-label={p.label} min={p.min} max={p.max} step={p.step} value={value}
                         onChange={(e) => setEdits((s) => ({ ...s, [key]: Number(e.target.value) }))} />
-                      <input type="number" aria-label={`${p.label} value`} min={p.min} max={p.max} step={p.step} value={value}
+                      <input disabled={!canWrite} type="number" aria-label={`${p.label} value`} min={p.min} max={p.max} step={p.step} value={value}
                         onChange={(e) => setEdits((s) => ({ ...s, [key]: Number(e.target.value) }))} />
                     </div>
                     <div className="param-foot">
@@ -481,12 +486,12 @@ export default function App() {
                         {p.scale && liveValue !== undefined ? ` (${(liveValue * p.scale).toFixed(2)}${p.unit ?? ''})` : ''}
                       </span>
                       {p.binding.kind !== 'local' && changed && (
-                        <button className="btn btn-apply" onClick={() => void applyParam(p.id, value)}>
+                        <button disabled={!canWrite} className="btn btn-apply" onClick={() => void applyParam(p.id, value)}>
                           Apply to {p.binding.kind === 'device' ? 'sensor' : 'edge'}
                         </button>
                       )}
                       {p.binding.kind === 'local' && changed && (
-                        <button className="btn" onClick={() => void applyParam(p.id, value)}>Set</button>
+                        <button disabled={!canWrite} className="btn" onClick={() => void applyParam(p.id, value)}>Set</button>
                       )}
                     </div>
                     {held && held.binding === 'device' && held.confirmedAt === null && (
@@ -505,8 +510,8 @@ export default function App() {
                         was {held.from ?? '—'}
                         {held.binding === 'device' && held.confirmedAt !== null && ' · the sensor confirmed it'}
                         {' '}· goes back in {Math.max(0, Math.round((held.revertAt - Date.now()) / 60000))} min
-                        <button className="link" onClick={() => void api.commit(held.param, pipeline?.uid).then(async () => setPending((await api.params()).pending)).catch((e: Error) => setNotice(e.message))}>keep</button>
-                        <button className="link" onClick={() => void api.revert(held.param, pipeline?.uid).then(async () => { setPending((await api.params()).pending); setRun(await api.run()); }).catch((e: Error) => setNotice(e.message))}>undo now</button>
+                        <button disabled={!canWrite} className="link" onClick={() => void api.commit(held.param, pipeline?.uid).then(async () => setPending((await api.params()).pending)).catch((e: Error) => setNotice(e.message))}>keep</button>
+                        <button disabled={!canWrite} className="link" onClick={() => void api.revert(held.param, pipeline?.uid).then(async () => { setPending((await api.params()).pending); setRun(await api.run()); }).catch((e: Error) => setNotice(e.message))}>undo now</button>
                       </div>
                     )}
                     {p.help && <div className="help">{p.help}</div>}
@@ -516,8 +521,8 @@ export default function App() {
 
               {spec.domain === 'device' && (
                 <div className="danger">
-                  <button className="btn" onClick={() => void api.resetBackground(pipeline?.uid).catch((e: Error) => setNotice(e.message))}>Relearn background</button>
-                  <button className="btn btn-warn" onClick={() => {
+                  <button disabled={!canWrite} className="btn" onClick={() => void api.resetBackground(pipeline?.uid).catch((e: Error) => setNotice(e.message))}>Relearn background</button>
+                  <button disabled={!canWrite} className="btn btn-warn" onClick={() => {
                     if (confirm('Write the sensor’s current parameters to its flash? This survives a reboot and is not on a timer.')) {
                       void api.persist(pipeline?.uid).catch((e: Error) => setNotice(e.message));
                     }
@@ -607,6 +612,7 @@ function Timeline({ frames, live, at, onScrub, onLive }: {
   onScrub: (frame: number) => void;
   onLive: () => void;
 }) {
+  const canWrite = useCapability('algo.write');
   // Re-render on a tick so "1 min ago" keeps up while nothing else changes.
   const [, setNow] = useState(0);
   useEffect(() => {
@@ -637,7 +643,7 @@ function Timeline({ frames, live, at, onScrub, onLive }: {
           if (f) onScrub(f.frame);
         }}
       />
-      <button className={`livepill ${live ? 'on' : ''}`} onClick={onLive} title={live ? 'watching now' : 'back to now'}>
+      <button disabled={!canWrite} className={`livepill ${live ? 'on' : ''}`} onClick={onLive} title={live ? 'watching now' : 'back to now'}>
         {live
           ? <><span className="livedot" />LIVE</>
           : (
@@ -657,6 +663,7 @@ function Timeline({ frames, live, at, onScrub, onLive }: {
  * normally keeps.
  */
 function TrainingData() {
+  const canRecord = useCapability('algo.write');
   const [s, setS] = useState<Awaited<ReturnType<typeof api.pairs>> | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -683,7 +690,7 @@ function TrainingData() {
               <div><span>with people</span><b>{s.withPeople}</b></div>
               <div><span>on disk</span><b>{mb} MB</b></div>
             </div>
-            <button className={`btn ${s.recording ? 'on' : ''}`} disabled={busy} onClick={() => {
+            <button className={`btn ${s.recording ? 'on' : ''}`} disabled={!canRecord || busy} onClick={() => {
               setBusy(true);
               setError('');
               void api.record(!s.recording).then((result) => {
