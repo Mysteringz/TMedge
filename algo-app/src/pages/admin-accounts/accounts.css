@@ -10,11 +10,15 @@
 .accounts-editor .accounts-check { display: flex; align-items: center; }
 .accounts-editor .accounts-check input { width: 20px; }
 .accounts-confirm { border-inline-start: 3px solid currentColor; padding: 12px; }
+.accounts-page .accounts-delete { border: 1px solid var(--support-error); }
 .accounts-table-wrap table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .accounts-table-wrap caption { text-align: left; padding-block: 12px; }
 .accounts-table-wrap th, .accounts-table-wrap td { text-align: left; padding: 12px 8px; border-bottom: 1px solid var(--border, #555); vertical-align: top; }
 @media (max-width: 600px) {
   .accounts-page { padding: 16px; }
+  .accounts-page button, .accounts-editor input, .accounts-editor select { min-height: 44px; }
+  .accounts-table-wrap td:nth-child(2)::before { content: 'Role: '; }
+  .accounts-table-wrap td:nth-child(3)::before { content: 'Status: '; }
   .accounts-table-wrap table, .accounts-table-wrap tbody, .accounts-table-wrap tr, .accounts-table-wrap th, .accounts-table-wrap td { display: block; width: auto; }
   .accounts-table-wrap thead { display: none; }
   .accounts-table-wrap caption { display: block; width: 100%; }

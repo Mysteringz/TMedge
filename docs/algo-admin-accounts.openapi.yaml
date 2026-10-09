@@ -48,6 +48,35 @@ paths:
         default: { $ref: '#/components/responses/Error' }
   /api/admin/accounts/{name}:
     parameters: [{ $ref: '#/components/parameters/Name' }]
+    delete:
+      summary: Permanently remove account and revoke access; current named admin only
+      description: 'Revision and commit-time authority checked under shared file lock. Protects final enabled Admin. Self deletion permitted with another enabled Admin. Submitted jobs/profile/operational history retained; recreated username may access retained history but old cookies/HPC credentials/tickets stay invalid.'
+      parameters: [{ $ref: '#/components/parameters/WriteHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: { $ref: '#/components/schemas/Revision' }
+      responses:
+        '200':
+          description: Account removed, including self deletion
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      name: { type: string }
+                      deleted: { type: boolean, enum: [true] }
+                  error: { nullable: true }
+        default: { $ref: '#/components/responses/Error' }
     patch:
       summary: Change role/status; revision required; protects final enabled admin
       parameters: [{ $ref: '#/components/parameters/WriteHeader' }]
@@ -111,7 +140,7 @@ components:
     WriteHeader: { in: header, name: x-tm-algo, required: true, schema: { type: string, enum: ['1'] }, description: Origin must match this server when provided. }
     Name: { in: path, name: name, required: true, schema: { type: string } }
   schemas:
-    Role: { type: string, enum: [viewer, engineer, admin] }
+    Role: { type: string, enum: [viewer, operator, engineer, admin] }
     Password: { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
     Revision: { type: string, pattern: '^[a-f0-9]{64}$', description: Opaque edit token; refresh after conflicts. }
     Account:

@@ -40,8 +40,8 @@ try {
   if (cmd === 'add' && name) {
     const pw = await readPassword(`password for ${name} (${MIN_PASSWORD}+ chars): `);
     if (process.stdin.isTTY && (await readPassword('again: ')) !== pw) throw new Error('the passwords differ');
-    const role = selectedRole ?? 'engineer';
-    if (!isAdminRole(role)) throw new Error('role must be viewer, engineer or admin');
+    const role = selectedRole ?? 'operator';
+    if (!isAdminRole(role)) throw new Error('role must be viewer, operator, engineer or admin');
     const u = await users.add(name, pw, role);
     console.log(`added ${u.name} to ${users.path}`);
   } else if (cmd === 'reset-password' && name) {
@@ -58,7 +58,7 @@ try {
     const names = users.names();
     console.log(`${names.length} account(s) in ${users.path}${names.length ? `: ${names.join(', ')}` : ''}`);
   } else {
-    console.error('usage: npm run algo-user -- add <name> [viewer|engineer|admin] | reset-password <name> | role <name> <viewer|engineer|admin> | remove <name> | list');
+    console.error('usage: npm run algo-user -- add <name> [viewer|operator|engineer|admin] | reset-password <name> | role <name> <viewer|operator|engineer|admin> | remove <name> | list');
     process.exit(1);
   }
 } catch (err) {

@@ -16,8 +16,11 @@ import { KEY, nodesJson, siteJson } from './fixtures.js';
 
 test('policy distinguishes reader, engineer, admin and local account management', () => {
   assert.deepEqual(principal('reader', 'viewer').capabilities, ['algo.read', 'training.read', 'firmware.read']);
-  assert.ok(principal('operator', 'engineer').capabilities.includes('training.write'));
-  assert.ok(!principal('operator', 'engineer').capabilities.includes('firmware.write'));
+  assert.ok(principal('operator', 'operator').capabilities.includes('training.write'));
+  assert.ok(!principal('operator', 'operator').capabilities.includes('firmware.write'));
+  assert.ok(principal('engineer', 'engineer').capabilities.includes('firmware.write'));
+  assert.ok(principal('engineer', 'engineer').capabilities.includes('nodes.admin'));
+  assert.ok(!principal('engineer', 'engineer').capabilities.includes('accounts.manage'));
   assert.ok(!principal('local', 'admin', false).capabilities.includes('accounts.manage'));
   for (const op of ['set', 'reset-bg', 'identify', 'save']) assert.equal(nodeCommandCapability({ op }), 'nodes.write');
   for (const op of ['reboot', 'ota', 'erase', undefined, 1]) assert.equal(nodeCommandCapability({ op }), 'nodes.admin');
@@ -63,7 +66,7 @@ test('HTTP permissions guard every mutation family and external CLI edits close 
     nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
   const usersPath = join(dataDir, 'users.json'), users = new AlgoUsers(usersPath);
-  for (const role of ['viewer', 'engineer', 'admin'] as const) await users.add(role, 'a long test password', role);
+  for (const role of ['viewer', 'operator', 'engineer', 'admin'] as const) await users.add(role, 'a long test password', role);
   const runtime = createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
   const consoleCore = createConsole(runtime);
   const handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({ SESSION_SECRET: 'x'.repeat(40), ALGO_USERS_FILE: usersPath }, cfg.adminPassword), consoleCore);
@@ -75,7 +78,7 @@ test('HTTP permissions guard every mutation family and external CLI edits close 
     return (response.headers.get('set-cookie') ?? '').split(';')[0]!;
   };
   try {
-    const viewer = await login('viewer'), engineer = await login('engineer'), admin = await login('admin');
+    const operator = await login('operator'), viewer = await login('viewer'), engineer = await login('engineer'), admin = await login('admin');
     const write = (cookie: string, path: string, body: unknown = {}, method = 'POST') => fetch(`${base}${path}`, { method, headers: { cookie, 'content-type': 'application/json', 'x-tm-algo': '1', 'x-tm-console': '1' }, body: JSON.stringify(body) });
     for (const path of ['/api/run', '/api/mode', '/api/pipeline/save', '/api/params/apply', '/api/params/commit', '/api/params/revert', '/api/params/persist', '/api/node/reset-background', '/api/pairs/record', '/api/pairs/prune', '/api/train/uploads', '/api/train/jobs', '/api/train/hpc/ticket', '/api/train/hpc/connect', '/api/train/hpc/term']) {
       assert.equal((await write(viewer, path)).status, 403, path);
@@ -83,9 +86,11 @@ test('HTTP permissions guard every mutation family and external CLI edits close 
     for (const path of ['/api/catalogue', '/api/params', '/console-app/api/state', '/console-app/api/firmware']) assert.equal((await fetch(`${base}${path}`, { headers: { cookie: viewer } })).status, 200, path);
     const me = await (await fetch(`${base}/api/me`, { headers: { cookie: viewer } })).json() as { role: string; capabilities: string[] };
     assert.equal(me.role, 'viewer'); assert.ok(!me.capabilities.includes('algo.write'));
-    for (const path of ['/console-app/api/firmware/cleanup', '/console-app/api/firmware/uploads', '/console-app/api/firmware/rollout', '/console-app/api/firmware/rollout/cancel', '/console-app/api/nodes/0000000000000001/reset-cursor', '/console-app/api/provision/requests/missing/approve']) assert.equal((await write(engineer, path)).status, 403, path);
-    assert.equal((await write(engineer, '/console-app/api/nodes/0000000000000001/command', { op: 'reboot' })).status, 403);
-    assert.equal((await write(engineer, '/console-app/api/nodes/0000000000000001/command', { opcode: 7 })).status, 403);
+    for (const path of ['/console-app/api/firmware/cleanup', '/console-app/api/firmware/uploads', '/console-app/api/firmware/rollout', '/console-app/api/firmware/rollout/cancel', '/console-app/api/nodes/0000000000000001/reset-cursor', '/console-app/api/provision/requests/missing/approve']) assert.equal((await write(operator, path)).status, 403, path);
+    assert.equal((await write(operator, '/console-app/api/nodes/0000000000000001/command', { op: 'reboot' })).status, 403);
+    assert.equal((await write(operator, '/console-app/api/nodes/0000000000000001/command', { opcode: 7 })).status, 403);
+    for (const path of ['/console-app/api/firmware/cleanup', '/console-app/api/nodes/0000000000000001/reset-cursor', '/console-app/api/provision/requests/missing/approve']) assert.notEqual((await write(engineer, path)).status, 403, path);
+    assert.notEqual((await write(engineer, '/console-app/api/nodes/0000000000000001/command', { op: 'reboot' })).status, 403);
     assert.equal((await write(admin, '/console-app/api/nodes/0000000000000001/command', { op: 'ota' })).status, 400, 'unknown raw operations remain rejected');
     assert.equal((await write(engineer, '/api/pipeline/save', { name: 'permissions-test' })).status, 200);
     const token = (await (await fetch(`${base}/api/ws-token`, { headers: { cookie: engineer } })).json() as { token: string }).token;
@@ -99,5 +104,15 @@ test('HTTP permissions guard every mutation family and external CLI edits close 
     assert.equal((await write(newCookie, '/api/run')).status, 403);
     users.update('engineer', { revoke: true });
     assert.equal((await fetch(`${base}/api/me`, { headers: { cookie: newCookie } })).status, 401);
+    const deletedCookie = await login('engineer');
+    const deletedToken = (await (await fetch(`${base}/api/ws-token`, { headers: { cookie: deletedCookie } })).json() as { token: string }).token;
+    users.remove('engineer'); await users.add('engineer', 'a long test password', 'engineer');
+    assert.equal((await fetch(`${base}/api/me`, { headers: { cookie: deletedCookie } })).status, 401);
+    await new Promise<void>((resolve, reject) => {
+      const oldSocket = new WebSocket(`${base.replace('http:', 'ws:')}/ws?token=${encodeURIComponent(deletedToken)}`, { headers: { cookie: deletedCookie } });
+      oldSocket.once('open', () => { oldSocket.terminate(); reject(new Error('old ticket revived after account recreation')); });
+      oldSocket.once('unexpected-response', (_request, response) => { assert.notEqual(response.statusCode, 101); response.resume(); resolve(); });
+      oldSocket.once('error', () => resolve());
+    });
   } finally { await handle.dispose(); await new Promise<void>((resolve) => handle.server.close(() => resolve())); await runtime.stop(); }
 });

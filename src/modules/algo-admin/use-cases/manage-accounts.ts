@@ -18,6 +18,13 @@ export class ManageAccounts {
     const accounts = this.repository.list();
     return { accounts: accounts.slice(offset, offset + limit), offset, limit, total: accounts.length };
   }
+  async delete(name: string, input: unknown, authorize: () => void) {
+    authorize();
+    if (!/^[a-z0-9][a-z0-9_.-]{1,31}$/.test(name) || !input || typeof input !== 'object' || Array.isArray(input)) throw new AccountError('VALIDATION', 400, 'A username and current revision are required.');
+    const body = input as Record<string, unknown>;
+    if (Object.keys(body).some((key) => key !== 'revision') || typeof body.revision !== 'string' || !/^[a-f0-9]{64}$/.test(body.revision)) throw new AccountError('VALIDATION', 400, 'A current account revision is required.');
+    return this.repository.delete(name, body.revision, authorize);
+  }
   async mutate(kind: AccountMutation['kind'], name: string, input: unknown, authorize: () => void) {
     authorize();
     const invalid = (message: string): never => { throw new AccountError('VALIDATION', 400, message); };

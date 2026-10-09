@@ -94,7 +94,7 @@ export class AlgoUsers {
     return name.trim().toLowerCase();
   }
 
-  async add(rawName: string, password: string, role: AdminRole = 'engineer', authorize: () => void = () => {}): Promise<AlgoUser> {
+  async add(rawName: string, password: string, role: AdminRole = 'operator', authorize: () => void = () => {}): Promise<AlgoUser> {
     if (typeof rawName !== 'string' || typeof password !== 'string' || password.length > 1024) throw new Error('username and password required within the size limits');
     if (!isAdminRole(role)) throw new Error('invalid role');
     const name = AlgoUsers.normalise(rawName);
@@ -114,11 +114,15 @@ export class AlgoUsers {
     return user;
   }
 
-  remove(rawName: string): boolean {
+  remove(rawName: string, expected?: AlgoUser, authorize: () => void = () => {}): boolean {
     return withPrivateFileLock(this.path, () => {
       this.seen = ''; this.refresh();
+      authorize();
       if (this.invalid) throw new Error('refusing to replace an invalid account file');
-      const next = new Map(this.users), ok = next.delete(AlgoUsers.normalise(rawName));
+      const name = AlgoUsers.normalise(rawName), current = this.users.get(name);
+      if (expected && !current) throw new Error('no such account');
+      if (expected && current && JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('account changed; retry the operation');
+      const next = new Map(this.users), ok = next.delete(name);
       if (ok) { this.protectLastAdmin(next); this.save(next); } return ok;
     });
   }

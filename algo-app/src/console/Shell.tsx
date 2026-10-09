@@ -57,7 +57,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
         if (response.status === 401) { onSession(null); setUser(null); return; }
         if (!response.ok) throw new Error('Could not check access.');
         const value = await response.json() as AdminSession;
-        if (!value.user || !['viewer', 'engineer', 'admin'].includes(value.role) || !Array.isArray(value.capabilities)) throw new Error('Access information is unavailable.');
+        if (!value.user || !['viewer', 'operator', 'engineer', 'admin'].includes(value.role) || !Array.isArray(value.capabilities)) throw new Error('Access information is unavailable.');
         onSession(value); setUser(value.user); setAccessError('');
       } catch (error) { if (!controller.signal.aborted) { onSession(null); setAccessError(error instanceof Error ? error.message : 'Could not check access.'); } }
       finally { busy = false; }

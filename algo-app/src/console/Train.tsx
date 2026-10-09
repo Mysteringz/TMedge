@@ -516,14 +516,14 @@ export function Train() {
   if (loadError) {
     return (
       <main className="cx-train">
-      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}
+      {!canWrite && <p role="status">Read-only access. An operator or engineer can change parameters and run training.</p>}
         <Head status="—" hpc={null} />
         <section className="card elev-sm cx-card"><div className="cx-error">! module 02 could not load: {loadError}</div></section>
       </main>
     );
   }
   if (!cfg || !form) return <main className="cx-train">
-      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}<Head status="…" hpc={null} /></main>;
+      {!canWrite && <p role="status">Read-only access. An operator or engineer can change parameters and run training.</p>}<Head status="…" hpc={null} /></main>;
 
   const status = job?.status ?? 'NEW';
   const partition = cfg.partitions.find((p) => p.name === form.partition);
@@ -543,7 +543,7 @@ export function Train() {
 
   return (
     <main className="cx-train">
-      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}
+      {!canWrite && <p role="status">Read-only access. An operator or engineer can change parameters and run training.</p>}
       <Head status={status} hpc={hpc} />
 
       <div className="cx-train-cols">

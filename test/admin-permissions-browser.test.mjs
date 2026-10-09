@@ -13,12 +13,12 @@ import { DEFAULT_NODE_LIMITS } from '../dist/src/edge/config.js';
 import { buildRegistry } from '../dist/src/edge/registry.js';
 import { KEY, nodesJson, siteJson } from '../dist/test/fixtures.js';
 
-const artifactDir = resolve('../.codex/docs/algo-admin-improvements/task-2-1-roles-and-permissions/artifacts');
+const artifactDir = resolve(process.env.ROLE_ARTIFACT_DIR ?? '../.codex/docs/algo-admin-improvements/task-2-1-roles-and-permissions/artifacts');
 mkdirSync(artifactDir, { recursive: true });
 const dataDir = mkdtempSync(join(tmpdir(), 'tm-browser-')), usersPath = join(dataDir, 'users.json');
 process.env.DATA_DIR = dataDir;
 const users = new AlgoUsers(usersPath), password = randomBytes(18).toString('hex');
-for (const role of ['viewer', 'engineer', 'admin']) await users.add(role, password, role);
+for (const role of ['viewer', 'operator', 'engineer', 'admin']) await users.add(role, password, role);
 const cfg = { edgeId: 'browser-test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: '', dataDir, recordRaw: false, consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'test-only', flashToken: null, pushUrls: [], pushToken: '', publishMs: 60000, gatewayPort: 0, gatewayToken: null, nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null };
 const runtime = createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson())), core = createConsole(runtime);
 const handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({ SESSION_SECRET: randomBytes(32).toString('hex'), ALGO_USERS_FILE: usersPath }, cfg.adminPassword), core);
@@ -27,7 +27,7 @@ const base = `http://127.0.0.1:${handle.server.address().port}`;
 const browser = await chromium.launch({ headless: true, channel: 'chrome' });
 const evidence = [];
 try {
-  for (const role of ['viewer', 'engineer', 'admin']) {
+  for (const role of ['viewer', 'operator', 'engineer', 'admin']) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const response = await context.request.post(`${base}/auth/login`, { data: { username: role, password } });
     assert.equal(response.status(), 200);
@@ -36,8 +36,8 @@ try {
     await page.goto(`${base}/updates`);
     await page.getByRole('heading', { name: 'Updates', exact: true }).waitFor();
     const browse = page.getByRole('button', { name: 'Browse folder', exact: true });
-    assert.equal(await browse.isDisabled(), role !== 'admin');
-    if (role !== 'admin') await page.getByText('Admin access required.', { exact: true }).waitFor();
+    assert.equal(await browse.isDisabled(), !['engineer', 'admin'].includes(role));
+    if (!['engineer', 'admin'].includes(role)) await page.getByText('Engineer or admin access required.', { exact: true }).waitFor();
     await page.screenshot({ path: join(artifactDir, `${role}-updates.png`), fullPage: true });
     await page.goto(`${base}/flow`); await page.getByText('Algo debugger', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'Reset graph', exact: true }).isDisabled(), role === 'viewer');
@@ -47,7 +47,7 @@ try {
       await page.screenshot({ path: join(artifactDir, 'viewer-training.png'), fullPage: true });
       await page.goto(`${base}/console`);
       const frame = page.frameLocator('iframe');
-      await frame.getByText('Read-only access. An engineer can change parameters and run training.', { exact: true }).waitFor();
+      await frame.getByText('Read-only access. An operator or engineer can change parameters and run training.', { exact: true }).waitFor();
       assert.equal(await frame.locator('#controls button[data-op="reboot"]').isDisabled(), true);
       await page.screenshot({ path: join(artifactDir, 'viewer-console.png'), fullPage: true });
       await page.setViewportSize({ width: 360, height: 800 }); await page.goto(`${base}/updates`);
@@ -82,7 +82,7 @@ try {
       evidence.push({ checks: ['mobile role and sign-out visible', 'flow and console 403 feedback', 'loading feedback', '401 login feedback'], writesAfterPermissionChange: writes.length });
     }
     assert.deepEqual(errors, []);
-    evidence.push({ role, updatesWrite: role === 'admin', flowWrite: role !== 'viewer', pageErrors: errors });
+    evidence.push({ role, updatesWrite: ['engineer', 'admin'].includes(role), flowWrite: role !== 'viewer', pageErrors: errors });
     await context.close();
   }
   writeFileSync(join(artifactDir, 'browser-results.json'), JSON.stringify({ runner: 'local Playwright Chromium', evidence }, null, 2));

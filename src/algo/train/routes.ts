@@ -90,7 +90,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
       if (!bindings.has(binding) && bindings.size >= 512) return void res.status(503).json({ error: 'too many live training bindings' });
       bindings.set(binding, { user: String(res.locals.user), req: { headers: { cookie: req.headers.cookie } } });
     }
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && opts.authorized && !opts.authorized(req)) return void res.status(403).json({ error: 'Engineer access required.' });
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && opts.authorized && !opts.authorized(req)) return void res.status(403).json({ error: 'Operator or engineer access required.' });
     return next();
   });
   let cfg: HpcConfig | null = null;

@@ -4,6 +4,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
+import { Socket } from 'node:net';
+import { IncomingMessage } from 'node:http';
+import { createECDH } from 'node:crypto';
 import express from 'express';
 import { existsSync } from 'node:fs';
 import { HpcService } from '../src/algo/train/hpc/service.js';
@@ -13,6 +16,7 @@ import { Gateway, type GatewayDeps, type GatewayConfig } from '../src/algo/train
 import { Credentials } from '../src/algo/train/hpc/sealed.js';
 import { packCredentials, sealCredentials } from '../src/shared/hpcseal.js';
 import type { SealTicket } from '../src/shared/hpcseal.js';
+import { AlgoUsers, createAlgoAuth, loadAlgoAuthConfig } from '../src/algo/auth.js';
 import { createTrain } from '../src/algo/train/routes.js';
 import { DurableCommandOutcomes } from '../src/modules/nodes/application/durable-command-outcomes.js';
 
@@ -99,7 +103,10 @@ test('revocation during fingerprint hashing cannot persist a fingerprint or repo
 test('a fresh browser identity epoch cannot preserve prior HPC credentials or tickets', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tm-epoch-')), configPath = join(root, 'hpc.json');
   writeFileSync(configPath, JSON.stringify({ verified: false, backend: 'vpn-ssh', partitions: [{ name: 'cpu', maxTime: '1:00:00', gpu: false }], defaultPartition: 'cpu', modules: [], planA: { vpnHost: 'vpn.example', vpnDomains: ['hku.hk'], submitHost: 'hpc.example', idleTtlSeconds: 600, maxSessions: 2, socksPorts: [21000, 21003], tools: {} } }));
-  const { deps } = fakeDeps(); let epoch = '0';
+  const { deps } = fakeDeps(), usersPath = join(root, 'users.json');
+  const users = new AlgoUsers(usersPath); await users.add('alice', 'long epoch password', 'engineer');
+  const auth = createAlgoAuth(loadAlgoAuthConfig({ SESSION_SECRET: 'x'.repeat(40), ALGO_USERS_FILE: usersPath }, 'set'));
+  let epoch = auth.accountEpoch('alice')!;
   const train = createTrain({ root, configPath, gatewayDeps: deps, mutating: (_req, _res, next) => next(), bindingOf: (req) => req.headers.cookie ?? '', accountEpoch: () => epoch, authorized: (req) => req.headers.cookie === epoch, authenticated: (req) => req.headers.cookie === epoch });
   const app = express(); app.use(express.json()); app.use((_req, res, next) => { res.locals.user = 'alice'; next(); }); app.use('/api/train', train.router);
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -113,8 +120,10 @@ test('a fresh browser identity epoch cannot preserve prior HPC credentials or ti
     const operation = await response.json() as { opId: string };
     const stream = await request(`/ops/${operation.opId}/events`); const events = await stream.text(); assert.match(events, /CONNECTED/);
     const oldTicket = await sealed();
+    const oldTerminal = await (await request('/hpc/term', {})).json() as { tid: string };
     assert.equal((await (await request('/hpc')).json() as { session: { state: string } }).session.state, 'up');
-    epoch = '1';
+    users.remove('alice'); await users.add('alice', 'long epoch password', 'engineer');
+    const recreatedEpoch = auth.accountEpoch('alice')!; assert.notEqual(recreatedEpoch, epoch); epoch = recreatedEpoch;
     assert.notEqual((await (await request('/hpc')).json() as { session: { state: string } }).session.state, 'up', 'fresh login checked before the sweeper must invalidate old cache');
     assert.equal((await request('/hpc/connect', { sealed: oldTicket })).status, 400, 'old credential ticket is destroyed');
     const begun = deferred<void>(), resume = deferred<void>();
@@ -126,10 +135,17 @@ test('a fresh browser identity epoch cannot preserve prior HPC credentials or ti
     await begun.promise;
     const pendingStream = await request(`/ops/${pendingId}/events`), reader = pendingStream.body!.getReader();
     await reader.read();
-    epoch = '2'; resume.resolve();
+    users.remove('alice'); await users.add('alice', 'long epoch password', 'engineer'); epoch = auth.accountEpoch('alice')!; resume.resolve();
     const result = await reader.read();
     assert.equal(result.done, true, 'revoked reader receives no later private operation event');
     assert.equal((heldCredentials as Credentials | null)?.wiped, true, 'revoked in-flight credentials are wiped');
+    const fresh = await request('/hpc/connect', { sealed: await sealed() });
+    const freshId = (await fresh.json() as { opId: string }).opId;
+    assert.match(await (await request(`/ops/${freshId}/events`)).text(), /CONNECTED/);
+    const socket = new Socket(), incoming = new IncomingMessage(socket); incoming.headers.cookie = epoch;
+    const key = createECDH('prime256v1').generateKeys().toString('base64url');
+    assert.equal(train.sockets!.upgrade(incoming, socket, Buffer.alloc(0), new URL(`http://localhost/train-term?tid=${oldTerminal.tid}&epk=${key}`), 'alice', epoch), false, 'a recreated account with fresh HPC session cannot use old terminal ticket');
+    socket.destroy();
 
   } finally { train.stop(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });

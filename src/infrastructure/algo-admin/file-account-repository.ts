@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { AlgoUsers, type AlgoUser } from '../../algo/auth.js';
 import { AuthBusyError } from '../../web/auth.js';
-import { AccountError, type AdminAccount, type AccountMutation } from '../../modules/algo-admin/domain/accounts.js';
+import { AccountError, type AdminAccount, type AccountMutation, type AccountDeletion } from '../../modules/algo-admin/domain/accounts.js';
 import type { AdminAccountRepository } from '../../modules/algo-admin/repositories/admin-account-repository.js';
 
 export class FileAccountRepository implements AdminAccountRepository {
@@ -20,6 +20,16 @@ export class FileAccountRepository implements AdminAccountRepository {
     throw new AccountError('STORAGE_UNAVAILABLE', 503, 'Account storage is unavailable.');
   }
   list(): AdminAccount[] { try { return this.users.records().sort((a, b) => a.name.localeCompare(b.name)).map((user) => this.dto(user)); } catch (error) { return this.translate(error); } }
+  async delete(name: string, revision: string, authorize: () => void): Promise<AccountDeletion> {
+    try {
+      authorize();
+      const snapshot = this.users.records().find((user) => user.name === name);
+      if (!snapshot) throw new AccountError('NOT_FOUND', 404, 'This account no longer exists.');
+      if (this.dto(snapshot).revision !== revision) throw new AccountError('STALE_REVISION', 409, 'This account changed. Refresh accounts before deleting it.');
+      this.users.remove(name, snapshot, authorize);
+      return { name, deleted: true };
+    } catch (error) { return this.translate(error); }
+  }
   async mutate(change: AccountMutation, authorize: () => void): Promise<AdminAccount> {
     try {
       authorize();

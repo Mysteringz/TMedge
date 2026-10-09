@@ -1,6 +1,7 @@
 import type { AdminRole } from './permissions.js';
 
 export interface AdminAccount { name: string; role: AdminRole; disabled: boolean; createdAt: number; revision: string }
+export interface AccountDeletion { name: string; deleted: true }
 export class AccountError extends Error {
   constructor(readonly code: string, readonly status: number, message: string) { super(message); }
 }

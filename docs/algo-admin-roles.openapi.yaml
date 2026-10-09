@@ -44,7 +44,7 @@ components:
       properties:
         user: { type: string }
         auth: { type: boolean }
-        role: { type: string, enum: [viewer, engineer, admin] }
+        role: { type: string, enum: [viewer, operator, engineer, admin] }
         namedAccount: { type: boolean }
         capabilities:
           type: array

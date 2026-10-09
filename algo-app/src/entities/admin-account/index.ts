@@ -1,7 +1,8 @@
 import { permissionChanged } from '../admin-session/index.tsx';
 
-export interface AdminAccount { name: string; role: 'viewer' | 'engineer' | 'admin'; disabled: boolean; createdAt: number; revision: string }
+export interface AdminAccount { name: string; role: 'viewer' | 'operator' | 'engineer' | 'admin'; disabled: boolean; createdAt: number; revision: string }
 export interface AccountList { accounts: AdminAccount[]; offset: number; limit: number; total: number }
+export interface AccountDeletion { name: string; deleted: true }
 export class AccountRequestError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }

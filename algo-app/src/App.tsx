@@ -355,7 +355,7 @@ export default function App() {
   return (
     <div className="app">
       <ConnectionStatus transport={connection.transport} observedAt={connection.observedAt} fresh={connection.fresh} sensorOnline={sources.find((source) => source.uid === pipeline?.uid)?.online ?? null} />
-      {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}
+      {!canWrite && <p role="status">Read-only access. An operator or engineer can change parameters and run training.</p>}
       <header className="bar">
         <div className="brand"><span className="mark" /> Algo debugger</div>
         <div className="source">

@@ -12,12 +12,12 @@ import { DEFAULT_NODE_LIMITS } from '../dist/src/edge/config.js';
 import { buildRegistry } from '../dist/src/edge/registry.js';
 import { KEY, nodesJson, siteJson } from '../dist/test/fixtures.js';
 
-const artifacts = resolve('../.codex/docs/algo-admin-improvements/task-2-2-account-management/artifacts');
+const artifacts = resolve(process.env.ACCOUNT_ARTIFACT_DIR ?? '../.codex/docs/algo-admin-improvements/task-2-2-account-management/artifacts');
 mkdirSync(artifacts, { recursive: true });
 const dataDir = mkdtempSync(join(tmpdir(), 'tm-account-browser-')), usersPath = join(dataDir, 'users.json'), password = randomBytes(18).toString('hex');
 process.env.DATA_DIR = dataDir;
 const users = new AlgoUsers(usersPath);
-for (const [name, role] of [['admin', 'admin'], ['backup', 'admin'], ['viewer', 'viewer'], ['engineer', 'engineer']]) await users.add(name, password, role);
+for (const [name, role] of [['admin', 'admin'], ['backup', 'admin'], ['viewer', 'viewer'], ['engineer', 'engineer'], ['operator', 'operator']]) await users.add(name, password, role);
 const cfg = { edgeId: 'accounts-test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: '', dataDir, recordRaw: false, consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'test-only', flashToken: null, pushUrls: [], pushToken: '', publishMs: 60000, gatewayPort: 0, gatewayToken: null, nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null };
 const runtime = createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
 const handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({ SESSION_SECRET: randomBytes(32).toString('hex'), ALGO_USERS_FILE: usersPath }, cfg.adminPassword));
@@ -26,7 +26,7 @@ const base = `http://127.0.0.1:${handle.server.address().port}`, browser = await
 const evidence = [], errors = [];
 const login = async (context, username) => { assert.equal((await context.request.post(`${base}/auth/login`, { data: { username, password } })).status(), 200); };
 try {
-  for (const name of ['viewer', 'engineer']) {
+  for (const name of ['viewer', 'operator', 'engineer']) {
     const context = await browser.newContext(); await login(context, name); const page = await context.newPage();
     await page.goto(`${base}/accounts`); await page.getByText('Admin access required.', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'Create account', exact: true }).count(), 0);
@@ -47,12 +47,12 @@ try {
   await page.getByText('Account created-account saved.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Manage created-account', exact: true }).click();
   assert.equal(await page.getByLabel('Username', { exact: true }).getAttribute('readonly'), '');
-  assert.equal(await page.getByLabel('Role', { exact: true }).inputValue(), 'engineer');
+  assert.equal(await page.getByLabel('Role', { exact: true }).inputValue(), 'operator');
   await page.getByLabel('Role', { exact: true }).selectOption('viewer');
   await page.getByRole('button', { name: 'Review role / status change' }).click();
   await page.getByText('This ends current sessions. Submitted training jobs continue.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Cancel action' }).click();
-  assert.equal(users.get('created-account').role, 'engineer');
+  assert.equal(users.get('created-account').role, 'operator');
   await page.getByRole('button', { name: 'Review role / status change' }).click(); await page.getByRole('button', { name: 'Confirm action' }).click();
   await page.locator('#account-editor-heading').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: 'Manage created-account' }).waitFor();

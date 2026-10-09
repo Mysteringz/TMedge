@@ -148,7 +148,7 @@ export function Updates() {
 
   return (
     <main className="cx-train cx-updates">
-      {!canWrite && <p role="status">Admin access required.</p>}
+      {!canWrite && <p role="status">Engineer or admin access required.</p>}
       <header className="cx-train-head">
         <div>
           <div className="cx-kicker">Module 04 · Firmware</div>

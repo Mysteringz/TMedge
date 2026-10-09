@@ -17,18 +17,19 @@ export function accountRoutes(auth: AlgoAuth, accounts: ManageAccounts) {
     try { res.json({ data: accounts.list(Number(req.query.offset ?? 0), Number(req.query.limit ?? 25), accounts.authority(() => auth.principalOf(req))), error: null }); }
     catch (error) { fail(res, error); }
   });
-  const mutation = (kind: AccountMutation['kind']) => async (req: Request, res: Response) => {
+  const mutation = (kind: AccountMutation['kind'] | 'delete') => async (req: Request, res: Response) => {
     try {
       const authorize = accounts.authority(() => auth.principalOf(req)); authorize();
       const origin = req.get('origin');
       if (req.get('x-tm-algo') !== '1' || (origin && origin !== `${req.protocol}://${req.get('host')}`)) throw new AccountError('FORBIDDEN', 403, 'Request origin is not permitted.');
       const actor = auth.principalOf(req)!;
       if (!(kind === 'create' || kind === 'password' ? hashing : writes).allow(actor.name)) throw new AccountError('RATE_LIMITED', 429, 'Try again later.');
-      const result = await accounts.mutate(kind, String(req.params.name ?? ''), req.body, authorize);
+      const result = kind === 'delete' ? await accounts.delete(String(req.params.name ?? ''), req.body, authorize) : await accounts.mutate(kind, String(req.params.name ?? ''), req.body, authorize);
       res.status(kind === 'create' ? 201 : 200).json({ data: result, error: null });
     } catch (error) { fail(res, error); }
   };
   router.post('/', mutation('create')); router.patch('/:name', mutation('update'));
+  router.delete('/:name', mutation('delete'));
   router.post('/:name/password-resets', mutation('password')); router.post('/:name/session-revocations', mutation('revoke'));
   router.use((error: unknown, _req: Request, res: Response, _next: express.NextFunction) => { fail(res, new AccountError('VALIDATION', 400, 'Invalid or oversized JSON body.')); });
   return router;

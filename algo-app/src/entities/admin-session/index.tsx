@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 
-export interface AdminSession { user: string; role: 'viewer' | 'engineer' | 'admin'; namedAccount: boolean; capabilities: string[] }
+export interface AdminSession { user: string; role: 'viewer' | 'operator' | 'engineer' | 'admin'; namedAccount: boolean; capabilities: string[] }
 export const AdminSessionContext = createContext<AdminSession | null>(null);
 export function useCapability(capability: string): boolean { return useContext(AdminSessionContext)?.capabilities.includes(capability) ?? false; }
 export function useAdminSession(): AdminSession | null { return useContext(AdminSessionContext); }
