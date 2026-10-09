@@ -55,6 +55,19 @@ test('an edge with no token configured refuses every request, including an empty
   assert.equal(p.authorise(null), false, 'no token configured is not "anything goes"');
 });
 
+test('pending identity and request code survive a restart, while a denial stays denied', () => {
+  const { p, reg, nodesPath, dir } = setup();
+  const queued = p.request({ uid: NEW_UID, label: 'Bench' }, '127.0.0.1');
+  assert.equal(queued.status, 'pending');
+  const restarted = new Provisioning(reg, { token: TOKEN, nodesPath, auditPath: join(dir, 'audit.jsonl'), now: () => 1000 });
+  assert.deepEqual(restarted.requests(), p.requests());
+  assert.equal(restarted.statusOf(NEW_UID), 'pending');
+  restarted.deny(restarted.requests()[0]?.id ?? '', 'algo:alice');
+  const again = new Provisioning(reg, { token: TOKEN, nodesPath, auditPath: join(dir, 'audit.jsonl'), now: () => 1000 });
+  assert.deepEqual(again.requests(), []);
+  assert.equal(again.statusOf(NEW_UID), 'unknown');
+});
+
 test('approval admits an identity, never a placement', () => {
   const { p, reg, nodesPath } = setup();
   const before = [...reg.tables.values()].map((t) => ({ id: t.id, owner: t.owner, covered: [...t.coveredBy] }));

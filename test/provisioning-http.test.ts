@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { applicationErrorHandler } from '../src/infrastructure/http/errors.js';
 import { FileProvisioningService } from '../src/infrastructure/provisioning/file-provisioning-service.js';
-import { createProvisioningAdminRouter, createProvisioningToolRouter } from '../src/modules/provisioning/routes/provisioning-routers.js';
+import { createProvisioningAdminRouter, createProvisioningToolRouter, pairingCode } from '../src/modules/provisioning/routes/provisioning-routers.js';
 import { DatabaseProvisioningService } from '../src/modules/provisioning/application/database-provisioning-service.js';
 import type { ProvisioningService } from '../src/modules/provisioning/application/provisioning-service.js';
 import type { ProvisioningRepository } from '../src/modules/provisioning/repositories/provisioning-repository.js';
@@ -46,6 +46,18 @@ test('provisioning routes preserve token/admin guards and persist before admissi
     const denied = await fetch(`${base}/api/provision/request`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ uid: UID }) });
     assert.equal(denied.status, 401);
 
+    for (const authorization of [`Bearer ${TOKEN} extra`, `Bearer ${TOKEN},other`, `Bearer wrong`, `Basic ${TOKEN}`]) {
+      const response = await fetch(`${base}/api/provision/status/${UID}`, { headers: { authorization } });
+      assert.equal(response.status, 401, 'a malformed or incorrect bearer credential must not authorize polling');
+      const request = await fetch(`${base}/api/provision/request`, {
+        method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify({ uid: UID }),
+      });
+      assert.equal(request.status, 401, 'a malformed credential must not queue a join request');
+    }
+    assert.deepEqual(events, [], 'rejected credentials have no side effects');
+    const invalidUID = await fetch(`${base}/api/provision/status/not-a-mac`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    assert.equal(invalidUID.status, 400);
+
     const queued = await fetch(`${base}/api/provision/request`, {
       method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ uid: UID, label: 'Lab node' }),
@@ -62,7 +74,8 @@ test('provisioning routes preserve token/admin guards and persist before admissi
     const blocked = await fetch(`${base}/api/provision/requests/${queuedBody.id}/approve`, { method: 'POST', headers: adminHeaders });
     assert.equal(blocked.status, 403);
     const admitted = await fetch(`${base}/api/provision/requests/${queuedBody.id}/approve`, {
-      method: 'POST', headers: { ...adminHeaders, 'x-tm-console': '1' },
+      method: 'POST', headers: { ...adminHeaders, 'x-tm-console': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ uid: UID, pairingCode: pairingCode(queuedBody.id) }),
     });
     assert.equal(admitted.status, 200);
     assert.deepEqual(await admitted.json(), { ok: true, uid: UID, label: 'Lab node', placed: false });
@@ -124,12 +137,13 @@ test('file provisioning preserves typed validation and missing-request responses
     const queued = await request({ uid: UID });
     assert.equal(queued.status, 202);
     const pending = await queued.json() as { id: string };
-    const failed = await fetch(base + '/requests/' + pending.id + '/approve', { method: 'POST' });
+    const confirmation = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ uid: UID, pairingCode: pairingCode(pending.id) }) };
+    const failed = await fetch(base + '/requests/' + pending.id + '/approve', confirmation);
     assert.equal(failed.status, 503);
     assert.deepEqual(await failed.json(), { error: 'provisioning storage is unavailable' });
     assert.equal(registry.nodes.has(UID), false);
     registry.nodes.set(UID, { uid: UID, label: 'Concurrent admission', floorId: null, pose: null, owns: [], simulated: false, rgb: false });
-    const conflict = await fetch(base + '/requests/' + pending.id + '/approve', { method: 'POST' });
+    const conflict = await fetch(base + '/requests/' + pending.id + '/approve', confirmation);
     assert.equal(conflict.status, 409);
     assert.deepEqual(await conflict.json(), { error: `${UID} is already registered` });
     assert.equal(events.length, 1, 'failed mutations do not broadcast resolution');

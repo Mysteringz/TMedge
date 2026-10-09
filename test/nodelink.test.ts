@@ -479,6 +479,22 @@ test('direct: the node listener serves health and firmware, and nothing a person
 
 // --- configuration ------------------------------------------------------------------
 
+test('provisioning: configured tokens must fit the bearer header and require protected approval', () => {
+  const base = { TM_KEY: 'k', WEB_PUSH_URLS: '', ADMIN_PASSWORD: 'test-admin' };
+  const token = 'test-provisioning-token-with-32-chars';
+  assert.equal(loadEdgeConfig({ ...base, TMFLASH_TOKEN: token }).flashToken, token);
+  assert.equal(loadEdgeConfig(base).flashToken, null, 'no legacy provisioning token is configured');
+  for (const value of ['short', token + ' ', token + '\n', token + ',', token + 'é']) {
+    assert.throws(() => loadEdgeConfig({ ...base, TMFLASH_TOKEN: value }), (error: unknown) => {
+      assert.ok(error instanceof EnvError);
+      assert.match(error.message, /TMFLASH_TOKEN/);
+      assert.ok(!error.message.includes(value), 'configuration errors never reveal the token');
+      return true;
+    });
+  }
+  assert.throws(() => loadEdgeConfig({ ...base, ADMIN_PASSWORD: '', TMFLASH_TOKEN: token }), /ADMIN_PASSWORD/);
+});
+
 test('direct: enabling the node listener without a key refuses to start', () => {
   assert.throws(() => loadEdgeConfig({ ALLOW_UNSIGNED: '1', NODE_PORT: '5211', WEB_PUSH_URLS: '' }), EnvError);
   const cfg = loadEdgeConfig({ TM_KEY: 'k', NODE_PORT: '5211', WEB_PUSH_URLS: '' });

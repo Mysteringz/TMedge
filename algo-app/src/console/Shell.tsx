@@ -16,6 +16,8 @@ import './console.css';
 // home screen should not wait for it.
 const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
 const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Updates })));
+const Adoption = lazy(() => import('./Adoption.tsx').then((m) => ({ default: m.Adoption })));
+const TMflashConnect = lazy(() => import('./TMflashConnect.tsx').then((m) => ({ default: m.TMflashConnect })));
 
 export function Shell() {
   const path = usePath();
@@ -89,6 +91,8 @@ export function Shell() {
       <Nav user={user} onSignOut={signOut} />
       {screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
+          : screen === 'adoption' ? <Suspense fallback={<main className="cx-train cx-hint">Loading adoption…</main>}><Adoption /></Suspense>
+          : screen === 'tmflash-connect' ? <Suspense fallback={null}><TMflashConnect user={user} /></Suspense>
           : <Home user={user} />}
       <Toast text={toast} />
     </div>

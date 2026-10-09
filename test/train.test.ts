@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -476,6 +477,17 @@ async function boot() {
 }
 
 const W = { 'x-tm-algo': '1' };
+// Probe the declared-size gate without racing an early HTTP refusal against
+// a multi-megabyte upload still being written by fetch (which can see EPIPE).
+const declaredUpload = (base: string, cookie: string, filename: string, bytes: number) =>
+  new Promise<number>((resolve, reject) => {
+    const request = httpRequest(`${base}/api/train/uploads?filename=${encodeURIComponent(filename)}`, {
+      method: 'POST', headers: { cookie, ...W, 'content-type': 'application/octet-stream', 'content-length': bytes },
+    }, response => { response.resume(); response.once('end', () => { resolve(response.statusCode ?? 0); request.destroy(); }); });
+    request.on('error', reject);
+    request.setTimeout(5000, () => request.destroy(new Error('declared upload gate did not answer')));
+    request.flushHeaders();
+  });
 const upload = (base: string, cookie: string, filename: string, body: Buffer, headers: Record<string, string> = {}) =>
   fetch(`${base}/api/train/uploads?filename=${encodeURIComponent(filename)}`, {
     method: 'POST', headers: { cookie, ...W, 'content-type': 'application/octet-stream', ...headers }, body,
@@ -552,8 +564,8 @@ describe('module 02 over HTTP', () => {
 
   test('uploads: size, type and name are checked before anything is kept', async () => {
     const { base, root, alice } = await boot();
-    assert.equal((await upload(base, alice, 'big.py', Buffer.alloc(5 * 1024 * 1024 + 1, 0x41))).status, 413);
-    assert.equal((await upload(base, alice, 'big.zip', Buffer.alloc(2 * 1024 * 1024 + 1))).status, 413);
+    assert.equal(await declaredUpload(base, alice, 'big.py', 5 * 1024 * 1024 + 1), 413);
+    assert.equal(await declaredUpload(base, alice, 'big.zip', 2 * 1024 * 1024 + 1), 413);
     assert.equal((await upload(base, alice, 'train.exe', py('MZ'))).status, 400);
     assert.equal((await upload(base, alice, '../train.py', py('x'))).status, 400);
     assert.equal((await upload(base, alice, '.hidden.py', py('x'))).status, 400);

@@ -14,6 +14,11 @@ export class FileProvisioningService implements ProvisioningService {
     return this.provisioning.authorise(token);
   }
 
+  async ready(): Promise<void> {
+    try { this.provisioning.ready(); }
+    catch { throw new ApplicationError('unavailable', 'provisioning storage is unavailable'); }
+  }
+
   async request(input: unknown, from: string): Promise<JoinRequestResult> {
     const result = this.provisioning.request(asRequestInput(input), from);
     return result.status === 'pending'
@@ -40,7 +45,11 @@ export class FileProvisioningService implements ProvisioningService {
   }
 
   async deny(id: string, actor: string): Promise<JoinRequestView> {
-    return requestView(this.provisioning.deny(id, actor));
+    try { return requestView(this.provisioning.deny(id, actor)); }
+    catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      throw new ApplicationError('unavailable', 'provisioning storage is unavailable');
+    }
   }
 }
 

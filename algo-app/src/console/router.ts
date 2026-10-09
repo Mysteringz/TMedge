@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 
-export type Screen = 'login' | 'home' | 'flow' | 'train' | 'console' | 'updates';
+export type Screen = 'login' | 'home' | 'flow' | 'train' | 'console' | 'updates' | 'adoption' | 'tmflash-connect';
 
 export function screenOf(path: string): Screen {
   if (path.startsWith('/login')) return 'login';
@@ -12,6 +12,8 @@ export function screenOf(path: string): Screen {
   if (path.startsWith('/train')) return 'train';
   if (path === '/console' || path.startsWith('/console/')) return 'console';
   if (path === '/updates' || path.startsWith('/updates/')) return 'updates';
+  if (path === '/adoption' || path.startsWith('/adoption/')) return 'adoption';
+  if (path === '/tmflash/connect') return 'tmflash-connect';
   return 'home';
 }
 

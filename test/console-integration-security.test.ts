@@ -60,8 +60,8 @@ test('legacy console protects imagery, provisioning, firmware, static UI and liv
   assert.equal(command.status, 200);
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0], ['node-a', CMD_IDENTIFY, 0, 7]);
-  assert.equal((await fetch(base + '/api/provision/status/node-a')).status, 401);
-  assert.equal((await fetch(base + '/api/provision/status/node-a', { headers: { authorization: 'Bearer flash-test-token' } })).status, 200);
+  assert.equal((await fetch(base + '/api/provision/status/01:02:03:04:05:06')).status, 401);
+  assert.equal((await fetch(base + '/api/provision/status/01:02:03:04:05:06', { headers: { authorization: 'Bearer flash-test-token' } })).status, 200);
   assert.equal((await fetch(base + '/api/demo/rgb/node-a', { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: new Uint8Array([255, 216]) })).status, 403);
   assert.equal((await fetch(base + '/fw/not-an-image.bin')).status, 404);
   const wsBase = base.replace('http', 'ws');
@@ -104,7 +104,7 @@ test('shared console owns one feed and cleanup while moved legacy port hides all
   for (const path of ['/api/state', '/api/ws-token', '/api/firmware', '/api/provision/requests']) {
     assert.equal((await fetch(base + path, { headers: { authorization } })).status, 410);
   }
-  assert.equal((await fetch(base + '/api/provision/status/node-a', { headers: { authorization: 'Bearer flash-test-token' } })).status, 200);
+  assert.equal((await fetch(base + '/api/provision/status/01:02:03:04:05:06', { headers: { authorization: 'Bearer flash-test-token' } })).status, 200);
   await Promise.all([core.dispose(), stopConsole(server), core.dispose()]);
   assert.equal(disposed, 1);
   assert.equal(rt.listenerCount('raw'), 0);

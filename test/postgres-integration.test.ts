@@ -969,14 +969,15 @@ async function exercisePostgresEdgeCutover(
     const base = `http://127.0.0.1:${live.consolePort}`;
     const queued = await queueNode(base, token, uid, 'Process cutover node');
     requestIds.push(queued.id);
-    assert.equal((await decideNode(base, queued.id, 'approve')).status, 200);
+    assert.equal((await decideNode(base, { ...queued, pairingCode: 'WRONG' }, 'approve')).status, 400);
+    assert.equal((await decideNode(base, queued, 'approve')).status, 200);
     const outagePending = await queueNode(base, token, outageUid, 'Outage retry node');
     requestIds.push(outagePending.id);
 
     controlPostgresTestService('stop');
     databaseStopped = true;
     await waitForAcceptedPacketDuringOutage(base, live, uid);
-    const rejectedWhileDown = await decideNode(base, outagePending.id, 'approve');
+    const rejectedWhileDown = await decideNode(base, outagePending, 'approve');
     assert.equal(rejectedWhileDown.status, 503, 'durable approval reports PostgreSQL unavailability');
     assert.deepEqual(await rejectedWhileDown.json(), { error: 'provisioning storage is unavailable' });
     assert.equal(live.child.exitCode, null, 'the edge process remains running during database outage');
@@ -988,7 +989,7 @@ async function exercisePostgresEdgeCutover(
     controlPostgresTestService('start');
     databaseStopped = false;
     await waitForDatabase(database);
-    assert.equal((await decideNode(base, outagePending.id, 'approve')).status, 200, 'operator retry commits after recovery');
+    assert.equal((await decideNode(base, outagePending, 'approve')).status, 200, 'operator retry commits after recovery');
     await stopChild(live.child);
 
     restarted = await launchPostgresEdge(pg, directory, pg.port);
@@ -1038,22 +1039,29 @@ function controlPostgresTestService(action: 'start' | 'stop'): void {
   });
 }
 
-async function queueNode(base: string, token: string, uid: string, label: string): Promise<{ id: string }> {
+interface QueuedNode { id: string; uid: string; pairingCode: string }
+
+async function queueNode(base: string, token: string, uid: string, label: string): Promise<QueuedNode> {
   const response = await fetch(`${base}/api/provision/request`, {
     method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify({ uid, label }),
   });
   assert.equal(response.status, 202, await response.clone().text());
-  return response.json() as Promise<{ id: string }>;
+  const queued = await response.json() as QueuedNode;
+  assert.equal(queued.uid, uid);
+  assert.match(queued.pairingCode, /^[0-9A-F]{8}$/);
+  return queued;
 }
 
-async function decideNode(base: string, id: string, verdict: 'approve' | 'deny'): Promise<Response> {
-  return fetch(`${base}/api/provision/requests/${id}/${verdict}`, {
+async function decideNode(base: string, request: QueuedNode, verdict: 'approve' | 'deny'): Promise<Response> {
+  return fetch(`${base}/api/provision/requests/${request.id}/${verdict}`, {
     method: 'POST', signal: AbortSignal.timeout(10_000),
     headers: {
       authorization: `Basic ${Buffer.from('edge-admin:edge-admin-password').toString('base64')}`,
       'x-tm-console': '1',
+      'content-type': 'application/json',
     },
+    body: JSON.stringify({ uid: request.uid, pairingCode: request.pairingCode }),
   });
 }
 

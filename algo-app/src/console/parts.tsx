@@ -6,8 +6,9 @@ import { SignOut } from './icons.tsx';
 export const MODULES = [
   { n: '01', title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
   { n: '02', title: 'ML training', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
-  { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands, and admitting nodes.' },
+  { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
   { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
+  { n: '05', title: 'Adoption', path: '/adoption', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
 ] as const;
 
 /** A square of the accent with the letter in it: the console's only logo. */

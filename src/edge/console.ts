@@ -32,10 +32,13 @@ import { createFirmwareRouter } from '../modules/firmware/routes/firmware-router
 import { FirmwareStoreExecutor } from '../infrastructure/firmware-build/firmware-store-executor.js';
 import { RolloutImageUsageQuery } from '../infrastructure/firmware-build/rollout-image-usage-query.js';
 import { Provisioning } from './provisioning.js';
+import { AdoptionCredentials } from './adoption-credentials.js';
+import { createAdoptionRouter } from '../modules/provisioning/routes/adoption-router.js';
 import { FileProvisioningService } from '../infrastructure/provisioning/file-provisioning-service.js';
 import type { ProvisioningService } from '../modules/provisioning/application/provisioning-service.js';
 import { createProvisioningAdminRouter, createProvisioningToolRouter } from '../modules/provisioning/routes/provisioning-routers.js';
 import { applicationErrorHandler } from '../infrastructure/http/errors.js';
+import { ApplicationError } from '../modules/shared/application/contracts.js';
 import type { EdgeRuntime } from './runtime.js';
 import { ExecuteNodeCommand } from '../modules/nodes/application/execute-node-command.js';
 import { ResetNodeCursor } from '../modules/nodes/application/reset-node-cursor.js';
@@ -53,6 +56,10 @@ const MAX_SUBSCRIPTIONS = 64;
 
 export interface ConsoleCore {
   machine: Router;
+  provisioningTool: Router;
+  adoption: Router;
+  flasherCredentials: AdoptionCredentials;
+  provisioningService: ProvisioningService;
   ui: Router;
   upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
   closeSessions(binding: string): void;
@@ -60,11 +67,29 @@ export interface ConsoleCore {
 }
 
 export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): ConsoleCore {
-  const provisioningService = options.provisioningService ?? new FileProvisioningService(new Provisioning(rt.reg, {
+  const registration = options.provisioningService ?? new FileProvisioningService(new Provisioning(rt.reg, {
     token: rt.cfg.flashToken,
     nodesPath: rt.cfg.nodesPath,
     auditPath: join(rt.cfg.dataDir, 'provisioning.jsonl'),
   }));
+  const credentials = new AdoptionCredentials(join(rt.cfg.dataDir, 'flasher-credentials.json'));
+  const provisioningService: ProvisioningService = {
+    get enabled() { return registration.enabled || credentials.list().length > 0; },
+    authorize: token => registration.authorize(token) || credentials.authorize(token),
+    ready: () => registration.ready(),
+    request: (input, from) => registration.request(input, from),
+    statusOf: uid => registration.statusOf(uid), requests: () => registration.requests(),
+    approve: async (id, actor) => {
+      const request = (await registration.requests()).find(item => item.id === id);
+      // Both console entry points must enforce the same device-key policy.
+      // Admission alone cannot supply a board's authentication key.
+      if (request && rt.cfg.devices && !rt.cfg.devices.keys(request.uid).length && !rt.cfg.devices.allowsLegacy(request.uid)) {
+        throw new ApplicationError('conflict', 'enrol this device in the device key policy before approving; authentication is required');
+      }
+      return registration.approve(id, actor);
+    },
+    deny: (id, actor) => registration.deny(id, actor),
+  };
   const firmwareBuildWorker = new FirmwareBuildWorkerClient();
   const firmwareBuildJobs: FirmwareBuildJobService = options.firmwareBuildJobs ?? new FirmwareBuildJobs(new FirmwareStoreExecutor(rt.firmware, firmwareBuildWorker));
   const machine = express.Router();
@@ -109,10 +134,11 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     return res.end(bytes);
   });
   machine.post('/api/provision/request', express.json({ limit: '4kb' }));
-  machine.use('/api/provision', createProvisioningToolRouter({
+  const provisioningTool = createProvisioningToolRouter({
     service: provisioningService,
     broadcast: (message) => broadcast(message),
-  }));
+  });
+  machine.use('/api/provision', provisioningTool);
 
   const ui = express.Router();
   ui.use(express.json({ limit: '4kb' }));
@@ -226,6 +252,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     service: provisioningService,
     mutating,
     broadcast: (message) => broadcast(message),
+    actor: req => req.res?.locals.user ? `algo:${String(req.res.locals.user)}` : 'console',
   }));
 
   const imageInUse = new RolloutImageUsageQuery(rt.rollouts);
@@ -253,6 +280,10 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   stateTimer.unref();
   let disposal: Promise<void> | null = null;
   return {
+    flasherCredentials: credentials,
+    provisioningService,
+    provisioningTool,
+    adoption: createAdoptionRouter(rt, provisioningService, credentials),
     machine,
     ui,
     upgrade(req, socket, head, path, access) {
