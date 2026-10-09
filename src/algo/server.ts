@@ -203,7 +203,8 @@ export function startAlgo(
   // framed by this origin (and nothing else), and it shows rig RGB from
   // blob: URLs.
   if (consoleCore) {
-    const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; " +
+    const consoleCsp = "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; " +
+      "font-src https://fonts.gstatic.com; img-src 'self' data: blob:; " +
       "connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'";
     app.use('/console-app', (req: Request, res: Response, next: NextFunction) => {
       // Relative URLs in the console's page need the trailing slash.

@@ -2,14 +2,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { donutFrame } from './donut.ts';
 import { ArrowRight } from './icons.tsx';
+import { MODULES } from './parts.tsx';
 import { navigate } from './router.ts';
-
-const MODULES = [
-  { n: '01', title: 'Algorithm Flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
-  { n: '02', title: 'ML Training', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
-  { n: '03', title: 'Debug Console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands, and admitting nodes.' },
-  { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
-];
 
 export function Home({ user }: { user: string }) {
   const [sel, setSel] = useState(0);
@@ -37,14 +31,13 @@ export function Home({ user }: { user: string }) {
     <div className="cx-donut-stage" aria-hidden="true"><Donut /></div>
     <main className="cx-home-main">
       <section className="cx-home-left">
-        <div className="cx-kicker">&gt; SELECT MODULE</div>
+        <p className="cx-eyebrow">Select module</p>
         <h1 className="cx-welcome">Welcome back, {user}.</h1>
-        <p className="cx-help">Pick where to work. Use <kbd>↑ ↓</kbd> and <kbd>enter</kbd>.</p>
+        <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>4</kbd>.</p>
         <div className="cx-modules">
           {MODULES.map((m, i) => (
             <button key={m.n} className={`cx-module ${sel === i ? 'is-on' : ''}`}
               onClick={() => navigate(m.path)} onMouseEnter={() => setSel(i)} onFocus={() => setSel(i)}>
-              <span className="cx-caret">&gt;</span>
               <span className="cx-n">{m.n}</span>
               <span className="cx-mod-text">
                 <span className="cx-mod-title">{m.title}<span className="cx-path">{m.path}</span></span>

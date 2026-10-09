@@ -148,13 +148,13 @@ export function Updates() {
     <main className="cx-train cx-updates">
       <header className="cx-train-head">
         <div>
-          <div className="cx-kicker">&gt; MODULE 04 / FIRMWARE</div>
+          <div className="cx-kicker">Module 04 · Firmware</div>
           <h1 className="cx-h2">Updates</h1>
           <p className="cx-up-lede">Build from source. Prove it on one node. Then roll it out.</p>
         </div>
         <span className={`tag ${statusError ? 'tag-outline cx-tag-bad' : 'tag-neutral'} cx-tag-px`} role="status">
           <span className={`cx-sq ${dataReady ? 'cx-up-online' : ''}`} />
-          {statusError ? 'EDGE UNREACHABLE' : view ? 'CONNECTED TO EDGE' : 'CONNECTING…'}
+          {statusError ? 'Edge unreachable' : view ? 'Connected to edge' : 'Connecting…'}
         </span>
       </header>
 
@@ -162,9 +162,9 @@ export function Updates() {
       {actionError && <div className="cx-up-alert" role="alert">{actionError}</div>}
 
       <section className="cx-up-stats" aria-label="Update overview">
-        <Metric label="READY IMAGES" value={view ? String(ready.length).padStart(2, '0') : '—'} detail={view ? `${sizeOf(view.diskBytes)} stored on this edge` : 'Loading image library'} />
-        <Metric label="AVAILABLE NODES" value={view ? String(available.length).padStart(2, '0') : '—'} detail="Online with an update route" />
-        <Metric label="ROLLOUT" value={view?.rollout ? stageLabel(view.rollout.stage) : 'IDLE'} detail={view?.rollout ? `${view.rollout.nodes.filter((node) => node.state === 'confirmed').length}/${view.rollout.nodes.length} nodes confirmed` : 'No update in progress'} />
+        <Metric label="Ready images" value={view ? String(ready.length).padStart(2, '0') : '—'} detail={view ? `${sizeOf(view.diskBytes)} stored on this edge` : 'Loading image library'} />
+        <Metric label="Available nodes" value={view ? String(available.length).padStart(2, '0') : '—'} detail="Online with an update route" />
+        <Metric label="Rollout" value={view?.rollout ? stageLabel(view.rollout.stage) : 'Idle'} detail={view?.rollout ? `${view.rollout.nodes.filter((node) => node.state === 'confirmed').length}/${view.rollout.nodes.length} nodes confirmed` : 'No update in progress'} />
       </section>
 
       <div className="cx-up-cols">
@@ -189,14 +189,14 @@ export function Updates() {
             </div>
             {uploadProgress && <progress className="cx-up-upload-progress" max={uploadProgress.total} value={uploadProgress.done} aria-label="Source upload progress" />}
             <div className="cx-up-terminal">
-              <div className="cx-up-terminal-head"><span className="cx-label">BUILD OUTPUT</span><span className="cx-hint">{buildingActive && building ? `${Math.max(0, Math.round((Date.now() - building.startedAt) / 1000))}s elapsed` : 'tmflash / release'}</span></div>
+              <div className="cx-up-terminal-head"><span className="cx-label">Build output</span><span className="cx-hint">{buildingActive && building ? `${Math.max(0, Math.round((Date.now() - building.startedAt) / 1000))}s elapsed` : 'tmflash / release'}</span></div>
               <pre ref={log} className="cx-up-log" aria-label="Build output">{uploadProgress ? activity : buildLog || activity || '> Select source to start a build.\n> Build output will appear here.'}</pre>
               {building?.error && <p className="cx-hint is-err cx-up-log-error" role="alert">{building.error}</p>}
             </div>
           </section>
 
           <section className="card elev-sm cx-card" aria-labelledby="up-library-title">
-            <div className="cx-card-head"><h2 id="up-library-title" className="cx-label">IMAGE LIBRARY</h2><span className="cx-hint">Stored on this edge</span></div>
+            <div className="cx-card-head"><h2 id="up-library-title" className="cx-label">Image library</h2><span className="cx-hint">Stored on this edge</span></div>
             {!view ? <p className="cx-hint">Loading images…</p> : !view.builds.length
               ? <div className="cx-up-empty"><span className="cx-mono">No firmware images yet.</span><p>Upload a project above to build your first image.</p></div>
               : <div className="cx-up-table-wrap"><table className="table cx-up-images">
@@ -215,16 +215,16 @@ export function Updates() {
           <section className="card elev-sm cx-card" aria-labelledby="up-rollout-title">
             <PanelHead step="02" title="Roll out" id="up-rollout-title" />
             <p className="cx-up-copy">Choose a built image and the nodes to update.</p>
-            <div className="field"><label htmlFor="up-image">FIRMWARE IMAGE</label><select id="up-image" className="input" value={buildId} disabled={!dataReady || busy || running || !ready.length} onChange={(event) => setBuildId(event.target.value)}>
+            <div className="field"><label htmlFor="up-image">Firmware image</label><select id="up-image" className="input" value={buildId} disabled={!dataReady || busy || running || !ready.length} onChange={(event) => setBuildId(event.target.value)}>
               {!ready.length && <option value="">No ready images</option>}{ready.map((build) => <option key={build.id} value={build.id}>{build.version} · {build.id} · {sizeOf(build.size)}</option>)}
             </select></div>
-            <div className="field"><label htmlFor="up-target">UPDATE TARGET</label><select id="up-target" className="input" value={targetValue} disabled={!dataReady || busy || running} onChange={(event) => setTargetValue(event.target.value)}>
+            <div className="field"><label htmlFor="up-target">Update target</label><select id="up-target" className="input" value={targetValue} disabled={!dataReady || busy || running} onChange={(event) => setTargetValue(event.target.value)}>
               <option value="all">Every node ({available.length} available)</option>
               {layout.floors.map((floor) => <option key={floor.id} value={`floor:${floor.id}`}>{floor.name} ({eligibleNodes(nodes, { kind: 'floor', floorId: floor.id }).length} available)</option>)}
               {nodes.map((node) => <option key={node.uid} value={`node:${node.uid}`}>{node.label} ({node.uid}){eligibleNodes([node], { kind: 'all' }).length ? '' : ' — unavailable'}</option>)}
             </select></div>
             <div className="cx-up-plan">
-              <span className="tag tag-outline cx-tag-px">PILOT FIRST</span>
+              <span className="tag tag-outline cx-tag-px">Pilot first</span>
               <p>{!chosen.length ? 'No online node with an update route matches this target.'
                 : chosen.length === 1 ? <><strong>{chosen[0]?.label}</strong> is the only target.</>
                   : <><strong>{chosen[0]?.label}</strong> goes first. The other {chosen.length - 1} node{chosen.length === 2 ? '' : 's'} follow after it proves healthy.</>}</p>
@@ -237,7 +237,7 @@ export function Updates() {
           </section>
 
           <section className="card elev-sm cx-card" aria-labelledby="up-progress-title">
-            <div className="cx-card-head"><h2 id="up-progress-title" className="cx-label">ROLLOUT PROGRESS</h2>
+            <div className="cx-card-head"><h2 id="up-progress-title" className="cx-label">Rollout progress</h2>
               {running && <button className="btn btn-secondary cx-danger cx-btn-px" disabled={busy || !dataReady} onClick={() => setConfirmation({ kind: 'stop' })}>Stop rollout</button>}
             </div>
             {view?.rollout ? <RolloutProgress rollout={view.rollout} />
@@ -245,7 +245,7 @@ export function Updates() {
           </section>
 
           {!!view?.history.length && <section className="card elev-sm cx-card" aria-labelledby="up-history-title">
-            <h2 id="up-history-title" className="cx-label">RECENT UPDATES</h2>
+            <h2 id="up-history-title" className="cx-label">Recent updates</h2>
             {view.history.slice(0, 5).map((past) => <div key={past.id} className="cx-up-history">
               <div><span className="cx-mono">{past.version}</span><span className="cx-hint">{dateOf(past.startedAt)} · {past.nodes.filter((node) => node.state === 'confirmed').length}/{past.nodes.length} confirmed</span></div>
               <span className="tag tag-neutral cx-tag-px">{stageLabel(past.stage)}</span>
@@ -256,7 +256,7 @@ export function Updates() {
 
       <dialog ref={dialog} className="cx-up-confirm" onCancel={() => setConfirmation(null)} onClose={() => setConfirmation(null)} aria-labelledby="up-confirm-title">
         <div className="card cx-card">
-          <div className="cx-kicker">&gt; CONFIRM UPDATE</div>
+          <div className="cx-kicker">Confirm update</div>
           <h2 id="up-confirm-title">{confirmation?.kind === 'stop' ? 'Stop this rollout?' : 'Ready to update?'}</h2>
           {confirmation?.kind === 'start' ? <><p>Update {confirmation.nodes.length} node{confirmation.nodes.length === 1 ? '' : 's'} to <strong className="cx-mono">{confirmation.version}</strong>?</p>
             <p className="cx-hint">Image {confirmation.buildId}<br />Pilot: {confirmation.nodes[0]?.label} ({confirmation.nodes[0]?.uid})</p>
@@ -277,7 +277,7 @@ function PanelHead({ step, title, id }: { step: string; title: string; id: strin
   return <div className="cx-up-panel-head"><span className="cx-up-step">{step}</span><h2 id={id}>{title}</h2></div>;
 }
 function stageLabel(stage: Rollout['stage']) {
-  return { pilot: 'PILOT', rest: 'ROLLING OUT', done: 'COMPLETE', stopped: 'STOPPED' }[stage];
+  return { pilot: 'Pilot', rest: 'Rolling out', done: 'Complete', stopped: 'Stopped' }[stage];
 }
 function RolloutProgress({ rollout }: { rollout: Rollout }) {
   const confirmed = rollout.nodes.filter((node) => node.state === 'confirmed').length;
@@ -290,7 +290,7 @@ function RolloutProgress({ rollout }: { rollout: Rollout }) {
     <div className="cx-up-nodes">{rollout.nodes.map((node, index) => {
       const percent = node.state === 'confirmed' ? 100 : Math.min(100, Math.max(0, node.percent));
       return <div className={`cx-up-node ${node.state === 'failed' ? 'is-failed' : ''}`} key={node.uid}>
-        <div className="cx-up-node-head"><strong>{node.label}</strong>{index === 0 && <span className="cx-up-pilot">PILOT</span>}<span className={`cx-mono ${node.state === 'confirmed' ? 'cx-up-good' : ''}`}>{node.state} · {percent}%</span></div>
+        <div className="cx-up-node-head"><strong>{node.label}</strong>{index === 0 && <span className="cx-up-pilot">Pilot</span>}<span className={`cx-mono ${node.state === 'confirmed' ? 'cx-up-good' : ''}`}>{node.state} · {percent}%</span></div>
         <div className="cx-hint">{node.uid}</div>
         <progress max={100} value={percent} aria-label={`${node.label} update progress`} />
         {node.error && <p className="cx-hint is-err">{node.error}</p>}
