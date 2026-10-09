@@ -213,6 +213,8 @@ export interface NodeHealth {
     lastCmd: number;
     params: Record<string, number>;
     receivedAt: number;
+    /** Process-local accepted STATUS generation; independent of clock resolution. */
+    generation?: number;
   } | null;
   /** Heat of a typical single person in this view, learned online. */
   refHeat: number | null;

@@ -1,0 +1,146 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Live command receipts",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/console-app/api/nodes/{uid}/commands/{id}": {
+      "get": {
+        "summary": "Read one current issuer-private live receipt",
+        "parameters": [
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No-store envelope data receipt and error null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CommandReceipt"
+                    },
+                    "error": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Existing cookie-auth gate"
+          },
+          "403": {
+            "description": "Read authority unavailable"
+          },
+          "404": {
+            "description": "Foreign, expired, evicted, missing or post-restart receipt; identical response"
+          }
+        }
+      }
+    },
+    "/console-app/api/nodes/{uid}/command": {
+      "post": {
+        "summary": "Existing explicit dispatch; additive receipt/note and sent flag",
+        "description": "Existing operation-specific role and CSRF policy preserved. No retries/replay. Sent false when bounded dispatch wait ended uncertain. Standalone legacy equivalent paths omit /console-app.",
+        "responses": {
+          "200": {
+            "description": "Existing sent/note with additive receipt"
+          },
+          "400": {
+            "description": "Invalid existing command"
+          },
+          "403": {
+            "description": "Write permission/CSRF rejected"
+          },
+          "409": {
+            "description": "Conflict/uncertain transport with safe receipt when available"
+          },
+          "503": {
+            "description": "Unavailable durable intent or bounded dispatch capacity"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CommandReceipt": {
+        "type": "object",
+        "required": [
+          "id",
+          "uid",
+          "operation",
+          "sequence",
+          "boot",
+          "state",
+          "requestedAt",
+          "updatedAt",
+          "message"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "uid": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "boot": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "requested",
+              "sent",
+              "acknowledged",
+              "timed-out",
+              "uncertain",
+              "failed"
+            ]
+          },
+          "requestedAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

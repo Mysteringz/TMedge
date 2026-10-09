@@ -43,6 +43,7 @@ export interface PendingChange {
   /** Null until the node's STATUS shows it took the command. */
   confirmedAt: number | null;
   cmdSeq: number | null;
+  restoring?: boolean;
 }
 export interface SourceNode {
   uid: string; label: string; floorId: string; simulated: boolean;
@@ -67,7 +68,7 @@ export const api = {
     nodes: NodeSpec[]; edgeParams: Record<string, { lo: number; hi: number; unit: string }>;
     revertMs: number; preview: { available: boolean; reason: string | null };
   }>),
-  sources: () => fetch('/api/sources').then(json<{ nodes: SourceNode[] }>),
+  sources: (signal?: AbortSignal) => fetch('/api/sources', { signal }).then(json<{ nodes: SourceNode[] }>),
   pipeline: () => fetch('/api/pipeline').then(json<{
     pipeline: Pipeline; problems: { where: string; message: string }[]; dirty: string[]; saved: string[];
   }>),
@@ -89,7 +90,7 @@ export const api = {
   mode: (mode: 'live' | 'pause' | 'step', frame?: number) =>
     fetch('/api/mode', { method: 'POST', headers: write, body: JSON.stringify({ mode, frame }) })
       .then(json<{ live: boolean; frame?: number }>),
-  params: () => fetch('/api/params').then(json<{
+  params: (signal?: AbortSignal) => fetch('/api/params', { signal }).then(json<{
     device: Record<string, number>; edge: Record<string, number>;
     pending: PendingChange[]; audit: unknown[];
   }>),

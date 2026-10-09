@@ -51,6 +51,10 @@ export interface PendingChange {
   /** Set once the node's STATUS shows it took the command. */
   confirmedAt: number | null;
   cmdSeq: number | null;
+  /** Correlates observations to this dispatch, including recovery dispatches. */
+  commandAt?: number;
+  commandBoot?: number | null;
+  commandGeneration?: number | null;
   /** Recovery commands remain pending until a subsequent STATUS confirms them. */
   restoring?: boolean;
 }
@@ -145,8 +149,10 @@ export class ParamBroker {
       const node = this.rt.nodes().find((n) => n.uid === c.uid);
       const status = node?.status;
       if (!status) continue;
+      if (c.commandGeneration != null && (status.generation ?? 0) <= c.commandGeneration) continue;
+      if (status.receivedAt < (c.commandAt ?? c.at) || c.commandBoot != null && node?.boot !== c.commandBoot) continue;
       const applied = (status.params as Record<string, number> | undefined)?.[c.param];
-      const seen = c.cmdSeq === null || status.lastCmd >= c.cmdSeq;
+      const seen = c.cmdSeq !== null && status.lastCmd >= c.cmdSeq;
       if (seen && applied === c.to) {
         if (c.restoring) { this.pending.delete(key); restored.push([key, c]); }
         else c.confirmedAt = now;
@@ -261,6 +267,9 @@ export class ParamBroker {
       // been *sent*, and is not confirmed until the node says so.
       confirmedAt: binding.kind === 'edge' ? now : null,
       cmdSeq,
+      commandAt: now,
+      commandGeneration: binding.kind === 'device' ? this.rt.nodes().find((node) => node.uid === uid)?.status?.generation ?? null : null,
+      commandBoot: binding.kind === 'device' ? this.rt.ingest.links?.get(uid)?.boot ?? null : null,
     };
     this.pending.set(key, change);
     this.reverting.add(key);
@@ -322,6 +331,9 @@ export class ParamBroker {
         if (c.binding === 'device') {
           const id = PARAM_NAMES.indexOf(c.param as (typeof PARAM_NAMES)[number]);
           if (id < 0) throw new Error('invalid recovery parameter');
+          c.commandAt = Date.now();
+          c.commandGeneration = this.rt.nodes().find((node) => node.uid === uid)?.status?.generation ?? null;
+          c.commandBoot = this.rt.ingest.links?.get(uid)?.boot ?? null;
           c.cmdSeq = await this.rt.ingest.sendCommand(uid, CMD_SET_PARAM, id, c.from);
           c.restoring = true;
           c.to = c.from;

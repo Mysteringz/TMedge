@@ -9,6 +9,8 @@
  * and when an uncommitted change will be put back by itself.
  */
 import { useCapability } from './entities/admin-session/index.tsx';
+import { useConnectionState } from './entities/connection-state/index.ts';
+import { ConnectionStatus } from './widgets/connection-status/index.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider,
@@ -80,10 +82,15 @@ type MobilePane = typeof MOBILE_PANES[number]['id'];
 
 export default function App() {
   const canWrite = useCapability('algo.write');
+  const connection = useConnectionState();
+  const connectionRef = useRef(connection); connectionRef.current = connection;
+  const [parameterBusy, setParameterBusy] = useState(false);
+  const parameterInFlight = useRef(false);
   const [specs, setSpecs] = useState<NodeSpec[]>([]);
   const [revertMs, setRevertMs] = useState(15 * 60_000);
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [sources, setSources] = useState<SourceNode[]>([]);
+  const [sourceObservedAt, setSourceObservedAt] = useState<number | null>(null);
   const [run, setRun] = useState<RunResult | null>(null);
   const [selected, setSelected] = useState<string>('bg-1');
   const [pending, setPending] = useState<PendingChange[]>([]);
@@ -98,6 +105,7 @@ export default function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const ws = useRef<WebSocket | null>(null);
+  const deviceReady = connection.transport === 'connected' && sourceObservedAt !== null && connection.now - sourceObservedAt < 15000 && sources.some((source) => source.uid === pipeline?.uid && source.online);
   const flow = useReactFlow();
   const compact = useCompactLayout();
   const [mobilePane, setMobilePane] = useState<MobilePane>('graph');
@@ -136,11 +144,13 @@ export default function App() {
         const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`);
         socket = sock;
         ws.current = sock;
+        sock.onopen = () => { if (!closed && socket === sock) { setSourceObservedAt(null); connectionRef.current.setTransport('connected'); } };
         sock.onmessage = (ev) => {
           if (closed || socket !== sock) return;
           let msg: RunResult & { type: string; pipeline?: Pipeline; live?: boolean; pending?: PendingChange[] };
           try { msg = JSON.parse(String(ev.data)) as typeof msg; } catch { setNotice('The console received an unreadable live message.'); return; }
           if (!msg || typeof msg.type !== 'string') return;
+          connectionRef.current.received();
           if (msg.type === 'frame') {
             // A live frame must not overwrite the one being looked at.
             setScrub((s) => { if (s === null) { setRun(msg); if (msg.pending) setPending(msg.pending); } return s; });
@@ -150,8 +160,10 @@ export default function App() {
             if (msg.pending) setPending(msg.pending);
           }
         };
-        sock.onclose = () => { if (!closed && socket === sock) retryTimer = setTimeout(() => void open(), 2000); };
+        sock.onclose = () => { if (!closed && socket === sock) { connectionRef.current.setTransport('reconnecting'); retryTimer = setTimeout(() => void open(), 2000); } };
+        sock.onerror = () => { if (!closed) connectionRef.current.setTransport('disconnected'); };
       } catch {
+        if (!closed) connectionRef.current.setTransport('disconnected');
         if (!closed) retryTimer = setTimeout(() => void open(), 3000);
       }
     };
@@ -162,6 +174,21 @@ export default function App() {
       socket?.close();
       if (ws.current === socket) ws.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    let stopped = false, busy = false; let request: AbortController | null = null;
+    const refresh = async (): Promise<void> => {
+      if (stopped || busy || document.hidden) return; busy = true; request = new AbortController();
+      const timeout = setTimeout(() => request?.abort(), 10000);
+      try { const [source, params] = await Promise.all([api.sources(request.signal), api.params(request.signal)]);
+        if (!stopped && !request.signal.aborted) { setSources(source.nodes); setPending(params.pending); setSourceObservedAt(Date.now()); }
+      } catch { if (!stopped) setSourceObservedAt(null); }
+      finally { clearTimeout(timeout); busy = false; }
+    };
+    const visible = (): void => { if (document.hidden) request?.abort(); else void refresh(); };
+    const timer = setInterval(() => void refresh(), 5000); document.addEventListener('visibilitychange', visible); void refresh();
+    return () => { stopped = true; request?.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
   }, []);
 
   useEffect(() => () => { if (scrubTimer.current) clearTimeout(scrubTimer.current); runSeq.current++; }, []);
@@ -297,7 +324,10 @@ export default function App() {
   }, []);
 
   const applyParam = async (paramId: string, value: number) => {
-    if (!pipeline) return;
+    if (!pipeline || parameterInFlight.current) return;
+    const binding = specs.find((item) => item.type === pipeline.nodes.find((node) => node.id === selected)?.type)?.params.find((item) => item.id === paramId)?.binding;
+    if (binding?.kind === 'device' && !deviceReady) { setNotice('Device controls wait for a refreshed connection and sensor state.'); return; }
+    parameterInFlight.current = true; setParameterBusy(true);
     try {
       await api.apply(selected, paramId, value, pipeline.uid);
       const p = await api.params();
@@ -309,7 +339,7 @@ export default function App() {
       setEdits((e) => { const { [`${selected}.${paramId}`]: _drop, ...rest } = e; return rest; });
     } catch (e) {
       setNotice((e as Error).message);
-    }
+    } finally { parameterInFlight.current = false; setParameterBusy(false); }
   };
 
   const step = (delta: number) => {
@@ -324,6 +354,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <ConnectionStatus transport={connection.transport} observedAt={connection.observedAt} fresh={connection.fresh} sensorOnline={sources.find((source) => source.uid === pipeline?.uid)?.online ?? null} />
       {!canWrite && <p role="status">Read-only access. An engineer can change parameters and run training.</p>}
       <header className="bar">
         <div className="brand"><span className="mark" /> Algo debugger</div>
@@ -486,8 +517,8 @@ export default function App() {
                         {p.scale && liveValue !== undefined ? ` (${(liveValue * p.scale).toFixed(2)}${p.unit ?? ''})` : ''}
                       </span>
                       {p.binding.kind !== 'local' && changed && (
-                        <button disabled={!canWrite} className="btn btn-apply" onClick={() => void applyParam(p.id, value)}>
-                          Apply to {p.binding.kind === 'device' ? 'sensor' : 'edge'}
+                        <button disabled={!canWrite || parameterBusy || p.binding.kind === 'device' && !deviceReady} className="btn btn-apply" onClick={() => void applyParam(p.id, value)}>
+                          {parameterBusy ? 'Requested…' : `Apply to ${p.binding.kind === 'device' ? 'sensor' : 'edge'}`}
                         </button>
                       )}
                       {p.binding.kind === 'local' && changed && (
@@ -499,7 +530,7 @@ export default function App() {
                       // reports every 10s. Saying so beats showing the old
                       // number back, which read as the change being dropped.
                       <div className="held held-waiting">
-                        asked for {held.to} · waiting for the sensor to confirm
+                        {held.restoring ? 'Restoring previous value — waiting for device confirmation' : 'Sent — waiting for device'} · {held.uid} · sequence {held.cmdSeq ?? 'unavailable'} · asked for {held.to}
                         {Date.now() - held.at > 30_000 && (
                           <strong> — no confirmation in {Math.round((Date.now() - held.at) / 1000)}s; it may be offline or refusing this value</strong>
                         )}
@@ -508,10 +539,10 @@ export default function App() {
                     {held && (
                       <div className="held">
                         was {held.from ?? '—'}
-                        {held.binding === 'device' && held.confirmedAt !== null && ' · the sensor confirmed it'}
+                        {held.binding === 'device' && held.confirmedAt !== null && ` · Device confirmed at ${new Date(held.confirmedAt).toLocaleTimeString()}`}
                         {' '}· goes back in {Math.max(0, Math.round((held.revertAt - Date.now()) / 60000))} min
-                        <button disabled={!canWrite} className="link" onClick={() => void api.commit(held.param, pipeline?.uid).then(async () => setPending((await api.params()).pending)).catch((e: Error) => setNotice(e.message))}>keep</button>
-                        <button disabled={!canWrite} className="link" onClick={() => void api.revert(held.param, pipeline?.uid).then(async () => { setPending((await api.params()).pending); setRun(await api.run()); }).catch((e: Error) => setNotice(e.message))}>undo now</button>
+                        <button disabled={!canWrite || held.binding === 'device' && !deviceReady} className="link" onClick={() => void api.commit(held.param, pipeline?.uid).then(async () => setPending((await api.params()).pending)).catch((e: Error) => setNotice(e.message))}>keep</button>
+                        <button disabled={!canWrite || held.binding === 'device' && !deviceReady} className="link" onClick={() => void api.revert(held.param, pipeline?.uid).then(async () => { setPending((await api.params()).pending); setRun(await api.run()); }).catch((e: Error) => setNotice(e.message))}>undo now</button>
                       </div>
                     )}
                     {p.help && <div className="help">{p.help}</div>}
@@ -521,8 +552,9 @@ export default function App() {
 
               {spec.domain === 'device' && (
                 <div className="danger">
-                  <button disabled={!canWrite} className="btn" onClick={() => void api.resetBackground(pipeline?.uid).catch((e: Error) => setNotice(e.message))}>Relearn background</button>
-                  <button disabled={!canWrite} className="btn btn-warn" onClick={() => {
+                  {!deviceReady && <p>Device controls wait for a refreshed connection and sensor state.</p>}
+                  <button disabled={!canWrite || !deviceReady} className="btn" onClick={() => void api.resetBackground(pipeline?.uid).catch((e: Error) => setNotice(e.message))}>Relearn background</button>
+                  <button disabled={!canWrite || !deviceReady} className="btn btn-warn" onClick={() => {
                     if (confirm('Write the sensor’s current parameters to its flash? This survives a reboot and is not on a timer.')) {
                       void api.persist(pipeline?.uid).catch((e: Error) => setNotice(e.message));
                     }

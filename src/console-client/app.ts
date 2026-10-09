@@ -5,8 +5,15 @@
  */
 import type { ConsoleDetection, EdgeHealth, NodeHealth, NodePose, OccupancySnapshot, Point, RawFrameMessage } from '../shared/types.js';
 import { initFirmware, setFirmwareTargets } from './firmware.js';
+import { CommandStatus } from './command-status.js';
+import type { CommandReceipt } from '../modules/nodes/domain/command-receipt.js';
 
 let capabilities: string[] = [];
+let connected = false, lastMessageAt: number | null = null, commandBusy = false, disposed = false;
+let stateRefreshed = false;
+let liveSocket: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let commands: CommandStatus | null = null;
 const can = (capability: string) => capabilities.includes(capability);
 const SVG = 'http://www.w3.org/2000/svg';
 const $ = <T extends Element = HTMLElement>(sel: string): T => {
@@ -479,7 +486,7 @@ function renderDetail(): void {
     ['Wi-Fi', s ? `${s.ip} · ${s.rssi} dBm · ch ${s.channel} · drops ${s.wifiDrops}` : '–'],
     ['memory', s ? `heap ${(s.heap / 1024).toFixed(0)} kB (min ${(s.minHeap / 1024).toFixed(0)}) · stack free ${s.stackFree} B` : '–'],
     ['sensor', s ? `Vdd ${s.vdd.toFixed(2)} V · errors ${s.sensorErrors} · frames ${s.frames}` : '–'],
-    ['last command applied', s ? (s.lastCmd ? new Date(s.lastCmd * 1000).toLocaleTimeString() : 'none') : '–'],
+    ['last command sequence observed', s ? String(s.lastCmd) : '–'],
     ['uplink', uplink(n)],
   ];
   $('#detail-kv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
@@ -490,12 +497,14 @@ function renderDetail(): void {
   // A direct node whose session has closed has no route until it reconnects.
   const noRoute = n.address !== null && n.transport === null;
   controls.hidden = !n.online || proxied || noRoute;
+  controls.querySelectorAll<HTMLButtonElement>('button[data-op]').forEach((button) => { button.disabled = !connected || !stateRefreshed || commandBusy || lastMessageAt === null || Date.now() - lastMessageAt > 15000 || !can(button.dataset.op === 'reboot' ? 'nodes.admin' : 'nodes.write'); });
   $('#cmd-result').textContent = proxied ? 'Commands unavailable: this node is reached through a local proxy.'
     : noRoute ? 'Commands unavailable: the node\'s direct session has closed.' : $('#cmd-result').textContent;
   const params = $('#params');
+  params.querySelectorAll<HTMLInputElement>('input').forEach((input) => { input.disabled = !connected || !stateRefreshed || commandBusy || !can('nodes.write') || lastMessageAt === null || Date.now() - lastMessageAt > 15000; });
   if (s && params.dataset.uid !== n.uid) {
     params.dataset.uid = n.uid;
-    params.innerHTML = Object.entries(s.params).map(([k, v]) => `<label>${esc(k)}<input data-param="${esc(k)}" type="number" ${can('nodes.write') ? '' : 'disabled'} step="1" value="${esc(String(v))}"></label>`).join('');
+    params.innerHTML = Object.entries(s.params).map(([k, v]) => `<label>${esc(k)}<input data-param="${esc(k)}" type="number" ${can('nodes.write') && connected ? '' : 'disabled'} step="1" value="${esc(String(v))}"></label>`).join('');
     params.querySelectorAll<HTMLInputElement>('input').forEach((inp) => inp.addEventListener('change', () => {
       void command({ op: 'set', param: inp.dataset.param, value: Number(inp.value) });
     }));
@@ -602,17 +611,22 @@ function initJoin(): void {
 async function command(body: { op: string; param?: string | undefined; value?: number }): Promise<void> {
   if (!can(['set', 'reset-bg', 'identify', 'save'].includes(body.op) ? 'nodes.write' : 'nodes.admin')) { $('#cmd-result').textContent = 'Your access has changed. This action is unavailable.'; return; }
   if (!selected) return;
+  if (commandBusy || !connected || !stateRefreshed || lastMessageAt === null || Date.now() - lastMessageAt > 15000 || !last?.nodes.find((node) => node.uid === selected)?.online) { commands?.message('Device controls wait for a refreshed connection and sensor state.'); return; }
+  const uid = selected; commandBusy = true; renderDetail(); commands?.message(`${uid} · Requested ${body.op}…`);
   try {
     const res = await fetch(`api/nodes/${encodeURIComponent(selected)}/command`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-tm-console': '1' }, body: JSON.stringify(body),
     });
-    const j = (await res.json()) as { note?: string; error?: string };
-    $('#cmd-result').textContent = res.ok ? `sent ${body.op}${body.param ? ` ${body.param}=${body.value}` : ''} — ${j.note ?? ''}` : `failed: ${j.error ?? `HTTP ${res.status}`}`;
-  } catch { $('#cmd-result').textContent = 'Cannot reach the edge. The command has not been confirmed.'; }
+    const j = (await res.json()) as { note?: string; error?: string; receipt?: CommandReceipt };
+    if (j.receipt) commands?.show(j.receipt);
+    else if (selected === uid) commands?.message(res.ok ? 'Sent — waiting for device. Status unavailable; acknowledgement does not confirm execution or persistence.' : `Failed: ${j.error ?? `HTTP ${res.status}`}`);
+  } catch { if (selected === uid) commands?.message('Outcome uncertain. Cannot reach the edge; check device state before sending again.'); }
+  finally { commandBusy = false; renderDetail(); }
 }
 
 function select(uid: string | null): void {
   selected = uid;
+  commands?.select(uid);
   const params = $('#params');
   delete params.dataset.uid;
   renderNodes();
@@ -625,6 +639,7 @@ function select(uid: string | null): void {
 // --- wiring ---------------------------------------------------------------------------
 
 async function connect(): Promise<void> {
+  if (disposed) return;
   const conn = $('#conn');
   try {
     const { token } = (await (await fetch('api/ws-token')).json()) as { token: string };
@@ -633,13 +648,18 @@ async function connect(): Promise<void> {
     const wsUrl = new URL(`ws?token=${encodeURIComponent(token)}`, location.href);
     wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(wsUrl);
+    liveSocket = ws;
     ws.onopen = () => {
-      conn.textContent = 'live';
+      stateRefreshed = false;
+      connected = true; conn.textContent = 'Connected';
       conn.className = 'chip good';
     };
     ws.onmessage = (e) => {
+      if (disposed || liveSocket !== ws) return;
+      lastMessageAt = Date.now();
       const msg = JSON.parse(String(e.data)) as { type: string } & Record<string, unknown>;
       if (msg.type === 'state') {
+        stateRefreshed = true;
         last = msg as unknown as StateMsg;
         // Every online node's RAW, plus the RGB rigs (their RGB is sent to
         // subscribers only). The node being inspected and the real hardware go
@@ -657,6 +677,7 @@ async function connect(): Promise<void> {
           // Default to a real node if one is online: that is usually what someone opening the console is checking.
           const real = new Set(layout?.nodes.filter((n) => !n.simulated).map((n) => n.uid));
           selected = last.nodes.find((n) => n.online && real.has(n.uid))?.uid ?? last.nodes.find((n) => n.online)?.uid ?? null;
+          commands?.select(selected);
         }
         renderHealth();
         renderNodes();
@@ -687,18 +708,25 @@ async function connect(): Promise<void> {
       }
     };
     ws.onclose = () => {
-      conn.textContent = 'disconnected — retrying';
+      connected = false; stateRefreshed = false; conn.textContent = 'Reconnecting'; renderDetail();
       conn.className = 'chip bad';
-      setTimeout(() => void connect(), 2000);
+      if (!disposed) reconnectTimer = setTimeout(() => void connect(), 2000);
     };
   } catch {
-    conn.textContent = 'cannot reach edge';
+    connected = false; stateRefreshed = false; conn.textContent = 'Disconnected';
     conn.className = 'chip bad';
-    setTimeout(() => void connect(), 3000);
+    if (!disposed) reconnectTimer = setTimeout(() => void connect(), 3000);
   }
 }
 
 async function start(): Promise<void> {
+  commands = new CommandStatus($('#cmd-result')); $('#refresh-command-status').addEventListener('click', () => commands?.refresh());
+  const freshnessTimer = setInterval(() => {
+    const freshness = $('#data-freshness');
+    freshness.textContent = lastMessageAt === null ? 'No device data received.' : `${connected && stateRefreshed && Date.now() - lastMessageAt < 15000 ? 'Live messages current' : 'Last known data — messages stale or disconnected'} · Last message ${new Date(lastMessageAt).toLocaleTimeString()}`;
+    renderDetail();
+  }, 1000);
+  window.addEventListener('pagehide', () => { disposed = true; commands?.dispose(); clearInterval(freshnessTimer); clearTimeout(reconnectTimer); liveSocket?.close(); });
   const identity = await fetch('api/me');
   if (!identity.ok) throw new Error('Access information is unavailable.');
   const me = await identity.json() as { capabilities?: string[] };

@@ -1,19 +1,21 @@
 import { ApplicationError } from '../../shared/application/contracts.js';
+import type { CommandReceipt } from '../domain/command-receipt.js';
+import { ReceiptDispatchError } from './live-command-receipts.js';
 import { CMD_IDENTIFY, CMD_REBOOT, CMD_RESET_BACKGROUND, CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from '../../../edge/protocol.js';
 
 export type NodeCommand = { uid: string; opcode: number; argument: number; value: number };
-export type NodeCommandDispatch = (command: NodeCommand, authorized?: () => boolean) => Promise<void>;
+export type NodeCommandDispatch = (command: NodeCommand, authorized?: () => boolean, issuer?: string) => Promise<void | CommandReceipt>;
 
 /** Validates a console command and maps it to the existing node protocol. */
 export class ExecuteNodeCommand {
   constructor(private readonly dispatch: NodeCommandDispatch) {}
 
-  async execute(uid: string, input: unknown, authorized?: () => boolean): Promise<void> {
+  async execute(uid: string, input: unknown, context?: (() => boolean) | { authorized(): boolean; issuer: string }): Promise<void | CommandReceipt> {
     const command = makeCommand(uid, input);
     try {
-      await this.dispatch(command, authorized);
+      return await this.dispatch(command, typeof context === 'function' ? context : context?.authorized, typeof context === 'object' ? context.issuer : undefined);
     } catch (error: unknown) {
-      if (error instanceof ApplicationError && error.kind === 'unavailable') throw error;
+      if (error instanceof ReceiptDispatchError || error instanceof ApplicationError && error.kind === 'unavailable') throw error;
       throw new ApplicationError('conflict', error instanceof Error ? error.message : String(error));
     }
   }

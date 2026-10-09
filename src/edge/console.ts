@@ -225,11 +225,10 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     reads: {
       rgb: (uid) => rt.rgb.get(uid) ?? null,
       raw: (uid) => rt.lastRaw(uid),
+      receipt: (issuer, uid, id) => rt.commandReceipts.get(issuer, uid, id),
     },
-    executeCommand: new ExecuteNodeCommand(({ uid, opcode, argument, value }, authorized) =>
-      rt.commandOutcomes
-        ? rt.commandOutcomes.send({ uid, opcode, argument, value }, { id: 'console', kind: 'console' }, authorized)
-        : rt.ingest.sendCommand(uid, opcode, argument, value).then(() => undefined)),
+    executeCommand: new ExecuteNodeCommand((command, authorized, issuer) =>
+      rt.commandReceipts.send(command, { issuer: issuer ?? 'legacy:console', authorized: authorized ?? (() => true) })),
     resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursor(uid)),
     mutating,
   }));
