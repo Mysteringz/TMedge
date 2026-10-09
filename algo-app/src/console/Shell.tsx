@@ -5,7 +5,9 @@
  * console's top bar. Module 04 owns firmware builds and OTA rollouts.
  */
 import { AdminSessionContext, type AdminSession } from '../entities/admin-session/index.tsx';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { NotificationProvider } from '../entities/operation-notification/index.tsx';
+import { NotificationCenter, NotificationToggle } from '../widgets/notification-center/index.tsx';
 import { Root as FlowApp } from '../App.tsx';
 import { Home } from './Home.tsx';
 import { Login } from './Login.tsx';
@@ -21,10 +23,16 @@ const Accounts = lazy(() => import('../pages/admin-accounts/index.tsx').then((m)
 
 export function Shell() {
   const [session, setSession] = useState<AdminSession | null>(null);
-  const [toast, flash] = useToast();
+  const [toast, rawFlash] = useToast();
+  const notificationToast = useRef(false);
+  const flash = useCallback((message: string) => { notificationToast.current = false; rawFlash(message); }, [rawFlash]);
+  const announce = useCallback((message: string) => { notificationToast.current = true; rawFlash(message); }, [rawFlash]);
+  const clearNotice = useCallback(() => { if (notificationToast.current) { notificationToast.current = false; rawFlash(''); } }, [rawFlash]);
   return (
     <AdminSessionContext.Provider value={session}>
-      <ShellContent session={session} onSession={setSession} flash={flash} />
+      <NotificationProvider owner={session?.capabilities.includes('algo.read') ? session.user : null} scope={session ? `${session.user}:${session.role}:${session.capabilities.join(',')}` : ''} announce={announce} clearNotice={clearNotice}>
+        <ShellContent session={session} onSession={setSession} flash={flash} />
+      </NotificationProvider>
       <div className="cx"><Toast text={toast} /></div>
     </AdminSessionContext.Provider>
   );
@@ -104,7 +112,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
   if (screen === 'console') {
     return (
       <div className="cx-flow">
-        <div className="cx cx-flow-bar"><Nav user={user} onSignOut={signOut} /></div>
+        <div className="cx cx-flow-bar"><ShellNavigation user={user} onSignOut={signOut} /></div>
         {/* Its own document: the console's global stylesheet and run-once
             module stay out of this app (see src/algo/server.ts). */}
         <iframe className="cx-frame" src="/console-app/" title="Debug console" />
@@ -115,7 +123,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
   if (screen === 'flow') {
     return (
       <div className="cx-flow">
-        <div className="cx cx-flow-bar"><Nav user={user} onSignOut={signOut} /></div>
+        <div className="cx cx-flow-bar"><ShellNavigation user={user} onSignOut={signOut} /></div>
         <FlowApp />
       </div>
     );
@@ -124,7 +132,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
   return (
     <div className="cx cx-page">
       <Backdrop />
-      <Nav user={user} onSignOut={signOut} />
+      <ShellNavigation user={user} onSignOut={signOut} />
       {screen === 'accounts' ? <Suspense fallback={<main aria-busy="true">Loading accounts…</main>}><Accounts /></Suspense>
         : screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
@@ -136,4 +144,8 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
 /** The faint 2x Grid behind the page. Decoration only. */
 function Backdrop() {
   return <div className="cx-grid" aria-hidden="true" />;
+}
+
+function ShellNavigation({ user, onSignOut }: { user: string; onSignOut(): void }) {
+  return <><Nav user={user} onSignOut={onSignOut} notificationToggle={<NotificationToggle />} /><NotificationCenter /></>;
 }

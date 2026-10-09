@@ -1,0 +1,11 @@
+.cx .cx-header { height: auto; min-height: 48px; flex-wrap: wrap; }
+.cx .cx-header-nav { flex-wrap: wrap; }
+.cx .cx-header-item { min-height: 48px; }
+.cx-notification-toggle { border: 0; background: transparent; color: var(--interactive); padding: 8px 12px; min-height: 40px; cursor: pointer; font: inherit; flex: none; }
+.cx-notification-toggle span { color: var(--text-primary); }
+.cx-notifications { position: relative; z-index: 2; padding: 16px; background: var(--layer-01); border-bottom: 1px solid var(--border-subtle-01); overflow-wrap: anywhere; }
+.cx-notifications ul { list-style: none; margin: 16px 0; padding: 0; max-height: 65vh; overflow-y: auto; }
+.cx-notifications li { padding: 16px 0; border-bottom: 1px solid var(--border-subtle-01); }
+.cx-notifications a { color: var(--interactive); min-height: 40px; display: inline-flex; align-items: center; }
+.cx-notification-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-block: 8px; }
+@media (max-width: 672px) { .cx-notification-toggle { order: 2; flex: 1 1 100%; text-align: left; border-top: 1px solid var(--border-subtle-01); } }

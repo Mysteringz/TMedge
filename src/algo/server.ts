@@ -23,6 +23,9 @@ import { FileAccountRepository } from '../infrastructure/algo-admin/file-account
 import { createHealthRouter } from '../modules/algo-admin/controllers/health-controller.js';
 import { ReadOperationalHealth } from '../modules/algo-admin/use-cases/read-operational-health.js';
 import { RuntimeOperationalQueries } from '../infrastructure/algo-admin/runtime-operational-queries.js';
+import { createNotificationRouter } from '../modules/algo-admin/controllers/notification-controller.js';
+import { ReadNotifications } from '../modules/algo-admin/use-cases/read-notifications.js';
+import { RuntimeNotificationQueries } from '../infrastructure/algo-admin/runtime-notification-queries.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
 import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
 import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
@@ -188,6 +191,8 @@ export function startAlgo(
 
   // --- before sign-in: the form, the endpoints it posts to, the bundle -----
   app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
+  const notifications = express.Router();
+  app.use('/api/admin/notifications', notifications);
   app.use(auth.router);
   app.get(['/login', '/login/'], (req, res) => {
     if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
@@ -250,6 +255,7 @@ export function startAlgo(
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
   app.use('/api/admin/health', createHealthRouter(new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
+  notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService))));
 
   app.get('/api/catalogue', (_req, res) => res.json({
     nodes: NODE_SPECS,

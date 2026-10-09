@@ -2,7 +2,7 @@
 
 import { useAdminSession } from '../entities/admin-session/index.tsx';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 
 import { navigate, screenOf, usePath } from './router.ts';
 
@@ -44,7 +44,7 @@ export function Wordmark() {
 
 /** Carbon's UI shell header: the name, the modules, the person. */
 
-export function Nav({ user, onSignOut }: { user: string; onSignOut(): void }) {
+export function Nav({ user, onSignOut, notificationToggle }: { user: string; onSignOut(): void; notificationToggle?: ReactNode }) {
 
   const session = useAdminSession();
 
@@ -85,6 +85,7 @@ export function Nav({ user, onSignOut }: { user: string; onSignOut(): void }) {
       <span className="cx-who"><span className="cx-online" />{user}@team <span className="tag tag-neutral">{session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator'}</span></span>
 
       <button className="cx-header-action cx-out" onClick={onSignOut} aria-label="Sign out" title="Sign out"><SignOut /></button>
+      {notificationToggle}
 
     </header>
 

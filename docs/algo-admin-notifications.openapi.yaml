@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info: { title: Algo derived outcome notifications, version: 1.0.0 }
+security: [{ algoCookie: [] }]
+paths:
+  /api/admin/notifications:
+    get:
+      summary: Recent owner training and permitted shared firmware outcomes
+      description: 'Current algo.read authority; training.read selects full principal-owned jobs, firmware.read selects shared retained rollout current/history. No owner override. Maximum100 newest items from7days. IDs use stable outcome times/keys, never generatedAt. Read status is per-browser and is not written to this API. No historical delivery guarantee.'
+      responses:
+        '200':
+          description: Snapshot, independently unavailable/forbidden sources disclosed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  error: { nullable: true }
+                  data:
+                    type: object
+                    required: [generatedAt, items, sources, historyLimited]
+                    properties:
+                      generatedAt: { type: number, description: Epoch milliseconds }
+                      historyLimited: { type: boolean, enum: [true] }
+                      sources:
+                        type: object
+                        properties:
+                          training: { $ref: '#/components/schemas/SourceState' }
+                          firmware: { $ref: '#/components/schemas/SourceState' }
+                      items:
+                        type: array
+                        maxItems: 100
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required: [id, kind, resourceId, label, outcome, occurredAt, href]
+                          properties:
+                            id: { type: string, description: Stable kind/resource/outcome/time key }
+                            kind: { type: string, enum: [training, firmware] }
+                            resourceId: { type: string }
+                            label: { type: string, maxLength: 324 }
+                            outcome: { type: string, enum: [Completed, Failed, Timed out, Out of memory, Submission failed, Cancelled, Unknown, Stopped, Uncertain] }
+                            occurredAt: { type: number, nullable: true, description: Original stable event time; unknown is null }
+                            href: { type: string, description: Existing protected training job/updates screen }
+        default:
+          description: '401 UNAUTHENTICATED;403 FORBIDDEN;503 UNAVAILABLE. Current authority rechecked before publication. No credentials, private logs/code or network addresses.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { nullable: true }
+                  error:
+                    type: object
+                    properties:
+                      code: { type: string }
+                      message: { type: string }
+components:
+  securitySchemes:
+    algoCookie: { type: apiKey, in: cookie, name: tm_algo }
+  schemas:
+    SourceState: { type: string, enum: [available, unavailable, forbidden] }
