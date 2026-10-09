@@ -5,6 +5,7 @@ import { encodeFrame } from './frames.js';
 import { validate } from './graph.js';
 import { defaultPipeline, NODE_SPECS, specOf } from './nodes.js';
 import type { PairRecorder } from './pairs.js';
+import { recordModeOf } from './autorecord.js';
 import { EDGE_PARAMS, type ParamBroker, REVERT_MS } from './params.js';
 import type { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
@@ -190,10 +191,11 @@ function registerRecorderRoutes(router: Router, deps: AlgoRouterDependencies): v
     ...deps.pairs.stats(), rgbNodes: [...deps.runtime.reg.nodes.values()].filter((node) => node.rgb).map((node) => node.uid),
   }));
   router.post('/api/pairs/record', deps.mutating, (req, res) => {
-    const on = (req.body as { on?: boolean }).on === true;
+    const mode = recordModeOf(req.body);
+    if (!mode) return res.status(400).json({ error: 'mode must be off, auto or on' });
     const rgbNodes = [...deps.runtime.reg.nodes.values()].filter((node) => node.rgb);
-    if (on && rgbNodes.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
-    deps.pairs.setRecording(on);
+    if (mode !== 'off' && rgbNodes.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
+    deps.pairs.setMode(mode);
     return res.json({ ok: true, ...deps.pairs.stats() });
   });
   router.post('/api/pairs/prune', deps.mutating, (_req, res) => {
