@@ -88,11 +88,13 @@ export class AlgoUsers {
 
   get(name: string): AlgoUser | undefined { this.refresh(); return this.users.get(name); }
 
+  records(): AlgoUser[] { this.refresh(); if (this.invalid) throw new Error('invalid account file'); return [...this.users.values()].map((user) => ({ ...user })); }
+
   static normalise(name: string): string {
     return name.trim().toLowerCase();
   }
 
-  async add(rawName: string, password: string, role: AdminRole = 'engineer'): Promise<AlgoUser> {
+  async add(rawName: string, password: string, role: AdminRole = 'engineer', authorize: () => void = () => {}): Promise<AlgoUser> {
     if (typeof rawName !== 'string' || typeof password !== 'string' || password.length > 1024) throw new Error('username and password required within the size limits');
     if (!isAdminRole(role)) throw new Error('invalid role');
     const name = AlgoUsers.normalise(rawName);
@@ -104,6 +106,7 @@ export class AlgoUsers {
     const user: AlgoUser = { name, salt: salt.toString('hex'), hash: (await passwordHash(password, salt)).toString('hex'), createdAt: Date.now(), role, disabled: false, sessionVersion: 0 };
     withPrivateFileLock(this.path, () => {
       this.seen = ''; this.refresh();
+      authorize();
       if (this.invalid) throw new Error('refusing to replace an invalid account file');
       if (this.users.has(name)) throw new Error('account already exists');
       this.save(new Map(this.users).set(name, user));
@@ -136,27 +139,28 @@ export class AlgoUsers {
     return timingSafeEqual(hash, Buffer.from(user.hash, 'hex')) ? current : null;
   }
 
-  async resetPassword(rawName: string, password: string): Promise<AlgoUser> {
+  async resetPassword(rawName: string, password: string, expected?: AlgoUser, authorize: () => void = () => {}): Promise<AlgoUser> {
     if (typeof password !== 'string' || password.length < MIN_PASSWORD || password.length > 1024) throw new Error('invalid password length');
-    const snapshot = this.get(AlgoUsers.normalise(rawName));
+    const snapshot = expected ?? this.get(AlgoUsers.normalise(rawName));
     if (!snapshot) throw new Error('no such account');
     const salt = randomBytes(16), hash = (await passwordHash(password, salt)).toString('hex');
-    return this.update(rawName, { salt: salt.toString('hex'), hash }, snapshot);
+    return this.update(rawName, { salt: salt.toString('hex'), hash }, snapshot, authorize);
   }
 
   /** Shared serialized primitive for CLI and downstream account management. */
-  update(rawName: string, patch: { role?: AdminRole; disabled?: boolean; revoke?: boolean; salt?: string; hash?: string }, expected?: AlgoUser): AlgoUser {
+  update(rawName: string, patch: { role?: AdminRole; disabled?: boolean; revoke?: boolean; salt?: string; hash?: string }, expected?: AlgoUser, authorize: () => void = () => {}): AlgoUser {
     return withPrivateFileLock(this.path, () => {
       this.seen = ''; this.refresh();
+      authorize();
       if (this.invalid) throw new Error('invalid account file');
       const name = AlgoUsers.normalise(rawName), current = this.users.get(name);
       if (!current) throw new Error('no such account');
-      if (expected && (current.hash !== expected.hash || current.salt !== expected.salt || current.sessionVersion !== expected.sessionVersion || current.createdAt !== expected.createdAt)) throw new Error('account changed; retry the operation');
+      if (expected && (current.hash !== expected.hash || current.salt !== expected.salt || current.sessionVersion !== expected.sessionVersion || current.createdAt !== expected.createdAt || current.role !== expected.role || current.disabled !== expected.disabled)) throw new Error('account changed; retry the operation');
       if (patch.role !== undefined && !isAdminRole(patch.role)) throw new Error('invalid role');
       if (patch.disabled !== undefined && typeof patch.disabled !== 'boolean') throw new Error('invalid disabled flag');
       if ((patch.salt !== undefined || patch.hash !== undefined) && (!/^[0-9a-f]{32}$/.test(patch.salt ?? '') || !/^[0-9a-f]{64}$/.test(patch.hash ?? ''))) throw new Error('invalid credentials');
       const changed = patch.revoke || (patch.role !== undefined && patch.role !== current.role) || (patch.disabled !== undefined && patch.disabled !== current.disabled) || patch.hash !== undefined;
-      const { revoke: _revoke, ...fields } = patch;
+      const fields = Object.fromEntries(Object.entries(patch).filter(([key, value]) => key !== 'revoke' && value !== undefined));
       const user = { ...current, ...fields, sessionVersion: (current.sessionVersion ?? 0) + (changed ? 1 : 0) };
       if (!Number.isSafeInteger(user.sessionVersion)) throw new Error('session version exhausted');
       const next = new Map(this.users).set(name, user);

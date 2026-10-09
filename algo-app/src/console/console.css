@@ -450,3 +450,5 @@
 
 /* Toolbar buttons in a card bar stay compact so the file name keeps room. */
 .cx .cx-bar .btn { gap: 8px; padding: 0 12px; }
+.cx .cx-account-shortcut { display: none; }
+@media (max-width: 672px) { .cx .cx-account-shortcut { display: flex; width: auto; margin-right: auto; font-size: 14px; padding: 8px; min-height: 40px; align-items: center; color: var(--interactive); } .cx .cx-account-crumb { display: none; } }

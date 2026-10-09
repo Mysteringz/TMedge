@@ -1,0 +1,150 @@
+openapi: 3.0.3
+info:
+  title: Algo named account management
+  version: 1.0.0
+security:
+  - algoCookie: []
+paths:
+  /api/admin/accounts:
+    get:
+      summary: List named accounts (current named admin only)
+      parameters:
+        - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        '200':
+          description: Paginated public accounts in data; error is null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accounts: { type: array, items: { $ref: '#/components/schemas/Account' } }
+                      offset: { type: integer }
+                      limit: { type: integer }
+                      total: { type: integer }
+                  error: { nullable: true }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create account; immutable normalized username, explicit role
+      parameters: [{ $ref: '#/components/parameters/WriteHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, role, password]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 32, pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,31}$' }
+                role: { $ref: '#/components/schemas/Role' }
+                password: { $ref: '#/components/schemas/Password' }
+      responses:
+        '201': { $ref: '#/components/responses/Account' }
+        default: { $ref: '#/components/responses/Error' }
+  /api/admin/accounts/{name}:
+    parameters: [{ $ref: '#/components/parameters/Name' }]
+    patch:
+      summary: Change role/status; revision required; protects final enabled admin
+      parameters: [{ $ref: '#/components/parameters/WriteHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: { $ref: '#/components/schemas/Revision' }
+                role: { $ref: '#/components/schemas/Role' }
+                disabled: { type: boolean }
+              anyOf: [{ required: [role] }, { required: [disabled] }]
+      responses:
+        '200': { $ref: '#/components/responses/Account' }
+        default: { $ref: '#/components/responses/Error' }
+  /api/admin/accounts/{name}/password-resets:
+    parameters: [{ $ref: '#/components/parameters/Name' }]
+    post:
+      summary: Reset password and invalidate all sessions; submitted jobs continue
+      parameters: [{ $ref: '#/components/parameters/WriteHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, password]
+              properties:
+                revision: { $ref: '#/components/schemas/Revision' }
+                password: { $ref: '#/components/schemas/Password' }
+      responses:
+        '200': { $ref: '#/components/responses/Account' }
+        default: { $ref: '#/components/responses/Error' }
+  /api/admin/accounts/{name}/session-revocations:
+    parameters: [{ $ref: '#/components/parameters/Name' }]
+    post:
+      summary: Invalidate every current session
+      parameters: [{ $ref: '#/components/parameters/WriteHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: { $ref: '#/components/schemas/Revision' }
+      responses:
+        '200': { $ref: '#/components/responses/Account' }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    algoCookie: { type: apiKey, in: cookie, name: tm_algo }
+  parameters:
+    WriteHeader: { in: header, name: x-tm-algo, required: true, schema: { type: string, enum: ['1'] }, description: Origin must match this server when provided. }
+    Name: { in: path, name: name, required: true, schema: { type: string } }
+  schemas:
+    Role: { type: string, enum: [viewer, engineer, admin] }
+    Password: { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
+    Revision: { type: string, pattern: '^[a-f0-9]{64}$', description: Opaque edit token; refresh after conflicts. }
+    Account:
+      type: object
+      additionalProperties: false
+      required: [name, role, disabled, createdAt, revision]
+      properties:
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        disabled: { type: boolean }
+        createdAt: { type: number, description: Unix milliseconds }
+        revision: { $ref: '#/components/schemas/Revision' }
+  responses:
+    Account:
+      description: Public account in data; error is null
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: '#/components/schemas/Account' }
+              error: { nullable: true }
+    Error:
+      description: '401 UNAUTHENTICATED; 403 FORBIDDEN/LOCAL_MODE; 400 VALIDATION; 404 NOT_FOUND; 409 DUPLICATE/STALE_REVISION/LAST_ADMIN; 429 RATE_LIMITED; 503 STORAGE_UNAVAILABLE. Create/reset share 10/5min per-admin limit; other writes 60/5min. JSON body max 8KiB. Local mode unavailable.'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { nullable: true }
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: { type: string }
+                  message: { type: string }

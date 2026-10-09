@@ -17,6 +17,7 @@ import './console.css';
 // home screen should not wait for it.
 const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
 const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Updates })));
+const Accounts = lazy(() => import('../pages/admin-accounts/index.tsx').then((m) => ({ default: m.Accounts })));
 
 export function Shell() {
   const [session, setSession] = useState<AdminSession | null>(null);
@@ -124,7 +125,8 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
     <div className="cx cx-page">
       <Backdrop />
       <Nav user={user} onSignOut={signOut} />
-      {screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
+      {screen === 'accounts' ? <Suspense fallback={<main aria-busy="true">Loading accounts…</main>}><Accounts /></Suspense>
+        : screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
           : <Home user={user} />}
     </div>

@@ -76,9 +76,11 @@ export function Nav({ user, onSignOut }: { user: string; onSignOut(): void }) {
 
         ))}
 
+        {session?.namedAccount && session.capabilities.includes('accounts.manage') && <a className="cx-header-item" href="/accounts" aria-current={screen === 'accounts' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
       </nav>
+      {session?.namedAccount && session.capabilities.includes('accounts.manage') && <a className="cx-header-action cx-account-shortcut" href="/accounts" onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
 
-      {here && <span className="cx-crumb">{here.title}</span>}
+      {(here || screen === 'accounts') && <span className={screen === 'accounts' ? 'cx-crumb cx-account-crumb' : 'cx-crumb'}>{here?.title ?? 'Accounts'}</span>}
 
       <span className="cx-who"><span className="cx-online" />{user}@team <span className="tag tag-neutral">{session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator'}</span></span>
 

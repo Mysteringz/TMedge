@@ -17,6 +17,9 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
+import { accountRoutes } from '../modules/algo-admin/controllers/accounts.js';
+import { ManageAccounts } from '../modules/algo-admin/use-cases/manage-accounts.js';
+import { FileAccountRepository } from '../infrastructure/algo-admin/file-account-repository.js';
 import { createHealthRouter } from '../modules/algo-admin/controllers/health-controller.js';
 import { ReadOperationalHealth } from '../modules/algo-admin/use-cases/read-operational-health.js';
 import { RuntimeOperationalQueries } from '../infrastructure/algo-admin/runtime-operational-queries.js';
@@ -184,6 +187,7 @@ export function startAlgo(
   });
 
   // --- before sign-in: the form, the endpoints it posts to, the bundle -----
+  app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
   app.use(auth.router);
   app.get(['/login', '/login/'], (req, res) => {
     if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
