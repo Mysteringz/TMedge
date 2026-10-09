@@ -48,6 +48,12 @@ test('a python3-only node executes one task and keeps its exit result', (t) => {
     assert.equal(saved?.status, exitCode === 0 ? 'COMPLETED' : 'FAILED');
   }
 
+  writeFileSync(join(dir, 'code', 'train.py'), readFileSync('algo-app/src/console/train/example.py'));
+  const example = spawnSync('/bin/bash', [script], { env, encoding: 'utf8', timeout: 10_000 });
+  assert.equal(example.status, 0, example.stderr);
+  assert.equal(example.stdout.match(/^TMEDGE_EXAMPLE_OK$/gm)?.length, 1, 'the starter trains exactly once');
+  assert.equal(parseExitReport(readFileSync(join(dir, '.tmedge-exit-324'), 'utf8'), 324)?.status, 'COMPLETED');
+
   // Prefer the active environment's python when it exists, rather than
   // selecting a different interpreter just because it is named python3.
   writeFileSync(join(bin, 'python'), `#!/bin/bash\necho environment-python\nexec ${python3} "$@"\n`, { mode: 0o700 });
@@ -55,6 +61,33 @@ test('a python3-only node executes one task and keeps its exit result', (t) => {
   const active = spawnSync('/bin/bash', [script], { env, encoding: 'utf8' });
   assert.equal(active.status, 0, active.stderr);
   assert.equal(active.stdout, 'environment-python\none task\n');
+});
+
+test('the synthetic starter trains without site packages or a dataset and rejects invalid inputs', () => {
+  const script = 'algo-app/src/console/train/example.py';
+  const example = spawnSync('python3', ['-I', '-S', script], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(example.status, 0, example.stderr);
+  assert.equal(example.stderr, '');
+  assert.match(example.stdout, /synthetic training demo \(no real sensor data\)/);
+  assert.match(example.stdout, /samples 800 train \/ 200 validation/);
+  const losses = [...example.stdout.matchAll(/^epoch \d+\/20 loss ([\d.]+)/gm)].map(match => Number(match[1]));
+  assert.equal(losses.length, 20, 'every training epoch reports progress');
+  assert.ok((losses.at(-1) ?? Infinity) < (losses[0] ?? 0), 'training must improve the loss');
+  const accuracy = Number(example.stdout.match(/^validation_accuracy ([\d.]+)$/m)?.[1]);
+  assert.ok(accuracy >= 0.85 && accuracy <= 1, `held-out synthetic accuracy is ${accuracy}`);
+  assert.match(example.stdout, /^TMEDGE_EXAMPLE_OK$/m);
+
+  const short = spawnSync('python3', ['-I', '-S', script, '--epochs', '2', '--samples', '20', '--seed', '7'], { encoding: 'utf8' });
+  assert.equal(short.status, 0, short.stderr);
+  assert.match(short.stdout, /seed 7/);
+  assert.match(short.stdout, /samples 16 train \/ 4 validation/);
+  assert.match(short.stdout, /^epoch 02\/2 /m);
+  for (const args of [['--epochs', '0'], ['--samples', '1'], ['--lr', 'nan']]) {
+    const invalid = spawnSync('python3', ['-I', '-S', script, ...args], { encoding: 'utf8' });
+    assert.equal(invalid.status, 2, invalid.stderr);
+    assert.match(invalid.stderr, /error: --/);
+    assert.doesNotMatch(invalid.stdout, /TMEDGE_EXAMPLE_OK/);
+  }
 });
 
 test('an unavailable interpreter fails clearly and its result survives', (t) => {

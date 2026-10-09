@@ -4,6 +4,17 @@ HANDOVER.md rule 8: date, decision, why. The spec itself is
 [HANDOVER.md](HANDOVER.md); what has to happen before any job reaches HKU is
 [m0-checklist.md](m0-checklist.md).
 
+## 2026-10-09: a starter that runs on the verified cluster
+
+Replace the default parquet/scikit-learn job with a small synthetic
+logistic-regression demo using only Python 3's standard library. The
+cluster has Python 3 but none of the old example's packages or dataset.
+New drafts request one CPU, one GB, no GPU and two minutes, with no modules,
+conda environment or environment variables. Label the data and results as
+synthetic; they verify training execution rather than occupancy accuracy.
+Import the Python file as text in the editor so the uploadable script and
+the starter remain identical. Preserve saved jobs and unsaved user code.
+
 ## 2026-10-09: job 324 execution failure and status recovery
 
 Job 324 (`occupancy_gbc`) was accepted on October 6 and did execute. Its
