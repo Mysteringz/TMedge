@@ -67,6 +67,9 @@ mkdir -p "$OLD"
 git ls-files -z | tar --null -T - -cf - | tar -C "$OLD" -xf -
 cp -R dist node_modules "$OLD/"
 cp -R public-web/app "$OLD/public-web/"; cp -R public-console/js "$OLD/public-console/"
+# The old install needs the built student shell too; it is generated output,
+# so git ls-files deliberately no longer carries it into this fixture.
+cp public-web/index.html "$OLD/public-web/"
 # Throwaway values made up here, per run; the real .env is never read.
 rnd() { od -An -tx1 -N24 /dev/urandom | tr -d ' \n'; }
 cat > "$OLD/.env" <<EOF
