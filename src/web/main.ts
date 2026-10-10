@@ -22,6 +22,9 @@ import { SnapshotPublishers } from './publishers.js';
 import { GoogleError, googleFromEnv, GoogleLogin } from './google.js';
 import { turnstileCheck, turnstileFromEnv, type HumanCheck } from './auth.js';
 import { safeNext } from './navigation.js';
+import { UsageMeter } from '../modules/analytics/application/usage-meter.js';
+import { createUsageReportRouter } from '../modules/analytics/routes/usage-report-router.js';
+import { DEFAULT_ANALYTICS_TIMEZONE, isTimeZone } from '../shared/analytics.js';
 export { safeNext } from './navigation.js';
 
 export { asEmail } from '../modules/student-auth/routes/student-auth-router.js';
@@ -46,7 +49,12 @@ export interface WebConfig {
   google?: ReturnType<typeof googleFromEnv>;
   studentPersistenceMode?: 'file' | 'postgres';
   studentPostgres?: PostgresConnectionConfig;
-  activityRetentionDays?: number;}
+  activityRetentionDays?: number;
+  /** Where usage counts are kept between restarts; unset keeps them in memory only. */
+  analyticsDir?: string;
+  /** The site's own time zone: what "today" means for daily usage. */
+  analyticsTimeZone?: string;
+}
 
 /** Loads and validates environment-backed student web configuration. */
 export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
@@ -69,12 +77,15 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
     throw new Error('STUDENT_ACTIVITY_RETENTION_DAYS must be an integer 1..3650');
   }
   const turnstile = turnstileFromEnv(env);
+  const analyticsTimeZone = env.ANALYTICS_TIMEZONE || DEFAULT_ANALYTICS_TIMEZONE;
+  if (!isTimeZone(analyticsTimeZone)) throw new Error('ANALYTICS_TIMEZONE must be an IANA time zone such as Asia/Hong_Kong');
+  const usersPath = env.USERS_FILE || join(env.DATA_DIR || 'data', 'users.json');
   return {
     port,
     host: env.WEB_HOST || '0.0.0.0',
     pushToken, publishers,
     sessionSecret: Buffer.from(secret),
-    usersPath: env.USERS_FILE || join(env.DATA_DIR || 'data', 'users.json'),
+    usersPath,
     allowedDomains: (env.ALLOWED_EMAIL_DOMAINS ?? 'hku.hk,connect.hku.hk').split(',').map((domain) => domain.trim().toLowerCase()).filter(Boolean),
     signupOpen: env.SIGNUP_OPEN === '1',
     cookieSecure: env.COOKIE_SECURE === '1',
@@ -85,6 +96,10 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
     studentPersistenceMode,
     studentPostgres: studentPersistenceMode === 'postgres' ? loadPostgresConnectionConfig('runtime', env) : undefined,
     activityRetentionDays,
+    // Beside the account file, like the session revocations: the one
+    // directory the web unit is certain to be allowed to write.
+    analyticsDir: join(dirname(usersPath), 'analytics-web'),
+    analyticsTimeZone,
   };
 }
 
@@ -95,6 +110,7 @@ export interface WebAppInstance<TAccounts extends IStudentAccountRepository> {
   users: TAccounts;
   sessions: Sessions;
   activity: StudentActivityLog | undefined;
+  usage: UsageMeter;
   dispose(): Promise<void>;
 }
 
@@ -129,7 +145,14 @@ export function createWebApp(cfg: WebConfig, options: {
   const google = googleEnabled && cfg.google ? new GoogleLogin(cfg.google, cfg.sessionSecret) : null;
   const store = new SnapshotStore(cfg.staleMs);
   const noStore = (res: Response) => res.set('Cache-Control', 'no-store').vary('Cookie').vary('Authorization');
+  // Counts of how the site is used, for module 05 of the algo console. Always
+  // on: it is the only usage record there is when accounts live in a file.
+  const meter = new UsageMeter({
+    dir: cfg.analyticsDir ?? null, timeZone: cfg.analyticsTimeZone ?? DEFAULT_ANALYTICS_TIMEZONE,
+    secret: cfg.sessionSecret, live: () => sockets?.presence() ?? { sockets: 0, emails: [] },
+  });
   const authDependencies = {
+    usage: meter,
     accounts, sessions, accessTokens, allowedDomains: cfg.allowedDomains, signupOpen: cfg.signupOpen,
     cookieSecure: cfg.cookieSecure, noStore,
     humanCheck: cfg.turnstile ? cfg.turnstile.check ?? turnstileCheck(cfg.turnstile.secretKey, cfg.turnstile.hostnames) : null,
@@ -137,12 +160,22 @@ export function createWebApp(cfg: WebConfig, options: {
     activity: options.activity,
   };
   const requireStudent = createRequireStudent(authDependencies);
-  const usage = new StudentUsageActivity(() => store.view(), options.activity);
+  const usage = new StudentUsageActivity(() => store.view(), options.activity, meter);
   const appPage = readFileSync(join(PUBLIC, 'index.html'), 'utf8')
     .replaceAll('{{v}}', assetVersion())
     .replaceAll('{{turnstile}}', cfg.turnstile?.siteKey ?? '')
     .replaceAll('{{google}}', google ? 'on' : '');
   const app = createExpressApp(cfg);
+  app.use((req, res, next) => {
+    // Taken now: routers rewrite req.url while they work, and by the time the
+    // response has finished only the outermost path is the one to count.
+    const started = performance.now(), method = req.method, path = req.path;
+    res.on('finish', () => {
+      const email: unknown = res.locals.studentEmail;
+      meter.request(method, path, res.statusCode, performance.now() - started, typeof email === 'string' ? email : undefined);
+    });
+    next();
+  });
   const cfSource = cfg.turnstile ? ' https://challenges.cloudflare.com' : '';
   const csp = `default-src 'self'; script-src 'self'${cfSource}; frame-src ${cfg.turnstile ? `'self'${cfSource}` : "'none'"}; img-src 'self' data:; ` +
     "style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; " +
@@ -187,6 +220,7 @@ export function createWebApp(cfg: WebConfig, options: {
     try {
       const identity = await google.finish(req.query, parseCookies(req.headers.cookie)[GOOGLE_COOKIE]);
       const user = await accounts.google(identity, cfg.signupOpen);
+      meter.event('login', 'succeeded');
       options.activity?.record('login', 'succeeded', user.id ?? null, randomUUID());
       res.cookie('tm_session', sessions.issue(user.email, Date.now(), studentSessionVersion(user)), {
         httpOnly: true, sameSite: 'lax', secure: cfg.cookieSecure || req.secure, maxAge: sessions.ttl, path: '/',
@@ -202,21 +236,47 @@ export function createWebApp(cfg: WebConfig, options: {
   app.use(createStudentAuthRouter(authDependencies));
   app.use(createOccupancyRouter({ store, pushToken: cfg.pushToken, publishers: cfg.publishers, requireStudent, usage, onSnapshot: () => sockets.broadcast() }));
   app.use(createStudentUsageRouter({ requireStudent, usage }));
+  // How many accounts there are changes a few times a day; the report is
+  // asked for every few seconds while someone has the Analytics page open.
+  let accountFacts: { at: number; total: number | null; created: number[] | null } | null = null;
+  app.use(createUsageReportRouter({
+    pushToken: cfg.pushToken, publishers: cfg.publishers,
+    report: async (range) => {
+      if (!accountFacts || Date.now() - accountFacts.at > 60_000) {
+        const [total, created] = await Promise.all([
+          // A store that cannot answer leaves the figure unknown; it does not fail the whole report.
+          Promise.resolve().then(() => accounts.count()).catch(() => null),
+          Promise.resolve().then(() => accounts.createdTimes?.() ?? null).catch(() => null),
+        ]);
+        accountFacts = { at: Date.now(), total, created };
+      }
+      const floors = store.view().floors;
+      return meter.report(range, {
+        accountsTotal: accountFacts.total, accountCreatedTimes: accountFacts.created, accountStorage: cfg.studentPersistenceMode ?? 'file',
+        floorName: (id) => floors.find((floor) => floor.id === id)?.name ?? null,
+        tableName: (floorId, tableId) => floors.find((floor) => floor.id === floorId)?.tables.find((table) => table.id === tableId)?.name ?? null,
+        edges: store.edges(),
+      });
+    },
+  }));
   app.use(createStudentPageRouter({ requireStudent, noStore, appPage }));
   app.use(createStaticAssetRouter());
-  app.use(studentHttpErrorHandler(options.activity));
+  app.use(studentHttpErrorHandler(options.activity, meter));
   const server = createServer(app);
   sockets = new OccupancyWebSocketLifecycle(server, store, sessions, accounts);
   options.activity?.start();
+  meter.start();
   let disposal: Promise<void> | null = null;
   const dispose = () => {
     disposal ??= (async () => {
       try { await sockets.dispose(); } finally {
-        try { await options.activity?.dispose(); } finally { await options.closePersistence?.(); }
+        try { await meter.close(); } finally {
+          try { await options.activity?.dispose(); } finally { await options.closePersistence?.(); }
+        }
       }
     })();
     return disposal;  };
-  return { app, server, store, users: accounts, sessions, activity: options.activity, dispose };
+  return { app, server, store, users: accounts, sessions, activity: options.activity, usage: meter, dispose };
 }
 
 /** Async production composition; file-mode factories remain synchronous for existing callers. */

@@ -30,6 +30,15 @@
   --orange-50: #eb6200; --orange-60: #ba4e00; --orange-70: #8a3800; --orange-80: #5e2900; --orange-90: #3e1a00;
   --interactive: var(--orange-40); --interactive-hover: var(--orange-50); --on-interactive: #161616;
 
+  /* Bluegrid telemetry, Gray 100 values. Series colours are taken in this
+     order and never by taste; the set passes 3:1 on background and layer-01
+     and keeps its separation under colour-blind simulation. Magnitude is one
+     blue, dark to bright. Parts of a whole use the categorical set. */
+  --viz-01: #ee5396; --viz-02: #1192e8; --viz-03: #8a3ffc; --viz-04: #009d9a;
+  --viz-seq-01: #001d6c; --viz-seq-02: #0043ce; --viz-seq-03: #0f62fe; --viz-seq-04: #78a9ff; --viz-seq-05: #d0e2ff;
+  --categorical-01: #8a3ffc; --categorical-02: #33b1ff; --categorical-03: #007d79; --categorical-04: #ff7eb6; --gray-50: #8d8d8d;
+  --layer-accent-01: #393939; --icon-disabled: rgba(244, 244, 244, .25);
+
   /* What runs where (docs/ALGO_DASHBOARD.md): an orange stage is hardware. */
   --device: var(--orange-40); --edge: #33b1ff; --view: #8d8d8d; --mask: #08bdba;
 

@@ -181,7 +181,7 @@ flash devices or restart the site gateway automatically.
 
 TMflash signs in with an existing algo account using browser verification and
 PKCE. It queues requests; a signed-in operator matches the physical UID and
-request code in module 05 Adoption to approve. No service token is needed.
+request code in module 06 Adoption to approve. No service token is needed.
 See [the adoption runbook](../docs/ADOPTION.md) for account-session scope,
 Cloudflare API exceptions, persistent registry preparation and live checks.
 

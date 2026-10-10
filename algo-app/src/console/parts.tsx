@@ -17,7 +17,8 @@ export const MODULES = [
   { n: '02', title: 'ML training', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
   { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
   { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
-  { n: '05', title: 'Adoption', path: '/adoption', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
+  { n: '05', title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
+  { n: '06', title: 'Adoption', path: '/adoption', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
 ] as const;
 
 

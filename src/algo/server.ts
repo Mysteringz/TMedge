@@ -30,6 +30,8 @@ import { createNotificationRouter } from '../modules/algo-admin/controllers/noti
 import { ReadNotifications } from '../modules/algo-admin/use-cases/read-notifications.js';
 import { RuntimeNotificationQueries } from '../infrastructure/algo-admin/runtime-notification-queries.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
+import { createEdgeAnalytics } from '../infrastructure/analytics/edge-analytics.js';
+import { createAnalyticsRouter } from '../modules/analytics/routes/analytics-router.js';
 import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
 import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
 import { AlgoWebSocketAdapter } from './websocket-adapter.js';
@@ -88,6 +90,10 @@ export function startAlgo(
   // The env var forces it on; otherwise the recorder remembers what it was
   // last told, so a deploy does not quietly stop a collection run.
   if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setMode('on');
+  // Module 05. Started with the server, not with the first visitor: last
+  // week's chart needs someone to have been writing it down last week.
+  const analytics = createEdgeAnalytics(rt);
+  analytics.collector.start();
 
   /**
    * Which sensor the debugger opens on. A node that is sending pictures beats
@@ -267,6 +273,7 @@ export function startAlgo(
   app.use('/api/train', train.router);
   app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
   notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth }))));
+  app.use('/api/analytics', createAnalyticsRouter(auth, analytics.read));
 
   app.get('/api/catalogue', (_req, res) => res.json({
     nodes: NODE_SPECS,
@@ -610,7 +617,7 @@ export function startAlgo(
       broker.stop();
       for (const ws of wss.clients) ws.terminate();
       disposal = Promise.all([
-        algo.dispose(), consoleCore?.dispose(),
+        algo.dispose(), consoleCore?.dispose(), analytics.collector.stop(),
         new Promise<void>(resolve => wss.close(() => resolve())),
       ]).then(() => undefined);
       return disposal;

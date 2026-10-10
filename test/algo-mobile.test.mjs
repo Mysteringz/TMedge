@@ -305,7 +305,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       ]) {
         await t.test(`${viewport.width}×${viewport.height}: all modules fit`, async () => {
           await page.setViewportSize(viewport);
-          for (const path of ['/', '/flow', '/train', '/console', '/updates', '/adoption']) {
+          for (const path of ['/', '/flow', '/train', '/console', '/updates', '/analytics', '/analytics/usage', '/analytics/server', '/adoption']) {
             await page.unrouteAll({ behavior: 'wait' });
             if (path === '/train') await trainingFixtures(page);
             if (path === '/updates') await updatesFixtures(page);
@@ -321,6 +321,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
             if (path === '/train') await page.locator('.cx-jobs').getByText('SUBMIT_FAILED').waitFor();
             if (path === '/updates') await page.getByText('Connected to edge', { exact: false }).waitFor();
             if (path === '/adoption') await page.getByText('No requests waiting.', { exact: false }).waitFor();
+            if (path.startsWith('/analytics')) await page.locator('.an-view .an-metrics, .an-view .an-notice').first().waitFor();
             await fits(page, viewport.width);
             if (path === '/console') {
               await page.frameLocator('.cx-frame').locator('#conn.good').waitFor();
@@ -330,10 +331,38 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
               await frame.locator('#floor-tabs button').last().tap();
               assert.equal(await frame.locator('#floor-tabs button').last().getAttribute('aria-selected'), 'true');
             }
-            if (viewport.width === 390) await shot(page, engine, path.slice(1) || 'home');
+            if (viewport.width === 390) await shot(page, engine, path.slice(1).replaceAll('/', '-') || 'home');
           }
         });
       }
+
+      await t.test('analytics says what it cannot know instead of showing zero, and gives every chart as a table', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${base}/analytics`);
+        await page.getByRole('heading', { name: 'Analytics', exact: true }).waitFor();
+        // This edge publishes to no web tier and no sensor has reported: both
+        // figures are unknown, and neither may be drawn as 0.
+        await page.getByText('Student usage is not set up').waitFor();
+        for (const label of ['Students online', 'Seats taken now']) {
+          const tile = page.locator('.an-metric').filter({ hasText: label });
+          assert.equal((await tile.locator('.an-metric__value').innerText()).trim(), '–', `${label} is not known`);
+        }
+        await page.getByRole('tab', { name: 'Server and back end' }).tap();
+        await page.waitForURL('**/analytics/server**');
+        const memory = page.locator('.an-chart').filter({ has: page.getByRole('heading', { name: 'Memory', exact: true }) });
+        await memory.locator('svg[role=img]').waitFor();
+        await memory.getByRole('button', { name: 'View as table' }).tap();
+        assert.ok(await memory.locator('tbody tr').count() >= 1, 'the same readings, without hovering');
+        await memory.getByRole('button', { name: 'View as chart' }).tap();
+        await memory.locator('svg[role=img]').waitFor();
+        await page.locator('.an-range .seg-opt', { hasText: '7 days' }).tap();
+        await page.waitForURL('**range=7d');
+        // History began minutes ago; a week-long chart says so rather than implying a quiet week.
+        await page.getByText('History starts part-way through this range').waitFor();
+        await fits(page, 390);
+        await shot(page, engine, 'analytics-server-7d');
+      });
 
       await t.test('a new draft has a self-contained CPU example ready to save on a phone', async () => {
         await page.unrouteAll({ behavior: 'wait' });

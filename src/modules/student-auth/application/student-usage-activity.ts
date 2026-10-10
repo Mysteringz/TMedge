@@ -5,10 +5,15 @@ import { VENUES } from '../../../shared/venues.js';
 import { ApplicationError } from '../../shared/application/contracts.js';
 import type { StudentActivityLog } from './student-activity-log.js';
 import { isActivityIdentifier } from '../domain/student-activity-details.js';
+import type { UsageEventSink } from '../../analytics/application/usage-meter.js';
 
 /** Resolves campus context on the server; browser telemetry cannot choose its actor or result count. */
 export class StudentUsageActivity {
-  constructor(private readonly campus: () => CampusView, private readonly activity?: StudentActivityLog) {}
+  constructor(
+    private readonly campus: () => CampusView, private readonly activity?: StudentActivityLog,
+    /** Counts only (module 05 of the algo console); it is never given who did it. */
+    private readonly usage?: UsageEventSink,
+  ) {}
 
   record(userId: string | undefined, raw: unknown, requestId: string): void {
     const input = parseUsageInput(raw);
@@ -33,17 +38,17 @@ export class StudentUsageActivity {
     }
     details.liveData = hasLiveData(selected);
     if (input.action === 'seat-search') details.resultCount = searchSeats(selected, input.seats).slice(0, 20).length;
+    this.usage?.event(input.action, 'succeeded', details);
     if (userId) this.activity?.record(input.action, 'succeeded', userId, requestId, details);
   }
 
   /** Keep the legacy GET search response, logging only recognized identifiers. */
   recordApiSearch(userId: string | undefined, seats: number, floorId: string | undefined, resultCount: number, requestId: string): void {
-    if (!userId) return;
     const floors = this.campus().floors.filter((floor) => floorId === undefined || floor.id === floorId);
     const recognized = floors.find((floor) => floor.id === floorId && isActivityIdentifier(floor.id));
-    this.activity?.record('seat-search', 'succeeded', userId, requestId, {
-      seats, resultCount, liveData: hasLiveData(floors), ...(recognized ? { floorId: recognized.id } : {}),
-    });
+    const details = { seats, resultCount, liveData: hasLiveData(floors), ...(recognized ? { floorId: recognized.id } : {}) };
+    this.usage?.event('seat-search', 'succeeded', details);
+    if (userId) this.activity?.record('seat-search', 'succeeded', userId, requestId, details);
   }
 }
 

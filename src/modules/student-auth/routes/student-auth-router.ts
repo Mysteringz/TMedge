@@ -6,6 +6,7 @@ import { asyncHandler } from '../../../infrastructure/http/errors.js';
 import type { StudentActivityLog } from '../application/student-activity-log.js';
 import type { StudentActivityAction, StudentActivityOutcome } from '../repositories/student-activity-repository.js';
 import { createRequireStudent, studentCredential } from './student-request-auth.js';
+import type { UsageEventSink } from '../../analytics/application/usage-meter.js';
 
 export { createRequireStudent } from './student-request-auth.js';
 
@@ -20,6 +21,8 @@ export interface StudentAuthRouterDependencies {
   cookieSecure: boolean;
   noStore(res: Response): void;
   activity?: StudentActivityLog;
+  /** Outcome counts for the usage meter; unlike `activity` it exists in every storage mode. */
+  usage?: UsageEventSink;
   humanCheck?: HumanCheck | null;
   onLogout?: (token: string | undefined) => void;
 }
@@ -140,6 +143,7 @@ function createSignupHandler(deps: StudentAuthRouterDependencies, limiter: RateL
 }
 
 function recordActivity(deps: StudentAuthRouterDependencies, action: StudentActivityAction, outcome: StudentActivityOutcome, userId?: string): void {
+  deps.usage?.event(action, outcome);
   deps.activity?.record(action, outcome, userId ?? null, randomUUID());
 }
 

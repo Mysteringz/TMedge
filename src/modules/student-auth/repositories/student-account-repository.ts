@@ -8,4 +8,6 @@ export interface IStudentAccountRepository {
   create(email: string, name: string, password: string): Promise<User>;
   verify(email: string, password: string): Promise<User | null>;
   google?(identity: { sub: string; email: string; name: string }, signupOpen: boolean): Promise<User> | User;
+  /** When each account was created, for sign-up history. Times only: no identity leaves the store. */
+  createdTimes?(): number[] | Promise<number[]>;
 }
