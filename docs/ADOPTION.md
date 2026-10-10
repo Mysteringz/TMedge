@@ -3,8 +3,11 @@
 ## Operator flow
 
 In TMflash set Console URL to `https://algo.hkumyseat.com` and click **Sign in
-with algo account**. Complete the existing browser verification and authorize
-the app. Select 1, 2 or 4 fps, flash, then compare the USB board UID and request
+with algo account**. Complete the existing browser verification; the console
+automatically returns its one-use code to the initiating TMflash session. If
+the browser keeps the return page open, click **Return to TMflash**. A failed
+authorization shows **Retry connection**; an expired fallback obtains a fresh
+code. Select 1, 2 or 4 fps, flash, then compare the USB board UID and request
 code in **Adoption**. Type both to approve. The board stays unplaced; its first
 fresh authenticated report changes verification to **Verified reports**.
 Direct WSS setup also requires a fresh report ACK from the rebooted board.
@@ -82,8 +85,9 @@ Public verification after release/configuration:
 1. Unauthenticated preflight → JSON 401; exchange with invalid code → JSON
    401; no browser redirect, HTML page or Cloudflare refusal.
 2. Human authorize and Adoption remain inaccessible without algo sign-in.
-3. Start sign-in from the built TMflash.app, complete verification, authorize
-   and Test → **Console access is verified. Adoption is ready.**
+3. Start sign-in from the built TMflash.app and complete browser verification.
+   The popup returns automatically, without a second authorization click.
+   Test → **Console access is verified. Adoption is ready.**
 4. Request a real new device, match/approve UID and request code, verify its
    authenticated report/ACK, then restart through the supported deployment
    flow and confirm registration survived.
