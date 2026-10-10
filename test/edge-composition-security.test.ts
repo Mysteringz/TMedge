@@ -58,7 +58,9 @@ test('production application mounts one session-protected console and disposes i
   cfg.algoPort = (probe.address() as AddressInfo).port;
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const usersPath = join(cfg.dataDir, 'algo-users.json');
-  await new AlgoUsers(usersPath).add('alice', 'correct horse battery');
+  const users = new AlgoUsers(usersPath);
+  await users.add('alice', 'correct horse battery', 'engineer');
+  await users.add('operator', 'correct horse battery', 'operator');
   const previousSecret = process.env.SESSION_SECRET, previousUsers = process.env.ALGO_USERS_FILE;
   process.env.SESSION_SECRET = 'x'.repeat(40);
   process.env.ALGO_USERS_FILE = usersPath;
@@ -95,6 +97,15 @@ test('production application mounts one session-protected console and disposes i
     const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
     const headers = { cookie, 'x-tm-console': '1', 'x-tm-algo': '1' };
     assert.equal((await fetch(base + '/console-app/api/state', { headers })).status, 200);
+    const operatorLogin = await fetch(base + '/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'operator', password: 'correct horse battery' }) });
+    assert.equal(operatorLogin.status, 200);
+    const operatorCookie = operatorLogin.headers.get('set-cookie')!.split(';')[0]!;
+    const deniedBuild = await fetch(base + '/console-app/api/firmware/uploads/test/build', {
+      method: 'POST', headers: { ...headers, cookie: operatorCookie },
+    });
+    assert.equal(deniedBuild.status, 403, 'routine Operator access does not start firmware builds');
+    assert.equal(jobs.status(), null, 'denied Operator cannot dispatch injected build work');
     const build = await fetch(base + '/console-app/api/firmware/uploads/test/build', { method: 'POST', headers });
     assert.equal(build.status, 202);
     assert.ok(jobs.status(), 'the mounted route uses the injected service');
