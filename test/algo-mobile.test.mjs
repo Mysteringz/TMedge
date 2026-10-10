@@ -34,7 +34,8 @@ before(async () => {
   };
   runtime = createEdgeRuntime(config, buildRegistry(siteJson(), nodesJson()));
   const users = join(directory, 'users.json');
-  await new AlgoUsers(users).add('mobiletest', 'local browser test password');
+  // This fixture exercises commissioning/OTA, which require Engineer access.
+  await new AlgoUsers(users).add('mobiletest', 'local browser test password', 'engineer');
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users,
     SESSION_SECRET: 'local-only-test-secret'.repeat(3),
