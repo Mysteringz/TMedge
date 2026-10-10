@@ -35,7 +35,9 @@ before(async () => {
   runtime = createEdgeRuntime(config, buildRegistry(siteJson(), nodesJson()));
   const users = join(directory, 'users.json');
   // This fixture exercises commissioning/OTA, which require Engineer access.
-  await new AlgoUsers(users).add('mobiletest', 'local browser test password', 'engineer');
+  const accounts = new AlgoUsers(users);
+  await accounts.add('mobiletest', 'local browser test password', 'engineer');
+  for (const role of ['viewer', 'operator']) await accounts.add(`${role}test`, 'local browser test password', role);
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users,
     SESSION_SECRET: 'local-only-test-secret'.repeat(3),
@@ -115,33 +117,85 @@ async function updatesFixtures(page) {
 }
 
 for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
-  test(`${engine}: algo account connects TMflash, matches the physical request and revokes access`, { timeout: 60_000 }, async () => {
+  test(`${engine}: Viewer and Operator cannot initiate automatic TMflash authorization`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    try {
+      for (const role of ['viewer', 'operator']) {
+        const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+        try {
+          const login = await context.request.post(`${base}/auth/login`, { data: { username: `${role}test`, password: 'local browser test password' } });
+          assert.equal(login.status(), 200);
+          const page = await context.newPage();
+          let authorizations = 0;
+          page.on('request', request => { if (request.url().endsWith('/api/tmflash/authorize')) authorizations++; });
+          const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
+          const challenge = createHash('sha256').update(verifier).digest('base64url');
+          await page.goto(`${base}/tmflash/connect?challenge=${challenge}&state=${state}`);
+          await page.getByRole('status').filter({ hasText: 'Engineer or Admin access is required' }).waitFor();
+          assert.equal(await page.getByRole('button', { name: 'Retry connection' }).isDisabled(), true);
+          assert.equal(await page.getByRole('button', { name: 'Cancel', exact: true }).isEnabled(), true);
+          assert.equal(authorizations, 0, 'automatic continuation must respect the account capability before requesting a code');
+          for (const scheme of ['dark', 'light']) {
+            await page.emulateMedia({ colorScheme: scheme });
+            await fits(page, 390);
+            await shot(page, engine, `tmflash-${role}-${scheme}-390`);
+          }
+          const refused = await context.request.post(`${base}/api/tmflash/authorize`, { headers: { 'x-tm-algo': '1' }, data: { challenge, state } });
+          assert.equal(refused.status(), 403, 'the server independently enforces commissioning permission');
+        } finally { await context.close(); }
+      }
+    } finally { await browser.close(); }
+  });
+  test(`${engine}: algo sign-in automatically connects TMflash, matches the physical request and revokes access`, { timeout: 60_000 }, async () => {
     const browser = await browserType.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: 'dark' });
     const page = await context.newPage();
     try {
       const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
       const challenge = createHash('sha256').update(verifier).digest('base64url');
+      // Capture the real server's code before signing in. No second click
+      // should be needed after account verification to initiate the return.
+      let callback, authorizations = 0;
+      await page.route('**/api/tmflash/authorize', async route => {
+        authorizations++;
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        callback = new URL((await response.json()).redirect);
+        await route.fulfill({ status: 503, json: { error: 'Temporary handoff failure' } });
+      });
       await page.goto(`${base}/tmflash/connect?challenge=${challenge}&state=${state}`);
       await page.getByLabel('Username').fill('mobiletest');
       await page.getByLabel('Password', { exact: true }).fill('local browser test password');
       await page.getByRole('button', { name: 'Sign in', exact: true }).click();
       await page.getByRole('heading', { name: 'Connect TMflash' }).waitFor();
+      await page.getByRole('alert').filter({ hasText: 'Temporary handoff failure' }).waitFor();
+      assert.equal(authorizations, 1, 'account sign-in must automatically request exactly one callback');
+      assert.equal(await page.getByRole('button', { name: 'Authorize TMflash' }).count(), 0);
       for (const scheme of ['dark', 'light']) {
         await page.emulateMedia({ colorScheme: scheme });
         await fits(page, 390);
         await shot(page, engine, `tmflash-connect-${scheme}-390`);
       }
-      // Exercise the actual consent button but hold the custom callback in
-      // this headless fixture: launching an installed app belongs to macOS.
-      let callback;
+      // Retry a temporary failure, then let the page attempt its actual
+      // custom-scheme return. Headless browsers cannot open a native app,
+      // so the return button must remain available for blocked handoffs.
+      await page.unroute('**/api/tmflash/authorize');
       await page.route('**/api/tmflash/authorize', async route => {
+        authorizations++;
         const response = await route.fetch();
         callback = new URL((await response.json()).redirect);
-        await route.fulfill({ status: 400, json: { error: 'Callback captured by browser test' } });
+        await route.fulfill({ response });
       });
-      await page.getByRole('button', { name: 'Authorize TMflash' }).click();
-      await page.getByRole('alert').filter({ hasText: 'Callback captured by browser test' }).waitFor();
+      await page.getByRole('button', { name: 'Retry connection' }).click();
+      await page.getByRole('button', { name: 'Return to TMflash' }).waitFor();
+      assert.equal(authorizations, 2);
+      await page.getByRole('button', { name: 'Return to TMflash' }).click();
+      assert.equal(authorizations, 2, 'a fallback return must reuse the same one-use code');
+      for (const scheme of ['dark', 'light']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        await fits(page, 390);
+        await shot(page, engine, `tmflash-return-${scheme}-390`);
+      }
       assert.equal(callback.protocol, 'hk.hkumyseat.tmflash:');
       assert.equal(callback.searchParams.get('state'), state);
       const exchanged = await context.request.post(`${base}/api/tmflash/exchange`, { data: { code: callback.searchParams.get('code'), verifier } });
@@ -179,6 +233,39 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await page.getByRole('status').filter({ hasText: 'TMflash session revoked.' }).waitFor();
       const refused = await context.request.get(`${base}/api/provision/preflight`, { headers: { authorization: `Bearer ${issued.token}` } });
       assert.equal(refused.status(), 401);
+    } finally { await context.close(); await browser.close(); }
+  });
+  test(`${engine}: TMflash rejects invalid requests and unsafe handoffs and retries an expired return`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const page = await context.newPage();
+    try {
+      const login = await context.request.post(`${base}/auth/login`, { data: { username: 'mobiletest', password: 'local browser test password' } });
+      assert.equal(login.status(), 200);
+      const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
+      const challenge = createHash('sha256').update(verifier).digest('base64url');
+      let authorizations = 0;
+      await page.route('**/api/tmflash/authorize', async route => { authorizations++; await route.fulfill({ json: { redirect: 'https://example.com/' } }); });
+      await page.goto(`${base}/tmflash/connect?challenge=${challenge}&state=${state}&state=${state}`);
+      await page.getByRole('alert').filter({ hasText: 'This sign-in request is invalid' }).waitFor();
+      assert.equal(authorizations, 0, 'ambiguous requests cannot initiate sign-in');
+      await page.goto(`${base}/tmflash/connect?challenge=${challenge}&state=${state}`);
+      await page.getByRole('alert').filter({ hasText: 'Invalid TMflash return address' }).waitFor();
+      assert.equal(new URL(page.url()).origin, base, 'an unsafe return URL cannot navigate away');
+      await page.unroute('**/api/tmflash/authorize');
+      await page.route('**/api/tmflash/authorize', async route => { authorizations++; await route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Sign in</h1>' }); });
+      await page.getByRole('button', { name: 'Retry connection' }).click();
+      await page.getByRole('alert').filter({ hasText: 'The console returned a sign-in page' }).waitFor();
+      await page.unroute('**/api/tmflash/authorize');
+      await page.route('**/api/tmflash/authorize', async route => { authorizations++; await route.fulfill({ response: await route.fetch() }); });
+      await page.clock.install();
+      await page.getByRole('button', { name: 'Retry connection' }).click();
+      await page.getByRole('button', { name: 'Return to TMflash' }).waitFor();
+      assert.equal(authorizations, 3);
+      await page.clock.fastForward(60_000);
+      await page.getByRole('button', { name: 'Return to TMflash' }).click();
+      await page.getByRole('button', { name: 'Return to TMflash' }).waitFor();
+      assert.equal(authorizations, 4, 'an expired return must obtain a fresh one-use code');
     } finally { await context.close(); await browser.close(); }
   });
   test(`${engine}: the algorithm console works on phones, tablets and desktop`, { timeout: 180_000 }, async t => {
