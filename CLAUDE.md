@@ -25,7 +25,9 @@ src/algo/                algo console: node-graph over the real pipeline (docs/A
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 /train, 03 /console, 04 /updates, 05 /adoption
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 /train, 03 /console, 04 /updates, 05 /analytics, 06 /adoption
+src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
+src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
 src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMflash access
 src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
@@ -113,6 +115,12 @@ has hidden Linux failures before.
   docs/hpc/HANDOVER.md rules 1-6 apply to every change there.
 - **The node listener is not a web surface.** `/tmnode`, `/fw/<id>.bin` (grant
   only) and `/healthz`; nothing a person could read. It binds to loopback.
+- **Analytics: unknown is not zero, and counts are not people.** A source that
+  did not answer has no data, a stretch nothing was measured in is a gap, and
+  a floor no sensor covers has no occupancy figure -- never a 0. Nothing in
+  `src/modules/analytics` may hold an email, a name or an account ID; "active
+  students" is counted from a keyed hash. Its history writer must never throw:
+  it runs inside the services it is watching. docs/ANALYTICS.md.
 
 ## Conventions
 

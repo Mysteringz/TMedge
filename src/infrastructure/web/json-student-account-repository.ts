@@ -32,6 +32,10 @@ export class JsonStudentAccountRepository implements IStudentAccountRepository {
     return this.users.size;
   }
 
+  createdTimes(): number[] {
+    return [...this.users.values()].map((user) => user.createdAt);
+  }
+
   google(identity: { sub: string; email: string; name: string }, signupOpen: boolean): User {
     if (!identity.sub || identity.sub.length > 255) throw new AuthError('Invalid Google identity.');
     const bySubject = [...this.users.values()].find((user) => user.google === identity.sub);

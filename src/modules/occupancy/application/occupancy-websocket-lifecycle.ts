@@ -37,6 +37,11 @@ export class OccupancyWebSocketLifecycle {
     }, 100);
   };
 
+  /** Who has the live view open, for the usage meter: a count and the accounts behind it. */
+  presence(): { sockets: number; emails: string[] } {
+    return { sockets: this.clients.size, emails: [...this.clients.values()].map((identity) => identity.email) };
+  }
+
   closeSession(token: string | undefined): void {
     if (!token) return;
     for (const [client, identity] of this.clients) if (identity.token === token) client.terminate();

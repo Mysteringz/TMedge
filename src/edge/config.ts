@@ -5,6 +5,8 @@
 import { hostname } from 'node:os';
 import { loadPostgresConnectionConfig, PostgresConfigError, type PostgresConnectionConfig } from '../infrastructure/postgres/config.js';
 import { DeviceKeys, GatewayKeys } from './secure.js';
+import { DEFAULT_ANALYTICS_TIMEZONE, isTimeZone } from '../shared/analytics.js';
+import { DEFAULT_UNITS, isUnitName } from '../infrastructure/analytics/systemd-probe.js';
 export type PersistenceMode = 'file' | 'postgres';
 
 export interface EdgeConfig {
@@ -49,6 +51,12 @@ export interface EdgeConfig {
   nodeLimits: NodeListenerLimits;
   /** Test only: serve the node listener over TLS itself (PEM paths). Production terminates TLS at Cloudflare. */
   nodeTls: { certPath: string; keyPath: string } | null;
+  /**
+   * Module 05 of the algo console. `timeZone` is the site's own, so "today"
+   * and the hour-of-week pattern mean what they do on campus; `units` are the
+   * systemd units whose state it may read (never start, stop or change).
+   */
+  analytics?: { timeZone: string; units: string[] };
 }
 
 export interface NodeListenerLimits {
@@ -146,6 +154,14 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     // over the internet authenticates with the key or not at all.
     throw new EnvError('NODE_PORT is set but TM_KEY is not: the direct node listener always requires a signing key.');
   }
+  const analyticsTimeZone = env.ANALYTICS_TIMEZONE || DEFAULT_ANALYTICS_TIMEZONE;
+  if (!isTimeZone(analyticsTimeZone)) throw new EnvError(`ANALYTICS_TIMEZONE must be an IANA time zone such as Asia/Hong_Kong, got "${analyticsTimeZone}"`);
+  const analyticsUnits = env.ANALYTICS_UNITS === undefined || env.ANALYTICS_UNITS === ''
+    ? [...DEFAULT_UNITS] : env.ANALYTICS_UNITS.split(',').map((unit) => unit.trim()).filter(Boolean);
+  // These names become arguments to systemctl, so anything but a plain unit name is refused outright.
+  if (analyticsUnits.length > 32 || analyticsUnits.some((unit) => !isUnitName(unit))) {
+    throw new EnvError('ANALYTICS_UNITS must be at most 32 comma-separated systemd unit names (letters, digits, @ _ . : -)');
+  }
   const certPath = env.NODE_TLS_CERT ?? '';
   const keyPath = env.NODE_TLS_KEY ?? '';
   if ((certPath === '') !== (keyPath === '')) throw new EnvError('NODE_TLS_CERT and NODE_TLS_KEY go together (test only)');
@@ -193,5 +209,6 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
       grantMs: int(env, 'NODE_GRANT_MS', DEFAULT_NODE_LIMITS.grantMs, 10_000, 3_600_000),
     },
     nodeTls: certPath ? { certPath, keyPath } : null,
+    analytics: { timeZone: analyticsTimeZone, units: analyticsUnits },
   };
 }

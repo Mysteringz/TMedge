@@ -2,7 +2,9 @@
  * The console around everything: sign-in, module select, and the modules.
  * Module 01 is the algo debugger exactly as it was (App.tsx), and module 03
  * the edge's debug console (formerly console.hkumyseat.com), each under the
- * console's top bar. Module 04 owns firmware builds and OTA rollouts.
+ * console's top bar. Module 04 owns firmware builds and OTA rollouts, and
+ * module 05 is analytics: usage of the student site and the state of the
+ * server, read-only.
  */
 import { AdminSessionContext, type AdminSession } from '../entities/admin-session/index.tsx';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -20,6 +22,7 @@ import './console.css';
 const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
 const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Updates })));
 const Accounts = lazy(() => import('../pages/admin-accounts/index.tsx').then((m) => ({ default: m.Accounts })));
+const Analytics = lazy(() => import('../pages/analytics/index.tsx').then((m) => ({ default: m.Analytics })));
 const Adoption = lazy(() => import('./Adoption.tsx').then((m) => ({ default: m.Adoption })));
 const TMflashConnect = lazy(() => import('./TMflashConnect.tsx').then((m) => ({ default: m.TMflashConnect })));
 
@@ -138,6 +141,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
       {screen === 'accounts' ? <Suspense fallback={<main aria-busy="true">Loading accounts…</main>}><Accounts /></Suspense>
         : screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
+          : screen === 'analytics' ? <Suspense fallback={<main className="cx-train cx-hint">Loading analytics…</main>}><Analytics /></Suspense>
           : screen === 'adoption' ? <Suspense fallback={<main className="cx-train cx-hint">Loading adoption…</main>}><Adoption /></Suspense>
           : screen === 'tmflash-connect' ? <Suspense fallback={null}><TMflashConnect user={user} /></Suspense>
           : <Home user={user} />}

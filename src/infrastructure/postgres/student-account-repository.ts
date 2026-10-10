@@ -22,6 +22,13 @@ export class PostgresStudentAccountRepository implements IStudentAccountReposito
     });
   }
 
+  async createdTimes(): Promise<number[]> {
+    return this.available(async () => {
+      const rows = await this.source.query('SELECT created_at FROM public.student_users ORDER BY created_at LIMIT 200000') as Array<{ created_at: Date | string }>;
+      return rows.map((row) => new Date(row.created_at).getTime()).filter(Number.isFinite);
+    });
+  }
+
   async get(email: string): Promise<User | undefined> {
     return this.available(async () => {
       const rows = await this.source.query('SELECT * FROM public.student_users WHERE email = $1', [normalizeStudentEmail(email)]) as AccountRow[];

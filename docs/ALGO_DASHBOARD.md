@@ -273,7 +273,7 @@ password prompt. Cloudflare Access still sits in front; behind it:
 ## Screens
 
 - `/login` — sign-in.
-- `/` — module select (↑ ↓, 1–4, enter).
+- `/` — module select (↑ ↓, 1–6, enter).
 - `/flow` — module 01, the node-graph debugger described above, unchanged.
 - `/train` — module 02, ML Training: a placeholder until there is a sandboxed
   job runner to back it.
@@ -283,6 +283,11 @@ password prompt. Cloudflare Access still sits in front; behind it:
 - `/updates` — module 04, firmware source upload, build output, saved images,
   target selection and pilot-first OTA rollout progress. Uses the console's
   existing `/console-app/api/firmware*` services and `x-tm-console: 1` write guard.
+- `/analytics` — module 05, how the student site is used and how the server is
+  doing: students, searches, seats, processor, memory, storage, services.
+  Read-only, any signed-in role. See [ANALYTICS.md](ANALYTICS.md).
+- `/adoption` — module 06, commissioning physical sensors. See
+  [ADOPTION.md](ADOPTION.md).
 
 ### Module 03, the debug console
 

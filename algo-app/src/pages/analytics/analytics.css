@@ -1,0 +1,136 @@
+/* Module 05, laid out as Bluegrid's console: filters in one row above
+   everything they scope, tiles before trends before detail, surfaces told
+   apart by layer and never by shadow, every edge square and every gap a step
+   of the 8px grid. */
+
+.cx .an { gap: 24px; }
+.cx .an-head-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; font-size: 12px; letter-spacing: .32px; color: var(--text-helper); }
+.cx .an-view { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+/* — filter row: tabs for the view, a content switcher for the range — */
+.cx .an-filters { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px 24px; }
+.cx .an-tabs { display: flex; min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.cx .an-tab {
+  flex: none; height: 40px; padding: 0 16px; border: 0; border-bottom: 2px solid var(--border-subtle-01); background: transparent;
+  color: var(--text-secondary); font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; white-space: nowrap; cursor: pointer;
+  transition: color 70ms var(--ease-productive), border-color 70ms var(--ease-productive);
+}
+.cx .an-tab:hover { color: var(--text-primary); border-bottom-color: var(--border-strong-01); }
+/* Selected is the accent edge and a weight change, never colour alone. */
+.cx .an-tab[aria-selected="true"] { color: var(--text-primary); font-weight: 600; border-bottom-color: var(--interactive); }
+
+/* — sections — */
+.cx .an-section { margin-top: 16px; }
+.cx .an-section:first-child { margin-top: 0; }
+.cx .an-section h2 { font: 400 20px/1.4 var(--font-sans); letter-spacing: 0; }
+.cx .an-section p { margin: 4px 0 0; max-width: 66ch; color: var(--text-secondary); font-size: 14px; line-height: 1.43; }
+
+.cx .an-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
+.cx .an-grid > * { grid-column: span 12; min-width: 0; }
+/* Charts in a row share its height; a notice is only as tall as what it says. */
+.cx .an-grid > * > .an-chart { height: 100%; }
+@media (min-width: 1056px) {
+  .cx .an-grid > .an-span-8 { grid-column: span 8; }
+  .cx .an-grid > .an-span-6 { grid-column: span 6; }
+  .cx .an-grid > .an-span-4 { grid-column: span 4; }
+}
+.cx .an-stack { display: flex; flex-direction: column; gap: 24px; }
+
+/* — metric tiles: one band, hairlines between, at most four across — */
+.cx .an-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--border-subtle-00); }
+.cx .an-metric { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; background: var(--layer-01); }
+.cx .an-metric__label { color: var(--text-secondary); font-size: 14px; line-height: 1.28572; letter-spacing: .16px; }
+.cx .an-metric__value { font: 300 32px/1.25 var(--font-sans); letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx .an-metric__unit { margin-left: 4px; color: var(--text-secondary); font-size: 16px; }
+.cx .an-metric__unknown { color: var(--text-helper); }
+.cx .an-metric__delta { display: flex; align-items: flex-start; gap: 4px; min-height: 16px; color: var(--text-secondary); font-size: 12px; line-height: 1.33333; letter-spacing: .32px; }
+.cx .an-metric__delta strong { color: var(--text-primary); font-weight: 600; }
+/* Colour confirms what the arrow and the signed number already say. */
+.cx .an-metric__delta--good .an-icon { color: var(--support-success); }
+.cx .an-metric__delta--bad .an-icon { color: var(--support-error); }
+.cx .an-metric .an-spark { margin-top: auto; }
+
+/* — panels: a tile holding a table, a meter or a list of facts — */
+.cx .an-panel { min-width: 0; padding: 16px; background: var(--layer-01); }
+.cx .an-panel__head { margin-bottom: 16px; }
+.cx .an-table--roomy th, .cx .an-table--roomy td { height: 40px; font-size: 14px; letter-spacing: .16px; white-space: normal; }
+.cx .an-table--roomy thead th { position: static; font-size: 14px; white-space: nowrap; }
+.cx .an-panel .table td, .cx .an-panel .table tbody th { border-bottom-color: var(--border-subtle-01); }
+
+.cx .an-facts { display: grid; gap: 0; margin: 0; }
+.cx .an-facts > div { display: grid; grid-template-columns: minmax(120px, 2fr) 3fr; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle-01); }
+.cx .an-facts > div:last-child { border-bottom: 0; }
+.cx .an-facts dt { color: var(--text-secondary); font-size: 14px; }
+.cx .an-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.cx .an-facts dd.cx-mono { font-size: 13px; }
+
+/* — status: always an icon and a word — */
+.cx .an-status { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; line-height: 1.33333; letter-spacing: .32px; }
+.cx .an-status--ok .an-icon { color: var(--support-success); }
+.cx .an-status--warn .an-icon { color: var(--support-warning); }
+.cx .an-status--err .an-icon { color: var(--support-error); }
+.cx .an-status--off .an-icon { color: var(--text-helper); }
+/* The mark inside the yellow disc stays dark so it reads on any ground. */
+.cx .an-icon__inner { fill: #161616; }
+
+/* — service health — */
+.cx .an-health { width: 100%; background: var(--layer-01); }
+.cx .an-health__head, .cx .an-health__row { display: grid; grid-template-columns: minmax(144px, 1.4fr) minmax(128px, 1.2fr) minmax(160px, 2.5fr) 72px; gap: 16px; align-items: center; padding: 0 16px; }
+.cx .an-health__head { min-height: 40px; background: var(--layer-accent-01); font: 600 14px/1.29 var(--font-sans); letter-spacing: .16px; }
+.cx .an-health__row { min-height: 56px; padding-block: 8px; border-bottom: 1px solid var(--border-subtle-01); font-size: 14px; letter-spacing: .16px; }
+.cx .an-health__row:hover { background: var(--layer-hover-01); }
+.cx .an-health__name small { display: block; color: var(--text-secondary); font-size: 12px; letter-spacing: .32px; overflow-wrap: anywhere; }
+.cx .an-health .an-status { white-space: normal; }
+.cx .an-uptime { display: flex; gap: 2px; height: 24px; }
+.cx .an-uptime span { flex: 1; min-width: 2px; background: var(--support-success); transition: opacity 110ms; }
+.cx .an-uptime span.is-warn { background: var(--support-warning); }
+.cx .an-uptime span.is-err { background: var(--support-error); }
+.cx .an-uptime span.is-none { background: var(--border-subtle-01); }
+.cx .an-uptime:hover span:not(:hover) { opacity: .55; }
+.cx .an-health__legend { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px 16px; color: var(--text-secondary); font-size: 12px; letter-spacing: .32px; }
+.cx .an-health__legend span { display: inline-flex; align-items: center; gap: 8px; }
+.cx .an-health__legend i { display: inline-block; width: 10px; height: 10px; }
+
+/* — meter — */
+.cx .an-meter { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cx .an-meter__header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.cx .an-meter__title { font: 600 14px/1.28572 var(--font-sans); letter-spacing: .16px; overflow-wrap: anywhere; }
+.cx .an-meter__total { color: var(--text-secondary); font-size: 14px; letter-spacing: .16px; font-variant-numeric: tabular-nums; }
+.cx .an-meter__bar { display: flex; gap: 1px; height: 8px; background: var(--border-subtle-01); }
+.cx .an-meter__seg { flex: none; height: 100%; background: var(--c); }
+.cx .an-meter__legend { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 4px 0 0; padding: 0; list-style: none; }
+.cx .an-meter__key { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; line-height: 1.33333; letter-spacing: .32px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cx .an-meter__key strong { color: var(--text-primary); font-weight: 600; }
+.cx .an-meter__swatch { flex: none; width: 12px; height: 12px; background: var(--c); }
+.cx .an-meter__readout { color: var(--text-secondary); font-size: 12px; line-height: 1.33333; letter-spacing: .32px; }
+
+/* — inline notification: edge, icon and bold title carry the status — */
+.cx .an-notice { display: flex; gap: 12px; min-width: 0; padding: 12px 16px 12px 13px; background: var(--layer-01); border-left: 3px solid var(--support-info); color: var(--text-primary); font-size: 14px; line-height: 1.29; }
+.cx .an-notice--warning { border-left-color: var(--support-warning); }
+.cx .an-notice--error { border-left-color: var(--support-error); }
+.cx .an-notice__icon { color: var(--support-info); margin-top: 0; }
+.cx .an-notice--warning .an-notice__icon { color: var(--support-warning); }
+.cx .an-notice--error .an-notice__icon { color: var(--support-error); }
+.cx .an-notice__text { min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.cx .an-notice__title { margin-right: 8px; color: var(--text-primary); font-weight: 600; }
+
+/* Two tiles across between tablet and laptop; charts are already one column. */
+@media (max-width: 1055px) { .cx .an-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .cx .an-tab { min-height: 44px; } }
+
+@media (max-width: 672px) {
+  .cx .an-filters { align-items: stretch; }
+  .cx .an-range { width: 100%; }
+  .cx .an-range .seg-opt { flex: 1 1 0; justify-content: center; padding: 0 8px; }
+  .cx .an-tab { padding: 0 12px; }
+  .cx .an-metric { padding: 12px; }
+  .cx .an-metric__value { font-size: 28px; }
+  .cx .an-chart, .cx .an-panel { padding: 12px; }
+  /* The daily bars need room a phone does not have; status and uptime say the same. */
+  .cx .an-health__head, .cx .an-health__row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 56px; gap: 12px; padding-inline: 12px; }
+  .cx .an-health__head > :nth-child(3), .cx .an-health__row > :nth-child(3) { display: none; }
+  .cx .an-health__legend { display: none; }
+  .cx .an-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+@media (max-width: 380px) { .cx .an-metrics { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .cx .an-tab, .cx .an-uptime span { transition: none; } }
