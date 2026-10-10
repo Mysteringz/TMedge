@@ -22,6 +22,8 @@ export interface HpcRouteDeps {
   config: HpcConfig;
   mutating: RequestHandler;
   limit: RequestHandler;
+  authorized?: (req: Request) => boolean;
+  authenticated?: (req: Request) => boolean;
   userOf(res: Response): string;
 }
 
@@ -57,6 +59,7 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const ready = prepare(req, res, 'connect', null);
     if (!ready) return;
     const op = service.ops.create(user, null, 'connect');
+    service.bindAuthority(op, () => d.authorized?.(req) ?? true);
     void service.connect(op, ready.creds!, ready.passwordChanged);
     return res.status(202).json({ opId: op.id });
   });
@@ -116,6 +119,7 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     // SUBMITTING now, synchronously: a second click cannot send it twice.
     store.update({ ...job, status: 'SUBMITTING', message: null, updatedAt: Date.now() });
     const op = service.ops.create(user, job.id, 'submit');
+    service.bindAuthority(op, () => d.authorized?.(req) ?? true);
     void service.submit(op, job, ready.creds, ready.passwordChanged);
     return res.status(202).json({ opId: op.id });
   });
@@ -128,6 +132,7 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const ready = prepare(req, res, 'refresh', job.id);
     if (!ready) return;
     const op = service.ops.create(user, job.id, 'refresh');
+    service.bindAuthority(op, () => d.authorized?.(req) ?? true);
     void service.refresh(op, job, ready.creds, ready.passwordChanged);
     return res.status(202).json({ opId: op.id });
   });
@@ -140,6 +145,7 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const ready = prepare(req, res, 'cancel', job.id);
     if (!ready) return;
     const op = service.ops.create(user, job.id, 'cancel');
+    service.bindAuthority(op, () => d.authorized?.(req) ?? true);
     void service.cancel(op, job, ready.creds, ready.passwordChanged);
     return res.status(202).json({ opId: op.id });
   });
@@ -163,10 +169,11 @@ export function mountHpc(router: Router, d: HpcRouteDeps): void {
     const op = service.ops.get(d.userOf(res), String(req.params.id));
     if (!op) return res.status(404).json({ error: 'no such operation' });
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-    const send = (e: { seq: number; type: string; data: unknown }) => res.write(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`);
+    const valid = () => d.authenticated?.(req) ?? true;
+    const send = (e: { seq: number; type: string; data: unknown }) => { if (!valid()) { res.end(); return; } res.write(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`); };
     for (const e of op.events) send(e);
     if (op.done) return res.end();
-    const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+    const ping = setInterval(() => { if (!valid()) { clearInterval(ping); res.end(); return; } res.write(': ping\n\n'); }, 5000);
     const unsubscribe = op.subscribe((e) => {
       send(e);
       if (e.type === 'done' || e.type === 'error') { clearInterval(ping); res.end(); }

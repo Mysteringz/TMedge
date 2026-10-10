@@ -4,12 +4,13 @@
  */
 import { useEffect, useState } from 'react';
 
-export type Screen = 'login' | 'home' | 'flow' | 'train' | 'console' | 'updates' | 'adoption' | 'tmflash-connect';
+export type Screen = 'login' | 'home' | 'flow' | 'train' | 'console' | 'updates' | 'accounts' | 'adoption' | 'tmflash-connect';
 
 export function screenOf(path: string): Screen {
   if (path.startsWith('/login')) return 'login';
   if (path.startsWith('/flow')) return 'flow';
   if (path.startsWith('/train')) return 'train';
+  if (path === '/accounts' || path.startsWith('/accounts/')) return 'accounts';
   if (path === '/console' || path.startsWith('/console/')) return 'console';
   if (path === '/updates' || path.startsWith('/updates/')) return 'updates';
   if (path === '/adoption' || path.startsWith('/adoption/')) return 'adoption';

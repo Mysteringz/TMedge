@@ -122,6 +122,7 @@ test('TMflash account sign-in needs browser consent and PKCE; its code is one-us
 test('password changes and account removal invalidate native sessions and pending login codes immediately', async () => {
   const { algoBase, cookie, usersPath } = await boot();
   const users = new AlgoUsers(usersPath);
+  await users.add('backupadmin', 'a second administrator password', 'admin');
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(algoBase + path, {
     method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
   });
@@ -133,7 +134,7 @@ test('password changes and account removal invalidate native sessions and pendin
   };
   const session = await (await post('/api/tmflash/exchange', await grant(cookie))).json() as { token: string };
   const pending = await grant(cookie);
-  await users.add('alice', 'a changed account password');
+  await users.resetPassword('alice', 'a changed account password');
   assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers: { authorization: `Bearer ${session.token}` } })).status, 401);
   assert.equal((await post('/api/tmflash/exchange', pending)).status, 401);
   const login = await post('/auth/login', { username: 'alice', password: 'a changed account password' });
@@ -175,7 +176,7 @@ const listening = (s: import('node:http').Server) =>
 /** The edge as main.ts wires it: one console core, served by both ports. */
 async function boot() {
   const usersPath = join(mkdtempSync(join(tmpdir(), 'tmedge-algousers-')), 'users.json');
-  await new AlgoUsers(usersPath).add('alice', 'correct horse battery');
+  await new AlgoUsers(usersPath).add('alice', 'correct horse battery', 'admin');
   const rt = runtime();
   const core = createConsole(rt);
   const consoleServer = startConsole(rt, core, { uiMovedTo: consoleMovedTo(8091) });
@@ -195,6 +196,33 @@ async function boot() {
   const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
   return { rt, consoleBase, algoBase, cookie, usersPath };
 }
+
+test('merged adoption and native credentials retain four-role gates and invalidate on account epoch changes', async () => {
+  const { algoBase, usersPath } = await boot(), users = new AlgoUsers(usersPath);
+  const post = (path: string, body: unknown, cookie = '') => fetch(algoBase + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tm-algo': '1', cookie }, body: JSON.stringify(body) });
+  for (const role of ['viewer', 'operator', 'engineer', 'admin'] as const) {
+    await users.add(role, 'merged test account password', role);
+    const login = await post('/auth/login', { username: role, password: 'merged test account password' });
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]!;
+    assert.equal((await fetch(algoBase + '/api/adoption', { headers: { cookie } })).status, 200);
+    const allowed = role === 'engineer' || role === 'admin';
+    assert.equal((await post('/api/adoption/tokens', { label: 'Role test', hours: 1 }, cookie)).status, allowed ? 201 : 403);
+    assert.equal((await post('/api/adoption/requests/missing/deny', {}, cookie)).status, allowed ? 404 : 403);
+    const verifier = randomBytes(32).toString('base64url');
+    const consent = await post('/api/tmflash/authorize', { challenge: createHash('sha256').update(verifier).digest('base64url'), state: randomBytes(32).toString('base64url') }, cookie);
+    assert.equal(consent.status, allowed ? 200 : 403);
+    if (!allowed) continue;
+    const code = new URL((await consent.json() as { redirect: string }).redirect).searchParams.get('code');
+    const exchanged = await post('/api/tmflash/exchange', { code, verifier }); assert.equal(exchanged.status, 201);
+    const token = (await exchanged.json() as { token: string }).token;
+    const headers = { authorization: `Bearer ${token}` };
+    assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers })).status, 200);
+    users.update(role, { role: 'operator' });
+    assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers })).status, 401, 'demotion revokes native commissioning permission');
+    users.remove(role); await users.add(role, 'merged test account password', 'engineer');
+    assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers })).status, 401, 'same-name recreation never restores native credentials');
+  }
+});
 
 test('signed out, the console inside the algo console is as closed as the rest of it', async () => {
   const { algoBase } = await boot();
@@ -370,7 +398,7 @@ test('a password reset ends existing debug streams without an edge restart', asy
   try {
     await new Promise<void>((resolve, reject) => { ws.once('message', () => resolve()); ws.once('error', reject); });
     const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()));
-    await new AlgoUsers(usersPath).add('alice', 'a different correct password');
+    await new AlgoUsers(usersPath).resetPassword('alice', 'a different correct password');
     await closed;
     assert.equal((await fetch(`${algoBase}/api/me`, { headers: { cookie } })).status, 401);
   } finally { ws.terminate(); }

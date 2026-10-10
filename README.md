@@ -2,6 +2,15 @@
 
 TMedge turns thermal sensor reports into live seat availability for HKUMySeat. It includes occupancy processing, a student dashboard with 3D floor maps and group-seat suggestions, and an authenticated console for diagnostics, algorithm tuning, firmware updates, and cluster training jobs.
 
+Student HTTP APIs support bearer access for external apps alongside browser
+cookie sessions. See [student token authentication](docs/student-token-auth.md)
+for token login, expiry, revocation, and integration examples.
+
+Security fixes, validation and deployment requirements are tracked in
+[the security specsheet](docs/SECURITY_BUG_SPEC.md). TMsense 1.7 encrypted
+telemetry and per-device/gateway/publisher credentials are documented in
+[the coordinated protocol and migration runbook](docs/ENCRYPTED_NODE_PROTOCOL.md).
+
 The edge and student web services run separately. The student service receives [occupancy snapshots](src/shared/types.ts) containing seat states and totals, without thermal pixels or person detections. Thermal frames and optional calibration camera images belong to privileged diagnostics and [training storage](docs/TRAINING_POSTGRES.md).
 
 ## Interesting techniques

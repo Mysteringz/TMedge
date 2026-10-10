@@ -15,8 +15,9 @@
     <strong>TMedge console</strong>
     <span id="edge-id" class="muted"></span>
     <span class="grow"></span>
-    <span id="conn" class="chip">connecting…</span>
+    <span id="conn" class="chip" role="status" aria-live="polite">Connecting…</span>
   </header>
+  <p id="data-freshness" class="muted">No device data received.</p>
 
   <section class="health" id="health" aria-label="Edge health"></section>
 
@@ -70,6 +71,7 @@
         </div>
       </div>
       <p class="muted small" id="cmd-result"></p>
+      <button id="refresh-command-status" type="button">Refresh status</button>
     </section>
 
     <section class="panel span3">

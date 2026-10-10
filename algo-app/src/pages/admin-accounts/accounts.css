@@ -1,0 +1,50 @@
+.accounts-page { max-width: 1100px; margin-inline: auto; overflow-wrap: anywhere; }
+.cx .accounts-page h1 { font-size: 32px; line-height: 1.25; margin-bottom: 12px; }
+.cx .accounts-page .accounts-lead { color: var(--text-secondary); margin-bottom: 24px; }
+.accounts-page .accounts-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-block: 20px; }
+.cx .accounts-page .btn { min-height: 44px; padding: 10px 16px; white-space: normal; }
+.cx .accounts-page .accounts-delete { background: var(--layer-02); color: var(--text-error); border: 1px solid var(--support-error); }
+.cx .accounts-page .accounts-delete:hover:not(:disabled) { background: var(--layer-hover-01); }
+.cx .accounts-page .btn:disabled { cursor: not-allowed; color: var(--text-disabled); background: var(--button-disabled); border-color: transparent; }
+.accounts-page .accounts-editor { background: var(--layer-01); border: 1px solid var(--border-subtle-01); padding: 24px; margin-block: 32px; }
+.cx .accounts-page .accounts-editor h2 { font-size: 24px; margin-bottom: 20px; }
+.accounts-page .accounts-editor fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.accounts-page .accounts-editor label { display: grid; gap: 8px; margin-block: 16px; color: var(--text-secondary); }
+.accounts-page .accounts-editor input, .accounts-page .accounts-editor select { width: 100%; max-width: 420px; min-width: 0; min-height: 44px; padding: 12px; box-sizing: border-box; color: var(--text-primary); background: var(--field-02); border: 0; border-bottom: 1px solid var(--border-strong-01); border-radius: 0; font: inherit; accent-color: var(--interactive); }
+.accounts-page .accounts-editor input:disabled, .accounts-page .accounts-editor select:disabled { color: var(--text-disabled); border-bottom-color: var(--border-subtle-01); }
+.accounts-page .accounts-editor .accounts-check { display: flex; align-items: center; min-height: 44px; }
+.accounts-page .accounts-editor .accounts-check input { width: 20px; min-height: 20px; }
+.cx .accounts-page .accounts-hint { color: var(--text-helper); max-width: 64ch; font-size: 12px; margin-block: 12px 20px; }
+.accounts-page .accounts-confirm { background: var(--layer-02); border-inline-start: 3px solid var(--support-warning); padding: 20px; margin-block: 24px; }
+.accounts-page .accounts-confirm-delete { border-inline-start-color: var(--support-error); }
+.cx .accounts-page .accounts-confirm h3 { font-size: 20px; margin-bottom: 12px; }
+.accounts-page .accounts-confirm input { background: var(--layer-01); }
+.cx .accounts-page .accounts-feedback, .cx .accounts-page .accounts-empty { padding: 16px; margin-block: 20px; background: var(--layer-01); border-inline-start: 3px solid var(--border-strong-01); }
+.cx .accounts-page .accounts-feedback:empty { display: none; }
+.accounts-page .accounts-feedback.accounts-success { border-inline-start-color: var(--support-success); }
+.accounts-page .accounts-feedback.accounts-error { border-inline-start-color: var(--support-error); color: var(--text-error); }
+.accounts-page .accounts-loading, .accounts-page .accounts-date { color: var(--text-secondary); }
+.accounts-page .accounts-table-wrap { margin-block: 32px; }
+.accounts-page .accounts-table-wrap table { width: 100%; border-collapse: collapse; table-layout: fixed; background: var(--layer-01); }
+.accounts-page .accounts-table-wrap caption { text-align: left; padding: 16px; background: var(--layer-01); border-bottom: 1px solid var(--border-subtle-01); font-weight: 600; }
+.accounts-page .accounts-table-wrap th, .accounts-page .accounts-table-wrap td { text-align: left; padding: 16px; border-bottom: 1px solid var(--border-subtle-01); vertical-align: middle; }
+.accounts-page .accounts-table-wrap thead { background: var(--layer-02); }
+.accounts-page .accounts-table-wrap tbody tr:hover { background: var(--layer-hover-01); }
+.accounts-page .accounts-badge { display: inline-block; border: 1px solid var(--accounts-badge-accent, var(--text-secondary)); background: var(--layer-02); color: var(--text-primary); border-radius: 16px; padding: 3px 10px; font-size: 12px; line-height: 1.5; }
+.accounts-page .accounts-role-operator { --accounts-badge-accent: var(--support-info); }
+.accounts-page .accounts-role-engineer { --accounts-badge-accent: var(--interactive); }
+.accounts-page .accounts-role-admin { --accounts-badge-accent: var(--support-warning); }
+.accounts-page .accounts-status-enabled { --accounts-badge-accent: var(--support-success); }
+.accounts-page .accounts-status-disabled { --accounts-badge-accent: var(--text-helper); }
+.accounts-page .accounts-mobile-label { display: none; }
+@media (max-width: 600px) {
+  .cx .accounts-page { padding: 16px; }
+  .accounts-page .accounts-editor { padding: 16px; }
+  .accounts-page .accounts-confirm { padding: 16px; }
+  .accounts-page .accounts-table-wrap table, .accounts-page .accounts-table-wrap tbody, .accounts-page .accounts-table-wrap tr, .accounts-page .accounts-table-wrap th, .accounts-page .accounts-table-wrap td { display: block; width: auto; }
+  .accounts-page .accounts-table-wrap thead { display: none; }
+  .accounts-page .accounts-table-wrap caption { display: block; width: 100%; }
+  .accounts-page .accounts-table-wrap tr { border: 1px solid var(--border-subtle-01); margin: 16px 0; padding: 12px; }
+  .accounts-page .accounts-table-wrap td, .accounts-page .accounts-table-wrap th { padding: 8px 4px; border: 0; }
+  .accounts-page .accounts-mobile-label { display: inline; color: var(--text-secondary); }
+}

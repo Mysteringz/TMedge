@@ -1,3 +1,4 @@
+import { permissionChanged } from '../../entities/admin-session/index.tsx';
 /** Module 02's server: /api/train (src/algo/train/routes.ts, hpc/routes.ts). */
 import type { SealTicket } from '../../../../src/shared/hpcseal.js';
 import type { TermTicket } from '../../../../src/shared/hpcterm.js';
@@ -120,6 +121,7 @@ function signIn(): void {
 
 async function json<T>(r: Response): Promise<T> {
   // The session ended under us: sign in, then come back here.
+  permissionChanged(r.status);
   if (r.status === 401) signIn();
   const body = (await r.json().catch(() => ({}))) as { error?: string; problems?: Problem[] };
   if (!r.ok) throw new TrainError(body.error ?? `HTTP ${r.status}`, body.problems ?? [], r.status);
@@ -127,6 +129,7 @@ async function json<T>(r: Response): Promise<T> {
 }
 
 async function text(r: Response): Promise<string> {
+  permissionChanged(r.status);
   if (r.status === 401) signIn();
   if (!r.ok) throw new TrainError(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`, [], r.status);
   return r.text();
@@ -161,14 +164,16 @@ export const train = {
   /** 428 is an answer here, not an error: it means "sign in to HKU first". */
   act: async (id: string, action: HpcAction, body: unknown = {}): Promise<ActResult> => {
     const r = await fetch(`/api/train/jobs/${q(id)}/${action}`, { method: 'POST', headers: write, body: JSON.stringify(body) });
-    if (r.status === 401) signIn();
+    permissionChanged(r.status);
+  if (r.status === 401) signIn();
     const out = (await r.json().catch(() => ({}))) as Omit<ActResult, 'status'>;
     return { status: r.status, ...out };
   },
   /** Sign in without a job: 200 {already} with a live session, 202 {opId}, or 428. */
   connect: async (body: unknown = {}): Promise<ActResult & { already?: boolean }> => {
     const r = await fetch('/api/train/hpc/connect', { method: 'POST', headers: write, body: JSON.stringify(body) });
-    if (r.status === 401) signIn();
+    permissionChanged(r.status);
+  if (r.status === 401) signIn();
     return { status: r.status, ...((await r.json().catch(() => ({}))) as Omit<ActResult, 'status'>) };
   },
   answerHostKey: (opId: string, accept: boolean) =>
@@ -176,7 +181,8 @@ export const train = {
   termTicket: () => fetch('/api/train/hpc/term', { method: 'POST', headers: write }).then(json<TermTicket>),
   log: async (id: string, stream: 'out' | 'err'): Promise<{ status: number; text?: string; error?: string }> => {
     const r = await fetch(`/api/train/jobs/${q(id)}/log?stream=${stream}`);
-    if (r.status === 401) signIn();
+    permissionChanged(r.status);
+  if (r.status === 401) signIn();
     if (r.ok) return { status: r.status, text: await r.text() };
     return { status: r.status, ...((await r.json().catch(() => ({}))) as { error?: string }) };
   },

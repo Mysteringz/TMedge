@@ -1,0 +1,2 @@
+.connection-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; background: var(--layer-01); color: var(--text-secondary); overflow-wrap: anywhere; }
+.connection-status > [role="status"] { color: var(--text-primary); font-weight: 600; }

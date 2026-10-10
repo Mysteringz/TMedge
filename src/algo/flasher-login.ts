@@ -18,7 +18,7 @@ export function flasherLogin(auth: AlgoAuth, core: ConsoleCore, now: () => numbe
   const mutating: RequestHandler = (req, res, next) => req.get('x-tm-algo') === '1'
     ? next() : res.status(403).json({ error: 'missing x-tm-algo header' });
   const expire = () => { for (const [code, grant] of codes) if (grant.expiresAt <= now()) codes.delete(code); };
-  browser.post('/authorize', mutating, asyncHandler(async (req, res) => {
+  browser.post('/authorize', auth.requireCapability('nodes.admin'), mutating, asyncHandler(async (req, res) => {
     const user = auth.userOf(req), subject = user ? auth.accountSubject(user) : null;
     if (!user || !subject) return res.status(401).json({ error: 'sign in with an algo account first' });
     const { challenge, state } = (req.body ?? {}) as { challenge?: unknown; state?: unknown };
@@ -28,6 +28,7 @@ export function flasherLogin(auth: AlgoAuth, core: ConsoleCore, now: () => numbe
     expire();
     if (codes.size >= 128) return res.status(429).json({ error: 'too many sign-ins in progress; try again shortly' });
     await core.provisioningService.ready();
+    if (auth.userOf(req) !== user || auth.accountSubject(user) !== subject) return res.status(401).json({ error: 'sign in again before authorizing TMflash' });
     const code = randomBytes(32).toString('base64url');
     codes.set(code, { user, subject, challenge, expiresAt: now() + 60_000 });
     const callback = new URL(CALLBACK); callback.searchParams.set('code', code); callback.searchParams.set('state', state);

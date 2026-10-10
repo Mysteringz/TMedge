@@ -19,7 +19,7 @@ test('native login codes expire at sixty seconds and admission readiness is requ
   const directory = mkdtempSync(join(tmpdir(), 'tm-native-login-'));
   const nodesPath = join(directory, 'nodes.json'), usersPath = join(directory, 'users.json');
   writeFileSync(nodesPath, JSON.stringify(nodesJson()));
-  await new AlgoUsers(usersPath).add('alice', 'local test account password');
+  await new AlgoUsers(usersPath).add('alice', 'local test account password', 'engineer');
   const cfg: EdgeConfig = {
     edgeId: 'test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1',
     sitePath: '', nodesPath, dataDir: directory, recordRaw: false, consolePort: 0,
@@ -60,6 +60,15 @@ test('native login codes expire at sixty seconds and admission readiness is requ
     const refused = await post('/api/tmflash/authorize', input, { cookie, 'x-tm-algo': '1' });
     assert.equal(refused.status, 503);
     assert.ok(!(await refused.text()).includes(directory), 'storage paths never reach the login UI');
+    const originalReady = core.provisioningService.ready;
+    let release: (() => void) | undefined;
+    core.provisioningService.ready = () => new Promise<void>((resolve) => { release = resolve; });
+    const pending = post('/api/tmflash/authorize', input, { cookie, 'x-tm-algo': '1' });
+    while (!release) await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal((await post('/auth/logout', {}, { cookie })).status, 200);
+    (release as () => void)();
+    assert.equal((await pending).status, 401, 'logout during readiness cannot create a native grant');
+    core.provisioningService.ready = originalReady;
   } finally {
     await core.dispose(); await rt.stop();
     await new Promise<void>(resolve => server.close(() => resolve()));

@@ -1,0 +1,630 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Algo operational health",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/admin/health": {
+      "get": {
+        "summary": "Read sanitized current operational health",
+        "description": "All current roles may read. Training remains current-owner only. No HPC connection, worker dispatch or audit parsing. Each source fails independently; polling reads do not accumulate slow source queries.",
+        "security": [
+          {
+            "algoCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded independent source observations (unavailable/disabled data=null)",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HealthSnapshot"
+                    },
+                    "error": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Existing outer cookie-auth gate rejects an absent or expired session; legacy error response retained."
+          },
+          "403": {
+            "description": "Current principal lacks algo.read."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "algoCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "tm_algo"
+      }
+    },
+    "schemas": {
+      "Sensor": {
+        "type": "object",
+        "required": [
+          "uid",
+          "label",
+          "floorId",
+          "online",
+          "reportReceivedAt",
+          "statusReceivedAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "uid": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "floorId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 160
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "reportReceivedAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "statusReceivedAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 8640000000000000
+          }
+        }
+      },
+      "SensorSummary": {
+        "type": "object",
+        "required": [
+          "total",
+          "offline",
+          "unknown",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "offline": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/Sensor"
+            }
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "updatedAt",
+          "lastPolledAt",
+          "endedAt",
+          "remoteObservationRequired"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "updatedAt": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "lastPolledAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "endedAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "remoteObservationRequired": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TrainingSummary": {
+        "type": "object",
+        "required": [
+          "total",
+          "failed",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            }
+          }
+        }
+      },
+      "FirmwareNode": {
+        "type": "object",
+        "required": [
+          "uid",
+          "label",
+          "state",
+          "percent",
+          "updatedAt",
+          "outcomeUncertain"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "uid": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "percent": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "updatedAt": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "outcomeUncertain": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Rollout": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "stage",
+          "startedAt",
+          "finishedAt",
+          "interrupted",
+          "total",
+          "failed",
+          "uncertain",
+          "confirmed",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "stage": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "startedAt": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "finishedAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "interrupted": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "uncertain": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "confirmed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/FirmwareNode"
+            }
+          }
+        }
+      },
+      "FirmwareSummary": {
+        "type": "object",
+        "required": [
+          "build",
+          "rollout"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "build": {
+            "type": "object",
+            "required": [
+              "state",
+              "startedAt"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "building",
+                  "failed"
+                ]
+              },
+              "startedAt": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 8640000000000000
+              }
+            }
+          },
+          "rollout": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Rollout"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Parameter": {
+        "type": "object",
+        "required": [
+          "uid",
+          "param",
+          "binding",
+          "revertAt",
+          "confirmedAt",
+          "restoring"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "uid": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "param": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "binding": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "revertAt": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "confirmedAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "restoring": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ParameterSummary": {
+        "type": "object",
+        "required": [
+          "total",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/Parameter"
+            }
+          }
+        }
+      },
+      "HealthSnapshot": {
+        "type": "object",
+        "required": [
+          "generatedAt",
+          "sensors",
+          "training",
+          "firmware",
+          "parameters"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "generatedAt": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8640000000000000
+          },
+          "sensors": {
+            "type": "object",
+            "required": [
+              "state",
+              "observedAt",
+              "staleAfterMs",
+              "data"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "unavailable",
+                  "disabled"
+                ]
+              },
+              "observedAt": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 8640000000000000
+              },
+              "staleAfterMs": {
+                "type": "integer",
+                "const": 15000
+              },
+              "data": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SensorSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "training": {
+            "type": "object",
+            "required": [
+              "state",
+              "observedAt",
+              "staleAfterMs",
+              "data"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "unavailable",
+                  "disabled"
+                ]
+              },
+              "observedAt": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 8640000000000000
+              },
+              "staleAfterMs": {
+                "type": "integer",
+                "const": 60000
+              },
+              "data": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TrainingSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "firmware": {
+            "type": "object",
+            "required": [
+              "state",
+              "observedAt",
+              "staleAfterMs",
+              "data"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "unavailable",
+                  "disabled"
+                ]
+              },
+              "observedAt": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 8640000000000000
+              },
+              "staleAfterMs": {
+                "type": "integer",
+                "const": 15000
+              },
+              "data": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/FirmwareSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "parameters": {
+            "type": "object",
+            "required": [
+              "state",
+              "observedAt",
+              "staleAfterMs",
+              "data"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "available",
+                  "unavailable",
+                  "disabled"
+                ]
+              },
+              "observedAt": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 8640000000000000
+              },
+              "staleAfterMs": {
+                "type": "integer",
+                "const": 15000
+              },
+              "data": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ParameterSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

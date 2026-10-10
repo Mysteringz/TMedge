@@ -101,7 +101,7 @@ export function createEdgeRuntime(
     });
   }
   const commandOutcomes = persistence.commandOutcomeRepository
-    ? new DurableCommandOutcomes(persistence.commandOutcomeRepository, (command) => ingest.sendCommand(command.uid, command.opcode, command.argument, command.value))
+    ? new DurableCommandOutcomes(persistence.commandOutcomeRepository, (command) => ingest.sendCommand(command.uid, command.opcode, command.argument, command.value), Date.now, 60_000, (uid) => ingest.links.get(uid)?.boot ?? null)
     : null;
   const rolloutService = persistence.rolloutRepository
     ? new DurableRolloutService(rollouts, persistence.rolloutRepository)

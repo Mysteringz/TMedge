@@ -1,0 +1,147 @@
+openapi: 3.0.3
+info:
+  title: TMedge student token authentication
+  version: 1.0.0
+  description: >-
+    Student HTTP access tokens for controlled native and server-side clients.
+    Existing browser cookies remain supported. Tokens are opaque signed TMedge
+    credentials, not JWTs. Refresh tokens and third-party OAuth are not provided.
+paths:
+  /api/auth/token:
+    post:
+      summary: Authenticate a student and issue a fifteen-minute access token
+      description: >-
+        Uses the browser login credential rules, optional login Turnstile check,
+        and shared IP rate limiter. Sets no cookie. Returns Cache-Control
+        no-store and Pragma no-cache. Cross-origin browser requests are refused.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Credentials'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Credentials'
+      responses:
+        '200':
+          description: Access token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessToken'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Origin refused or required human verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: Request body exceeds 8 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: Unsupported body encoding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Shared login rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      summary: Revoke the presented student access token
+      description: >-
+        Requires bearer authentication without a tm_session cookie. Revokes only
+        this token and leaves other tokens and browser sessions active.
+      security:
+        - studentBearer: []
+      responses:
+        '204':
+          description: Token revoked; no body
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    studentBearer:
+      type: http
+      scheme: bearer
+      description: Short-lived signed TMedge student access token; not a JWT
+  schemas:
+    Credentials:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          description: Full student email or UID using configured university domains
+        password:
+          type: string
+          maxLength: 1024
+          writeOnly: true
+        cf-turnstile-response:
+          type: string
+          description: Required when Turnstile is enabled; solved for the login action
+    AccessToken:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          enum: [900]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+  responses:
+    InvalidRequest:
+      description: Malformed input, mixed credentials, or invalid Authorization syntax
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Invalid credentials or missing, expired, revoked, or wrong-purpose token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Student account storage unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Unexpected storage or server failure; no private details exposed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

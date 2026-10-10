@@ -1,3 +1,4 @@
+import { permissionChanged } from './entities/admin-session/index.tsx';
 /** Talking to the edge. Every write carries the header a form cannot send. */
 export interface PortSpec { id: string; label: string; type: string }
 export interface ParamSpec {
@@ -42,6 +43,7 @@ export interface PendingChange {
   /** Null until the node's STATUS shows it took the command. */
   confirmedAt: number | null;
   cmdSeq: number | null;
+  restoring?: boolean;
 }
 export interface SourceNode {
   uid: string; label: string; floorId: string; simulated: boolean;
@@ -55,6 +57,7 @@ const write = { 'content-type': 'application/json', 'x-tm-algo': '1' };
 async function json<T>(r: Response): Promise<T> {
   // The session ended under us (expired, signed out in another tab, account
   // removed): go and sign in, then come back to this page.
+  permissionChanged(r.status);
   if (r.status === 401) location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
   if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`);
   return (await r.json()) as T;
@@ -65,7 +68,7 @@ export const api = {
     nodes: NodeSpec[]; edgeParams: Record<string, { lo: number; hi: number; unit: string }>;
     revertMs: number; preview: { available: boolean; reason: string | null };
   }>),
-  sources: () => fetch('/api/sources').then(json<{ nodes: SourceNode[] }>),
+  sources: (signal?: AbortSignal) => fetch('/api/sources', { signal }).then(json<{ nodes: SourceNode[] }>),
   pipeline: () => fetch('/api/pipeline').then(json<{
     pipeline: Pipeline; problems: { where: string; message: string }[]; dirty: string[]; saved: string[];
   }>),
@@ -87,7 +90,7 @@ export const api = {
   mode: (mode: 'live' | 'pause' | 'step', frame?: number) =>
     fetch('/api/mode', { method: 'POST', headers: write, body: JSON.stringify({ mode, frame }) })
       .then(json<{ live: boolean; frame?: number }>),
-  params: () => fetch('/api/params').then(json<{
+  params: (signal?: AbortSignal) => fetch('/api/params', { signal }).then(json<{
     device: Record<string, number>; edge: Record<string, number>;
     pending: PendingChange[]; audit: unknown[];
   }>),

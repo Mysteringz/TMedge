@@ -1,4 +1,5 @@
 /** Firmware source, builds and pilot-first OTA, in the console's own design. */
+import { useCapability } from '../entities/admin-session/index.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { firmwareSourcePath } from '../../../src/shared/firmware-upload.ts';
 import { ArrowRight, UploadSimple } from './icons.tsx';
@@ -13,6 +14,7 @@ const errorOf = (error: unknown) => error instanceof Error ? error.message : Str
 type Confirmation = { kind: 'start'; buildId: string; version: string; target: UpdateTarget; nodes: UpdateNode[] } | { kind: 'stop' };
 
 export function Updates() {
+  const canWrite = useCapability('firmware.write');
   const [view, setView] = useState<FirmwareView | null>(null);
   const [layout, setLayout] = useState<UpdateLayout>({ floors: [] });
   const [nodes, setNodes] = useState<UpdateNode[]>([]);
@@ -146,6 +148,7 @@ export function Updates() {
 
   return (
     <main className="cx-train cx-updates">
+      {!canWrite && <p role="status">Engineer or admin access required.</p>}
       <header className="cx-train-head">
         <div>
           <div className="cx-kicker">Module 04 · Firmware</div>
@@ -177,13 +180,13 @@ export function Updates() {
               <div><strong>{folder || 'Select a project folder'}</strong><span>{folder ? `${files.length} release files · ${sizeOf(files.reduce((total, file) => total + file.size, 0))}` : 'platformio.ini + src/ + include/'}</span></div>
               <input ref={input} type="file" multiple {...{ webkitdirectory: '', directory: '' }} hidden aria-label="TMsense project folder"
                 onChange={(event) => selectFolder(event.target.files)} />
-              <button className="btn btn-secondary cx-btn-px" disabled={busy || buildingActive} onClick={() => input.current?.click()}>{folder ? 'Change folder' : 'Browse folder'}</button>
+              <button className="btn btn-secondary cx-btn-px" disabled={!canWrite || busy || buildingActive} onClick={() => input.current?.click()}>{folder ? 'Change folder' : 'Browse folder'}</button>
             </div>
             <p className="cx-hint">Release build: <code>tmflash</code>. Local provisioning files and generated output are excluded.</p>
             {projectError && <p className="cx-hint is-err" role="alert">{projectError}</p>}
             {view && !view.pio && <p className="cx-hint is-err">The firmware build worker is not configured on this edge. Existing images can still be rolled out.</p>}
             <div className="cx-up-actions">
-              <button className="btn btn-primary cx-btn-px" disabled={!dataReady || !view?.pio || busy || buildingActive || !files.length || !!projectError}
+              <button className="btn btn-primary cx-btn-px" disabled={!canWrite || !dataReady || !view?.pio || busy || buildingActive || !files.length || !!projectError}
                 onClick={() => void uploadAndBuild()}><UploadSimple />{uploadProgress ? 'Uploading…' : buildingActive ? 'Building…' : 'Upload and build'}</button>
               <span className="cx-hint" role="status">{buildLabel}</span>
             </div>
@@ -204,7 +207,7 @@ export function Updates() {
                 <tbody>{view.builds.map((build) => <tr key={build.id} className={build.id === buildId ? 'is-on' : ''}>
                   <td><strong className="cx-mono">{build.version}</strong><span className="cx-hint" title={`SHA-256: ${build.sha256}`}>{build.id}</span>{build.state !== 'ready' && <span className="cx-hint is-err">{build.error || build.state}</span>}</td>
                   <td className="cx-mono">{sizeOf(build.size)}</td><td className="cx-hint">{dateOf(build.builtAt)}</td>
-                  <td><button className={`btn ${build.id === buildId ? 'btn-primary' : 'btn-secondary'} cx-btn-px`} disabled={build.state !== 'ready' || busy || running}
+                  <td><button className={`btn ${build.id === buildId ? 'btn-primary' : 'btn-secondary'} cx-btn-px`} disabled={!canWrite || build.state !== 'ready' || busy || running}
                     onClick={() => setBuildId(build.id)} aria-label={`Select image ${build.id}`} aria-pressed={build.id === buildId}>{build.id === buildId ? 'Selected' : 'Select'}</button></td>
                 </tr>)}</tbody>
               </table></div>}
@@ -215,10 +218,10 @@ export function Updates() {
           <section className="card elev-sm cx-card" aria-labelledby="up-rollout-title">
             <PanelHead step="02" title="Roll out" id="up-rollout-title" />
             <p className="cx-up-copy">Choose a built image and the nodes to update.</p>
-            <div className="field"><label htmlFor="up-image">Firmware image</label><select id="up-image" className="input" value={buildId} disabled={!dataReady || busy || running || !ready.length} onChange={(event) => setBuildId(event.target.value)}>
+            <div className="field"><label htmlFor="up-image">Firmware image</label><select id="up-image" className="input" value={buildId} disabled={!canWrite || !dataReady || busy || running || !ready.length} onChange={(event) => setBuildId(event.target.value)}>
               {!ready.length && <option value="">No ready images</option>}{ready.map((build) => <option key={build.id} value={build.id}>{build.version} · {build.id} · {sizeOf(build.size)}</option>)}
             </select></div>
-            <div className="field"><label htmlFor="up-target">Update target</label><select id="up-target" className="input" value={targetValue} disabled={!dataReady || busy || running} onChange={(event) => setTargetValue(event.target.value)}>
+            <div className="field"><label htmlFor="up-target">Update target</label><select id="up-target" className="input" value={targetValue} disabled={!canWrite || !dataReady || busy || running} onChange={(event) => setTargetValue(event.target.value)}>
               <option value="all">Every node ({available.length} available)</option>
               {layout.floors.map((floor) => <option key={floor.id} value={`floor:${floor.id}`}>{floor.name} ({eligibleNodes(nodes, { kind: 'floor', floorId: floor.id }).length} available)</option>)}
               {nodes.map((node) => <option key={node.uid} value={`node:${node.uid}`}>{node.label} ({node.uid}){eligibleNodes([node], { kind: 'all' }).length ? '' : ' — unavailable'}</option>)}
@@ -230,7 +233,7 @@ export function Updates() {
                   : <><strong>{chosen[0]?.label}</strong> goes first. The other {chosen.length - 1} node{chosen.length === 2 ? '' : 's'} follow after it proves healthy.</>}</p>
               <span className="cx-hint">The pilot must report the new image, a working sensor, and an accepted packet. A failed pilot stops the rollout.</span>
             </div>
-            <button className="btn btn-primary cx-btn-px cx-up-start" disabled={!dataReady || !selectedBuild || !chosen.length || busy || running}
+            <button className="btn btn-primary cx-btn-px cx-up-start" disabled={!canWrite || !dataReady || !selectedBuild || !chosen.length || busy || running}
               onClick={() => selectedBuild && setConfirmation({ kind: 'start', buildId, version: selectedBuild.version, target, nodes: chosen })}>
               {running ? 'Rollout in progress' : `Start update${chosen.length ? ` · ${chosen.length} node${chosen.length === 1 ? '' : 's'}` : ''}`}<ArrowRight />
             </button>
@@ -238,7 +241,7 @@ export function Updates() {
 
           <section className="card elev-sm cx-card" aria-labelledby="up-progress-title">
             <div className="cx-card-head"><h2 id="up-progress-title" className="cx-label">Rollout progress</h2>
-              {running && <button className="btn btn-secondary cx-danger cx-btn-px" disabled={busy || !dataReady} onClick={() => setConfirmation({ kind: 'stop' })}>Stop rollout</button>}
+              {running && <button className="btn btn-secondary cx-danger cx-btn-px" disabled={!canWrite || busy || !dataReady} onClick={() => setConfirmation({ kind: 'stop' })}>Stop rollout</button>}
             </div>
             {view?.rollout ? <RolloutProgress rollout={view.rollout} />
               : <div className="cx-up-empty"><span className="cx-mono">Standing by.</span><p>Start an update to follow each node from download to confirmation.</p></div>}
@@ -262,8 +265,8 @@ export function Updates() {
             <p className="cx-hint">Image {confirmation.buildId}<br />Pilot: {confirmation.nodes[0]?.label} ({confirmation.nodes[0]?.uid})</p>
             <p className="cx-up-copy">{confirmation.nodes.length > 1 ? 'The remaining nodes follow only after the pilot comes back healthy.' : 'This node must come back healthy to confirm the update.'}</p></>
             : <p className="cx-up-copy">Nodes already flashing will finish. Nodes still queued will be left alone.</p>}
-          <div className="cx-up-actions"><button className="btn btn-secondary" disabled={busy} onClick={() => setConfirmation(null)}>Back</button>
-            <button className="btn btn-primary cx-btn-px" disabled={busy || !dataReady || (confirmation?.kind === 'start' && running)} onClick={() => void confirmAction()}>{busy ? 'Working…' : confirmation?.kind === 'stop' ? 'Stop rollout' : 'Start update'}<ArrowRight /></button></div>
+          <div className="cx-up-actions"><button className="btn btn-secondary" disabled={!canWrite || busy} onClick={() => setConfirmation(null)}>Back</button>
+            <button className="btn btn-primary cx-btn-px" disabled={!canWrite || busy || !dataReady || (confirmation?.kind === 'start' && running)} onClick={() => void confirmAction()}>{busy ? 'Working…' : confirmation?.kind === 'stop' ? 'Stop rollout' : 'Start update'}<ArrowRight /></button></div>
         </div>
       </dialog>
     </main>

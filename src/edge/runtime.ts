@@ -23,6 +23,7 @@ import type { NodeServer } from './nodelink.js';
 import type { Publisher } from './publisher.js';
 import type { BoundedOccupancyHistorySink } from '../modules/occupancy-history/application/bounded-occupancy-history-sink.js';
 import type { DurableCommandOutcomes } from '../modules/nodes/application/durable-command-outcomes.js';
+import { LiveCommandReceipts } from '../modules/nodes/application/live-command-receipts.js';
 import type { RolloutService } from '../modules/rollouts/application/rollout-service.js';
 import { StaticBackground } from './staticbg.js';
 
@@ -33,6 +34,7 @@ interface NodeInfo {
   lastReportAt: number | null;
   status: Status | null;
   statusAt: number | null;
+  statusGeneration?: number;
   lastRaw: RawFrameMessage | null;
   /** An edge-detected node's own REPORT: kept for its ambient reading, never counted. */
   nodeReport: Report | null;
@@ -86,6 +88,7 @@ export class EdgeRuntime extends EventEmitter {
   readonly rollouts: Rollouts;
   readonly occupancyHistory: BoundedOccupancyHistorySink | null;
   readonly commandOutcomes: DurableCommandOutcomes | null;
+  readonly commandReceipts: LiveCommandReceipts;
   readonly rolloutService: RolloutService;
   readonly persistenceAvailable: (() => Promise<boolean>) | null;
   private lastRecordedMinute = -1;
@@ -107,6 +110,13 @@ export class EdgeRuntime extends EventEmitter {
     this.rollouts = services.rollouts;
     this.occupancyHistory = services.occupancyHistory ?? null;
     this.commandOutcomes = services.commandOutcomes ?? null;
+    this.commandReceipts = new LiveCommandReceipts({
+      boot: (uid) => this.ingest.links.get(uid)?.boot ?? null,
+      dispatch: (command, authorized) => this.commandOutcomes
+        ? this.commandOutcomes.send(command, { id: 'console', kind: 'console' }, authorized)
+        : authorized() ? this.ingest.sendCommand(command.uid, command.opcode, command.argument, command.value)
+          : Promise.reject(new Error('Access changed; no command was sent.')),
+    });
     this.rolloutService = services.rolloutService ?? services.rollouts;
     this.persistenceAvailable = services.persistenceAvailable ?? null;
     for (const f of reg.floors) this.dwell.set(f.id, new DwellMap(f.width, f.height));
@@ -140,6 +150,7 @@ export class EdgeRuntime extends EventEmitter {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     this.started = false;
+    this.commandReceipts.dispose();
     if (this.publishTimer) clearInterval(this.publishTimer);
     if (this.rolloutTimer) clearInterval(this.rolloutTimer);
     this.publishTimer = null;
@@ -260,7 +271,9 @@ export class EdgeRuntime extends EventEmitter {
     const i = this.infoFor(p.uid);
     i.status = p;
     i.statusAt = at;
-    this.commandOutcomes?.observeStatus(p.uid, p.lastCmd);
+    i.statusGeneration = (i.statusGeneration ?? 0) + 1;
+    this.commandOutcomes?.observeStatus(p.uid, p.lastCmd, { boot: p.boot, at });
+    this.commandReceipts.observeStatus({ uid: p.uid, sequence: p.lastCmd, boot: p.boot, at });
   }
 
   lastRaw(uid: string): RawFrameMessage | null {
@@ -292,6 +305,7 @@ export class EdgeRuntime extends EventEmitter {
         owns: def?.owns ?? [],
         pose: def?.pose ?? null,
         online: !!i?.lastReportAt && now - i.lastReportAt < 10_000,
+        reportReceivedAt: i?.lastReportAt ?? null,
         address: link?.address ?? null,
         transport: link ? (link.route?.kind ?? null) : null,
         direct: this.directInfo(uid),
@@ -318,6 +332,7 @@ export class EdgeRuntime extends EventEmitter {
             stackFree: s.stackFree, wifiDrops: s.wifiDrops, sensorErrors: s.sensorErrors, frames: s.frames,
             fps: s.fps, vdd: s.vdd, lastCmd: s.lastCmd, params: s.params as Record<string, number>,
             receivedAt: i.statusAt,
+            generation: i.statusGeneration ?? 0,
           }
           : null,
         refHeat: this.engine.refHeat(uid),

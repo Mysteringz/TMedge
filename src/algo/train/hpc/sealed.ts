@@ -84,6 +84,8 @@ export class SealedInbox {
 
   constructor(private readonly now: () => number = Date.now) {}
 
+  revoke(user: string): void { for (const [kid, ticket] of this.tickets) if (ticket.user === user) this.tickets.delete(kid); }
+
   private sweep(): void {
     const t = this.now();
     for (const [kid, ticket] of this.tickets) if (ticket.expires <= t) this.tickets.delete(kid);

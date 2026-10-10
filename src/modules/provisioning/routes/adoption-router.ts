@@ -11,6 +11,13 @@ export function createAdoptionRouter(rt: EdgeRuntime, service: ProvisioningServi
   const router = Router();
   const mutating: RequestHandler = (req, res, next) => req.get('x-tm-algo') === '1'
     ? next() : res.status(403).json({ error: 'missing x-tm-algo header' });
+  const stillAuthorized = (res: import('express').Response): boolean => {
+    if (typeof res.locals.permits === 'function' && !res.locals.permits()) {
+      res.status(403).json({ error: 'Your access has changed. This action is unavailable.' });
+      return false;
+    }
+    return true;
+  };
   router.get('/', asyncHandler(async (_req, res) => {
     let ready = true;
     try { await service.ready(); } catch { ready = false; }
@@ -26,6 +33,7 @@ export function createAdoptionRouter(rt: EdgeRuntime, service: ProvisioningServi
   }));
   router.post('/tokens', mutating, asyncHandler(async (req, res) => {
     await service.ready();
+    if (!stillAuthorized(res)) return;
     return res.status(201).json(credentials.issueForAccount(req.body?.label, req.body?.hours, String(res.locals.user)));
   }));
   router.post('/tokens/:id/revoke', mutating, (req, res) => {
@@ -40,6 +48,7 @@ export function createAdoptionRouter(rt: EdgeRuntime, service: ProvisioningServi
     // A token authorises a question. The operator must match this physical
     // board's identity and request to TMflash before answering it.
     if (verdict === 'approve') await confirmApproval(service, id, req.body);
+    if (!stillAuthorized(res)) return;
     const actor = `algo:${String(res.locals.user)}`;
     const result = verdict === 'approve' ? await service.approve(id, actor) : await service.deny(id, actor);
     return res.json({ ok: true, uid: result.uid, placed: false });

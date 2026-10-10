@@ -34,7 +34,10 @@ before(async () => {
   };
   runtime = createEdgeRuntime(config, buildRegistry(siteJson(), nodesJson()));
   const users = join(directory, 'users.json');
-  await new AlgoUsers(users).add('mobiletest', 'local browser test password');
+  // This fixture exercises commissioning/OTA, which require Engineer access.
+  const accounts = new AlgoUsers(users);
+  await accounts.add('mobiletest', 'local browser test password', 'engineer');
+  for (const role of ['viewer', 'operator']) await accounts.add(`${role}test`, 'local browser test password', role);
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users,
     SESSION_SECRET: 'local-only-test-secret'.repeat(3),
@@ -114,6 +117,35 @@ async function updatesFixtures(page) {
 }
 
 for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
+  test(`${engine}: Viewer and Operator cannot initiate automatic TMflash authorization`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    try {
+      for (const role of ['viewer', 'operator']) {
+        const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+        try {
+          const login = await context.request.post(`${base}/auth/login`, { data: { username: `${role}test`, password: 'local browser test password' } });
+          assert.equal(login.status(), 200);
+          const page = await context.newPage();
+          let authorizations = 0;
+          page.on('request', request => { if (request.url().endsWith('/api/tmflash/authorize')) authorizations++; });
+          const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
+          const challenge = createHash('sha256').update(verifier).digest('base64url');
+          await page.goto(`${base}/tmflash/connect?challenge=${challenge}&state=${state}`);
+          await page.getByRole('status').filter({ hasText: 'Engineer or Admin access is required' }).waitFor();
+          assert.equal(await page.getByRole('button', { name: 'Retry connection' }).isDisabled(), true);
+          assert.equal(await page.getByRole('button', { name: 'Cancel', exact: true }).isEnabled(), true);
+          assert.equal(authorizations, 0, 'automatic continuation must respect the account capability before requesting a code');
+          for (const scheme of ['dark', 'light']) {
+            await page.emulateMedia({ colorScheme: scheme });
+            await fits(page, 390);
+            await shot(page, engine, `tmflash-${role}-${scheme}-390`);
+          }
+          const refused = await context.request.post(`${base}/api/tmflash/authorize`, { headers: { 'x-tm-algo': '1' }, data: { challenge, state } });
+          assert.equal(refused.status(), 403, 'the server independently enforces commissioning permission');
+        } finally { await context.close(); }
+      }
+    } finally { await browser.close(); }
+  });
   test(`${engine}: algo sign-in automatically connects TMflash, matches the physical request and revokes access`, { timeout: 60_000 }, async () => {
     const browser = await browserType.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: 'dark' });

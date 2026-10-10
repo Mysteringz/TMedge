@@ -30,6 +30,8 @@ export function writePrivateJson(path: string, value: unknown): void {
   closeSync(fd);
   try {
     renameSync(temp, path);
+    // Windows cannot fsync directory handles; the file itself was already flushed before renaming.
+    if (process.platform === 'win32') return;
     const directory = openSync(dirname(path), 'r');
     try { fsyncSync(directory); } finally { closeSync(directory); }
   } catch (err) { try { unlinkSync(temp); } catch { /* already renamed */ } throw err; }

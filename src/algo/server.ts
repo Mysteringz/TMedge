@@ -20,6 +20,15 @@ import { applicationErrorHandler } from '../infrastructure/http/errors.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
+import { accountRoutes } from '../modules/algo-admin/controllers/accounts.js';
+import { ManageAccounts } from '../modules/algo-admin/use-cases/manage-accounts.js';
+import { FileAccountRepository } from '../infrastructure/algo-admin/file-account-repository.js';
+import { createHealthRouter } from '../modules/algo-admin/controllers/health-controller.js';
+import { ReadOperationalHealth } from '../modules/algo-admin/use-cases/read-operational-health.js';
+import { RuntimeOperationalQueries } from '../infrastructure/algo-admin/runtime-operational-queries.js';
+import { createNotificationRouter } from '../modules/algo-admin/controllers/notification-controller.js';
+import { ReadNotifications } from '../modules/algo-admin/use-cases/read-notifications.js';
+import { RuntimeNotificationQueries } from '../infrastructure/algo-admin/runtime-notification-queries.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
 import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
 import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
@@ -181,6 +190,9 @@ export function startAlgo(
   });
 
   // --- before sign-in: the form, the endpoints it posts to, the bundle -----
+  app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
+  const notifications = express.Router();
+  app.use('/api/admin/notifications', notifications);
   app.use(auth.router);
   const nativeLogin = consoleCore ? flasherLogin(auth, consoleCore) : null;
   if (nativeLogin) app.use('/api/tmflash', express.json({ limit: '4kb' }), nativeLogin.machine);
@@ -218,19 +230,27 @@ export function startAlgo(
       res.set('Content-Security-Policy', consoleCsp);
       res.locals.wsBinding = auth.sessionToken(req);
       res.locals.embeddedConsole = true;
+      res.locals.principal = auth.principalOf(req);
+      res.locals.permits = (capability: import('../modules/algo-admin/domain/permissions.js').Capability) => !!auth.principalOf(req)?.capabilities.includes(capability);
       return next();
     }, consoleCore.ui);
   }
   app.use(express.json({ limit: '256kb' }));
 
-  app.get('/api/me', (_req, res) => res.json({ user: res.locals.user, auth: authCfg.enabled }));
+  app.get('/api/me', (_req, res) => { const current = res.locals.principal; return res.json({ user: res.locals.user, auth: authCfg.enabled, role: current.role, capabilities: current.capabilities, namedAccount: current.namedAccount }); });
 
   /** Writes need a header a cross-site form cannot send. */
   const mutating = (req: Request, res: Response, next: NextFunction) => {
+    const allowed = auth.principalOf(req)?.capabilities.includes(req.path.startsWith('/api/train') ? 'training.write' : 'algo.write');
+    if (!allowed) return res.status(403).json({ error: 'Your access has changed. This action is unavailable.' });
     if (req.get('x-tm-algo') !== '1') return res.status(403).json({ error: 'missing x-tm-algo header' });
     return next();
   };
-  if (consoleCore) app.use('/api/adoption', consoleCore.adoption);
+  if (consoleCore) app.use('/api/adoption', (req, res, next) => {
+    res.locals.permits = () => !!auth.principalOf(req)?.capabilities.includes('nodes.admin');
+    if (req.method !== 'GET') return auth.requireCapability('nodes.admin')(req, res, next);
+    return next();
+  }, consoleCore.adoption);
   if (nativeLogin) app.use('/api/tmflash', nativeLogin.browser);
 
   // Module 02: training jobs for HKU HPC2021 (src/algo/train/, docs/hpc/).
@@ -239,9 +259,14 @@ export function startAlgo(
     configPath: process.env.HPC_CONFIG || join(ROOT, 'config', 'hpc.json'),
     mutating,
     bindingOf: (req) => auth.sessionToken(req),
+    accountEpoch: (name) => auth.accountEpoch(name),
+    authenticated: (req) => !!auth.userOf(req),
+    authorized: (req) => !!auth.principalOf(req)?.capabilities.includes('training.write'),
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
+  app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
+  notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth }))));
 
   app.get('/api/catalogue', (_req, res) => res.json({
     nodes: NODE_SPECS,
@@ -485,6 +510,7 @@ export function startAlgo(
     const binding = auth.sessionToken(req);
     // Module 02's shell on the cluster: its own one-time ticket, bound to this sign-in.
     if (url.pathname === '/train-term') {
+      if (!auth.principalOf(req)?.capabilities.includes('training.write')) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
       if (train.sockets?.upgrade(req, socket, head, url, auth.userOf(req)!, binding)) return;
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
@@ -513,6 +539,10 @@ export function startAlgo(
       ws.send(JSON.stringify({ type: 'pipeline_state', pipeline, live }));
     });
   });
+
+  const authorityTimer = setInterval(() => { for (const [ws, client] of clients) if (!auth.userOf(client.req)) ws.terminate(); }, 5000);
+  authorityTimer.unref();
+  server.on('close', () => clearInterval(authorityTimer));
 
   const send = (msg: unknown) => {
     const s = JSON.stringify(msg);

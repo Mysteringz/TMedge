@@ -12,6 +12,7 @@ export function Home({ user }: { user: string }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (document.activeElement instanceof HTMLElement && document.activeElement.closest('button, a, input, select, textarea, [contenteditable="true"]')) return;
       if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => (s + 1) % MODULES.length); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => (s + MODULES.length - 1) % MODULES.length); }
       else if (/^[1-9]$/.test(e.key) && Number(e.key) <= MODULES.length) setSel(Number(e.key) - 1);
@@ -31,8 +32,8 @@ export function Home({ user }: { user: string }) {
     <div className="cx-donut-stage" aria-hidden="true"><Donut /></div>
     <main className="cx-home-main">
       <section className="cx-home-left">
-        <p className="cx-eyebrow">Select module</p>
         <h1 className="cx-welcome">Welcome back, {user}.</h1>
+        <p className="cx-eyebrow">Select module</p>
         <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>5</kbd>.</p>
         <div className="cx-modules">
           {MODULES.map((m, i) => (

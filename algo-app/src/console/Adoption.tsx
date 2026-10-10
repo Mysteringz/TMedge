@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCapability } from '../entities/admin-session/index.tsx';
 import './adoption.css';
 
 interface JoinRequest { id: string; uid: string; label: string; firmware: string | null; from: string; at: number; expiresAt: number; pairingCode: string }
@@ -24,6 +25,7 @@ async function api<T>(path = '', body?: unknown, signal?: AbortSignal): Promise<
 }
 
 export function Adoption() {
+  const canCommission = useCapability('nodes.admin');
   const [view, setView] = useState<AdoptionView | null>(null);
   const [statusError, setStatusError] = useState('');
   const [actionError, setActionError] = useState('');
@@ -53,10 +55,11 @@ export function Adoption() {
     catch (error) { if (mounted.current) setActionError(errorOf(error)); }
     finally { if (mounted.current) setBusy(false); }
   }
-  const actionable = !!view && !statusError && !busy;
+  const actionable = canCommission && !!view && !statusError && !busy;
   return <main className="cx-adoption">
     <p className="cx-eyebrow">Module 05 · Device commissioning</p>
     <h1>Adoption</h1>
+    {!canCommission && <p className="ad-hint" role="status">Read-only adoption access. Engineer or Admin access is required to commission devices and authorize TMflash.</p>}
     <p className="ad-lead">Bring a physical sensor online, verify its reports, then place it in the floor plan.</p>
     <ol className="ad-steps"><li>Sign in on TMflash</li><li>Flash the device</li><li>Match and approve</li><li>Verify reports</li></ol>
     {statusError && <p className="ad-error" role="alert">{statusError} Approval is unavailable until the connection recovers.</p>}

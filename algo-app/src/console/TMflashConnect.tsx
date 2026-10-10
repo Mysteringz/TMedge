@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useCapability } from '../entities/admin-session/index.tsx';
 import { navigate } from './router.ts';
 import './adoption.css';
 
@@ -19,15 +20,16 @@ async function authorize(challenge: string, state: string): Promise<string> {
 }
 
 export function TMflashConnect({ user }: { user: string }) {
+  const canCommission = useCapability('nodes.admin');
   const query = new URLSearchParams(location.search);
   const challenge = query.get('challenge') ?? '', state = query.get('state') ?? '';
   const valid = query.getAll('challenge').length === 1 && query.getAll('state').length === 1 && /^[A-Za-z0-9_-]{43}$/.test(challenge) && /^[A-Za-z0-9_-]{43}$/.test(state);
-  const [busy, setBusy] = useState(valid), [error, setError] = useState(''), [attempt, setAttempt] = useState(0);
+  const [busy, setBusy] = useState(valid && canCommission), [error, setError] = useState(''), [attempt, setAttempt] = useState(0);
   const [handoff, setHandoff] = useState<{ url: string; expiresAt: number } | null>(null);
   const request = useRef<{ challenge: string; state: string; attempt: number; result: Promise<string> } | null>(null);
 
   useEffect(() => {
-    if (!valid) return;
+    if (!valid || !canCommission) { request.current = null; setBusy(false); setHandoff(null); return; }
     let gone = false;
     setBusy(true); setError(''); setHandoff(null);
     // StrictMode can mount an effect twice. Reuse the same one-use code
@@ -43,9 +45,10 @@ export function TMflashConnect({ user }: { user: string }) {
       if (!gone) setError(cause instanceof Error ? cause.message : 'Could not reach the console.');
     }).finally(() => { if (!gone) setBusy(false); });
     return () => { gone = true; };
-  }, [valid, challenge, state, attempt]);
+  }, [valid, canCommission, challenge, state, attempt]);
 
   function returnToApp() {
+    if (!canCommission || !valid || busy) return;
     if (handoff && handoff.expiresAt > Date.now()) location.assign(handoff.url);
     else setAttempt(value => value + 1);
   }
@@ -59,12 +62,13 @@ export function TMflashConnect({ user }: { user: string }) {
     <p className="cx-eyebrow">TMflash · Account verification</p><h1>Connect TMflash</h1>
     <section className="ad-panel">
       <h2>Signed in as {user}</h2>
-      {valid && <p className="ad-notice" role="status">{busy ? 'Completing sign-in… TMflash will open automatically.' : handoff ? 'Returning to TMflash… If this window stays open, click Return to TMflash.' : 'Sign-in could not finish. Retry to return to TMflash.'}</p>}
+      {valid && canCommission && <p className="ad-notice" role="status">{busy ? 'Completing sign-in… TMflash will open automatically.' : handoff ? 'Returning to TMflash… If this window stays open, click Return to TMflash.' : 'Sign-in could not finish. Retry to return to TMflash.'}</p>}
       <p>This Mac's access lasts 24 hours and lets TMflash queue new devices for adoption and check their approval status.</p>
       <p>Device approval requires your signed-in console account and the UID and request code from the physical board. You can revoke this Mac's access in Adoption.</p>
       {!valid && <p className="ad-error" role="alert">This sign-in request is invalid. Start again from TMflash.</p>}
       {error && <p className="ad-error" role="alert">{error}</p>}
-      <div className="ad-match"><button className="ad-primary" disabled={!valid || busy} onClick={returnToApp}>{busy ? 'Connecting…' : handoff ? 'Return to TMflash' : 'Retry connection'}</button><button disabled={busy} onClick={cancel}>{valid ? 'Cancel' : 'Back to Adoption'}</button></div>
+      {!canCommission && <p role="status">Engineer or Admin access is required to authorize TMflash.</p>}
+      <div className="ad-match"><button className="ad-primary" disabled={!canCommission || !valid || busy} onClick={returnToApp}>{busy ? 'Connecting…' : handoff ? 'Return to TMflash' : 'Retry connection'}</button><button disabled={busy} onClick={cancel}>{valid ? 'Cancel' : 'Back to Adoption'}</button></div>
     </section>
   </main>;
 }

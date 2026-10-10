@@ -12,6 +12,7 @@
  * console and this port to 127.0.0.1 without one). The password itself is no
  * longer a way in here; it stays the console's.
  */
+import { isAdminRole, principal, type AdminRole, type AdminPrincipal, type Capability } from '../modules/algo-admin/domain/permissions.js';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -25,7 +26,7 @@ export const ALGO_ACTION = 'algo-login';
 const NAME = /^[a-z0-9][a-z0-9_.-]{1,31}$/;
 export const MIN_PASSWORD = 12;
 
-export interface AlgoUser { name: string; salt: string; hash: string; createdAt: number }
+export interface AlgoUser { name: string; salt: string; hash: string; createdAt: number; role?: AdminRole; disabled?: boolean; sessionVersion?: number }
 
 /**
  * The people who may sign in. Re-read when the file changes, so adding
@@ -59,9 +60,9 @@ export class AlgoUsers {
       const list = JSON.parse(readFileSync(this.path, 'utf8')) as AlgoUser[];
       if (!Array.isArray(list) || list.some((u) => !u || typeof u.name !== 'string' || !NAME.test(u.name) ||
           typeof u.salt !== 'string' || !/^[0-9a-f]{32}$/.test(u.salt) ||
-          typeof u.hash !== 'string' || !/^[0-9a-f]{64}$/.test(u.hash) || !Number.isFinite(u.createdAt) || u.createdAt < 0) ||
+          typeof u.hash !== 'string' || !/^[0-9a-f]{64}$/.test(u.hash) || !Number.isFinite(u.createdAt) || u.createdAt < 0 || (u.role !== undefined && !isAdminRole(u.role)) || (u.disabled !== undefined && typeof u.disabled !== 'boolean') || (u.sessionVersion !== undefined && (!Number.isSafeInteger(u.sessionVersion) || u.sessionVersion < 0))) ||
           new Set(list.map((u) => u.name)).size !== list.length) throw new Error('invalid account file');
-      this.users = new Map(list.map((u) => [u.name, u]));
+      this.users = new Map(list.map((u) => [u.name, { ...u, role: u.role ?? 'engineer', disabled: u.disabled ?? false, sessionVersion: u.sessionVersion ?? 0 }]));
       this.invalid = false;
     } catch {
       // A half-written or hand-mangled file must not open the door; it closes it.
@@ -87,37 +88,48 @@ export class AlgoUsers {
 
   get(name: string): AlgoUser | undefined { this.refresh(); return this.users.get(name); }
 
+  records(): AlgoUser[] { this.refresh(); if (this.invalid) throw new Error('invalid account file'); return [...this.users.values()].map((user) => ({ ...user })); }
+
   static normalise(name: string): string {
     return name.trim().toLowerCase();
   }
 
-  async add(rawName: string, password: string): Promise<AlgoUser> {
+  async add(rawName: string, password: string, role: AdminRole = 'operator', authorize: () => void = () => {}): Promise<AlgoUser> {
     if (typeof rawName !== 'string' || typeof password !== 'string' || password.length > 1024) throw new Error('username and password required within the size limits');
+    if (!isAdminRole(role)) throw new Error('invalid role');
     const name = AlgoUsers.normalise(rawName);
     if (!NAME.test(name)) throw new Error('a username is 2-32 of a-z, 0-9, _ . - and starts with a letter or digit');
     if (password.length < MIN_PASSWORD) throw new Error(`use at least ${MIN_PASSWORD} characters for the password`);
     this.refresh();
     const salt = randomBytes(16);
     if (this.invalid) throw new Error('refusing to replace an invalid account file');
-    const user: AlgoUser = { name, salt: salt.toString('hex'), hash: (await passwordHash(password, salt)).toString('hex'), createdAt: Date.now() };
+    const user: AlgoUser = { name, salt: salt.toString('hex'), hash: (await passwordHash(password, salt)).toString('hex'), createdAt: Date.now(), role, disabled: false, sessionVersion: 0 };
     withPrivateFileLock(this.path, () => {
       this.seen = ''; this.refresh();
+      authorize();
       if (this.invalid) throw new Error('refusing to replace an invalid account file');
+      if (this.users.has(name)) throw new Error('account already exists');
       this.save(new Map(this.users).set(name, user));
     });
     return user;
   }
 
-  remove(rawName: string): boolean {
+  remove(rawName: string, expected?: AlgoUser, authorize: () => void = () => {}): boolean {
     return withPrivateFileLock(this.path, () => {
       this.seen = ''; this.refresh();
+      authorize();
       if (this.invalid) throw new Error('refusing to replace an invalid account file');
-      const next = new Map(this.users), ok = next.delete(AlgoUsers.normalise(rawName));
-      if (ok) this.save(next); return ok;
+      const name = AlgoUsers.normalise(rawName), current = this.users.get(name);
+      if (expected && !current) throw new Error('no such account');
+      if (expected && current && JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('account changed; retry the operation');
+      const next = new Map(this.users), ok = next.delete(name);
+      if (ok) { this.protectLastAdmin(next); this.save(next); } return ok;
     });
   }
 
-  async verify(rawName: string, password: string): Promise<string | null> {
+  async verify(rawName: string, password: string): Promise<string | null> { return (await this.verifyRecord(rawName, password))?.name ?? null; }
+
+  async verifyRecord(rawName: string, password: string): Promise<AlgoUser | null> {
     if (typeof rawName !== 'string' || typeof password !== 'string' || rawName.length > 32 || password.length > 1024) return null;
     this.refresh();
     const name = AlgoUsers.normalise(rawName);
@@ -125,10 +137,44 @@ export class AlgoUsers {
     // Hash for unknown names too, so timing does not say which accounts exist.
     const salt = user ? Buffer.from(user.salt, 'hex') : randomBytes(16);
     const hash = await passwordHash(password, salt);
-    if (!user) return null;
+    if (!user || user.disabled) return null;
     const current = this.get(name);
-    if (current?.hash !== user.hash || current.salt !== user.salt) return null;
-    return timingSafeEqual(hash, Buffer.from(user.hash, 'hex')) ? name : null;
+    if (!current || current.disabled || current.sessionVersion !== user.sessionVersion || current.hash !== user.hash || current.salt !== user.salt) return null;
+    return timingSafeEqual(hash, Buffer.from(user.hash, 'hex')) ? current : null;
+  }
+
+  async resetPassword(rawName: string, password: string, expected?: AlgoUser, authorize: () => void = () => {}): Promise<AlgoUser> {
+    if (typeof password !== 'string' || password.length < MIN_PASSWORD || password.length > 1024) throw new Error('invalid password length');
+    const snapshot = expected ?? this.get(AlgoUsers.normalise(rawName));
+    if (!snapshot) throw new Error('no such account');
+    const salt = randomBytes(16), hash = (await passwordHash(password, salt)).toString('hex');
+    return this.update(rawName, { salt: salt.toString('hex'), hash }, snapshot, authorize);
+  }
+
+  /** Shared serialized primitive for CLI and downstream account management. */
+  update(rawName: string, patch: { role?: AdminRole; disabled?: boolean; revoke?: boolean; salt?: string; hash?: string }, expected?: AlgoUser, authorize: () => void = () => {}): AlgoUser {
+    return withPrivateFileLock(this.path, () => {
+      this.seen = ''; this.refresh();
+      authorize();
+      if (this.invalid) throw new Error('invalid account file');
+      const name = AlgoUsers.normalise(rawName), current = this.users.get(name);
+      if (!current) throw new Error('no such account');
+      if (expected && (current.hash !== expected.hash || current.salt !== expected.salt || current.sessionVersion !== expected.sessionVersion || current.createdAt !== expected.createdAt || current.role !== expected.role || current.disabled !== expected.disabled)) throw new Error('account changed; retry the operation');
+      if (patch.role !== undefined && !isAdminRole(patch.role)) throw new Error('invalid role');
+      if (patch.disabled !== undefined && typeof patch.disabled !== 'boolean') throw new Error('invalid disabled flag');
+      if ((patch.salt !== undefined || patch.hash !== undefined) && (!/^[0-9a-f]{32}$/.test(patch.salt ?? '') || !/^[0-9a-f]{64}$/.test(patch.hash ?? ''))) throw new Error('invalid credentials');
+      const changed = patch.revoke || (patch.role !== undefined && patch.role !== current.role) || (patch.disabled !== undefined && patch.disabled !== current.disabled) || patch.hash !== undefined;
+      const fields = Object.fromEntries(Object.entries(patch).filter(([key, value]) => key !== 'revoke' && value !== undefined));
+      const user = { ...current, ...fields, sessionVersion: (current.sessionVersion ?? 0) + (changed ? 1 : 0) };
+      if (!Number.isSafeInteger(user.sessionVersion)) throw new Error('session version exhausted');
+      const next = new Map(this.users).set(name, user);
+      this.protectLastAdmin(next); this.save(next); return user;
+    });
+  }
+
+  private protectLastAdmin(next: Map<string, AlgoUser>): void {
+    const enabledAdmin = (u: AlgoUser) => u.role === 'admin' && !u.disabled;
+    if ([...this.users.values()].some(enabledAdmin) && ![...next.values()].some(enabledAdmin)) throw new Error('cannot remove, disable or demote the final enabled admin');
   }
 
   private save(users: Map<string, AlgoUser>): void {
@@ -181,6 +227,9 @@ export function safeAlgoNext(raw: unknown): string {
 
 export interface AlgoAuth {
   /** The signed-in user, or null. With auth off, everyone is "local". */
+  accountEpoch(name: string): string | null;
+  principalOf(req: { headers: { cookie?: string } }): AdminPrincipal | null;
+  requireCapability(capability: Capability): (req: Request, res: Response, next: NextFunction) => void;
   userOf(req: { headers: { cookie?: string } }): string | null;
   /** 401 for /api/*, a redirect to /login for pages. */
   requireUser: (req: Request, res: Response, next: NextFunction) => void;
@@ -198,25 +247,35 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
   const sessions = new Sessions(cfg.sessionSecret, 12 * 3600 * 1000, join(dirname(cfg.usersPath), 'session-revocations.json'));
   const logoutListeners = new Set<(token: string) => void>();
   const sessionToken: AlgoAuth['sessionToken'] = (req) => cfg.enabled ? parseCookies(req.headers.cookie)[ALGO_COOKIE] ?? '' : 'local';
+  const subjectFor = (user: AlgoUser) => `${user.name}:${createHmac('sha256', cfg.sessionSecret).update(`${user.salt}:${user.hash}${user.sessionVersion ? `:${user.sessionVersion}` : ''}`).digest('base64url')}`;
   const subject = (name: string) => {
     const user = users.get(name);
-    return user ? `${name}:${createHmac('sha256', cfg.sessionSecret).update(`${user.salt}:${user.hash}`).digest('base64url')}` : null;
+    return user && !user.disabled ? subjectFor(user) : null;
   };
   const limiter = new RateLimiter(10, 5 * 60_000);
   const isHuman = cfg.turnstile ? cfg.turnstile.check ?? turnstileCheck(cfg.turnstile.secretKey, cfg.turnstile.hostnames) : null;
 
-  const userOf: AlgoAuth['userOf'] = (req) => {
-    if (!cfg.enabled) return 'local';
-    const identity = sessions.read(sessionToken(req));
-    const name = identity?.split(':')[0];
-    // A removed account is signed out at once, not when its cookie expires.
-    return name && identity === subject(name) ? name : null;
+  const principalOf: AlgoAuth['principalOf'] = (req) => {
+    if (!cfg.enabled) return principal('local', 'admin', false);
+    const identity = sessions.read(sessionToken(req)), name = identity?.split(':')[0];
+    const current = name ? users.get(name) : undefined;
+    if (!current || current.disabled || identity !== subjectFor(current)) return null;
+    return principal(current.name, current.role ?? 'engineer');
+  };
+  const userOf: AlgoAuth['userOf'] = (req) => principalOf(req)?.name ?? null;
+
+  const requireCapability: AlgoAuth['requireCapability'] = (capability) => (req, res, next) => {
+    const current = principalOf(req);
+    if (!current) return void res.status(401).json({ error: 'sign in first' });
+    if (!current.capabilities.includes(capability)) return void res.status(403).json({ error: 'Your access has changed. This action is unavailable.' });
+    return next();
   };
 
   const requireUser: AlgoAuth['requireUser'] = (req, res, next) => {
     const user = userOf(req);
     if (user) {
       res.locals.user = user;
+      res.locals.principal = principalOf(req);
       return next();
     }
     // Deliberately no WWW-Authenticate header: that is what made the browser
@@ -259,14 +318,16 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
         return res.status(403).json({ error: 'complete the verification and try again' });
       }
     }
-    const user = await users.verify(name, password);
-    if (!user) return res.status(401).json({ error: 'wrong username or password' });
+    const verified = await users.verifyRecord(name, password);
+    if (!verified) return res.status(401).json({ error: 'wrong username or password' });
     // Lax, not Strict: algo.hkumyseat.com is reached through Cloudflare
     // Access's login on another site, and a Strict cookie would be withheld
     // from that first navigation -- the server would see a stranger while the
     // page's own requests saw an engineer. Writes are guarded separately by
     // the x-tm-algo header, which no cross-site form can send.
-    res.cookie(ALGO_COOKIE, sessions.issue(subject(user)!), {
+    const user = verified.name, issuedSubject = subjectFor(verified);
+    if (subject(user) !== issuedSubject) return res.status(401).json({ error: 'wrong username or password' });
+    res.cookie(ALGO_COOKIE, sessions.issue(issuedSubject), {
       httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: sessions.ttl, path: '/',
     });
     return res.json({ ok: true, user, redirect: safeAlgoNext(body.next) });
@@ -284,6 +345,9 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
     res.json({ ok: true, redirect: '/login' });
   });
 
-  return { userOf, requireUser, router, users, sessionToken, accountSubject: name => cfg.enabled ? subject(name) : null,
-    onLogout: (listener) => { logoutListeners.add(listener); } };
+  const accountSubject = (name: string): string | null => {
+    const current = cfg.enabled ? users.get(name) : undefined;
+    return current && principal(name, current.role ?? 'engineer').capabilities.includes('nodes.admin') ? subject(name) : null;
+  };
+  return { userOf, accountEpoch: subject, accountSubject, principalOf, requireCapability, requireUser, router, users, sessionToken, onLogout: (listener) => { logoutListeners.add(listener); } };
 }

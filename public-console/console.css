@@ -229,3 +229,4 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
   .kv { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .join-facts { grid-template-columns: minmax(0, 1fr); }
 }
+.console-access-notice, #data-freshness { margin: 8px 16px; overflow-wrap: anywhere; }
