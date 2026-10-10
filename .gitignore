@@ -1,6 +1,9 @@
 node_modules/
 dist/
 public-web/app/
+# Vite generates this entry alongside the hashed assets. Tracking it makes a
+# dependency update dirty the checkout and prevents a verified CI release.
+public-web/index.html
 public-console/js/
 data/
 .env
