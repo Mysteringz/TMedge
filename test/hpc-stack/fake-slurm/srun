@@ -1,3 +1,4 @@
 #!/bin/bash
 # One task, here and now.
+[ "${1:-}" = --ntasks=1 ] && shift
 exec "$@"

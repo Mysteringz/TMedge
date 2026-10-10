@@ -4,6 +4,46 @@ HANDOVER.md rule 8: date, decision, why. The spec itself is
 [HANDOVER.md](HANDOVER.md); what has to happen before any job reaches HKU is
 [m0-checklist.md](m0-checklist.md).
 
+## 2026-10-09: a starter that runs on the verified cluster
+
+Replace the default parquet/scikit-learn job with a small synthetic
+logistic-regression demo using only Python 3's standard library. The
+cluster has Python 3 but none of the old example's packages or dataset.
+New drafts request one CPU, one GB, no GPU and two minutes, with no modules,
+conda environment or environment variables. Label the data and results as
+synthetic; they verify training execution rather than occupancy accuracy.
+Import the Python file as text in the editor so the uploadable script and
+the starter remain identical. Preserve saved jobs and unsaved user code.
+
+## 2026-10-09: job 324 execution failure and status recovery
+
+Job 324 (`occupancy_gbc`) was accepted on October 6 and did execute. Its
+stderr says `execve(): python: No such file or directory`, followed by
+`srun` reporting exit code 2. The cluster has `/usr/bin/python3` but no
+`python`. It also has accounting disabled; the job was no longer in
+`squeue` or `scontrol`, yet the dashboard retained its last `PENDING`
+record. The saved script is the example, whose dependencies and example
+dataset are also absent on that account.
+
+- Prefer the environment's `python`, with a `python3` fallback and
+  unbuffered output. Keep one node/task explicit in both the allocation
+  and `srun`: the first live smoke test otherwise ran the script twice.
+- Save a versioned exit report atomically from the batch shell's EXIT
+  trap, preserving the original exit code if writing the report fails.
+  Use it only when scheduler queries return no record. Missing results
+  remain `UNKNOWN`; logs are evidence to inspect, not an inferred exit code.
+- Read the live queue even when accounting answers, since it contains
+  pending reasons and can be newer. Persist the reason and show when
+  status was last checked. Credentials and authentication are unchanged.
+
+With the user signed in, the final renderer and gateway upload/submit/status/
+log functions were tested through the existing SSH connection on the real
+cluster. Job **327** ran exactly one Python 3 task and the exit report parsed
+as `COMPLETED`, exit **0**. Job **328** deliberately exited **7** and parsed
+as `FAILED`, exit **7**, after both jobs had left the live queue. Neither
+test required accounting or installed packages; these are execution/status
+smoke tests, not a completed run of the example training model.
+
 ## 2026-10-06: M1 built inside the algo console
 
 **Status.** M1 (drafts, uploads, spec validation, sbatch rendering, no HPC)

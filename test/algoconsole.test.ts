@@ -8,7 +8,8 @@
  * know the console port's address.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,20 +22,147 @@ import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { consoleMovedTo, createConsole, startConsole, stopConsole } from '../src/edge/console.js';
 import { buildRegistry } from '../src/edge/registry.js';
 import { createEdgeRuntime } from '../src/edge/composition-root.js';
-import { KEY, nodesJson, siteJson } from './fixtures.js';
+import { DeviceKeys } from '../src/edge/secure.js';
+import { KEY, identity, report, nodesJson, siteJson } from './fixtures.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'tmedge-algoconsole-'));
 
 function runtime() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'tmedge-'));
+  const nodesPath = join(dataDir, 'nodes.json');
+  writeFileSync(nodesPath, JSON.stringify(nodesJson()));
   const cfg: EdgeConfig = {
     edgeId: 'test', keys: [KEY], allowUnsigned: false, udpPort: 0, udpHost: '127.0.0.1',
-    sitePath: '', nodesPath: '', dataDir: mkdtempSync(join(tmpdir(), 'tmedge-')), recordRaw: false,
+    sitePath: '', nodesPath, dataDir, recordRaw: false,
     consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1', adminPassword: 'admin-pass', flashToken: null, pushUrls: [], pushToken: '', publishMs: 1000,
     gatewayPort: 0, gatewayToken: null,
     nodeHost: '127.0.0.1', nodePort: 0, nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
   };
   return createEdgeRuntime(cfg, buildRegistry(siteJson(), nodesJson()));
 }
+
+test('adoption tokens cross the machine gate but never the human approval gate; reports verify only after admission', async () => {
+  const { rt, algoBase, cookie } = await boot();
+  const uid = '30:ed:a0:11:22:33';
+  const post = (path: string, body: unknown, headers: Record<string, string>) => fetch(algoBase + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  const admin = { cookie, 'x-tm-algo': '1' };
+  assert.equal((await fetch(algoBase + '/api/adoption')).status, 401);
+  assert.equal((await fetch(algoBase + '/adoption', { redirect: 'manual' })).status, 302);
+  assert.equal((await post('/api/adoption/tokens', { label: 'Bench', hours: 24 }, { cookie })).status, 403);
+  const issued = await post('/api/adoption/tokens', { label: 'Bench', hours: 24 }, admin);
+  assert.equal(issued.status, 201);
+  const credential = await issued.json() as { id: string; token: string };
+  const machine = { authorization: `Bearer ${credential.token}` };
+  const stateResponse = await fetch(algoBase + '/api/adoption', { headers: { cookie } });
+  const stateText = await stateResponse.text();
+  assert.equal(stateResponse.headers.get('cache-control'), 'no-store');
+  assert.ok(!stateText.includes(credential.token) && !stateText.includes('digest'));
+  assert.ok(!readFileSync(join(rt.cfg.dataDir, 'flasher-credentials.json'), 'utf8').includes(credential.token));
+  assert.equal((await fetch(algoBase + '/api/provision/preflight')).status, 401);
+  const preflight = await fetch(algoBase + '/api/provision/preflight', { headers: machine });
+  assert.deepEqual(await preflight.json(), { protocol: 'tmflash.adoption.v1', ready: true, approval: 'human' });
+  assert.equal((await fetch(algoBase + '/api/adoption', { headers: machine })).status, 401);
+  const queued = await post('/api/provision/request', { uid, label: 'Physical bench', firmware: '1.6' }, machine);
+  assert.equal(queued.status, 202);
+  const pending = await queued.json() as { id: string; pairingCode: string };
+  assert.match(pending.pairingCode, /^[0-9A-F]{8}$/);
+  const approvalPath = `/api/adoption/requests/${pending.id}/approve`;
+  const confirmation = { uid, pairingCode: pending.pairingCode };
+  assert.equal((await post(approvalPath, confirmation, { ...machine, 'x-tm-algo': '1' })).status, 401);
+  assert.equal((await post(approvalPath, { uid, pairingCode: 'WRONG' }, admin)).status, 400);
+  assert.equal(rt.reg.nodes.has(uid), false);
+  assert.equal((await post(approvalPath, confirmation, admin)).status, 200);
+  assert.equal(rt.reg.nodes.get(uid)?.floorId, null);
+  assert.ok(readFileSync(rt.cfg.nodesPath, 'utf8').includes(uid));
+  assert.ok(readFileSync(join(rt.cfg.dataDir, 'provisioning.jsonl'), 'utf8').includes('algo:alice'));
+  const devices = async () => (await (await fetch(algoBase + '/api/adoption', { headers: { cookie } })).json() as { nodes: { uid: string; verified: boolean }[] }).nodes;
+  assert.equal((await devices()).find(node => node.uid === uid)?.verified, false, 'approval is not proof of successful telemetry');
+  const signed = report(identity(uid), [], 1);
+  rt.ingest.handle(signed, { kind: 'udp', address: '127.0.0.1' });
+  assert.equal((await devices()).find(node => node.uid === uid)?.verified, true, 'a signed accepted report closes the loop');
+  assert.equal((await post(`/api/adoption/tokens/${credential.id}/revoke`, {}, admin)).status, 200);
+  assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers: machine })).status, 401);
+});
+
+test('TMflash account sign-in needs browser consent and PKCE; its code is one-use and logout revokes access', async () => {
+  const { algoBase, cookie } = await boot();
+  const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(algoBase + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  const authBody = { challenge, state };
+  assert.equal((await post('/api/tmflash/authorize', authBody, { 'x-tm-algo': '1' })).status, 401);
+  assert.equal((await post('/api/tmflash/authorize', authBody, { cookie })).status, 403);
+  assert.equal((await post('/api/tmflash/authorize', { ...authBody, challenge: 'bad' }, { cookie, 'x-tm-algo': '1' })).status, 400);
+  const consent = await post('/api/tmflash/authorize', authBody, { cookie, 'x-tm-algo': '1' });
+  assert.equal(consent.status, 200);
+  const callback = new URL((await consent.json() as { redirect: string }).redirect);
+  assert.equal(callback.origin, 'null');
+  assert.equal(callback.protocol, 'hk.hkumyseat.tmflash:');
+  assert.equal(callback.host, 'login');
+  assert.equal(callback.searchParams.get('state'), state);
+  const code = callback.searchParams.get('code');
+  assert.equal((await post('/api/tmflash/exchange', { code, verifier: randomBytes(32).toString('base64url') })).status, 401, 'an intercepted callback cannot authorize another Mac');
+  const exchange = await post('/api/tmflash/exchange', { code, verifier });
+  assert.equal(exchange.status, 201);
+  const session = await exchange.json() as { token: string; user: string; expiresAt: number };
+  assert.equal(session.user, 'alice');
+  assert.ok(session.expiresAt > Date.now() + 23 * 3600_000 && session.expiresAt <= Date.now() + 24 * 3600_000);
+  assert.equal((await post('/api/tmflash/exchange', { code, verifier })).status, 401, 'a code cannot create two sessions');
+  const machine = { authorization: `Bearer ${session.token}` };
+  assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers: machine })).status, 200);
+  assert.equal((await fetch(algoBase + '/console-app/api/state', { headers: machine })).status, 401, 'native access cannot read thermal imagery');
+  assert.equal((await post('/api/tmflash/logout', {}, machine)).status, 204);
+  assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers: machine })).status, 401);
+});
+
+test('password changes and account removal invalidate native sessions and pending login codes immediately', async () => {
+  const { algoBase, cookie, usersPath } = await boot();
+  const users = new AlgoUsers(usersPath);
+  await users.add('backupadmin', 'a second administrator password', 'admin');
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(algoBase + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  const grant = async (browserCookie: string) => {
+    const verifier = randomBytes(32).toString('base64url');
+    const consent = await post('/api/tmflash/authorize', { challenge: createHash('sha256').update(verifier).digest('base64url'), state: randomBytes(32).toString('base64url') }, { cookie: browserCookie, 'x-tm-algo': '1' });
+    assert.equal(consent.status, 200);
+    return { code: new URL((await consent.json() as { redirect: string }).redirect).searchParams.get('code'), verifier };
+  };
+  const session = await (await post('/api/tmflash/exchange', await grant(cookie))).json() as { token: string };
+  const pending = await grant(cookie);
+  await users.resetPassword('alice', 'a changed account password');
+  assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers: { authorization: `Bearer ${session.token}` } })).status, 401);
+  assert.equal((await post('/api/tmflash/exchange', pending)).status, 401);
+  const login = await post('/auth/login', { username: 'alice', password: 'a changed account password' });
+  const newCookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+  const nextSession = await (await post('/api/tmflash/exchange', await grant(newCookie))).json() as { token: string };
+  const nextPending = await grant(newCookie);
+  assert.equal(users.remove('alice'), true);
+  assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers: { authorization: `Bearer ${nextSession.token}` } })).status, 401);
+  assert.equal((await post('/api/tmflash/exchange', nextPending)).status, 401);
+});
+
+test('both adoption consoles require an enrolled telemetry key before admitting a secure-policy device', async () => {
+  const { rt, algoBase, cookie } = await boot();
+  rt.cfg.devices = new DeviceKeys({ version: 2, nodes: {} });
+  const uid = '30:ed:a0:11:22:44';
+  const post = (path: string, body: unknown, headers: Record<string, string>) => fetch(algoBase + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  const admin = { cookie, 'x-tm-algo': '1' };
+  const issued = await (await post('/api/adoption/tokens', { label: 'Test Mac', hours: 24 }, admin)).json() as { token: string };
+  const request = await (await post('/api/provision/request', { uid }, { authorization: `Bearer ${issued.token}` })).json() as { id: string; pairingCode: string };
+  const confirm = { uid, pairingCode: request.pairingCode };
+  assert.equal((await post(`/api/adoption/requests/${request.id}/approve`, confirm, admin)).status, 409);
+  assert.equal((await post(`/console-app/api/provision/requests/${request.id}/approve`, confirm, { cookie, 'x-tm-console': '1' })).status, 409);
+  assert.equal(rt.reg.nodes.has(uid), false);
+  rt.cfg.devices = new DeviceKeys({ version: 2, nodes: { [uid]: { current: { id: 7, secret: '11'.repeat(32) } } } });
+  assert.equal((await post(`/api/adoption/requests/${request.id}/approve`, confirm, admin)).status, 200);
+});
 
 const running: (() => Promise<void>)[] = [];
 after(async () => { for (const stop of running) await stop(); });
@@ -68,6 +196,33 @@ async function boot() {
   const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
   return { rt, consoleBase, algoBase, cookie, usersPath };
 }
+
+test('merged adoption and native credentials retain four-role gates and invalidate on account epoch changes', async () => {
+  const { algoBase, usersPath } = await boot(), users = new AlgoUsers(usersPath);
+  const post = (path: string, body: unknown, cookie = '') => fetch(algoBase + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tm-algo': '1', cookie }, body: JSON.stringify(body) });
+  for (const role of ['viewer', 'operator', 'engineer', 'admin'] as const) {
+    await users.add(role, 'merged test account password', role);
+    const login = await post('/auth/login', { username: role, password: 'merged test account password' });
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]!;
+    assert.equal((await fetch(algoBase + '/api/adoption', { headers: { cookie } })).status, 200);
+    const allowed = role === 'engineer' || role === 'admin';
+    assert.equal((await post('/api/adoption/tokens', { label: 'Role test', hours: 1 }, cookie)).status, allowed ? 201 : 403);
+    assert.equal((await post('/api/adoption/requests/missing/deny', {}, cookie)).status, allowed ? 404 : 403);
+    const verifier = randomBytes(32).toString('base64url');
+    const consent = await post('/api/tmflash/authorize', { challenge: createHash('sha256').update(verifier).digest('base64url'), state: randomBytes(32).toString('base64url') }, cookie);
+    assert.equal(consent.status, allowed ? 200 : 403);
+    if (!allowed) continue;
+    const code = new URL((await consent.json() as { redirect: string }).redirect).searchParams.get('code');
+    const exchanged = await post('/api/tmflash/exchange', { code, verifier }); assert.equal(exchanged.status, 201);
+    const token = (await exchanged.json() as { token: string }).token;
+    const headers = { authorization: `Bearer ${token}` };
+    assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers })).status, 200);
+    users.update(role, { role: 'operator' });
+    assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers })).status, 401, 'demotion revokes native commissioning permission');
+    users.remove(role); await users.add(role, 'merged test account password', 'engineer');
+    assert.equal((await fetch(algoBase + '/api/provision/preflight', { headers })).status, 401, 'same-name recreation never restores native credentials');
+  }
+});
 
 test('signed out, the console inside the algo console is as closed as the rest of it', async () => {
   const { algoBase } = await boot();

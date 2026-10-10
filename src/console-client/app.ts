@@ -557,6 +557,7 @@ function showNextJoin(): void {
   $('#join-fw').textContent = req.firmware ?? 'not reported';
   $('#join-from').textContent = req.from;
   $('#join-queue').textContent = joinQueue.length ? `${joinQueue.length} more waiting` : '';
+  ($('#join-code') as HTMLInputElement).value = '';
   const err = $('#join-error');
   err.hidden = true;
   err.textContent = '';
@@ -572,7 +573,8 @@ async function answerJoin(verdict: 'approve' | 'deny'): Promise<void> {
   for (const button of buttons) button.disabled = true;
   try {
     const res = await fetch(`api/provision/requests/${encodeURIComponent(req.id)}/${verdict}`, {
-      method: 'POST', headers: { 'x-tm-console': '1' },
+      method: 'POST', headers: { 'x-tm-console': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ uid: req.uid, pairingCode: ($('#join-code') as HTMLInputElement).value.toUpperCase() }),
     });
     if (!res.ok) {
       const j = (await res.json().catch(() => ({}))) as { error?: string };

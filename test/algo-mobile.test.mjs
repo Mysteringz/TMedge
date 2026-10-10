@@ -4,9 +4,10 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash, randomBytes } from 'node:crypto';
 import { chromium, webkit } from 'playwright';
 import { createEdgeRuntime } from '../dist/src/edge/composition-root.js';
 import { createConsole } from '../dist/src/edge/console.js';
@@ -20,10 +21,11 @@ let runtime, handle, base, directory;
 const originalDataDir = process.env.DATA_DIR;
 before(async () => {
   directory = mkdtempSync(join(tmpdir(), 'tmedge-mobile-'));
+  writeFileSync(join(directory, 'nodes.json'), JSON.stringify(nodesJson()));
   process.env.DATA_DIR = directory;
   const config = {
     edgeId: 'mobile-preview', keys: [KEY], allowUnsigned: false,
-    udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: '', dataDir: directory,
+    udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: join(directory, 'nodes.json'), dataDir: directory,
     recordRaw: false, consolePort: 0, algoPort: 0, consoleHost: '127.0.0.1',
     adminPassword: 'local-browser-test', flashToken: null, pushUrls: [], pushToken: '',
     publishMs: 1000, gatewayPort: 0, gatewayToken: null, nodeHost: '127.0.0.1',
@@ -84,7 +86,7 @@ async function shot(page, engine, name) {
 // Populate tables with long names and provide an available, disconnected
 // cluster. The sign-in dialog can be exercised without contacting HKU.
 async function trainingFixtures(page) {
-  await page.route('**/api/train/jobs', route => route.fulfill({ json: { jobs: [{
+  await page.route('**/api/train/jobs', route => route.request().method() !== 'GET' ? route.continue() : route.fulfill({ json: { jobs: [{
     id: 'mobile-draft', name: 'occupancy_training_with_a_long_project_name',
     status: 'SUBMIT_FAILED', partition: 'gpu', gpus: 1, code: { kind: 'py', filename: 'train.py' },
     slurmJobId: null, createdAt: Date.now(), updatedAt: Date.now(),
@@ -112,11 +114,82 @@ async function updatesFixtures(page) {
 }
 
 for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
+  test(`${engine}: algo account connects TMflash, matches the physical request and revokes access`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: 'dark' });
+    const page = await context.newPage();
+    try {
+      const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
+      const challenge = createHash('sha256').update(verifier).digest('base64url');
+      await page.goto(`${base}/tmflash/connect?challenge=${challenge}&state=${state}`);
+      await page.getByLabel('Username').fill('mobiletest');
+      await page.getByLabel('Password', { exact: true }).fill('local browser test password');
+      await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+      await page.getByRole('heading', { name: 'Connect TMflash' }).waitFor();
+      for (const scheme of ['dark', 'light']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        await fits(page, 390);
+        await shot(page, engine, `tmflash-connect-${scheme}-390`);
+      }
+      // Exercise the actual consent button but hold the custom callback in
+      // this headless fixture: launching an installed app belongs to macOS.
+      let callback;
+      await page.route('**/api/tmflash/authorize', async route => {
+        const response = await route.fetch();
+        callback = new URL((await response.json()).redirect);
+        await route.fulfill({ status: 400, json: { error: 'Callback captured by browser test' } });
+      });
+      await page.getByRole('button', { name: 'Authorize TMflash' }).click();
+      await page.getByRole('alert').filter({ hasText: 'Callback captured by browser test' }).waitFor();
+      assert.equal(callback.protocol, 'hk.hkumyseat.tmflash:');
+      assert.equal(callback.searchParams.get('state'), state);
+      const exchanged = await context.request.post(`${base}/api/tmflash/exchange`, { data: { code: callback.searchParams.get('code'), verifier } });
+      assert.equal(exchanged.status(), 201);
+      const issued = await exchanged.json();
+      assert.equal(issued.user, 'mobiletest');
+      await page.goto(`${base}/adoption`);
+      await page.getByRole('heading', { name: 'TMflash sign-in' }).waitFor();
+      const uid = engine === 'chromium' ? '30:ed:a0:11:22:01' : '30:ed:a0:11:22:02';
+      const queued = await context.request.post(`${base}/api/provision/request`, {
+        headers: { authorization: `Bearer ${issued.token}` }, data: { uid, label: 'New physical sensor', firmware: '1.6' },
+      });
+      assert.equal(queued.status(), 202);
+      const request = await queued.json();
+      const card = page.locator('.ad-request').filter({ hasText: uid });
+      await card.waitFor();
+      assert.equal(await card.getByRole('button', { name: 'Approve device' }).isDisabled(), true);
+      for (const scheme of ['dark', 'light']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        for (const width of [390, 1440]) {
+          await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+          await fits(page, width);
+          await shot(page, engine, `adoption-${scheme}-${width}`);
+        }
+      }
+      await card.getByLabel(`UID from TMflash for ${uid}`).fill(uid);
+      await card.getByLabel(`Code from TMflash for ${uid}`).fill(request.pairingCode);
+      await card.getByRole('button', { name: 'Approve device' }).click();
+      await page.getByRole('status').filter({ hasText: `${uid} approved` }).waitFor();
+      const device = page.locator('.ad-device').filter({ hasText: uid });
+      await device.getByText('Waiting for reports', { exact: true }).waitFor();
+      await device.getByText('Unplaced', { exact: true }).waitFor();
+      const tokenRow = page.locator('.ad-token-list li').filter({ hasText: 'TMflash on Mac' }).last();
+      await tokenRow.getByRole('button', { name: 'Revoke' }).click();
+      await page.getByRole('status').filter({ hasText: 'TMflash session revoked.' }).waitFor();
+      const refused = await context.request.get(`${base}/api/provision/preflight`, { headers: { authorization: `Bearer ${issued.token}` } });
+      assert.equal(refused.status(), 401);
+    } finally { await context.close(); await browser.close(); }
+  });
   test(`${engine}: the algorithm console works on phones, tablets and desktop`, { timeout: 180_000 }, async t => {
     const browser = await browserType.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 320, height: 844 }, isMobile: true, hasTouch: true, colorScheme: 'dark' });
     const errors = [];
-    context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
+    // The spec's "ResizeObserver loop" notice means a resize was deferred to
+    // the next frame, not that anything failed. WebKit reports it as an error
+    // when React Flow re-measures during a viewport change, at random, and it
+    // blocked a deploy of unchanged code. Every other error still fails.
+    const benign = /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)\.?$/;
+    context.on('page', page => page.on('pageerror', error => { if (!benign.test(error.message)) errors.push(error.message); }));
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
     page.setDefaultNavigationTimeout(15_000);
@@ -144,7 +217,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       ]) {
         await t.test(`${viewport.width}×${viewport.height}: all modules fit`, async () => {
           await page.setViewportSize(viewport);
-          for (const path of ['/', '/flow', '/train', '/console', '/updates']) {
+          for (const path of ['/', '/flow', '/train', '/console', '/updates', '/adoption']) {
             await page.unrouteAll({ behavior: 'wait' });
             if (path === '/train') await trainingFixtures(page);
             if (path === '/updates') await updatesFixtures(page);
@@ -159,6 +232,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
             }
             if (path === '/train') await page.locator('.cx-jobs').getByText('SUBMIT_FAILED').waitFor();
             if (path === '/updates') await page.getByText('Connected to edge', { exact: false }).waitFor();
+            if (path === '/adoption') await page.getByText('No requests waiting.', { exact: false }).waitFor();
             await fits(page, viewport.width);
             if (path === '/console') {
               await page.frameLocator('.cx-frame').locator('#conn.good').waitFor();
@@ -172,6 +246,67 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           }
         });
       }
+
+      await t.test('a new draft has a self-contained CPU example ready to save on a phone', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await trainingFixtures(page);
+        await page.goto(`${base}/train`);
+        await page.getByRole('button', { name: 'New draft', exact: true }).tap();
+        assert.equal(await page.getByLabel('Job name', { exact: true }).inputValue(), 'synthetic_demo');
+        assert.equal(await page.getByLabel('CPUs', { exact: true }).inputValue(), '1');
+        assert.equal(await page.getByLabel('Mem GB', { exact: true }).inputValue(), '1');
+        assert.equal(await page.getByLabel('GPUs', { exact: true }).inputValue(), '0');
+        assert.equal(await page.getByLabel('Time', { exact: true }).inputValue(), '0:02:00');
+        assert.equal(await page.getByLabel('Arguments', { exact: true }).inputValue(), '--epochs 20 --samples 1000 --seed 42');
+        assert.equal(await page.getByLabel('Conda env', { exact: true }).inputValue(), '');
+        assert.equal(await page.getByLabel('Environment', { exact: true }).inputValue(), '');
+        assert.equal(await page.locator('input[type="checkbox"]:checked').count(), 0);
+        await page.getByText('# TMedge synthetic training demo for the HKU SLURM cluster.', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Save draft', exact: true }).tap();
+        await page.getByText('Draft synthetic_demo saved', { exact: true }).waitFor();
+        const jobId = new URL(page.url()).searchParams.get('job');
+        assert.ok(jobId, 'the example is saved as a new job');
+        const savedScript = await context.request.get(`${base}/api/train/jobs/${jobId}/file?path=train.py`);
+        assert.equal(savedScript.status(), 200);
+        assert.equal(await savedScript.text(), readFileSync('algo-app/src/console/train/example.py', 'utf8'), 'saving keeps the same runnable example');
+        for (const colorScheme of ['dark', 'light']) {
+          await page.emulateMedia({ colorScheme });
+          await fits(page, 390);
+          await shot(page, engine, `example-draft-${colorScheme}`);
+        }
+        await page.emulateMedia({ colorScheme: 'dark' });
+      });
+
+      await t.test('waiting jobs show the scheduler reason and when it was last checked on a phone', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await trainingFixtures(page);
+        const job = {
+          id: 'pending-job', status: 'PENDING', slurmJobId: 324,
+          spec: { name: 'pending_training', partition: 'debug', cpusPerTask: 4, memGb: 16, gpus: 1,
+            timeLimit: '2:00:00', modules: [], condaEnv: null, entrypoint: 'train.py', args: [], env: {}, notifyEmail: false },
+          code: { kind: 'py', filename: 'train.py', bytes: 9, unpackedBytes: 9, fileCount: 1, py: ['train.py'] },
+          sbatch: '', createdAt: Date.now(), updatedAt: Date.now(), lastPolledAt: Date.now() - 2 * 60_000,
+          submittedAt: Date.now(), startedAt: null, endedAt: null, exitCode: null, remoteDir: '~/hpc-dash/jobs/pending-job',
+          slurmState: 'PENDING', slurmReason: 'ReqNodeNotAvail, UnavailableNodes:iw-g2', elapsedSeconds: 0, node: null, message: null,
+        };
+        await page.route('**/api/train/jobs', route => route.fulfill({ json: { jobs: [{
+          ...job, name: job.spec.name, partition: 'debug', gpus: 1,
+        }] } }));
+        await page.route('**/api/train/jobs/pending-job', route => route.fulfill({ json: { job } }));
+        await page.route('**/api/train/jobs/pending-job/file**', route => route.fulfill({ body: 'print(1)\n', contentType: 'text/plain' }));
+        await page.goto(`${base}/train`);
+        await page.locator('.cx-jobs').getByText(job.spec.name).tap();
+        await page.getByText(`SLURM reason: ${job.slurmReason}`, { exact: true }).waitFor();
+        await page.getByText('Last checked 2m ago · Sign in and refresh for the current state', { exact: true }).waitFor();
+        for (const colorScheme of ['dark', 'light']) {
+          await page.emulateMedia({ colorScheme });
+          await fits(page, 390);
+          await shot(page, engine, `pending-job-${colorScheme}`);
+        }
+        await page.emulateMedia({ colorScheme: 'dark' });
+      });
 
       await t.test('flow tabs preserve edits and desktop sizes across rotation', async () => {
         await page.unrouteAll({ behavior: 'wait' });

@@ -177,41 +177,23 @@ runs typecheck, tests and build on Linux and macOS with Node 22. TMflash runs
 fake-serial-node tests and release builds on macOS. These pipelines do not
 flash devices or restart the site gateway automatically.
 
-## Turning on node provisioning (TMflash)
+## Turning on account-based adoption (TMflash)
 
-TMflash can ask the edge to admit a node it has just flashed. The request is
-queued; somebody with the debug console open allows or denies it.
+TMflash signs in with an existing algo account using browser verification and
+PKCE. It queues requests; a signed-in operator matches the physical UID and
+request code in module 05 Adoption to approve. No service token is needed.
+See [the adoption runbook](../docs/ADOPTION.md) for account-session scope,
+Cloudflare API exceptions, persistent registry preparation and live checks.
 
-Two settings, both in `/opt/tmedge-shared/.env`:
+File-mode registration must use a writable persistent directory outside the
+release. Both the nodes file and its parent must be writable: atomic registry
+replacement and the pending-request file require directory access. Production
+uses `/var/lib/tmedge/adoption/nodes.json`, inside the service's existing
+`ReadWritePaths=/var/lib/tmedge`, with `NODES_CONFIG` pointing there. Merely
+making `/opt/tmedge-shared/nodes.json` writable is insufficient when its
+parent and the systemd filesystem policy forbid atomic replacement.
 
-```sh
-TMFLASH_TOKEN=<32+ random chars>          # what TMflash presents
-NODES_CONFIG=/opt/tmedge-shared/nodes.json
-```
-
-In legacy file mode (`PERSISTENCE_MODE=file`, the default), `NODES_CONFIG` is
-required once the token is set. Approving a node appends to that file, and a
-release's own `config/nodes.json` is replaced on the next deploy — every node
-admitted since would go with it. The edge refuses to start rather than let that
-happen silently, so a missing or unwritable path is a startup error, not a
-surprise next Thursday.
-
-After a separately rehearsed JSON import and explicit database cutover, set
-`PERSISTENCE_MODE=postgres` and provide `PGHOST`, `PGPORT`, `PGDATABASE`,
-`PG_RUNTIME_USER`, and `PG_RUNTIME_PASSWORD` in the protected environment file.
-The runtime account uses the runtime role; schema migrations use the separate
-`PG_MIGRATION_USER` and `PG_MIGRATION_PASSWORD` credentials through the
-migration command. In PostgreSQL mode startup requires a successful validated
-registry load and never reads or writes `NODES_CONFIG`. Do not switch this
-setting until import validation, backup, restore, and rollback rehearsals pass.
-
-`deploy.sh` seeds `/opt/tmedge-shared/nodes.json` from the release the first
-time it runs after this change. The file must be owned by the account the
-unit runs as (`remote.sh` does this); `tmedge-edge.service` lists it in
-`ReadWritePaths` because `ProtectSystem=strict` otherwise blocks the write at
-the kernel, whatever the file mode says.
-
-To generate a token: `openssl rand -base64 32`. It is a secret — it belongs
-in `.env` (mode 600) and in the flashing laptop's Keychain, never in a repo,
-a command line or a chat message. Revoke it by changing it and restarting;
-nothing else depends on it.
+`TMFLASH_TOKEN` remains optional compatibility for existing automation. It does
+not enable account sign-in or replace its verification. For PostgreSQL mode,
+keep the existing separately approved import/cutover and runtime-role setup;
+this file-storage preparation must not be used for that mode.

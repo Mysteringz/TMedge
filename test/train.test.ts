@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -242,7 +243,7 @@ describe('injection: user strings reach the program byte for byte (T4-7)', () =>
       // user typed may add or change one there.
       const header = script.split('\n').slice(1, script.split('\n').findIndex((l) => l.trim() !== '' && !l.startsWith('#')));
       for (const line of header.filter((l) => l.startsWith('#SBATCH'))) {
-        assert.match(line, /^#SBATCH --(job-name=[A-Za-z0-9_-]+|partition=(cpu|gpu)|time=[0-9:-]+|cpus-per-task=\d+|mem=\d+G|gres=gpu:\d|output=slurm-%j\.out|error=slurm-%j\.err)$/, line);
+        assert.match(line, /^#SBATCH --(job-name=[A-Za-z0-9_-]+|partition=(cpu|gpu)|time=[0-9:-]+|nodes=1|ntasks=1|cpus-per-task=\d+|mem=\d+G|gres=gpu:\d|output=slurm-%j\.out|error=slurm-%j\.err)$/, line);
       }
       const scriptPath = join(work, 'job.sbatch');
       const out = join(work, 'calls');
@@ -251,7 +252,7 @@ describe('injection: user strings reach the program byte for byte (T4-7)', () =>
       writeFileSync(out, '');
       writeFileSync(envOut, '');
       execFileSync('bash', ['-c', stubs], {
-        env: { PATH: process.env.PATH, SLURM_SUBMIT_DIR: work, STUB_CONDA: join(work, 'conda'), SCRIPT: scriptPath,
+        env: { PATH: process.env.PATH, SLURM_SUBMIT_DIR: work, SLURM_JOB_ID: '324', STUB_CONDA: join(work, 'conda'), SCRIPT: scriptPath,
           OUT: out, ENVOUT: envOut, KEYS: Object.keys(v.spec.env).join(' ') },
       });
       const fields = readFileSync(out, 'utf8').split('\0');
@@ -265,7 +266,7 @@ describe('injection: user strings reach the program byte for byte (T4-7)', () =>
       const expected = [
         ...(v.spec.modules.length ? [['module', 'purge'], ...v.spec.modules.map((m) => ['module', 'load', m])] : []),
         ...(v.spec.condaEnv ? [['conda', 'activate', v.spec.condaEnv]] : []),
-        ['srun', 'python', v.spec.entrypoint, ...v.spec.args],
+        ['srun', '--ntasks=1', execFileSync('bash', ['-c', 'command -v python || command -v python3']).toString('utf8').trim(), '-u', v.spec.entrypoint, ...v.spec.args],
       ];
       assert.deepEqual(calls, expected, `seed case ${i}: ${JSON.stringify(v.spec)}`);
       const envValues = readFileSync(envOut, 'utf8').split('\0').slice(0, -1);
@@ -476,6 +477,17 @@ async function boot() {
 }
 
 const W = { 'x-tm-algo': '1' };
+// Probe the declared-size gate without racing an early HTTP refusal against
+// a multi-megabyte upload still being written by fetch (which can see EPIPE).
+const declaredUpload = (base: string, cookie: string, filename: string, bytes: number) =>
+  new Promise<number>((resolve, reject) => {
+    const request = httpRequest(`${base}/api/train/uploads?filename=${encodeURIComponent(filename)}`, {
+      method: 'POST', headers: { cookie, ...W, 'content-type': 'application/octet-stream', 'content-length': bytes },
+    }, response => { response.resume(); response.once('end', () => { resolve(response.statusCode ?? 0); request.destroy(); }); });
+    request.on('error', reject);
+    request.setTimeout(5000, () => request.destroy(new Error('declared upload gate did not answer')));
+    request.flushHeaders();
+  });
 const upload = (base: string, cookie: string, filename: string, body: Buffer, headers: Record<string, string> = {}) =>
   fetch(`${base}/api/train/uploads?filename=${encodeURIComponent(filename)}`, {
     method: 'POST', headers: { cookie, ...W, 'content-type': 'application/octet-stream', ...headers }, body,
@@ -552,8 +564,8 @@ describe('module 02 over HTTP', () => {
 
   test('uploads: size, type and name are checked before anything is kept', async () => {
     const { base, root, alice } = await boot();
-    assert.equal((await upload(base, alice, 'big.py', Buffer.alloc(5 * 1024 * 1024 + 1, 0x41))).status, 413);
-    assert.equal((await upload(base, alice, 'big.zip', Buffer.alloc(2 * 1024 * 1024 + 1))).status, 413);
+    assert.equal(await declaredUpload(base, alice, 'big.py', 5 * 1024 * 1024 + 1), 413);
+    assert.equal(await declaredUpload(base, alice, 'big.zip', 2 * 1024 * 1024 + 1), 413);
     assert.equal((await upload(base, alice, 'train.exe', py('MZ'))).status, 400);
     assert.equal((await upload(base, alice, '../train.py', py('x'))).status, 400);
     assert.equal((await upload(base, alice, '.hidden.py', py('x'))).status, 400);

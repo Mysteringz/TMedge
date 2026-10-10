@@ -166,6 +166,7 @@ jobs:
         working-directory: TMedge
         run: |
           python3 deploy/test-release.py
+          python3 deploy/test-adoption-storage.py
           python3 deploy/test-receiver.py
           python3 deploy/training/test-offline.py
 

@@ -49,7 +49,7 @@ function cfg(dataDir: string): EdgeConfig {
 }
 function job(user: string, status: TrainJob['status'], updatedAt: number): TrainJob {
   return { id: `${user}-${updatedAt}`, user, status, updatedAt, createdAt: updatedAt, submittedAt: null, startedAt: null, endedAt: null,
-    lastPolledAt: null, slurmJobId: null, remoteDir: 'PRIVATE', exitCode: null, slurmState: null, elapsedSeconds: null, node: 'PRIVATE', message: 'PRIVATE', sbatch: 'PRIVATE',
+    lastPolledAt: null, slurmJobId: null, remoteDir: 'PRIVATE', exitCode: null, slurmState: null, slurmReason: null, elapsedSeconds: null, node: 'PRIVATE', message: 'PRIVATE', sbatch: 'PRIVATE',
     code: { kind: 'py', filename: 'PRIVATE', bytes: 1, sha256: 'PRIVATE', unpackedBytes: 1, fileCount: 1, py: [] },
     spec: { name: 'job name', partition: 'cpu', cpusPerTask: 1, memGb: 1, gpus: 0, timeLimit: '1:00:00', modules: [], condaEnv: null, entrypoint: 'PRIVATE', args: [], env: {}, notifyEmail: false } };
 }
@@ -107,7 +107,10 @@ test('controller reads are allowed for each role, deny missing authority and own
   const app = express(); let owner = '';
   app.use((req, res, next) => { const name = req.get('x-test-principal'); if (name) res.locals.principal = name === 'denied' ? { ...principal(name, 'viewer'), capabilities: [] } : principal(name, name === 'admin' ? 'admin' : name === 'engineer' ? 'engineer' : 'viewer'); next(); });
   const queries = query(); queries.training = (name) => { owner = name; return null; };
-  app.use('/api/admin/health', createHealthRouter(new ReadOperationalHealth(queries)));
+  app.use('/api/admin/health', createHealthRouter({ principalOf: (req) => {
+    const name = (req as express.Request).get('x-test-principal');
+    return !name ? null : name === 'denied' ? { ...principal(name, 'viewer'), capabilities: [] } : principal(name, name === 'admin' ? 'admin' : name === 'engineer' ? 'engineer' : 'viewer');
+  }, accountEpoch: () => 'test-epoch' }, new ReadOperationalHealth(queries)));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>((done) => server.once('listening', done));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/admin/health`;
   try {
@@ -118,6 +121,29 @@ test('controller reads are allowed for each role, deny missing authority and own
       assert.equal(response.status, 200); assert.equal(owner, role); assert.equal(response.headers.get('cache-control'), 'no-store');
     }
   } finally { await new Promise<void>((done) => server.close(() => done())); }
+});
+
+test('delayed health reads refuse revoked cookies, changed capabilities and recreated owner epoch', async () => {
+  let actor: ReturnType<typeof principal> | null = principal('alice', 'admin'), epoch = 'original';
+  let release: (() => void) | undefined;
+  const queries = query();
+  queries.training = async () => { await new Promise<void>((resolve) => { release = resolve; }); return { total: 1, failed: 0, rows: [] }; };
+  const app = express(); app.use('/api/admin/health', createHealthRouter({ principalOf: () => actor, accountEpoch: () => epoch }, new ReadOperationalHealth(queries)));
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>((resolve) => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/admin/health`;
+  try {
+    for (const change of ['logout', 'capabilities', 'recreate']) {
+      actor = principal('alice', 'admin'); epoch = 'original'; release = undefined;
+      const pending = fetch(url);
+      while (!release) await new Promise((resolve) => setTimeout(resolve, 1));
+      if (change === 'logout') actor = null;
+      else if (change === 'capabilities') actor = { ...actor, capabilities: [] };
+      else epoch = 'new-account';
+      (release as () => void)(); const response = await pending;
+      assert.equal(response.status, change === 'capabilities' ? 403 : 401);
+      assert.equal((await response.json() as { data: unknown }).data, null);
+    }
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
 test('composed authenticated endpoint uses live sources for every role and rejects old disabled sessions', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'tm-health-api-')), usersPath = join(dataDir, 'users.json');

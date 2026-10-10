@@ -14,6 +14,9 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import type { ConsoleCore } from '../edge/console.js';
+import { flasherLogin } from './flasher-login.js';
+import { applicationErrorHandler } from '../infrastructure/http/errors.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
@@ -34,6 +37,7 @@ import { createAlgoRouter } from './routes.js';
 import { defaultPipeline } from './nodes.js';
 import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
+import { recordModeOf } from './autorecord.js';
 import { createTrain, trainRoot } from './train/routes.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
@@ -45,13 +49,6 @@ import { validate } from './graph.js';
 import { NODE_SPECS, specOf } from './nodes.js';
 
 export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
-interface ConsoleCore {
-  firmwareHealth?(): Promise<unknown>;
-  ui: express.Router;
-  upgrade(req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer, path: string, access?: { binding: string; valid(): boolean }): boolean;
-  closeSessions(binding: string): void;
-  dispose(): Promise<void>;
-}
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
 
@@ -77,8 +74,9 @@ export function startAlgo(
   const dataDir = options.dataDir ?? process.env.DATA_DIR ?? join(ROOT, 'data');
   const dir = join(dataDir, 'algo', 'pipelines');
   mkdirSync(dir, { recursive: true });
-  // Training data for the ML locator. Off by default: it writes to disk and
-  // holds pictures of a room, so somebody has to ask for it.
+  // Training data for the ML locator. It holds pictures of a room, so by
+  // default it is kept only while the detector says somebody is in it
+  // (autorecord.ts); "on" keeps everything, "off" nothing.
   const pairsDir = join(dataDir, 'algo', 'pairs');
   if (process.env.TRAINING_STORAGE && !['postgres', 'files'].includes(process.env.TRAINING_STORAGE)) {
     throw new Error('TRAINING_STORAGE must be postgres or files');
@@ -89,7 +87,7 @@ export function startAlgo(
   const pairs = spool ?? new PairRecorder({ dir: pairsDir });
   // The env var forces it on; otherwise the recorder remembers what it was
   // last told, so a deploy does not quietly stop a collection run.
-  if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setRecording(true);
+  if (process.env.ALGO_RECORD_PAIRS === '1') pairs.setMode('on');
 
   /**
    * Which sensor the debugger opens on. A node that is sending pictures beats
@@ -144,6 +142,8 @@ export function startAlgo(
     // of the pairing is to know when it did.
     const report = rt.lastReport(uid);
     if (report) algo.frames.addReport(uid, report.frame, dets, report.flags, report.boot);
+    // Simulated people are not training data (onRaw keeps their frames out too).
+    if (!rt.reg.nodes.get(uid)?.simulated) pairs.presence(uid, dets.reduce((n, d) => n + d.persons, 0));
   };
   rt.on('report', onReport);
 
@@ -194,6 +194,11 @@ export function startAlgo(
   const notifications = express.Router();
   app.use('/api/admin/notifications', notifications);
   app.use(auth.router);
+  const nativeLogin = consoleCore ? flasherLogin(auth, consoleCore) : null;
+  if (nativeLogin) app.use('/api/tmflash', express.json({ limit: '4kb' }), nativeLogin.machine);
+  // TMflash is a machine, with its own scoped credential. Mount only its
+  // provisioning API before the human sign-in; no imagery or admin writes.
+  if (consoleCore) app.use('/api/provision', express.json({ limit: '4kb' }), consoleCore.provisioningTool);
   app.get(['/login', '/login/'], (req, res) => {
     if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
     return sendShell(res);
@@ -241,6 +246,12 @@ export function startAlgo(
     if (req.get('x-tm-algo') !== '1') return res.status(403).json({ error: 'missing x-tm-algo header' });
     return next();
   };
+  if (consoleCore) app.use('/api/adoption', (req, res, next) => {
+    res.locals.permits = () => !!auth.principalOf(req)?.capabilities.includes('nodes.admin');
+    if (req.method !== 'GET') return auth.requireCapability('nodes.admin')(req, res, next);
+    return next();
+  }, consoleCore.adoption);
+  if (nativeLogin) app.use('/api/tmflash', nativeLogin.browser);
 
   // Module 02: training jobs for HKU HPC2021 (src/algo/train/, docs/hpc/).
   const train = createTrain({
@@ -254,7 +265,7 @@ export function startAlgo(
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
-  app.use('/api/admin/health', createHealthRouter(new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
+  app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
   notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth }))));
 
   app.get('/api/catalogue', (_req, res) => res.json({
@@ -448,10 +459,11 @@ export function startAlgo(
   }));
 
   app.post('/api/pairs/record', mutating, (req, res) => {
-    const on = (req.body as { on?: boolean }).on === true;
+    const mode = recordModeOf(req.body);
+    if (!mode) return res.status(400).json({ error: 'mode must be off, auto or on' });
     const rgb = [...rt.reg.nodes.values()].filter((n) => n.rgb);
-    if (on && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
-    pairs.setRecording(on);
+    if (mode !== 'off' && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
+    pairs.setMode(mode);
     return res.json({ ok: true, ...pairs.stats() });
   });
 
@@ -465,7 +477,8 @@ export function startAlgo(
     res.json({ token: `${exp}.${createHmac('sha256', wsSecret).update(`${exp}:${auth.sessionToken(req)}`).digest('hex')}` });
   });
 
-  // Home, /flow, /train, /console, /updates: routed in the browser.
+  app.use(applicationErrorHandler);
+  // Home and modules, including /adoption: routed in the browser.
   app.get('/{*splat}', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'no such endpoint' });
     return sendShell(res);

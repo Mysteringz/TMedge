@@ -34,7 +34,7 @@ export function Home({ user }: { user: string }) {
       <section className="cx-home-left">
         <h1 className="cx-welcome">Welcome back, {user}.</h1>
         <p className="cx-eyebrow">Select module</p>
-        <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>4</kbd>.</p>
+        <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>5</kbd>.</p>
         <div className="cx-modules">
           {MODULES.map((m, i) => (
             <button key={m.n} className={`cx-module ${sel === i ? 'is-on' : ''}`}

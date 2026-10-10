@@ -238,7 +238,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
       id: randomUUID(), user, spec: v.spec, status: 'DRAFT', code, sbatch: renderSbatch(v.spec),
       createdAt: now, updatedAt: now, submittedAt: null, startedAt: null, endedAt: null,
       slurmJobId: null, remoteDir: null, exitCode: null, lastPolledAt: null,
-      slurmState: null, elapsedSeconds: null, node: null, message: null,
+      slurmState: null, slurmReason: null, elapsedSeconds: null, node: null, message: null,
     };
     if (upload) {
       store.create(job, uploads.codeDir(upload.id));

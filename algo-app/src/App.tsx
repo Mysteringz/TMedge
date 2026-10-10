@@ -20,7 +20,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   api, unpack,
-  type Envelope, type NodeSpec, type PendingChange, type Pipeline, type RunResult, type SourceNode,
+  type Envelope, type NodeSpec, type PendingChange, type Pipeline, type RecordMode, type RunResult, type SourceNode,
 } from './api.ts';
 import { Divider, useCompactLayout, usePaneSize } from './panes.tsx';
 import { GridView, Histogram, Json, Plane, PlanView, Table, type HeatJson } from './viewers.tsx';
@@ -690,10 +690,17 @@ function Timeline({ frames, live, at, onScrub, onLive }: {
 }
 
 /**
- * Pair recording. Off unless someone asks: it writes pictures of a room to
- * disk, which is a different thing from the occupancy numbers this system
- * normally keeps.
+ * Pair recording. By default it keeps frames only while the detector sees a
+ * person (plus a few seconds either side), so nobody has to remember to press
+ * record and an empty room overnight is not stored. "Always" keeps
+ * everything, for collecting empty-room negatives on purpose.
  */
+const RECORD_OPTIONS: Array<{ mode: RecordMode; label: string; title: string }> = [
+  { mode: 'off', label: 'Off', title: 'Keep nothing' },
+  { mode: 'auto', label: 'Auto', title: 'Keep frames while a person is detected' },
+  { mode: 'on', label: 'Always', title: 'Keep every frame, empty room included' },
+];
+
 function TrainingData() {
   const canRecord = useCapability('algo.write');
   const [s, setS] = useState<Awaited<ReturnType<typeof api.pairs>> | null>(null);
@@ -709,6 +716,17 @@ function TrainingData() {
   }, [refresh]);
   if (!s) return error ? <p className="notice">{error}</p> : null;
   const mb = (s.bytes / 1048576).toFixed(0);
+  const choose = (mode: RecordMode) => {
+    setBusy(true);
+    setError('');
+    void api.record(mode).then((result) => {
+      setS((current) => current ? { ...current, ...result } : current);
+      refresh();
+    }).catch((e: Error) => setError(e.message)).finally(() => setBusy(false));
+  };
+  const status = s.mode === 'off' ? 'Not recording'
+    : s.capturing ? '● Recording'
+      : 'Waiting for a person';
   return (
     <div className="lib-group training">
       <div className="lib-title">Training data</div>
@@ -722,16 +740,16 @@ function TrainingData() {
               <div><span>with people</span><b>{s.withPeople}</b></div>
               <div><span>on disk</span><b>{mb} MB</b></div>
             </div>
-            <button className={`btn ${s.recording ? 'on' : ''}`} disabled={!canRecord || busy} onClick={() => {
-              setBusy(true);
-              setError('');
-              void api.record(!s.recording).then((result) => {
-                setS((current) => current ? { ...current, recording: result.recording, samples: result.samples } : current);
-                refresh();
-              }).catch((e: Error) => setError(e.message)).finally(() => setBusy(false));
-            }}>
-              {s.recording ? '● Recording' : 'Start recording'}
-            </button>
+            <div className="record-modes" role="radiogroup" aria-label="Record training frames">
+              {RECORD_OPTIONS.map((o) => (
+                <button key={o.mode} type="button" role="radio" aria-checked={s.mode === o.mode} title={o.title}
+                  className={`btn ${s.mode === o.mode ? 'on' : ''}`} disabled={!canRecord || busy}
+                  onClick={() => { if (s.mode !== o.mode) choose(o.mode); }}>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            <p className={`record-status ${s.capturing ? 'is-live' : ''}`} aria-live="polite">{status}</p>
             {s.lastSkipped && <p className="hint">last skip: {s.lastSkipped}</p>}
           </>
         )}

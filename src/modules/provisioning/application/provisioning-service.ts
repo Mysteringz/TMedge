@@ -25,6 +25,8 @@ export type JoinRequestResult =
 export interface ProvisioningService {
   readonly enabled: boolean;
   authorize(token: string | null): boolean;
+  /** Checks authoritative storage without admitting an identity. */
+  ready(): Promise<void>;
   request(input: unknown, from: string): Promise<JoinRequestResult>;
   statusOf(uid: string): Promise<'registered' | 'pending' | 'unknown'>;
   requests(): Promise<JoinRequestView[]>;

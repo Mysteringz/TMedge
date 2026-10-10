@@ -20,6 +20,8 @@ import './console.css';
 const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
 const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Updates })));
 const Accounts = lazy(() => import('../pages/admin-accounts/index.tsx').then((m) => ({ default: m.Accounts })));
+const Adoption = lazy(() => import('./Adoption.tsx').then((m) => ({ default: m.Adoption })));
+const TMflashConnect = lazy(() => import('./TMflashConnect.tsx').then((m) => ({ default: m.TMflashConnect })));
 
 export function Shell() {
   const [session, setSession] = useState<AdminSession | null>(null);
@@ -136,6 +138,8 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
       {screen === 'accounts' ? <Suspense fallback={<main aria-busy="true">Loading accounts…</main>}><Accounts /></Suspense>
         : screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
+          : screen === 'adoption' ? <Suspense fallback={<main className="cx-train cx-hint">Loading adoption…</main>}><Adoption /></Suspense>
+          : screen === 'tmflash-connect' ? <Suspense fallback={null}><TMflashConnect user={user} /></Suspense>
           : <Home user={user} />}
     </div>
   );

@@ -50,6 +50,8 @@ export interface Job {
   exitCode: number | null;
   remoteDir: string | null;
   slurmState: string | null;
+  slurmReason: string | null;
+  lastPolledAt: number | null;
   elapsedSeconds: number | null;
   node: string | null;
   /** Why the last attempt failed, in words. */

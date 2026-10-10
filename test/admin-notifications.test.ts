@@ -46,7 +46,7 @@ test('disabled/failed/hung sources stay distinct and hung work does not accumula
 
 function job(user: string, status: TrainJob['status'], at: number): TrainJob {
   return { id: `${user}-${status}`, user, status, updatedAt: at, createdAt: at, submittedAt: at, startedAt: null, endedAt: status === 'UNKNOWN' || status === 'SUBMIT_FAILED' ? null : at,
-    lastPolledAt: null, slurmJobId: null, remoteDir: 'PRIVATE', exitCode: null, slurmState: null, elapsedSeconds: null, node: 'PRIVATE', message: 'PRIVATE', sbatch: 'PRIVATE',
+    lastPolledAt: null, slurmJobId: null, remoteDir: 'PRIVATE', exitCode: null, slurmState: null, slurmReason: null, elapsedSeconds: null, node: 'PRIVATE', message: 'PRIVATE', sbatch: 'PRIVATE',
     code: { kind: 'py', filename: 'PRIVATE', bytes: 1, sha256: 'PRIVATE', unpackedBytes: 1, fileCount: 1, py: [] },
     spec: { name: `${user} work`, partition: 'cpu', cpusPerTask: 1, memGb: 1, gpus: 0, timeLimit: '1:00:00', modules: [], condaEnv: null, entrypoint: 'PRIVATE', args: [], env: {}, notifyEmail: false } };
 }

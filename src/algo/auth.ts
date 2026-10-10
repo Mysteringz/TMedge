@@ -238,6 +238,8 @@ export interface AlgoAuth {
   users: AlgoUsers;
   sessionToken(req: { headers: { cookie?: string } }): string;
   onLogout(listener: (token: string) => void): void;
+  /** A native credential stops working when its account or password changes. */
+  accountSubject(name: string): string | null;
 }
 
 export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
@@ -343,5 +345,9 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
     res.json({ ok: true, redirect: '/login' });
   });
 
-  return { userOf, accountEpoch: subject, principalOf, requireCapability, requireUser, router, users, sessionToken, onLogout: (listener) => { logoutListeners.add(listener); } };
+  const accountSubject = (name: string): string | null => {
+    const current = cfg.enabled ? users.get(name) : undefined;
+    return current && principal(name, current.role ?? 'engineer').capabilities.includes('nodes.admin') ? subject(name) : null;
+  };
+  return { userOf, accountEpoch: subject, accountSubject, principalOf, requireCapability, requireUser, router, users, sessionToken, onLogout: (listener) => { logoutListeners.add(listener); } };
 }

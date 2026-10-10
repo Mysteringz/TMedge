@@ -25,7 +25,9 @@ src/algo/                algo console: node-graph over the real pipeline (docs/A
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow React Flow editor, 02 /train, 03 /console, 04 /updates
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 /train, 03 /console, 04 /updates, 05 /adoption
+src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMflash access
+src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
 ```
@@ -81,14 +83,15 @@ has hidden Linux failures before.
 - **A live parameter change is temporary.** The algo dashboard's writes revert
   after 15 minutes unless committed, flash writes are a separate act, and
   every change is in `data/algo/audit.jsonl` with its old value.
-- **A node is admitted by a person.** TMflash's token buys a *pending
-  request*; somebody with the console open approves it. What is admitted is
+- **A node is admitted by a person.** TMflash's account session buys a *pending
+  request*; somebody signed into Adoption matches the physical UID and request
+  code to approve it. What is admitted is
   an identity: floor, pose and owns are null/empty, so a new node can connect
   and stream but cannot move a number a student sees until it is placed.
   `NodeDef.floorId` and `.pose` are nullable so the compiler finds every
   place that would otherwise do geometry on a pose nobody measured.
 - **nodes.json is the one config the edge writes.** It lives in
-  `/opt/tmedge-shared` with `NODES_CONFIG` pointing at it, because a release's
+  a persistent writable directory with `NODES_CONFIG` pointing at it, because a release's
   own copy is replaced on the next deploy. The edge refuses to start if
   `TMFLASH_TOKEN` is set and that file is unwritable or inside the release.
 - **Config is strict.** Add validation for any new field.
