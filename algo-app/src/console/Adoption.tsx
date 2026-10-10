@@ -65,7 +65,7 @@ export function Adoption() {
     {view && !view.ready && <p className="ad-error" role="alert">Persistent node storage is unavailable. Ask the server administrator to fix registration storage before flashing.</p>}
     <section className="ad-panel" aria-labelledby="flasher-heading">
       <h2 id="flasher-heading">TMflash sign-in</h2>
-      <p>Set TMflash's console URL to <code>https://algo.hkumyseat.com</code> and click <b>Sign in with algo account</b>. Complete the console verification, then authorize that Mac.</p>
+      <p>Set TMflash's console URL to <code>https://algo.hkumyseat.com</code> and click <b>Sign in with algo account</b>. Complete the browser sign-in; verification returns you to TMflash automatically.</p>
       <p className="ad-hint">The server verifies the account on every provisioning request. Access lasts 24 hours and is kept in the Mac's Keychain. Sign out in TMflash or revoke a session here to end access. Password changes and account removal also invalidate it.</p>
       {view?.legacyToken && <p className="ad-hint">The server also accepts its configured legacy token. Rotate that token through server configuration.</p>}
       <ul className="ad-token-list">{view?.tokens.map(token => <li key={token.id}>
