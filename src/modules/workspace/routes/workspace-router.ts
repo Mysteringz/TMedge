@@ -62,8 +62,10 @@ export function createWorkspaceRouter(auth: Pick<AlgoAuth, 'principalOf'>, servi
   router.get('/', reply(200, (actor) => ({
     generatedAt: now(),
     me: { name: actor.name, canTriage: actor.canTriage, isAdmin: actor.isAdmin },
-    // Names only. What role a colleague holds is the Accounts page's to show, to admins.
+    // Names, and what each person works on. What *access* a colleague holds is
+    // the Accounts page's to show, to admins.
     members: services.members().map((member) => member.name).sort(),
+    teamRoles: Object.fromEntries(services.members().filter((member) => member.teamRoles.length > 0).map((member) => [member.name, member.teamRoles])),
     mail: mailbox.list(actor),
     board: board.view(actor),
   })));

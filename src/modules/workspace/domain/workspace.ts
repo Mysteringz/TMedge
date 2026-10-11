@@ -26,7 +26,7 @@ export const TASK_STATUSES = ['todo', 'doing', 'done'] as const;
 export type TaskStatus = typeof TASK_STATUSES[number];
 
 /** Somebody who can be written to: an enabled account. `since` is when that account was created. */
-export interface Member { name: string; since: number }
+export interface Member { name: string; since: number; /** What they work on (ML, front-end, ...): a label, not access. */ teamRoles: string[] }
 
 /** The person a request is made by, with what their role allows on the board. */
 export interface Actor extends Member {

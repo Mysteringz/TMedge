@@ -29,3 +29,7 @@ Local trusted mode without `ADMIN_PASSWORD` retains operational admin access on 
 Raw node command Operator allowlist: `set` for the existing validated detector parameters, `reset-bg`, `identify`, `save`. `reboot`, reset-cursor, firmware and provisioning require Engineer or Admin. Unsupported/raw numeric commands remain rejected by the existing validator. This change adds no pipeline features or activity-log system.
 
 Account deletion requires a current revision and another enabled Admin when deleting an Admin. It revokes live access without cancelling jobs or deleting operational history. Reusing a username can expose retained username-owned jobs/profile history, but fresh cryptographic account material prevents old cookies or live HPC credentials/tickets from becoming valid again.
+
+## Team roles
+
+Separately from the access roles above, an account can carry team roles: ML, front-end, back-end, firmware, hardware. An Admin sets them on the Accounts page. They are labels the team uses to find and assign each other; they are shown in the landing page's mailbox, task assignment and search. They grant no capability, are not consulted by any permission check, and changing them does not increment the session version or end a session. A legacy record with no `teamRoles` key has none; a value outside the list fails the account file closed, like an invalid role.

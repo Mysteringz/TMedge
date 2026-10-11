@@ -1,6 +1,6 @@
 /** The mailbox: what other members wrote to you, what you sent, and writing to them. */
 import { useEffect, useState } from 'react';
-import { LIMITS, workspaceApi, WorkspaceRequestError, type Message, type MessageDraft, type MessageHeader, type WorkspaceSnapshot, type WorkspaceState } from '../../../entities/workspace/index.ts';
+import { LIMITS, teamRoleText, workspaceApi, WorkspaceRequestError, type Message, type MessageDraft, type MessageHeader, type WorkspaceSnapshot, type WorkspaceState } from '../../../entities/workspace/index.ts';
 import { ArrowBendUpLeft, ArrowLeft, PaperPlaneRight, Plus, Trash } from '../../../console/icons.tsx';
 import { Dialog, Field, fullTime, reason, when } from './parts.tsx';
 
@@ -176,7 +176,7 @@ export function ComposeDialog({ ws, snapshot, initial, onClose, onSent }: {
         <div className="cx-chips" role="group" aria-labelledby="ws-to-label">
           {others.map((name, index) => (
             <label key={name} className="seg-opt cx-chip"><input type="checkbox" id={index === 0 ? 'ws-to-first' : undefined} checked={to.includes(name)} onChange={() => toggle(name)} data-autofocus={index === 0 && to.length === 0 ? '' : undefined}
-              aria-describedby={tried && problems.to ? 'ws-to-hint' : undefined} />{name}</label>
+              aria-describedby={tried && problems.to ? 'ws-to-hint' : undefined} />{name}{snapshot.teamRoles[name] && <span className="ws-chip-role">{teamRoleText(snapshot.teamRoles[name])}</span>}</label>
           ))}
         </div>
         {others.length > 2 && (

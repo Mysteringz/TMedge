@@ -36,6 +36,12 @@ import { JsonDocumentStore } from '../infrastructure/workspace/json-document-sto
 import { Board, emptyBoard, parseBoard } from '../modules/workspace/application/board.js';
 import { emptyMail, Mailbox, parseMail } from '../modules/workspace/application/mailbox.js';
 import { createWorkspaceRouter } from '../modules/workspace/routes/workspace-router.js';
+import { KnowledgeFile } from '../infrastructure/assistant/knowledge-file.js';
+import { OllamaChatModel } from '../infrastructure/assistant/ollama-chat-model.js';
+import { runtimeAnalyticsSource } from '../infrastructure/analytics/runtime-analytics-source.js';
+import { AskAssistant } from '../modules/assistant/application/ask-assistant.js';
+import { loadAssistantConfig } from '../modules/assistant/domain/assistant.js';
+import { createAssistantRouter } from '../modules/assistant/routes/assistant-router.js';
 import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
 import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
 import { AlgoWebSocketAdapter } from './websocket-adapter.js';
@@ -211,13 +217,45 @@ export function startAlgo(
   // because a release's own tree is replaced on the next deploy.
   const workspaceDir = join(dataDir, 'algo', 'workspace');
   const teamMembers = () => authCfg.enabled
-    ? auth.users.records().filter((user) => !user.disabled).map((user) => ({ name: user.name, since: user.createdAt }))
+    ? auth.users.records().filter((user) => !user.disabled).map((user) => ({ name: user.name, since: user.createdAt, teamRoles: user.teamRoles ?? [] }))
     // With sign-in off there is one person, and they are "local".
-    : [{ name: 'local', since: 0 }];
+    : [{ name: 'local', since: 0, teamRoles: [] }];
+  const boardStore = new JsonDocumentStore(join(workspaceDir, 'board.json'), emptyBoard, parseBoard);
   app.use('/api/workspace', createWorkspaceRouter(auth, {
     mailbox: new Mailbox(new JsonDocumentStore(join(workspaceDir, 'mail.json'), emptyMail, parseMail), teamMembers),
-    board: new Board(new JsonDocumentStore(join(workspaceDir, 'board.json'), emptyBoard, parseBoard), teamMembers),
+    board: new Board(boardStore, teamMembers),
     members: teamMembers,
+  }));
+  // Ask AI (docs/ASSISTANT.md): a model on the Proxmox cluster that has read
+  // config/ai-knowledge.md. Off unless AI_OLLAMA_URL and AI_MODEL are set.
+  // What it is shown besides that file is below and nothing else: figures
+  // every signed-in member already sees. No mail, no frames, no student.
+  const assistantConfig = loadAssistantConfig(process.env);
+  const liveSource = runtimeAnalyticsSource(rt);
+  const liveFacts = (): string[] => {
+    const lines: string[] = [];
+    try {
+      const nodes = liveSource.pipeline(Date.now()).nodes;
+      lines.push(`Sensors: ${nodes.online} of ${nodes.registered} registered are reporting; ${nodes.realOnline} of ${nodes.real} physical sensors (the rest are simulated).`);
+      for (const floor of liveSource.floors(Date.now())) {
+        const known = floor.seats - floor.unknownSeats;
+        lines.push(floor.occupied === null || known <= 0
+          ? `Floor "${floor.name}" (${floor.id}): ${floor.seats} seats, occupancy unknown because no working sensor covers it.`
+          : `Floor "${floor.name}" (${floor.id}): ${floor.occupied} of ${known} covered seats taken${floor.unknownSeats > 0 ? `; ${floor.unknownSeats} more seats are not covered by a working sensor` : ''}.`);
+      }
+    } catch { lines.push('Sensor and floor figures could not be read just now.'); }
+    try {
+      const board = boardStore.read();
+      const open = board.requests.filter((request) => request.status === 'open' || request.status === 'planned' || request.status === 'in-progress');
+      lines.push(`Feature requests still in play: ${open.length}. Tasks not done: ${board.tasks.filter((task) => task.status !== 'done').length}.`);
+      for (const request of open.sort((a, b) => b.votes.length - a.votes.length).slice(0, 8)) lines.push(`Request ${request.id} (${request.status}, ${request.votes.length} votes): "${request.title}"`);
+      for (const task of board.tasks.filter((item) => item.status !== 'done').slice(0, 8)) lines.push(`Task ${task.id} (${task.status}, ${task.assignee ? `assigned to ${task.assignee}` : 'unassigned'}${task.due ? `, due ${task.due}` : ''}): "${task.title}"`);
+    } catch { /* the board is told about on its own tab; the assistant just goes without */ }
+    return lines;
+  };
+  app.use('/api/assistant', createAssistantRouter(auth, {
+    assistant: assistantConfig ? new AskAssistant(new OllamaChatModel(assistantConfig), new KnowledgeFile(process.env.AI_KNOWLEDGE_FILE || join(ROOT, 'config', 'ai-knowledge.md')), liveFacts) : null,
+    teamRolesOf: (name) => teamMembers().find((member) => member.name === name)?.teamRoles ?? [],
   }));
   app.use(auth.router);
   const nativeLogin = consoleCore ? flasherLogin(auth, consoleCore) : null;

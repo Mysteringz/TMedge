@@ -20,3 +20,6 @@ export const ArrowBendUpLeft = () => <svg {...base}><path d="M9 14 4 9l5-5" /><p
 export const CaretUp = () => <svg {...base}><path d="M5 15l7-7 7 7" /></svg>;
 export const Trash = () => <svg {...base}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3" /></svg>;
 export const PencilSimple = () => <svg {...base}><path d="M4 20h4L19 9l-4-4L4 16v4ZM13 7l4 4" /></svg>;
+export const MagnifyingGlass = () => <svg {...base}><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" /></svg>;
+export const Sparkle = () => <svg {...base}><path d="M12 3.5l1.9 5.1a2 2 0 0 0 1.2 1.2l5.1 1.9-5.1 1.9a2 2 0 0 0-1.2 1.2L12 19.9l-1.9-5.1a2 2 0 0 0-1.2-1.2L3.8 11.7l5.1-1.9a2 2 0 0 0 1.2-1.2L12 3.5Z" /><path d="M19 3v3M20.5 4.5h-3" /></svg>;
+export const Stop = () => <svg {...base}><rect x="6.5" y="6.5" width="11" height="11" rx="1" /></svg>;

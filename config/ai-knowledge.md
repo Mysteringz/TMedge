@@ -1,0 +1,149 @@
+This file is what "Ask AI" on the algo console knows. It is sent to the model
+before every question, word for word, so it is written for a reader that
+knows nothing else. Keep it true: when the system changes, change this file
+in the same commit (CLAUDE.md, "The assistant's knowledge base"). Keep it
+under 16 kB, and never put a secret, an address of a machine, or anything
+about a named person in it.
+
+## What the system is
+
+HKUMySeat tells students where there are free seats. Thermal sensors on the
+ceiling see people as heat; the system counts seats taken per table and shows
+students which tables have room. No picture of anybody is ever shown to a
+student or stored for them: that is the project's privacy claim.
+
+Three parts:
+- TMsense: the sensor node (ESP32-S3 with an MLX90640 thermal array, 32x24
+  pixels, 110 degree lens). It detects people on the device and sends signed
+  reports. A Raspberry Pi rig with a camera beside the thermal sensor is used
+  for calibration.
+- TMedge, "the edge": the server. It verifies every packet, turns detections
+  into occupancy, and publishes an occupancy snapshot. It also hosts this
+  console.
+- The student site, hkumyseat.com: a separate web service. It only ever
+  receives occupancy snapshots (seat states and totals), never thermal pixels
+  or detections.
+
+Sensors reach the edge by UDP, through a Wi-Fi site gateway (TMWAccess), or
+directly over a secure WebSocket. All three go through the same checks.
+TMflash is the Mac app that flashes and provisions a new sensor over USB.
+
+## How a count is made
+
+1. The node subtracts a learned background from each thermal frame and finds
+   warm blobs; each blob is one or more people.
+2. The edge projects blobs onto the floor plan using the sensor's mounting
+   height, rotation and lens model. Heat is normalised by the floor area a
+   pixel covers before estimating how many people a merged blob holds.
+3. Each table has one authority sensor: its owner, or a healthy fallback if
+   the owner is silent. This stops two overlapping sensors counting the same
+   person twice.
+4. Seats use hysteresis and zone counts use a median over a window, so the
+   numbers do not flicker. The latest frame alone is never used.
+5. A table never reports more people than it has seats, but the zone total
+   still counts everyone.
+
+Rules that are never broken:
+- Silence is never emptiness. A table with no working sensor is "unknown". It
+  is left out of free-seat totals and never suggested. Unknown is not zero.
+- A sensor marked "detector: edge" is counted by the edge from raw frames,
+  against a background learned over 24 hours (heat present in about 80% of
+  the day is furniture; the rest may be people). This exists because a
+  student sitting still for hours used to fade into the node's own
+  background. Until it has an hour of history its tables are unknown.
+
+## The console, algo.hkumyseat.com
+
+The landing page has, top to bottom: a welcome line, one search box, quick
+suggestions (the modules this person uses most), six live system figures, the
+mailbox, and the board (feature requests and tasks).
+
+The search box looks things up on the site first: modules, pages, members,
+your own mail, requests, tasks and sensors. A question, or anything the site
+has no match for, goes to Ask AI instead (that is you). Press "/" to focus it.
+
+Modules:
+- 01 Algorithm flow, /flow. A node graph over the real detection pipeline.
+  Change a parameter and see its effect on live or recorded frames. A live
+  parameter change reaches the real sensor or engine, and reverts by itself
+  after 15 minutes unless it is committed. Every change is written to an
+  audit log with the old value. The preview runs the firmware's own detector
+  code compiled for the server, so it cannot drift from the sensor.
+- 02 ML training, /train. Write a training script, run it on the university's
+  HPC cluster through SLURM, watch the job, fetch results. Each person signs
+  in to the cluster as themselves; credentials are sealed in the browser,
+  used once and never stored.
+- 03 Debug console, /console. Live thermal frames, the floor with fused
+  occupancy, per-sensor health, and commands to a sensor (set a parameter,
+  reset its background, identify, save, reboot).
+- 04 Updates, /updates. Upload firmware source, build an image, roll it out
+  over the air. A rollout always flashes one pilot sensor first and waits for
+  it to report the new version with a working sensor; a failed pilot stops
+  everything.
+- 05 Analytics, /analytics. How the student site is used (students online,
+  searches, sign-ins, traffic) at /analytics/usage, and how the server is
+  doing (processor, memory, storage with a fill forecast, services, sensor
+  ingest) at /analytics/server. Read-only. Counts only: no name, email or
+  account id of a student is kept.
+- 06 Adoption, /adoption. Admitting a newly flashed sensor. TMflash creates a
+  pending request; a person compares the board's UID and request code and
+  approves it. An admitted sensor has no floor or position yet, so it cannot
+  affect any number a student sees until it is placed.
+- Accounts, /accounts (admins only). Create accounts, set access roles and
+  team roles, reset passwords, revoke sessions.
+
+System figures on the landing page: sensors reporting, seats taken now,
+students online, processor, memory, storage. A dash means the source did not
+answer; it never means zero.
+
+## People, roles and the team workspace
+
+Access roles decide what someone may do:
+- Viewer: read everything operational; cannot change settings.
+- Operator: also change algorithm parameters, use routine sensor commands,
+  run their own training jobs.
+- Engineer: also firmware, provisioning and advanced sensor commands.
+- Admin: also manage accounts.
+Being an admin does not let anyone read another person's mail, training jobs
+or cluster credentials.
+
+Team roles say what someone works on: ML, front-end, back-end, firmware,
+hardware. They are labels for finding and assigning people. They grant no
+access.
+
+Mailbox: messages between account holders. A message is visible to its sender
+and its recipients only. No role can read other people's mail, and the
+assistant is never shown any mail.
+
+Board: anyone signed in can file a feature request and vote on it. Operators,
+engineers and admins decide a request's status (open, planned, in progress,
+shipped, declined) and create and assign tasks. Whoever a task is assigned to
+can move its status (to do, in progress, done) whatever their role.
+
+## How it is run
+
+- One server runs the edge and the student web service as separate
+  processes. Occupancy history, recordings and the workspace files live in a
+  data directory that survives deployments.
+- Deployment is only through the pipeline: a pull request with passing
+  checks, an artifact built by CI, an approval by the owner, then an
+  automatic health check with rollback. Nobody copies files onto the server.
+- Firmware and the edge share a wire format. A change to it must be made in
+  both repositories and proved by "npm run crosscheck".
+- Training data (thermal and camera frame pairs from the calibration rig) is
+  recorded only when recording is switched on, and is stored privately, apart
+  from anything students can reach.
+- Ask AI runs on a model hosted on the team's own cluster, not on a public
+  service. It has read this file and a few live figures. It has no tools and
+  cannot change anything.
+
+## Where to look for more
+
+- Detection and parameters: Algorithm flow, and docs/ALGO_DASHBOARD.md.
+- Why a count looks wrong: Debug console for the sensor's live frames and
+  health; Analytics, server view, for sensor ingest.
+- Server health and storage: Analytics, server view.
+- Student usage: Analytics, usage view.
+- A sensor that will not join: Adoption, and docs/ADOPTION.md.
+- Firmware: Updates. Training: ML training, and docs/hpc/.
+- The workspace and this assistant: docs/WORKSPACE.md, docs/ASSISTANT.md.

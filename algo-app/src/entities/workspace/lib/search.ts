@@ -2,13 +2,11 @@
  * What the landing page's terminal searches: everything on the site that has
  * a name, as one flat list, matched in the browser.
  *
- * It is a list of entries on purpose. Whatever answers questions in this
- * terminal later (the "ask" mode, not built yet) needs the same thing a
- * person searching does: the places, people and items that exist, and what
- * opening each one means.
+ * The site is searched first. What reads as a question, or matches nothing
+ * here, goes to Ask AI instead (entities/assistant).
  */
 import type { WorkspaceSnapshot } from '../model/types.ts';
-import { REQUEST_STATUS_LABEL, TASK_STATUS_LABEL } from '../model/types.ts';
+import { REQUEST_STATUS_LABEL, TASK_STATUS_LABEL, teamRoleText } from '../model/types.ts';
 
 export type SearchKind = 'module' | 'page' | 'action' | 'person' | 'request' | 'task' | 'message' | 'sensor';
 
@@ -68,7 +66,11 @@ export function buildIndex(input: { modules: readonly SiteModule[]; accounts: bo
   if (others.length) entries.push({ id: 'action:compose', kind: 'action', title: 'Compose message', detail: 'Write to one or more members of the team.', hint: 'compose', keywords: 'write send new mail email message', target: { type: 'compose', to: [] } });
   if (snapshot.me.canTriage) entries.push({ id: 'action:task', kind: 'action', title: 'New task', detail: 'Hand a piece of work to someone.', hint: 'task', keywords: 'add create assign todo work', target: { type: 'new-task' } });
 
-  for (const name of others) entries.push({ id: `person:${name}`, kind: 'person', title: name, detail: 'Write a message', hint: `${name}@team`, keywords: 'member team message mail write', target: { type: 'compose', to: [name] } });
+  for (const name of others) {
+    // Found by what they work on as well as by name: "ml" is a way to ask who to write to.
+    const roles = teamRoleText(snapshot.teamRoles[name]);
+    entries.push({ id: `person:${name}`, kind: 'person', title: name, detail: roles ? `${roles} · Write a message` : 'Write a message', hint: `${name}@team`, keywords: `member team message mail write ${roles} ${(snapshot.teamRoles[name] ?? []).join(' ')}`, target: { type: 'compose', to: [name] } });
+  }
   for (const r of snapshot.board.requests) entries.push({ id: `request:${r.id}`, kind: 'request', title: r.title, detail: `${REQUEST_STATUS_LABEL[r.status]} · ${r.votes} ${r.votes === 1 ? 'vote' : 'votes'} · by ${r.author}`, hint: r.id, keywords: `${r.detail} ${r.status} feature`, target: { type: 'request', id: r.id } });
   for (const t of snapshot.board.tasks) entries.push({ id: `task:${t.id}`, kind: 'task', title: t.title, detail: `${TASK_STATUS_LABEL[t.status]} · ${t.assignee ? `assigned to ${t.assignee}` : 'unassigned'}`, hint: t.id, keywords: `${t.detail} ${t.status} ${t.requestId ?? ''}`, target: { type: 'task', id: t.id } });
   for (const m of [...snapshot.mail.inbox, ...snapshot.mail.sent]) entries.push({ id: `message:${m.id}`, kind: 'message', title: m.subject, detail: m.box === 'inbox' ? `From ${m.from} · ${m.preview}` : `To ${m.to.join(', ')} · ${m.preview}`, hint: m.box === 'inbox' ? 'inbox' : 'sent', keywords: `${m.from} ${m.to.join(' ')} mail`, target: { type: 'message', id: m.id } });

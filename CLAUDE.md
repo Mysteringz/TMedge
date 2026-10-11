@@ -29,7 +29,9 @@ algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Pl
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
 src/modules/workspace/   the landing page's team side: mailbox, feature requests, tasks (docs/WORKSPACE.md); /api/workspace
-algo-app/src/widgets/workspace/  its UI, beside the module list: search terminal, system figures, mailbox, board
+src/modules/assistant/   Ask AI: a model on the team's Proxmox cluster, told config/ai-knowledge.md (docs/ASSISTANT.md); /api/assistant
+config/ai-knowledge.md   what Ask AI knows about the system -- UPDATE IT WITH EVERY CHANGE TO THE SYSTEM (rule below)
+algo-app/src/widgets/workspace/  the landing page under the welcome: the search/ask box, suggestions, system figures, mailbox, board
 src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMflash access
 src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
@@ -127,9 +129,38 @@ has hidden Linux failures before.
   reads other people's mail, every mailbox listing is filtered by who is
   asking, and mail older than an account is never shown to it (usernames are
   reused). The workspace's store is never replaced by a write that could not
-  first read it. Its "Ask AI" is a label that says not available: do not make
-  the terminal look as if something answers until something does.
-  docs/WORKSPACE.md.
+  first read it. docs/WORKSPACE.md.
+- **Team roles are labels, never authority.** ML, front-end, back-end and the
+  rest say what somebody works on. No permission check may read them; access
+  is the access role and only that.
+- **The assistant answers and never acts.** It is given no tools, and nothing
+  it writes is executed or followed. It is shown the knowledge base and a few
+  figures every member already sees -- never mail, imagery, anything about a
+  student, a machine address or a secret. Its answers are always marked as
+  AI, and a model that is down is said to be down. docs/ASSISTANT.md.
+
+## The assistant's knowledge base -- a rule for every change
+
+`config/ai-knowledge.md` is the whole of what Ask AI knows about this system.
+It is sent to the model before every question, so when it is out of date the
+assistant tells engineers things that are no longer true, with confidence.
+
+**Any change that alters how the system works or what the console offers must
+update `config/ai-knowledge.md` in the same commit.** This applies to every
+contributor, human or AI coding agent, and it is part of "done" for the task:
+
+- a module, page or screen added, removed, renamed or renumbered;
+- a role, permission, or who-may-do-what changed;
+- how a count is made, what "unknown" means, or any invariant above changed;
+- the pipeline, a transport, the deployment path or a privacy boundary changed;
+- anything on the landing page (search, Ask AI, mailbox, board, figures) changed.
+
+Write it for a reader that knows nothing else: plain sentences, what is true
+now, no history. Keep it under 16 kB. Never put a secret, a machine address,
+a hostname or anything about a named person in it -- it leaves the edge on
+every question. `test/assistant.test.ts` fails if a console module is missing
+from it or it grows too large; it cannot tell whether a description is still
+true, so read the file against your change before you call the change done.
 
 ## Conventions
 

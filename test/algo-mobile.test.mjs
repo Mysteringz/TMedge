@@ -312,7 +312,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await page.getByLabel('Username').fill('mobiletest');
       await page.getByLabel('Password', { exact: true }).fill('local browser test password');
       await page.getByRole('button', { name: 'Sign in', exact: true }).tap();
-      await page.getByText('Welcome back, mobiletest.').waitFor();
+      await page.getByRole('heading', { name: 'Welcome back, mobiletest.' }).waitFor();
 
       for (const viewport of [
         { width: 320, height: 844 }, { width: 390, height: 844 },
@@ -354,6 +354,92 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         });
       }
 
+      await t.test('the landing page: one box that searches the site first and asks the assistant otherwise, a welcome that is always readable, and the modules this person uses', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        const home = async () => { await page.goto(base); await page.locator('.ws[data-ready]').waitFor(); };
+        const box = page.getByRole('combobox', { name: 'Search the site or ask a question' });
+        const options = page.getByRole('option');
+
+        // No model is set up in this fixture: the page says so and offers only what works.
+        await home();
+        await page.getByText('Ask AI is not set up on this server yet.').waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Ask AI' }).isDisabled(), true);
+        await box.fill('how does counting work?');
+        await page.getByText('Nothing on the site matches').waitFor();
+        assert.equal(await options.count(), 0, 'nothing is offered that cannot answer');
+        await fits(page, 390);
+
+        // The welcome types itself in other languages. Its name for a screen
+        // reader never changes, and the person's name is never part of the act.
+        assert.equal(await page.locator('.cx-welcome b').textContent(), 'mobiletest');
+        assert.equal(await page.locator('.cx-module').count() + await page.getByText('Select module').count(), 0, 'the module selector is gone');
+        await page.waitForFunction(() => document.querySelector('.cx-welcome [lang]')?.getAttribute('lang') !== 'en', null, { timeout: 15_000 });
+        assert.equal(await page.getByRole('heading', { level: 1 }).getAttribute('aria-label'), 'Welcome back, mobiletest.');
+        assert.equal(await page.locator('.cx-welcome b').textContent(), 'mobiletest');
+        await fits(page, 390);
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await home();
+        await page.waitForTimeout(4500);
+        assert.equal(await page.locator('.cx-welcome__typed').textContent(), 'Welcome back', 'someone who asked for less motion gets the line, still');
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+
+        // With a model: a stand-in that answers, and remembers what it was asked.
+        const asked = [];
+        await page.route('**/api/assistant', route => route.fulfill({ json: { data: { available: true, reason: null, model: 'test-model:1b', knowledgeUpdatedAt: Date.now() }, error: null } }));
+        await page.route('**/api/assistant/ask', route => {
+          asked.push(route.request().postDataJSON());
+          return route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: delta\ndata: {"text":"Each table has **one** authority sensor."}\n\nevent: done\ndata: {}\n\n' });
+        });
+        await home();
+        // The name of something on the site is looked up on the site, and Enter opens it.
+        await box.fill('debug console');
+        await options.filter({ hasText: 'Live thermal frames' }).waitFor();
+        assert.match(await options.first().textContent(), /Debug console/, 'the site comes first for what the site has');
+        assert.match(await options.last().textContent(), /Ask AI/, 'and the assistant is still one row away');
+        // A question goes to the assistant first, even when the site has matches for its words.
+        await box.fill('how does the debug console work?');
+        await options.filter({ hasText: 'Ask AI' }).waitFor();
+        assert.match(await options.first().textContent(), /Ask AI/);
+        // So does anything the site has no name for.
+        await box.fill('thermal drift');
+        await options.first().waitFor();
+        assert.match(await options.first().textContent(), /Ask AI/);
+        assert.equal(await options.count(), 1);
+        await fits(page, 390);
+        await box.fill('why is a table unknown?');
+        await box.press('Enter');
+        await page.locator('.ws-answer__a').filter({ hasText: 'Each table has one authority sensor.' }).waitFor();
+        assert.equal(await page.locator('.ws-answer__a strong').textContent(), 'one', 'emphasis is shown as emphasis, built as elements');
+        assert.deepEqual(asked[0], { question: 'why is a table unknown?', history: [] });
+        await page.locator('.ws-ai-label').waitFor();
+        await page.getByText('it can be wrong', { exact: false }).waitFor();
+        await fits(page, 390);
+        // A follow-up carries what was just said, so "it" means something.
+        await box.fill('and when is it not?');
+        await box.press('Enter');
+        await page.waitForFunction(() => document.querySelectorAll('.ws-answer__turn').length === 2);
+        assert.deepEqual(asked[1].history, [{ role: 'user', content: 'why is a table unknown?' }, { role: 'assistant', content: 'Each table has **one** authority sensor.' }]);
+        await page.getByRole('button', { name: 'Close answers' }).tap();
+        assert.equal(await page.locator('.ws-answer').count(), 0);
+
+        // What this person opens is what the page offers first next time.
+        await page.evaluate(() => { for (const key of Object.keys(localStorage)) if (key.startsWith('tm-algo-usage')) localStorage.removeItem(key); });
+        await home();
+        assert.equal(await page.locator('.ws-places__label').textContent(), 'Jump to');
+        assert.equal(await page.locator('.ws-place').first().textContent(), 'Algorithm flow');
+        await page.getByRole('link', { name: 'Adoption', exact: true }).tap();
+        await page.getByText('No requests waiting.', { exact: false }).waitFor();
+        await home();
+        assert.equal(await page.locator('.ws-places__label').textContent(), 'Suggested for you');
+        assert.equal(await page.locator('.ws-place').first().textContent(), 'Adoption');
+        assert.equal(await page.locator('.ws-place').count(), 6, 'on a phone, where the header lists no modules, every module is still one tap away');
+        await fits(page, 390);
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        assert.equal(await page.locator('.ws-place:visible').count(), 4, 'beside a header that lists them all, only the most used are repeated');
+        await page.setViewportSize({ width: 390, height: 844 });
+      });
+
       await t.test('the landing page workspace finds things, delivers mail to the person it was sent to, and offers each role only what it may do', async () => {
         await page.unrouteAll({ behavior: 'wait' });
         await page.setViewportSize({ width: 390, height: 844 });
@@ -363,8 +449,8 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         const toast = (target, text) => target.locator('.cx-toast').filter({ hasText: text }).waitFor();
         await home(page);
 
-        // The terminal: every word narrows the list, and Enter opens the first answer.
-        const prompt = page.getByRole('combobox', { name: 'Search the site' });
+        // The box: every word narrows the list, and Enter opens the first answer.
+        const prompt = page.getByRole('combobox', { name: 'Search the site or ask a question' });
         await prompt.fill('analytics');
         await page.getByRole('option').filter({ hasText: 'HKUMySeat usage' }).waitFor();
         const broad = await page.getByRole('option').count();
@@ -377,7 +463,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await page.waitForURL(/\/analytics\/server/);
         await home(page);
         await prompt.fill('no such thing anywhere');
-        await page.getByText('No match for').waitFor();
+        await page.getByText('Nothing on the site matches').waitFor();
         assert.equal(await page.getByRole('option').count(), 0);
 
         // A member's name is a way to write to them.
@@ -398,7 +484,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         assert.equal(await dialog.count(), 0);
 
         // A request, and from it a task for somebody else.
-        await page.getByRole('tab', { name: /Requests/ }).tap();
+        await page.getByRole('tab', { name: /Feature requests/ }).tap();
         await page.getByRole('button', { name: 'New request' }).tap();
         await dialog.getByLabel('Title').fill(wish);
         await dialog.getByRole('button', { name: 'File request' }).tap();
@@ -419,11 +505,11 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           const viewer = await theirs.newPage();
           viewer.setDefaultTimeout(10_000);
           await home(viewer);
-          await viewer.getByRole('tab', { name: /Mailbox\s*1 unread/ }).tap();
+          await viewer.getByRole('radiogroup', { name: 'Mailbox' }).getByText('1 unread').waitFor({ state: 'attached' });
           await viewer.getByRole('button', { name: new RegExp(`Unread: ${subject.replace(/[()]/g, '\\$&')}`) }).tap();
           await viewer.locator('.ws-prose').waitFor();
           assert.equal(await viewer.locator('.ws-prose').textContent(), 'Please check it before the pilot.\nThanks.', 'a message is shown as it was written');
-          await viewer.waitForFunction(() => !document.querySelector('#ws-tab-mail .ws-count'), null, { timeout: 10_000 });
+          await viewer.waitForFunction(() => !document.querySelector('[aria-labelledby="ws-mail-title"] .ws-count'), null, { timeout: 10_000 });
           await fits(viewer, 390);
 
           await viewer.getByRole('tab', { name: /Tasks/ }).tap();
@@ -436,7 +522,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           await fits(viewer, 390);
           await viewer.getByRole('dialog').getByRole('button', { name: 'Close' }).last().tap();
 
-          await viewer.getByRole('tab', { name: /Requests/ }).tap();
+          await viewer.getByRole('tab', { name: /Feature requests/ }).tap();
           await viewer.getByRole('button', { name: `Vote for ${wish}. 1 vote.` }).tap();
           await viewer.getByRole('button', { name: `Remove your vote from ${wish}. 2 votes.` }).waitFor();
           await viewer.locator('.ws-req .ws-row').filter({ hasText: wish }).tap();

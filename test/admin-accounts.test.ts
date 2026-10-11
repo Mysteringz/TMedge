@@ -28,7 +28,7 @@ const code = (expected: string) => (error: unknown) => error instanceof AccountE
 test('public DTO, pagination, validation and serialized stale/final-admin protections', async () => {
   const f = await fixture();
   const list = f.accounts.list(1, 1, f.authorize); assert.equal(list.total, 3); assert.equal(list.accounts.length, 1);
-  assert.deepEqual(Object.keys(list.accounts[0]!).sort(), ['createdAt', 'disabled', 'name', 'revision', 'role']);
+  assert.deepEqual(Object.keys(list.accounts[0]!).sort(), ['createdAt', 'disabled', 'name', 'revision', 'role', 'teamRoles']);
   await assert.rejects(f.accounts.mutate('create', '', { name: 'viewer', role: 'viewer', password: 'long duplicate password' }, f.authorize), code('DUPLICATE'));
   for (const body of [{ name: 'invalid user', role: 'viewer', password: 'long new password' }, { name: 'new-user', role: 'root', password: 'long new password' }, { name: 'new-user', role: 'viewer', password: 'short' }, { name: 'new-user', role: 'viewer', password: 'long new password', hash: 'x' }]) await assert.rejects(f.accounts.mutate('create', '', body, f.authorize), code('VALIDATION'));
   const admin = f.repository.list().find((a) => a.name === 'admin')!, other = f.repository.list().find((a) => a.name === 'other')!;
@@ -59,6 +59,25 @@ test('admin revocation during hashing cannot commit create/reset; stale reset pr
   const resetDenied = f.accounts.mutate('password', 'viewer', { revision: target.revision, password: 'replacement password' }, authorize2);
   f.users.update('admin', { revoke: true }); await assert.rejects(resetDenied, code('UNAUTHENTICATED'));
   assert.equal(await f.users.verify('viewer', 'long viewer password'), 'viewer');
+});
+
+test('team roles are labels: set from a fixed list, kept in order, and granting nothing', async () => {
+  const f = await fixture();
+  const viewer = () => f.repository.list().find((a) => a.name === 'viewer')!;
+  assert.deepEqual(viewer().teamRoles, []);
+  const tagged = await f.accounts.mutate('update', 'viewer', { revision: viewer().revision, teamRoles: ['backend', 'ml', 'ml'] }, f.authorize);
+  assert.deepEqual(tagged.teamRoles, ['ml', 'backend']);
+  assert.equal(tagged.role, 'viewer', 'a team role is not an access role');
+  assert.deepEqual(principal('viewer', f.users.get('viewer')!.role!).capabilities, principal('viewer', 'viewer').capabilities);
+  assert.equal(f.users.get('viewer')!.sessionVersion, 0, 'relabelling somebody does not sign them out');
+  for (const teamRoles of [['admin'], 'ml', [1], ['ml', 'frontend', 'backend', 'firmware', 'hardware', 'ml']]) {
+    await assert.rejects(f.accounts.mutate('update', 'viewer', { revision: viewer().revision, teamRoles }, f.authorize), code('VALIDATION'));
+  }
+  const stale = viewer().revision;
+  await f.accounts.mutate('update', 'viewer', { revision: stale, teamRoles: [] }, f.authorize);
+  await assert.rejects(f.accounts.mutate('update', 'viewer', { revision: stale, teamRoles: ['frontend'] }, f.authorize), code('STALE_REVISION'));
+  const made = await f.accounts.mutate('create', '', { name: 'newbie', role: 'operator', password: 'long newbie password', teamRoles: ['frontend'] }, f.authorize);
+  assert.deepEqual(made.teamRoles, ['frontend']);
 });
 
 test('partial account patches preserve omitted role/status and legacy primitive ignores undefined', async () => {
