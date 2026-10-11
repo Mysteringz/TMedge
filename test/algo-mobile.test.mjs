@@ -772,9 +772,16 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await page.emulateMedia({ colorScheme: scheme });
         for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 844, height: 390 }, { width: 1024, height: 844 }]) {
           await page.setViewportSize(viewport);
-          const brand = await page.getByRole('button', { name: 'Home', exact: true }).boundingBox();
-          const button = await toggle.boundingBox();
-          assert.ok(button.x >= brand.x + brand.width - 1 && Math.abs(button.y - brand.y) < 1, 'navigation sits immediately beside the logo');
+          // Resizing and web-font loading can reflow the header between two
+          // browser calls. Compare both controls from the same layout.
+          const { brand, button } = await page.locator('.cx-header').evaluate(header => {
+            const home = header.querySelector('.cx-home');
+            const toggle = header.querySelector('.cx-nav-toggle');
+            if (!home || !toggle) throw new Error('Navigation controls are missing');
+            return { brand: home.getBoundingClientRect().toJSON(), button: toggle.getBoundingClientRect().toJSON() };
+          });
+          assert.ok(Math.abs(button.x - brand.right) < 1 && Math.abs(button.y - brand.y) < 1,
+            `navigation sits immediately beside the logo: ${JSON.stringify({ viewport, brand, button })}`);
           assert.ok(button.width >= 44 && button.height >= 44, 'navigation has a touch-sized target');
           await toggle.tap();
           assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
@@ -803,7 +810,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await toggle.focus();
       await page.keyboard.press('Enter');
       // WebKit on macOS uses Option-Tab to include links in keyboard focus.
-      await page.keyboard.press(engine === 'webkit' ? 'Alt+Tab' : 'Tab');
+      await page.keyboard.press(engine === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
       assert.equal(await menu.getByRole('link', { name: 'Home', exact: true }).evaluate(link => link === document.activeElement), true);
       await page.keyboard.press('Escape');
       assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
