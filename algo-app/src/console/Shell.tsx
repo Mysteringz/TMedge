@@ -20,6 +20,7 @@ import './console.css';
 
 // The editor (CodeMirror) is most of module 02's weight; sign-in and the
 // home screen should not wait for it.
+const MlData = lazy(() => import('./MlData.tsx').then(m => ({ default: m.MlData })));
 const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
 const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Updates })));
 const Accounts = lazy(() => import('../pages/admin-accounts/index.tsx').then((m) => ({ default: m.Accounts })));
@@ -92,7 +93,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
   // The landing page offers the modules this person opens most; this is where
   // it learns which those are. Analytics' views count as the places they are.
   useEffect(() => {
-    if (!user || !['flow', 'train', 'console', 'updates', 'analytics', 'adoption'].includes(screen)) return;
+    if (!user || !['flow', 'train', 'ml-data', 'console', 'updates', 'analytics', 'adoption'].includes(screen)) return;
     recordVisit(user, `/${path.split('/')[1] ?? ''}`);
   }, [user, screen, path]);
 
@@ -147,6 +148,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
       <Backdrop />
       <ShellNavigation user={user} onSignOut={signOut} />
       {screen === 'accounts' ? <Suspense fallback={<main aria-busy="true">Loading accounts…</main>}><Accounts /></Suspense>
+        : screen === 'ml-data' ? <Suspense fallback={<main className="cx-train cx-hint">Loading ML data…</main>}><MlData /></Suspense>
         : screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
           : screen === 'analytics' ? <Suspense fallback={<main className="cx-train cx-hint">Loading analytics…</main>}><Analytics /></Suspense>

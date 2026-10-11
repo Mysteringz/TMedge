@@ -37,7 +37,9 @@ if __name__ == '__main__':
       GRANT SELECT, INSERT ON training.frames, training.pairs TO crowdaware_ingest;
       GRANT SELECT ON training.ml_samples TO crowdaware_ingest;
       GRANT SELECT ON ALL TABLES IN SCHEMA training TO crowdaware_reader;
+      GRANT SELECT ON ALL SEQUENCES IN SCHEMA training TO crowdaware_reader;
       ALTER DEFAULT PRIVILEGES IN SCHEMA training GRANT SELECT ON TABLES TO crowdaware_reader;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA training GRANT SELECT ON SEQUENCES TO crowdaware_reader;
       ''', 'crowdaware_training')
     # Existing guest listens on LAN. A first-match rule limits these roles to
     # the Proxmox tunnel endpoint, without changing other database access.

@@ -69,10 +69,23 @@ Modules:
   after 15 minutes unless it is committed. Every change is written to an
   audit log with the old value. The preview runs the firmware's own detector
   code compiled for the server, so it cannot drift from the sensor.
-- 02 ML training, /train. Write a training script, run it on the university's
+- 02 ML job, /train. The ML menu groups ML job and ML data. ML job is the training page. Write a training script, run it on the university's
   HPC cluster through SLURM, watch the job, fetch results. Each person signs
   in to the cluster as themselves; credentials are sealed in the browser,
   used once and never stored.
+- 02 ML data, /ml-data. Query the private PostgreSQL training database with a
+  SELECT or WITH statement, inspect table definitions and a SchemaSpy report,
+  and download selected tables as a ZIP containing a SQL dump and a manifest.
+  The console shows at most 200 rows, bounds result sizes and query time, and
+  summarizes binary values as byte counts. Queries cannot change the database. The dedicated reader can read table
+  data and sequence values for exports, but cannot advance or change sequences.
+  Every signed-in access role may query and inspect the schema; Operator,
+  Engineer and Admin may prepare exports. Each export belongs to the account
+  that requested it. Preparation runs in the background and the page polls
+  for completion; completed ZIPs expire after 24 hours. Restarted unfinished
+  exports fail and can be generated again. The table browser reads the live
+  database; the SchemaSpy report is a separately generated snapshot. SchemaSpy generation
+  runs on Proxmox; the console serves its static output.
 - 03 Debug console, /console. Live thermal frames, the floor with fused
   occupancy, per-sensor health, and commands to a sensor (set a parameter,
   reset its background, identify, save, reboot).
@@ -145,5 +158,5 @@ can move its status (to do, in progress, done) whatever their role.
 - Server health and storage: Analytics, server view.
 - Student usage: Analytics, usage view.
 - A sensor that will not join: Adoption, and docs/ADOPTION.md.
-- Firmware: Updates. Training: ML training, and docs/hpc/.
+- Firmware: Updates. Training: ML job, and docs/hpc/. Database: ML data, and docs/ML_DATA.md.
 - The workspace and this assistant: docs/WORKSPACE.md, docs/ASSISTANT.md.

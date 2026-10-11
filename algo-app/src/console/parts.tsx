@@ -2,7 +2,7 @@
 
 import { useAdminSession } from '../entities/admin-session/index.tsx';
 
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useId, type ReactNode } from 'react';
 
 import { navigate, screenOf, usePath } from './router.ts';
 
@@ -14,7 +14,8 @@ export const MODULES = [
 
   { n: '01', title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
 
-  { n: '02', title: 'ML training', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
+  { n: '02', title: 'ML job', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
+  { n: '02', title: 'ML data', path: '/ml-data', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
   { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
   { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
   { n: '05', title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
@@ -67,9 +68,9 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
       <nav className="cx-header-nav" aria-label="Modules">
 
-        {MODULES.map((m) => (
+        {MODULES.filter(m => m.path !== '/ml-data').map((m) => m.path === '/train' ? <MlMenu key={m.path} screen={screen} /> : (
 
-          <a key={m.n} className="cx-header-item" href={m.path} aria-current={here === m ? 'page' : undefined}
+          <a key={m.path} className="cx-header-item" href={m.path} aria-current={here === m ? 'page' : undefined}
 
             onClick={(e) => { e.preventDefault(); navigate(m.path); }}>{m.title}</a>
 
@@ -77,6 +78,7 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
         {session?.namedAccount && session.capabilities.includes('accounts.manage') && <a className="cx-header-item" href="/accounts" aria-current={screen === 'accounts' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
       </nav>
+      <div className="cx-mobile-ml"><MlMenu screen={screen} /></div>
       {session?.namedAccount && session.capabilities.includes('accounts.manage') && <a className="cx-header-action cx-account-shortcut" href="/accounts" onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
 
       {(here || screen === 'accounts') && <span className={screen === 'accounts' ? 'cx-crumb cx-account-crumb' : 'cx-crumb'}>{here?.title ?? 'Accounts'}</span>}
@@ -126,4 +128,26 @@ export function Toast({ text }: { text: string }) {
 
   return <div className="cx-toast" role="status"><span className="cx-sq" />{text}</div>;
 
+}
+
+function MlMenu({ screen }: { screen: string }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const close = (event: PointerEvent) => { if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false); };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, []);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const id = useId();
+  const active = screen === 'train' || screen === 'ml-data';
+  return <div className="cx-ml-menu" ref={root} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+    onKeyDown={event => { if (event.key === 'Escape') { setOpen(false); toggle.current?.focus(); } }}>
+    <button ref={toggle} className="cx-header-item" aria-expanded={open} aria-controls={id} aria-current={active ? 'page' : undefined}
+      onClick={() => setOpen(!open)}>ML <span aria-hidden="true">▾</span></button>
+    {open && <div id={id} className="cx-ml-dropdown">
+      {MODULES.filter(m => m.n === '02').map(m => <a key={m.path} href={m.path} aria-current={screenOf(m.path) === screen ? 'page' : undefined}
+        onClick={event => { event.preventDefault(); setOpen(false); navigate(m.path); }}>{m.title}</a>)}
+    </div>}
+  </div>;
 }

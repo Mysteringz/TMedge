@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily training schema documentation on Proxmox
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

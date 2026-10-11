@@ -51,6 +51,8 @@ import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
 import { recordModeOf } from './autorecord.js';
 import { createTrain, trainRoot } from './train/routes.js';
+import { createMlData } from './ml-data/routes.js';
+import { schemaAssets } from './ml-data/schema-report.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
@@ -205,6 +207,8 @@ export function startAlgo(
     next();
   });
 
+  app.use('/ml-schema-assets', schemaAssets(process.env.ML_SCHEMA_DIR || join(dataDir, 'algo', 'ml-schema')));
+
   // --- before sign-in: the form, the endpoints it posts to, the bundle -----
   app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
   const notifications = express.Router();
@@ -329,6 +333,8 @@ export function startAlgo(
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
+  const mlData = createMlData(auth, { env: process.env, dataDir });
+  app.use('/api/ml-data', mlData.router);
   app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
   notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth }))));
   app.use('/api/analytics', createAnalyticsRouter(auth, analytics.read));
@@ -551,6 +557,7 @@ export function startAlgo(
 
   const server = createServer(app);
   server.on('close', train.stop);
+  server.on('close', () => { void mlData.stop(); });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
   const clients = new Map<WebSocket, { req: IncomingMessage; binding: string }>();
   auth.onLogout((binding) => {
@@ -675,7 +682,7 @@ export function startAlgo(
       broker.stop();
       for (const ws of wss.clients) ws.terminate();
       disposal = Promise.all([
-        algo.dispose(), consoleCore?.dispose(), analytics.collector.stop(),
+        algo.dispose(), consoleCore?.dispose(), analytics.collector.stop(), mlData.stop(),
         new Promise<void>(resolve => wss.close(() => resolve())),
       ]).then(() => undefined);
       return disposal;
