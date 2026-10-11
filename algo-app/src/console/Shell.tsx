@@ -9,6 +9,7 @@
 import { AdminSessionContext, type AdminSession } from '../entities/admin-session/index.tsx';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { NotificationProvider } from '../entities/operation-notification/index.tsx';
+import { recordVisit } from '../entities/usage/index.ts';
 import { NotificationCenter, NotificationToggle } from '../widgets/notification-center/index.tsx';
 import { Root as FlowApp } from '../App.tsx';
 import { Home } from './Home.tsx';
@@ -87,6 +88,13 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
     if (user === null && screen !== 'login') toLogin();
     if (user && screen === 'login') navigate('/', true);
   }, [user, screen]);
+
+  // The landing page offers the modules this person opens most; this is where
+  // it learns which those are. Analytics' views count as the places they are.
+  useEffect(() => {
+    if (!user || !['flow', 'train', 'console', 'updates', 'analytics', 'adoption'].includes(screen)) return;
+    recordVisit(user, `/${path.split('/')[1] ?? ''}`);
+  }, [user, screen, path]);
 
   const signOut = async () => {
     try {

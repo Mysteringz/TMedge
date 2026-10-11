@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { accountRequest, AccountRequestError, type AdminAccount, type AccountDeletion } from '../../entities/admin-account/index.ts';
 import { permissionChanged, useAdminSession } from '../../entities/admin-session/index.tsx';
+import { TEAM_ROLES, TEAM_ROLE_LABEL } from '../../entities/workspace/model/types.ts';
 
 type Action = 'update' | 'password' | 'revoke' | 'delete';
 const ROLE_HELP = { viewer: 'View operational data and your own training history. Cannot change settings or run jobs.', operator: 'Change algorithm settings, use routine sensor controls and run your own training jobs. Cannot manage firmware, advanced sensor controls or accounts.', engineer: 'Use all operational controls, including firmware and provisioning, and your own training jobs. Cannot manage accounts.', admin: 'Use all operational controls and manage accounts. Training access remains limited to your own jobs.' };
@@ -9,6 +10,7 @@ export function ManageAdminAccount({ account, onSaved, onDeleted, onCancel }: { 
   const [name, setName] = useState(account?.name ?? '');
   const [role, setRole] = useState<AdminAccount['role']>(account?.role ?? 'operator');
   const [disabled, setDisabled] = useState(account?.disabled ?? false);
+  const [teamRoles, setTeamRoles] = useState<string[]>(account?.teamRoles ?? []);
   const [password, setPassword] = useState(''), [confirmation, setConfirmation] = useState('');
   const [pending, setPending] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [deleteName, setDeleteName] = useState(''), [deleteBlocked, setDeleteBlocked] = useState(false);
@@ -33,7 +35,7 @@ export function ManageAdminAccount({ account, onSaved, onDeleted, onCancel }: { 
     const abort = new AbortController(); controller.current = abort;
     try {
       const suffix = !account ? '' : `/${encodeURIComponent(account.name)}${action === 'password' ? '/password-resets' : action === 'revoke' ? '/session-revocations' : ''}`;
-      const body = !account ? { name, role, password } : action === 'update' ? { revision: account.revision, role, disabled } : action === 'password' ? { revision: account.revision, password } : { revision: account.revision };
+      const body = !account ? { name, role, password, teamRoles } : action === 'update' ? { revision: account.revision, role, disabled, teamRoles } : action === 'password' ? { revision: account.revision, password } : { revision: account.revision };
       if (action === 'delete' && account) {
         const result = await accountRequest<AccountDeletion>(suffix, 'DELETE', body, abort.signal);
         clearPasswords(); setDeleteName(''); setPending(null);
@@ -42,7 +44,8 @@ export function ManageAdminAccount({ account, onSaved, onDeleted, onCancel }: { 
       }
       const result = await accountRequest<AdminAccount>(suffix, action === 'update' ? 'PATCH' : 'POST', body, abort.signal);
       clearPasswords(); setPending(null);
-      if (account && account.name === session?.user && result.revision !== account.revision) { permissionChanged(401); return; }
+      // Relabelling yourself with a team role ends no session; anything else you do to your own account does.
+      if (account && account.name === session?.user && result.revision !== account.revision && (action !== 'update' || result.role !== account.role || result.disabled !== account.disabled)) { permissionChanged(401); return; }
       onSaved(result);
     } catch (failure) {
       if (!abort.signal.aborted) {
@@ -69,6 +72,9 @@ export function ManageAdminAccount({ account, onSaved, onDeleted, onCancel }: { 
       <fieldset disabled={busy || !!pending}>
         <label>Username<input name="username" autoComplete="off" value={name} readOnly={!!account} required minLength={2} maxLength={32} pattern="[a-zA-Z0-9][a-zA-Z0-9_.\-]{1,31}" onChange={(event) => setName(event.target.value)} aria-describedby="account-error" /></label>
         <label htmlFor="account-role">Role</label><select id="account-role" aria-describedby="account-role-help" value={role} onChange={(event) => setRole(event.target.value as AdminAccount['role'])}><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="engineer">Engineer</option><option value="admin">Admin</option></select><p className="accounts-hint" id="account-role-help">{ROLE_HELP[role]}</p>
+        <fieldset className="accounts-team" aria-describedby="account-team-help"><legend>Team roles</legend>
+          {TEAM_ROLES.map((item) => <label key={item} className="accounts-check"><input type="checkbox" checked={teamRoles.includes(item)} onChange={(event) => setTeamRoles(event.target.checked ? [...teamRoles, item] : teamRoles.filter((value) => value !== item))} /> {TEAM_ROLE_LABEL[item]}</label>)}
+        </fieldset><p className="accounts-hint" id="account-team-help">What this person works on. The team sees it when writing to them or assigning a task. It grants no access and does not sign them out.</p>
         {account && <label className="accounts-check"><input type="checkbox" checked={!disabled} onChange={(event) => setDisabled(!event.target.checked)} /> Enabled</label>}
         {passwordFields}
         <div className="accounts-actions"><button className="btn btn-primary" type="submit">{account ? 'Review role / status change' : 'Create account'}</button>
@@ -77,7 +83,7 @@ export function ManageAdminAccount({ account, onSaved, onDeleted, onCancel }: { 
       </fieldset>
       {account && pending !== 'delete' && <button ref={deleteTrigger} type="button" className="btn accounts-delete" disabled={busy || !!pending} onClick={() => { clearPasswords(); setError(''); setDeleteName(''); setPending('delete'); }}>Delete account</button>}
       {pending === 'delete' && account && <div className="accounts-confirm accounts-confirm-delete" role="group" aria-labelledby="account-delete-heading" onKeyDown={(event) => { if (event.key === 'Escape' && !busy) { event.preventDefault(); cancelDeletion(); } }}><h3 id="account-delete-heading">Delete account {account.name}?</h3><p id="account-delete-consequences">This permanently removes the account and ends its sessions. Submitted jobs continue. Training jobs, profiles and other operational data are retained. Reusing this username can give the new account access to its retained history.{account.name === session?.user && ' You will be signed out.'}</p><label>Type {account.name} to confirm<input ref={deleteInput} value={deleteName} disabled={busy || deleteBlocked} onChange={(event) => setDeleteName(event.target.value)} aria-describedby="account-delete-consequences account-delete-hint account-error" /></label><p className="accounts-hint" id="account-delete-hint">Enter the username exactly as shown.</p><div className="accounts-actions"><button type="button" className="btn accounts-delete" disabled={busy || deleteBlocked || deleteName !== account.name} onClick={() => void perform('delete')}>{busy ? 'Deleting...' : 'Delete account'}</button><button className="btn btn-secondary" type="button" disabled={busy} onClick={cancelDeletion}>Cancel deletion</button></div></div>}
-      {pending && pending !== 'delete' && <div className="accounts-confirm" role="group" aria-label="Confirm account action"><p><strong>{pending === 'update' ? `Change ${account?.name} to ${role}, ${disabled ? 'disabled' : 'enabled'}` : pending === 'password' ? `Reset password for ${account?.name}` : `Revoke all sessions for ${account?.name}`}?</strong></p><p>This ends current sessions. Submitted training jobs continue.</p><div className="accounts-actions"><button className="btn btn-primary" ref={confirmButton} type="button" disabled={busy} onClick={() => void perform(pending)}>{busy ? 'Saving…' : 'Confirm action'}</button><button className="btn btn-ghost" type="button" disabled={busy} onClick={() => { clearPasswords(); setPending(null); }}>Cancel action</button></div></div>}
+      {pending && pending !== 'delete' && <div className="accounts-confirm" role="group" aria-label="Confirm account action"><p><strong>{pending === 'update' ? `Change ${account?.name} to ${role}, ${disabled ? 'disabled' : 'enabled'}, team roles: ${teamRoles.map((item) => TEAM_ROLE_LABEL[item] ?? item).join(', ') || 'none'}` : pending === 'password' ? `Reset password for ${account?.name}` : `Revoke all sessions for ${account?.name}`}?</strong></p><p>{pending === 'update' && account && role === account.role && disabled === account.disabled ? 'Only team roles change: nobody is signed out.' : 'This ends current sessions. Submitted training jobs continue.'}</p><div className="accounts-actions"><button className="btn btn-primary" ref={confirmButton} type="button" disabled={busy} onClick={() => void perform(pending)}>{busy ? 'Saving…' : 'Confirm action'}</button><button className="btn btn-ghost" type="button" disabled={busy} onClick={() => { clearPasswords(); setPending(null); }}>Cancel action</button></div></div>}
       <p className="accounts-feedback accounts-error" id="account-error" role="alert">{error}</p>
       <button className="btn btn-ghost" type="button" disabled={busy} onClick={cancel}>Cancel editor</button>
     </form>

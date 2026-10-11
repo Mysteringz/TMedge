@@ -7,8 +7,9 @@ import type { AdminAccountRepository } from '../../modules/algo-admin/repositori
 export class FileAccountRepository implements AdminAccountRepository {
   constructor(private readonly users: AlgoUsers, private readonly secret: Buffer) {}
   private dto(user: AlgoUser): AdminAccount {
-    return { name: user.name, role: user.role ?? 'engineer', disabled: user.disabled ?? false, createdAt: user.createdAt,
-      revision: createHmac('sha256', this.secret).update('account-edit-v1').update(JSON.stringify([user.name, user.role, user.disabled, user.createdAt, user.sessionVersion, user.salt, user.hash])).digest('hex') };
+    return { name: user.name, role: user.role ?? 'engineer', teamRoles: user.teamRoles ?? [], disabled: user.disabled ?? false, createdAt: user.createdAt,
+      // Team roles are part of what an editor saw, so a stale editor cannot overwrite them either.
+      revision: createHmac('sha256', this.secret).update('account-edit-v1').update(JSON.stringify([user.name, user.role, user.disabled, user.createdAt, user.sessionVersion, user.salt, user.hash, ...(user.teamRoles?.length ? [user.teamRoles] : [])])).digest('hex') };
   }
   private translate(error: unknown): never {
     if (error instanceof AccountError || error instanceof AuthBusyError) throw error;
@@ -33,12 +34,12 @@ export class FileAccountRepository implements AdminAccountRepository {
   async mutate(change: AccountMutation, authorize: () => void): Promise<AdminAccount> {
     try {
       authorize();
-      if (change.kind === 'create') return this.dto(await this.users.add(change.name, change.password, change.role, authorize));
+      if (change.kind === 'create') return this.dto(await this.users.add(change.name, change.password, change.role, authorize, change.teamRoles ?? []));
       const snapshot = this.users.records().find((user) => user.name === change.name);
       if (!snapshot) throw new AccountError('NOT_FOUND', 404, 'Account not found.');
       if (this.dto(snapshot).revision !== change.revision) throw new AccountError('STALE_REVISION', 409, 'This account changed. Refresh before saving.');
       const updated = change.kind === 'password' ? await this.users.resetPassword(change.name, change.password, snapshot, authorize)
-        : this.users.update(change.name, change.kind === 'revoke' ? { revoke: true } : { ...(change.role === undefined ? {} : { role: change.role }), ...(change.disabled === undefined ? {} : { disabled: change.disabled }) }, snapshot, authorize);
+        : this.users.update(change.name, change.kind === 'revoke' ? { revoke: true } : { ...(change.role === undefined ? {} : { role: change.role }), ...(change.disabled === undefined ? {} : { disabled: change.disabled }), ...(change.teamRoles === undefined ? {} : { teamRoles: change.teamRoles }) }, snapshot, authorize);
       return this.dto(updated);
     } catch (error) { return this.translate(error); }
   }

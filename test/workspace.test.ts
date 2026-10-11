@@ -22,7 +22,7 @@ import type { BoardView, MailboxView, MailDocument, MessageView, RequestView, Ta
 import { createWorkspaceRouter } from '../src/modules/workspace/routes/workspace-router.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
 
-interface Snapshot { me: { name: string; canTriage: boolean; isAdmin: boolean }; members: string[]; mail: MailboxView; board: BoardView }
+interface Snapshot { me: { name: string; canTriage: boolean; isAdmin: boolean }; members: string[]; teamRoles: Record<string, string[]>; mail: MailboxView; board: BoardView }
 interface Reply<T> { status: number; data: T; code: string | null }
 
 const ROLES = { ada: 'admin', ben: 'engineer', cy: 'operator', vi: 'viewer' } as const;
@@ -35,7 +35,7 @@ async function fixture(signIn = true) {
   const users = new AlgoUsers(usersPath);
   if (signIn) for (const [name, role] of Object.entries(ROLES)) await users.add(name, password(name), role);
   const auth = createAlgoAuth(loadAlgoAuthConfig({ SESSION_SECRET: 'w'.repeat(40), ALGO_USERS_FILE: usersPath }, signIn ? 'set' : null));
-  const members = () => signIn ? auth.users.records().filter((user) => !user.disabled).map((user) => ({ name: user.name, since: user.createdAt })) : [{ name: 'local', since: 0 }];
+  const members = () => signIn ? auth.users.records().filter((user) => !user.disabled).map((user) => ({ name: user.name, since: user.createdAt, teamRoles: user.teamRoles ?? [] })) : [{ name: 'local', since: 0, teamRoles: [] }];
   const mailPath = join(dir, 'workspace', 'mail.json'), boardPath = join(dir, 'workspace', 'board.json');
   let clock: number | null = null;
   const now = () => clock ?? Date.now();
@@ -194,7 +194,11 @@ test('reads need a session, and writes need the console header and this origin',
     assert.deepEqual(mine.me, { name: 'vi', canTriage: false, isAdmin: false });
     assert.deepEqual((await f.snapshot('cy')).me, { name: 'cy', canTriage: true, isAdmin: false });
     assert.deepEqual(mine.members, ['ada', 'ben', 'cy', 'vi']);
-    assert.ok(!JSON.stringify(mine).includes('admin') && !JSON.stringify(mine).includes('engineer'), 'colleagues\' roles are not handed to everyone');
+    assert.ok(!JSON.stringify(mine).includes('admin') && !JSON.stringify(mine).includes('engineer'), 'colleagues\' access roles are not handed to everyone');
+    // What somebody works on is: it is how a task finds the right person.
+    f.users.update('ben', { teamRoles: ['backend', 'ml'] });
+    assert.deepEqual((await f.snapshot('vi')).teamRoles, { ben: ['ml', 'backend'] });
+    assert.deepEqual((await f.snapshot('ben')).me, { name: 'ben', canTriage: true, isAdmin: false }, 'a team role changes no access and ends no session');
   } finally { await f.close(); }
 });
 
