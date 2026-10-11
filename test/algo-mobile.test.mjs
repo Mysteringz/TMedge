@@ -752,6 +752,96 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
 }
 
 for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
+  test(`${engine}: mobile navigation beside the logo reaches every module and respects account access`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    const context = await sessionFor(browser, engine, 'operator', { viewport: { width: 390, height: 844 }, hasTouch: true });
+    try {
+      const page = await context.newPage();
+      page.setDefaultTimeout(5_000);
+      await trainingFixtures(page);
+      await mlDataFixtures(page);
+      await updatesFixtures(page);
+      await page.goto(base);
+      const toggle = page.getByRole('button', { name: 'Navigation menu', exact: true });
+      const menu = page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
+      await toggle.waitFor();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+      assert.equal(await menu.count(), 0, 'closed navigation is absent from the tab order');
+
+      for (const scheme of ['dark', 'light']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 844, height: 390 }, { width: 1024, height: 844 }]) {
+          await page.setViewportSize(viewport);
+          // Resizing and web-font loading can reflow the header between two
+          // browser calls. Compare both controls from the same layout.
+          const { brand, button } = await page.locator('.cx-header').evaluate(header => {
+            const home = header.querySelector('.cx-home');
+            const toggle = header.querySelector('.cx-nav-toggle');
+            if (!home || !toggle) throw new Error('Navigation controls are missing');
+            return { brand: home.getBoundingClientRect().toJSON(), button: toggle.getBoundingClientRect().toJSON() };
+          });
+          assert.ok(Math.abs(button.x - brand.right) < 1 && Math.abs(button.y - brand.y) < 1,
+            `navigation sits immediately beside the logo: ${JSON.stringify({ viewport, brand, button })}`);
+          assert.ok(button.width >= 44 && button.height >= 44, 'navigation has a touch-sized target');
+          await toggle.tap();
+          assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+          assert.equal(await menu.getByRole('link').count(), 8, 'Home and all seven module pages are available');
+          assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0, 'non-admins have no Accounts link');
+          const bounds = await menu.boundingBox();
+          assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1 && bounds.y + bounds.height <= viewport.height, 'open navigation fits even in landscape');
+          await fits(page, viewport.width);
+          await menu.getByRole('link', { name: 'Adoption', exact: true }).scrollIntoViewIfNeeded();
+          await shot(page, engine, `navigation-${scheme}-${viewport.width}`);
+          await toggle.tap();
+        }
+      }
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Debug console', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['Home', '/']]) {
+        await toggle.tap();
+        await menu.getByRole('link', { name, exact: true }).tap();
+        await page.waitForURL(`${base}${path}`);
+        assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'selecting a module closes navigation');
+        await toggle.tap();
+        assert.equal(await menu.getByRole('link', { name, exact: true }).getAttribute('aria-current'), 'page');
+        await toggle.tap();
+      }
+
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      // WebKit on macOS uses Option-Tab to include links in keyboard focus.
+      await page.keyboard.press(engine === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
+      assert.equal(await menu.getByRole('link', { name: 'Home', exact: true }).evaluate(link => link === document.activeElement), true);
+      await page.keyboard.press('Escape');
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+      assert.equal(await toggle.evaluate(button => button === document.activeElement), true, 'Escape returns focus to the toggle');
+      await toggle.tap();
+      await page.getByRole('button', { name: /^Notifications,/ }).tap();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'an outside tap closes navigation');
+      await page.getByRole('button', { name: 'Close notifications', exact: true }).tap();
+      await toggle.tap();
+      await toggle.focus();
+      await page.getByRole('button', { name: 'Sign out', exact: true }).focus();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'moving focus out closes navigation');
+      await toggle.tap();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      assert.equal(await toggle.isVisible(), false, 'desktop retains its inline module links');
+      await page.getByRole('navigation', { name: 'Modules', exact: true }).getByRole('link', { name: 'Algorithm flow' }).waitFor();
+      await page.waitForFunction(() => document.querySelector('.cx-nav-toggle')?.getAttribute('aria-expanded') === 'false');
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'resizing to desktop dismisses the mobile menu');
+
+      const session = await (await context.request.get(`${base}/api/me`)).json();
+      await page.route('**/api/me', route => route.fulfill({ json: { ...session, role: 'admin', namedAccount: true, capabilities: [...session.capabilities, 'accounts.manage'] } }));
+      await page.reload();
+      await toggle.tap();
+      await menu.getByRole('link', { name: 'Accounts', exact: true }).waitFor();
+      await page.route('**/api/me', route => route.fulfill({ json: { ...session, namedAccount: false, capabilities: [...session.capabilities, 'accounts.manage'] } }));
+      await page.reload();
+      await toggle.tap();
+      assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0, 'local fallback operators do not gain account management');
+    } finally { await context.close(); await browser.close(); }
+  });
   test(`${engine}: ML dropdown, queries, schema and ZIP preparation work at phone width in both themes`, { timeout: 60_000 }, async () => {
     const browser = await browserType.launch({ headless: true });
     const context = await sessionFor(browser, engine, 'operator', { viewport: { width: 390, height: 844 } });
@@ -762,10 +852,11 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await page.goto(`${base}/ml-data`);
       await page.getByText('Database connected', { exact: true }).waitFor();
       await page.getByRole('img', {name:'Graphviz diagram of training database tables and foreign-key relationships'}).waitFor();
-      await page.getByRole('button', { name: 'ML', exact: true }).click();
-      await page.getByRole('link', { name: 'ML job', exact: true }).waitFor();
-      await page.getByRole('link', { name: 'ML data', exact: true }).click();
-      assert.equal(await page.getByRole('button', { name: 'ML', exact: true }).getAttribute('aria-expanded'), 'false');
+      await page.getByRole('button', { name: 'Navigation menu', exact: true }).click();
+      const navigation = page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
+      await navigation.getByRole('link', { name: 'ML job', exact: true }).waitFor();
+      await navigation.getByRole('link', { name: 'ML data', exact: true }).click();
+      assert.equal(await page.getByRole('button', { name: 'Navigation menu', exact: true }).getAttribute('aria-expanded'), 'false');
       await page.getByRole('button', { name: 'Run query', exact: true }).click();
       await page.getByRole('region', { name: 'SQL query results' }).getByText('[binary: 768 bytes]', { exact: true }).waitFor();
       for (const scheme of ['dark','light']) {
