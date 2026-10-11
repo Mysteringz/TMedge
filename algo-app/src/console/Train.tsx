@@ -805,7 +805,7 @@ function Head({ status, hpc }: { status: string; hpc: HpcState | null }) {
     <header className="cx-train-head">
       <div>
         <div className="cx-kicker">Module 02 · Training</div>
-        <h2 className="cx-h2">ML training</h2>
+        <h2 className="cx-h2">ML job</h2>
       </div>
       <div className="cx-job">
         {hpc && <>

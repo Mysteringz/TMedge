@@ -19,10 +19,15 @@ import { KEY, siteJson, nodesJson } from '../dist/test/fixtures.js';
 
 let runtime, handle, base, directory;
 const originalDataDir = process.env.DATA_DIR;
+const originalSchemaDir = process.env.ML_SCHEMA_DIR;
 before(async () => {
   directory = mkdtempSync(join(tmpdir(), 'tmedge-mobile-'));
   writeFileSync(join(directory, 'nodes.json'), JSON.stringify(nodesJson()));
   process.env.DATA_DIR = directory;
+  process.env.ML_SCHEMA_DIR = join(directory, 'ml-schema');
+  mkdirSync(process.env.ML_SCHEMA_DIR);
+  writeFileSync(join(process.env.ML_SCHEMA_DIR, 'index.html'), '<html><body><h1>SchemaSpy fixture</h1><a href="relationships.html">Relationships</a><map name="diagram"><area href="relationships.html" alt="Diagram relationship"></map></body></html>');
+  writeFileSync(join(process.env.ML_SCHEMA_DIR, 'relationships.html'), '<html><body><h1>Training relationships</h1><a href="index.html">Tables</a></body></html>');
   const config = {
     edgeId: 'mobile-preview', keys: [KEY], allowUnsigned: false,
     udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: join(directory, 'nodes.json'), dataDir: directory,
@@ -52,6 +57,8 @@ after(async () => {
   if (directory) rmSync(directory, { recursive: true, force: true });
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
+  if (originalSchemaDir === undefined) delete process.env.ML_SCHEMA_DIR;
+  else process.env.ML_SCHEMA_DIR = originalSchemaDir;
 });
 
 async function fits(target, width) {
@@ -116,6 +123,22 @@ async function trainingFixtures(page) {
     running: null, firstUse: { hostKey: true, password: true },
   } }));
   await page.route('**/api/train/hpc/connect', route => route.fulfill({ status: 428, json: { needs: 'credentials' } }));
+}
+
+
+async function mlDataFixtures(page, report = false) {
+  await page.route('**/api/ml-data/schema', route => route.fulfill({ json: { available: true, report, error: null, tables: [
+    { name: 'training.frames', kind: 'table', estimatedRows: 504924, bytes: 9017671680, columns: [
+      { name: 'id', type: 'text', nullable: false, primaryKey: true, references: null },
+      { name: 'payload', type: 'bytea', nullable: false, primaryKey: false, references: null },
+    ] },
+    { name: 'training.pairs', kind: 'table', estimatedRows: 112779, bytes: 142852096, columns: [
+      { name: 'thermal_id', type: 'text', nullable: false, primaryKey: false, references: 'training.frames.id' },
+    ] },
+  ] } }));
+  await page.route('**/api/ml-data/exports', route => route.request().method() === 'GET'
+    ? route.fulfill({ json: { jobs: [] } }) : route.fulfill({ status: 202, json: { id: 'fixture-export', state: 'processing', tables: ['training.frames'], createdAt: Date.now(), expiresAt: Date.now()+86400000, bytes: 12345, sha256: null, error: null } }));
+  await page.route('**/api/ml-data/query', route => route.fulfill({ json: { columns: ['id', 'payload'], rows: [['a-long-frame-id', '[binary: 768 bytes]']], truncated: false, elapsedMs: 12 } }));
 }
 
 async function updatesFixtures(page) {
@@ -330,9 +353,10 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       ]) {
         await t.test(`${viewport.width}×${viewport.height}: all modules fit`, async () => {
           await page.setViewportSize(viewport);
-          for (const path of ['/', '/flow', '/train', '/console', '/updates', '/analytics', '/analytics/usage', '/analytics/server', '/adoption']) {
+          for (const path of ['/', '/flow', '/train', '/ml-data', '/console', '/updates', '/analytics', '/analytics/usage', '/analytics/server', '/adoption']) {
             await page.unrouteAll({ behavior: 'wait' });
             if (path === '/train') await trainingFixtures(page);
+            if (path === '/ml-data') await mlDataFixtures(page);
             if (path === '/updates') await updatesFixtures(page);
             await page.goto(`${base}${path}`);
             await page.locator('.cx-header').waitFor();
@@ -442,7 +466,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await home();
         assert.equal(await page.locator('.ws-places__label').textContent(), 'Suggested for you');
         assert.equal(await page.locator('.ws-place').first().textContent(), 'Adoption');
-        assert.equal(await page.locator('.ws-place').count(), 6, 'on a phone, where the header lists no modules, every module is still one tap away');
+        assert.equal(await page.locator('.ws-place').count(), 7, 'on a phone, where the header lists no modules, every module is still one tap away');
         await fits(page, 390);
         await page.setViewportSize({ width: 1440, height: 1000 });
         assert.equal(await page.locator('.ws-place:visible').count(), 4, 'beside a header that lists them all, only the most used are repeated');
@@ -722,5 +746,49 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       });
       assert.deepEqual(errors, [], 'no browser runtime errors');
     } finally { await browser.close(); }
+  });
+}
+
+for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
+  test(`${engine}: ML dropdown, queries, schema and ZIP preparation work at phone width in both themes`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    const context = await sessionFor(browser, engine, 'operator', { viewport: { width: 390, height: 844 } });
+    try {
+      const page = await context.newPage();
+      await mlDataFixtures(page, true);
+      await page.goto(`${base}/ml-data`);
+      await page.getByText('Database connected', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'ML', exact: true }).click();
+      await page.getByRole('link', { name: 'ML job', exact: true }).waitFor();
+      await page.getByRole('link', { name: 'ML data', exact: true }).click();
+      assert.equal(await page.getByRole('button', { name: 'ML', exact: true }).getAttribute('aria-expanded'), 'false');
+      await page.getByRole('button', { name: 'Run query', exact: true }).click();
+      await page.getByRole('region', { name: 'SQL query results' }).getByText('[binary: 768 bytes]', { exact: true }).waitFor();
+      for (const scheme of ['dark','light']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        for (const tab of ['SQL console','Database schema','Download data']) {
+          await page.getByRole('tab', { name: tab, exact: true }).click();
+          await fits(page,390); await shot(page,engine,`ml-data-${tab.replaceAll(' ','-')}-${scheme}-390`);
+        }
+      }
+      await page.getByRole('tab', { name: 'Database schema', exact: true }).click();
+      await page.getByRole('button', { name: 'Open SchemaSpy report' }).click();
+      const reportFrame = page.frameLocator('iframe[title="SchemaSpy database visualization"]');
+      await reportFrame.getByRole('link', { name: 'Relationships', exact: true }).click();
+      await reportFrame.getByRole('heading', { name: 'Training relationships' }).waitFor();
+      await reportFrame.getByRole('link', { name: 'Tables', exact: true }).click();
+      await reportFrame.getByRole('heading', { name: 'SchemaSpy fixture' }).waitFor();
+      await reportFrame.locator('area').evaluate(area => area.click());
+      await reportFrame.getByRole('heading', { name: 'Training relationships' }).waitFor();
+      assert.equal(await page.locator('iframe[title="SchemaSpy database visualization"]').getAttribute('sandbox'), 'allow-scripts');
+      await page.getByRole('tab', { name: 'Download data', exact: true }).click();
+      await page.getByRole('button', { name: 'Prepare ZIP' }).click();
+      await page.getByText('processing', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Preparing dataset…' }).isDisabled(), true);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.getByRole('button', { name: 'ML', exact: true }).click();
+      await page.getByRole('link', { name: 'ML job', exact: true }).click();
+      await page.getByRole('heading', { name: 'ML job', exact: true }).waitFor();
+    } finally { await context.close(); await browser.close(); }
   });
 }

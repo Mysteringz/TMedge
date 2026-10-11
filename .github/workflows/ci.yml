@@ -122,6 +122,8 @@ jobs:
         run: |
           psql --host 127.0.0.1 --username postgres --dbname tmedge_test \
             --set ON_ERROR_STOP=1 --file TMedge/docker/postgres-test/init/001-roles.sql
+          psql --host 127.0.0.1 --username postgres --dbname tmedge_test --set ON_ERROR_STOP=1 \
+            --command "CREATE DATABASE crowdaware_training"
 
       - name: Typecheck
         working-directory: TMedge
@@ -150,6 +152,8 @@ jobs:
           PG_INTEGRATION_TEST: '1'
           PG_TEST_CONTAINER_ID: ${{ job.services.postgres.id }}
           TMEDGE_TEST_WORKER_URL: http://127.0.0.1:8123/build
+          ML_DATA_TEST_ADMIN_URL: postgresql://postgres:ci-admin-test-only@127.0.0.1:5432/crowdaware_training
+          ML_DATA_TEST_CONTAINER: ${{ job.services.postgres.id }}
         run: npm test
 
       # Compiles the firmware's own packet code (g++ + OpenSSL, both on the

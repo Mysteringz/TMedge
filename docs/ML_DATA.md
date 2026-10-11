@@ -1,0 +1,188 @@
+# ML data
+
+The console top bar groups **ML job** (the existing `/train` page) and **ML data**
+(`/ml-data`) under **ML**. Both are also discoverable from Home and its search.
+ML data belongs exclusively to the authenticated algo console. Nothing is
+mounted on the student web tier.
+
+The SQL console accepts a single SELECT or WITH query through a PostgreSQL
+read-only cursor and extended protocol. It previews at most 200 rows, 100
+columns, 4 KiB per cell and 1 MiB of results, with a ten-second database
+statement limit and a bounded overall fetch loop. Values are bounded in SQL
+before reaching Node. Binary values become byte-count labels; SQL functions
+can still explicitly derive other representations from data. Preview values
+are text. Errors never disclose the connection URL, credentials or database
+diagnostics. Querying and schema inspection require `training.read` (all
+current access roles). Preparing an export requires `training.write`
+(Operator, Engineer, Admin); team labels grant nothing.
+
+## Connection and deployment
+
+Use the already provisioned SELECT-only `crowdaware_reader` in
+`crowdaware_training` through the private SSH/Tailscale PostgreSQL forward.
+Do not reuse the writer worker's environment or the application's registry
+migration credentials. The edge accepts either `ML_DATABASE_URL` or
+`ML_DATABASE_URL_FILE`, never both. A file must have no group/world access,
+be readable by the service, and contain only the connection URL. URL options
+are refused so connection settings cannot undo the read-only defaults.
+
+Provision a 0600 reader URL file owned by the edge service **outside the
+release**, then set `ML_DATABASE_URL_FILE` in its shared environment. The
+connection is deliberately optional: an unconfigured or unavailable database
+shows its status and cannot look like an empty dataset. Install a native
+`pg_dump` matching PostgreSQL 18 or newer on the edge and set `ML_PG_DUMP` if
+it is not on PATH. Native deployments need this prerequisite; Docker users
+must supply a compatible client in their runtime image. No table migration is required. Apply the SELECT-only sequence grant in
+`deploy/training/ml-data-reader.sql` as the existing training schema owner.
+pg_dump needs sequence values for identity columns such as annotation IDs;
+SELECT on sequences grants no nextval/setval authority. The provisioning
+script includes this grant for new installs. Do not rerun initial credential
+provisioning on a host that lacks the original credential file.
+
+Live inspection on 2026-10-11 found LXC 105 on **proxmox1**, PostgreSQL 18,
+with `frames`, `pairs`, `annotations`, `thermal_background`, `fov_mask`, and
+`ml_samples` (a view). The database was about 8.6 GiB; do not assume a full
+export compresses to a fixed fraction of that. JPEG payloads already contain
+compressed data. HBA still permits the previous Proxmox tunnel hop rather
+than proxmox1's source address. Keep that established hop until a separately
+reviewed network change; this feature does not broaden HBA.
+
+From the Mac, keep NordVPN on and use the secondary userspace Tailscale
+client described in TRAINING_POSTGRES.md. Confirm host names with that client's
+status before using an address from older notes. The VM now lives on proxmox1;
+the previous allowed tunnel hop can still reach it. Credentials remain private.
+
+## ZIP exports
+
+1. `POST /api/ml-data/exports`, JSON `{ "tables": ["training.frames"] }`,
+   with `x-tm-algo: 1`, returns **202** and an ID before any database connection
+   or child process begins.
+2. A background worker validates selected names against the live catalog,
+   rejecting views and tables outside `training`. It runs `pg_dump` without
+   a shell and passes credentials privately through the child's environment,
+   never argv. One dump supplies a consistent snapshot for the selection.
+3. SQL goes directly into a streaming, deflated ZIP64 archive, with
+   `dataset.sql` and `manifest.json`. No uncompressed dump touches disk. `yazl`
+   is the one new runtime dependency: it supports streams, deflate and ZIP64
+   for datasets whose uncompressed SQL exceeds 4 GiB.
+4. The page polls `GET /api/ml-data/exports` every five seconds. The individual
+   status URL is `GET /api/ml-data/exports/:id`.
+5. `GET /api/ml-data/exports/:id/download` streams the completed file. It
+   supports byte ranges/resumption, Content-Disposition, and private no-store
+   headers for browser and CDN. The browser navigates to the download URL;
+   it never loads the entire archive into a JavaScript blob.
+
+Files and atomic receipts live in `DATA_DIR/algo/ml-exports` (private directory,
+0600 files), survive release swaps and belong to their requesting account
+and its identity epoch. Another account, including an Admin, cannot inspect
+or download them. Recreated/reset accounts do not inherit them. Session or
+permission revocation also ends an active download on the next five-second
+check. A failed pg_dump, disk/quota failure or shutdown never publishes a
+partial archive. On startup, unfinished jobs become failed and their partial
+files are removed. Completed jobs survive restarts. No dump is resumed blindly.
+
+Cleanup runs at startup, hourly and when listing/starting jobs. Completed ZIPs
+expire 24 hours after completion; failed receipts expire after 24 hours.
+Active downloads are leased while streaming. At most 32 receipts are retained
+and one export is prepared globally at a time. A two-hour timeout kills stuck
+dumps. `ML_EXPORT_MAX_BYTES` defaults to 8 GiB compressed and
+`ML_EXPORT_RESERVE_BYTES` to 1 GiB free; the actual job quota is the smaller of
+the configured cap and available space minus the reserve. It rechecks space
+while writing. Other services can also write to this filesystem, so monitor
+disk use and size these limits for the host.
+
+A ZIP contains **selected tables**, not a whole-database backup. A training
+schema preamble is included, but dependencies outside the selection are not.
+Select related tables together (pairs/annotations require frames) and restore
+only into a separate database with matching dependencies. Large-object
+payloads are normal bytea data in the SQL dump. Original payload bytes and
+metadata are preserved. This does not apply retention to source recordings.
+
+## Cloudflare
+
+Before production use, configure a **Bypass cache** Cache Rule for the algo
+host where the URI path starts with `/api/ml-data/`. Keep Cloudflare Access
+and the console's account sign-in on these paths. This is a cache exemption,
+not an authentication bypass. Check an authenticated download's headers and
+complete a transfer through the real tunnel after deployment.
+
+Background generation avoids waiting for a dump in the trigger request.
+Delivery begins immediately from an existing file; streams remain subject
+to network and proxy read/inactivity limits. Streaming does not guarantee
+an indefinitely stalled connection will survive. Byte-range support allows
+resumption of interrupted transfers. Cloudflare's current documented default
+proxy read timeout is 125 seconds, rather than the old 100-second assumption.
+See [connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/)
+and [cache eligibility](https://developers.cloudflare.com/cache/how-to/cache-rules/settings/).
+
+## SchemaSpy runs on Proxmox
+
+Java/Graphviz and the SchemaSpy job run on **proxmox1**, never on the Mac or
+in the edge HTTP process. The edge serves the generated static snapshot;
+its separate table/column browser always queries the live PostgreSQL catalog.
+Views are documented but are not table-export choices. No expensive row
+count is needed for this report (`norows`); table counts in the browser are
+explicitly PostgreSQL estimates.
+
+`deploy/training/generate-schemaspy.py` needs a private reader URL file,
+SchemaSpy 7.0.2, PostgreSQL JDBC 42.7.8, Java and Graphviz on Proxmox. Download
+jars from their official releases, verify the SchemaSpy release's SHA-512,
+and use absolute paths. The supplied daily systemd service/timer templates
+use a dedicated `crowdaware-schemaspy` system user; install its tools into
+`/opt/crowdaware-schemaspy`, credential into `/etc/crowdaware-schemaspy/reader.url`
+and create `/var/lib/crowdaware-schemaspy` owned by that user (0700).
+Point the URL at a **server-side** private PostgreSQL forward with pinned SSH
+host keys and the existing permitted tunnel hop. The job's connection must
+not depend on a tunnel running on the Mac.
+
+```sh
+python3 /opt/crowdaware-schemaspy/generate-schemaspy.py \
+  --reader-url-file /etc/crowdaware-schemaspy/reader.url \
+  --schemaspy-jar /opt/crowdaware-schemaspy/schemaspy-app.jar \
+  --jdbc-jar /opt/crowdaware-schemaspy/postgresql.jar \
+  --output /var/lib/crowdaware-schemaspy/report
+```
+
+The generator locks concurrent runs, uses a private temporary properties file
+(no password in argv), caps runtime to 15 minutes, scans generated output for
+the credential, and replaces the previous report only after success. Failed
+Java diagnostics are redacted into a 0600 `schemaspy-error.log` alongside the
+report; they are never returned to browsers. Only the **report directory** is
+transferred privately to the edge's persistent `ML_SCHEMA_DIR`; never transfer
+a reader URL, properties file, jar, log or `.previous` directory. Stage and
+rename that report directory on the edge after a successful transfer, then
+remove the old snapshot. This data artifact lives outside `/opt/tmedge` and
+is independent of the application release pipeline.
+
+The report is available at `/api/ml-data/schema/report/` only after sign-in,
+inside an opaque sandboxed frame. Its navigation bridge only asks the parent
+to load URLs inside the report directory, so SameSite sessions continue to
+work without giving report scripts access to the console's DOM. SchemaSpy's inline resources get their own CSP;
+the main console retains its existing CSP. Database diagrams and report-specific
+scripts/styles are embedded in authenticated HTML, because Chromium blocks
+opaque-frame subresource cookies. Only SchemaSpy's generic bundled vendor
+libraries/fonts are public at `/ml-schema-assets/`, like the console's login
+bundle; no database metadata is served there. The opaque report alone permits
+inline/evaluated library scripts, without access to the parent console DOM. Missing output is stated explicitly,
+with live definitions still usable. SchemaSpy reports are snapshots; regenerate
+after schema changes. Official [SchemaSpy documentation](https://schemaspy.readthedocs.io/en/master/)
+and [release](https://github.com/schemaspy/schemaspy/releases/tag/v7.0.2).
+
+## Validation
+
+`test/ml-data.test.ts` covers real child/ZIP generation, persistence, SHA-256,
+owner epochs, restart recovery, failure cleanup, quota, auth/CSRF, asynchronous
+202 responses, range downloads and account changes during queries.
+`test/ml-data-postgres.test.ts` uses a disposable PostgreSQL database with a
+real SELECT-only role, SQL write/multi-statement rejection, bounded binary/text
+previews, duplicate result columns, native pg_dump and real psql restore.
+CI runs that integration on PostgreSQL 17; local verification used PostgreSQL
+16. Live PostgreSQL 18 reader schema/query probes and the Proxmox-generated
+SchemaSpy snapshot are checked separately. No full live database backup is
+performed during development.
+
+Browser tests exercise the ML dropdown, query results, schema, table selection
+and async ZIP preparation in Chromium and WebKit, with both themes at phone
+width and all console modules from 320px to 1440px. Production rollout still
+requires the protected pipeline, the private connection/client/report setup,
+and the Cloudflare cache rule above.
