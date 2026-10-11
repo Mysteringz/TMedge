@@ -79,6 +79,21 @@ async function fits(target, width) {
   assert.deepEqual(layout.smallTargets, [], 'touch controls must be at least 44px high');
 }
 
+// The sign-in limiter allows ten attempts per address in five minutes, and the
+// two engines of this suite already spend all ten. A later test that needs a
+// role's session takes the one the first test made instead of signing in again.
+const signedIn = new Map();
+async function sessionFor(browser, engine, role, options = {}) {
+  const saved = signedIn.get(`${engine}:${role}`);
+  const context = await browser.newContext({ ...options, ...(saved ? { storageState: saved } : {}) });
+  if (!saved) {
+    // Only when the test that signs this role in was filtered out of the run.
+    const login = await context.request.post(`${base}/auth/login`, { data: { username: `${role}test`, password: 'local browser test password' } });
+    assert.equal(login.status(), 200);
+  }
+  return context;
+}
+
 async function shot(page, engine, name) {
   const output = process.env.ALGO_UI_SCREENSHOTS;
   if (!output) return;
@@ -125,6 +140,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         try {
           const login = await context.request.post(`${base}/auth/login`, { data: { username: `${role}test`, password: 'local browser test password' } });
           assert.equal(login.status(), 200);
+          signedIn.set(`${engine}:${role}`, await context.storageState());
           const page = await context.newPage();
           let authorizations = 0;
           page.on('request', request => { if (request.url().endsWith('/api/tmflash/authorize')) authorizations++; });
@@ -321,6 +337,8 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
             if (path === '/train') await page.locator('.cx-jobs').getByText('SUBMIT_FAILED').waitFor();
             if (path === '/updates') await page.getByText('Connected to edge', { exact: false }).waitFor();
             if (path === '/adoption') await page.getByText('No requests waiting.', { exact: false }).waitFor();
+            // The landing page's workspace arrives after the module list: measure it, not the gap it will fill.
+            if (path === '/') { await page.locator('.ws[data-ready]').waitFor(); await page.locator('.ws-panel__body > *').first().waitFor(); }
             if (path.startsWith('/analytics')) await page.locator('.an-view .an-metrics, .an-view .an-notice').first().waitFor();
             await fits(page, viewport.width);
             if (path === '/console') {
@@ -335,6 +353,108 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           }
         });
       }
+
+      await t.test('the landing page workspace finds things, delivers mail to the person it was sent to, and offers each role only what it may do', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        // Both engines run against one server, so what this writes is named for the engine writing it.
+        const subject = `Background reset on node 2 (${engine})`, wish = `Export a floor as CSV (${engine})`;
+        const home = async (target) => { await target.goto(base); await target.locator('.ws[data-ready]').waitFor(); };
+        const toast = (target, text) => target.locator('.cx-toast').filter({ hasText: text }).waitFor();
+        await home(page);
+
+        // The terminal: every word narrows the list, and Enter opens the first answer.
+        const prompt = page.getByRole('combobox', { name: 'Search the site' });
+        await prompt.fill('analytics');
+        await page.getByRole('option').filter({ hasText: 'HKUMySeat usage' }).waitFor();
+        const broad = await page.getByRole('option').count();
+        await prompt.fill('analytics server');
+        await page.getByRole('option').filter({ hasText: 'Server and back end' }).waitFor();
+        assert.ok(await page.getByRole('option').count() < broad, 'a second word must only narrow the results');
+        assert.match(await page.getByRole('option').first().textContent(), /Server and back end/, 'the page named by both words comes before the module that only mentions one');
+        await fits(page, 390);
+        await prompt.press('Enter');
+        await page.waitForURL(/\/analytics\/server/);
+        await home(page);
+        await prompt.fill('no such thing anywhere');
+        await page.getByText('No match for').waitFor();
+        assert.equal(await page.getByRole('option').count(), 0);
+
+        // A member's name is a way to write to them.
+        await prompt.fill('viewertest');
+        await page.getByRole('option').filter({ hasText: 'Write a message' }).waitFor();
+        await prompt.press('Enter');
+        const dialog = page.getByRole('dialog');
+        await dialog.getByRole('heading', { name: 'New message' }).waitFor();
+        assert.equal(await dialog.getByRole('checkbox', { name: 'viewertest' }).isChecked(), true);
+        await dialog.getByRole('button', { name: 'Send message' }).tap();
+        await dialog.getByText('Enter a subject.').waitFor();
+        assert.equal(await dialog.getByLabel('Subject').evaluate(field => field === document.activeElement), true, 'focus goes to the first thing to fix');
+        await dialog.getByLabel('Subject').fill(subject);
+        await dialog.getByLabel('Message').fill('Please check it before the pilot.\nThanks.');
+        await fits(page, 390);
+        await dialog.getByRole('button', { name: 'Send message' }).tap();
+        await toast(page, 'Message sent to viewertest.');
+        assert.equal(await dialog.count(), 0);
+
+        // A request, and from it a task for somebody else.
+        await page.getByRole('tab', { name: /Requests/ }).tap();
+        await page.getByRole('button', { name: 'New request' }).tap();
+        await dialog.getByLabel('Title').fill(wish);
+        await dialog.getByRole('button', { name: 'File request' }).tap();
+        await page.getByRole('heading', { name: wish }).waitFor();
+        await fits(page, 390);
+        await page.getByRole('button', { name: 'Create task', exact: true }).tap();
+        assert.equal(await dialog.getByLabel('Title').inputValue(), wish, 'a task made from a request starts with its title');
+        await dialog.getByLabel('Assigned to').selectOption('viewertest');
+        await fits(page, 390);
+        await dialog.getByRole('button', { name: 'Create task' }).tap();
+        await toast(page, /^Task T-\d+ assigned to viewertest\.$/);
+        await page.locator('.ws-task').filter({ hasText: wish }).waitFor();
+        await fits(page, 390);
+
+        // The person it was all sent to, who holds the least access there is.
+        const theirs = await sessionFor(browser, engine, 'viewer', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, colorScheme: 'dark' });
+        try {
+          const viewer = await theirs.newPage();
+          viewer.setDefaultTimeout(10_000);
+          await home(viewer);
+          await viewer.getByRole('tab', { name: /Mailbox\s*1 unread/ }).tap();
+          await viewer.getByRole('button', { name: new RegExp(`Unread: ${subject.replace(/[()]/g, '\\$&')}`) }).tap();
+          await viewer.locator('.ws-prose').waitFor();
+          assert.equal(await viewer.locator('.ws-prose').textContent(), 'Please check it before the pilot.\nThanks.', 'a message is shown as it was written');
+          await viewer.waitForFunction(() => !document.querySelector('#ws-tab-mail .ws-count'), null, { timeout: 10_000 });
+          await fits(viewer, 390);
+
+          await viewer.getByRole('tab', { name: /Tasks/ }).tap();
+          assert.equal(await viewer.getByRole('button', { name: 'New task' }).count(), 0, 'a viewer is not offered task creation');
+          await viewer.getByLabel(`Status of ${wish}`).selectOption('doing');
+          await toast(viewer, /^T-\d+ moved to in progress\.$/);
+          await viewer.locator('.ws-task .ws-row').filter({ hasText: wish }).tap();
+          await viewer.getByRole('dialog').getByText('This task is yours').waitFor();
+          assert.equal(await viewer.getByRole('dialog').locator('input, textarea, select').count(), 0, 'someone who cannot edit a task is shown it, not a form');
+          await fits(viewer, 390);
+          await viewer.getByRole('dialog').getByRole('button', { name: 'Close' }).last().tap();
+
+          await viewer.getByRole('tab', { name: /Requests/ }).tap();
+          await viewer.getByRole('button', { name: `Vote for ${wish}. 1 vote.` }).tap();
+          await viewer.getByRole('button', { name: `Remove your vote from ${wish}. 2 votes.` }).waitFor();
+          await viewer.locator('.ws-req .ws-row').filter({ hasText: wish }).tap();
+          await viewer.getByRole('heading', { name: wish }).waitFor();
+          assert.equal(await viewer.locator('#ws-request-status').count(), 0, 'a viewer cannot decide a request');
+          assert.equal(await viewer.getByRole('button', { name: 'Create task', exact: true }).count(), 0);
+          await fits(viewer, 390);
+          if (process.env.ALGO_UI_SCREENSHOTS) await shot(viewer, engine, 'home-workspace-viewer');
+        } finally { await theirs.close(); }
+
+        // And the member who was not written to has none of it.
+        const outsider = await sessionFor(browser, engine, 'operator');
+        try {
+          const view = await (await outsider.request.get(`${base}/api/workspace`)).json();
+          assert.equal(view.data.mail.inbox.length + view.data.mail.sent.length, 0);
+          assert.ok(!JSON.stringify(view.data.mail).includes('Background reset'));
+        } finally { await outsider.close(); }
+      });
 
       await t.test('analytics says what it cannot know instead of showing zero, and gives every chart as a table', async () => {
         await page.unrouteAll({ behavior: 'wait' });

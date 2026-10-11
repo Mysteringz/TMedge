@@ -28,6 +28,8 @@ src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunne
 algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 /train, 03 /console, 04 /updates, 05 /analytics, 06 /adoption
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
+src/modules/workspace/   the landing page's team side: mailbox, feature requests, tasks (docs/WORKSPACE.md); /api/workspace
+algo-app/src/widgets/workspace/  its UI, beside the module list: search terminal, system figures, mailbox, board
 src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMflash access
 src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
@@ -121,6 +123,13 @@ has hidden Linux failures before.
   `src/modules/analytics` may hold an email, a name or an account ID; "active
   students" is counted from a keyed hash. Its history writer must never throw:
   it runs inside the services it is watching. docs/ANALYTICS.md.
+- **Mail is its sender's and its recipients', and nobody else's.** No role
+  reads other people's mail, every mailbox listing is filtered by who is
+  asking, and mail older than an account is never shown to it (usernames are
+  reused). The workspace's store is never replaced by a write that could not
+  first read it. Its "Ask AI" is a label that says not available: do not make
+  the terminal look as if something answers until something does.
+  docs/WORKSPACE.md.
 
 ## Conventions
 

@@ -1,11 +1,15 @@
 /** Module select: where an engineer lands after signing in. */
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { donutFrame } from './donut.ts';
 import { ArrowRight } from './icons.tsx';
 import { MODULES } from './parts.tsx';
 import { navigate } from './router.ts';
 
-export function Home({ user }: { user: string }) {
+// Nobody needs a mailbox to sign in: the workspace arrives with the page
+// that shows it, and the module list does not wait for it.
+const Workspace = lazy(() => import('../widgets/workspace/index.ts').then((m) => ({ default: m.Workspace })));
+
+export function Home({ user, flash }: { user: string; flash(message: string): void }) {
   const [sel, setSel] = useState(0);
   const selRef = useRef(sel);
   selRef.current = sel;
@@ -34,7 +38,7 @@ export function Home({ user }: { user: string }) {
       <section className="cx-home-left">
         <h1 className="cx-welcome">Welcome back, {user}.</h1>
         <p className="cx-eyebrow">Select module</p>
-        <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>{MODULES.length}</kbd>.</p>
+        <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>{MODULES.length}</kbd>. Press <kbd>/</kbd> to search.</p>
         <div className="cx-modules">
           {MODULES.map((m, i) => (
             <button key={m.n} className={`cx-module ${sel === i ? 'is-on' : ''}`}
@@ -49,6 +53,8 @@ export function Home({ user }: { user: string }) {
           ))}
         </div>
       </section>
+      {/* Beside the modules: finding things, how the system is, and the team's own business. */}
+      <Suspense fallback={null}><Workspace user={user} flash={flash} /></Suspense>
     </main>
     </>
   );

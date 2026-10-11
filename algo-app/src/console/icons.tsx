@@ -15,3 +15,8 @@ export const FloppyDisk = () => <svg {...base}><path d="M5 4h11l4 4v11a1 1 0 0 1
 export const Plus = () => <svg {...base}><path d="M12 5v14M5 12h14" /></svg>;
 export const XMark = () => <svg {...base}><path d="M6 6l12 12M18 6 6 18" /></svg>;
 export const EyeSlash =() => <svg {...base}><path d="M4 4l16 16M9.9 5.3A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.8M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 5.4-1.6M9.9 9.9a3.2 3.2 0 0 0 4.2 4.2" /></svg>;
+export const ArrowLeft = () => <svg {...base}><path d="M20 12H4M10 6l-6 6 6 6" /></svg>;
+export const ArrowBendUpLeft = () => <svg {...base}><path d="M9 14 4 9l5-5" /><path d="M4 9h9a7 7 0 0 1 7 7v3" /></svg>;
+export const CaretUp = () => <svg {...base}><path d="M5 15l7-7 7 7" /></svg>;
+export const Trash = () => <svg {...base}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3" /></svg>;
+export const PencilSimple = () => <svg {...base}><path d="M4 20h4L19 9l-4-4L4 16v4ZM13 7l4 4" /></svg>;

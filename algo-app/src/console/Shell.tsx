@@ -144,7 +144,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
           : screen === 'analytics' ? <Suspense fallback={<main className="cx-train cx-hint">Loading analytics…</main>}><Analytics /></Suspense>
           : screen === 'adoption' ? <Suspense fallback={<main className="cx-train cx-hint">Loading adoption…</main>}><Adoption /></Suspense>
           : screen === 'tmflash-connect' ? <Suspense fallback={null}><TMflashConnect user={user} /></Suspense>
-          : <Home user={user} />}
+          : <Home user={user} flash={flash} />}
     </div>
   );
 }

@@ -273,7 +273,9 @@ password prompt. Cloudflare Access still sits in front; behind it:
 ## Screens
 
 - `/login` — sign-in.
-- `/` — module select (↑ ↓, 1–6, enter).
+- `/` — module select (↑ ↓, 1–6, enter), and beside it the workspace: a
+  search terminal (`/`), six system figures, and the team's mailbox, feature
+  requests and tasks. See [WORKSPACE.md](WORKSPACE.md).
 - `/flow` — module 01, the node-graph debugger described above, unchanged.
 - `/train` — module 02, ML Training: a placeholder until there is a sandboxed
   job runner to back it.
