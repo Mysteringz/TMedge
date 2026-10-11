@@ -54,6 +54,13 @@ Rules that are never broken:
 
 ## The console, algo.hkumyseat.com
 
+On phones and tablets, the navigation menu button beside the logo opens Home
+and every module, including both ML job and ML data. Accounts appears only
+for named accounts with account-management access. The current page is
+highlighted. Selecting a page, tapping outside or pressing Escape closes the
+menu. On wide screens the module links stay in the header, with ML grouped
+in its dropdown.
+
 The landing page has, top to bottom: a welcome line, one search box, quick
 suggestions (the modules this person uses most), six live system figures, the
 mailbox, and the board (feature requests and tasks).

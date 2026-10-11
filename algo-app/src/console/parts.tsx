@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState, useId, type ReactNode } from 
 
 import { navigate, screenOf, usePath } from './router.ts';
 
-import { SignOut } from './icons.tsx';
+import { Menu, SignOut, XMark } from './icons.tsx';
 
 
 
@@ -53,6 +53,7 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
   const screen = screenOf(path);
 
   const here = MODULES.find((m) => screenOf(m.path) === screen);
+  const canManageAccounts = Boolean(session?.namedAccount && session.capabilities.includes('accounts.manage'));
 
   return (
 
@@ -66,6 +67,8 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
       </button>
 
+      <MobileNavigation path={path} canManageAccounts={canManageAccounts} />
+
       <nav className="cx-header-nav" aria-label="Modules">
 
         {MODULES.filter(m => m.path !== '/ml-data').map((m) => m.path === '/train' ? <MlMenu key={m.path} screen={screen} /> : (
@@ -76,12 +79,10 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
         ))}
 
-        {session?.namedAccount && session.capabilities.includes('accounts.manage') && <a className="cx-header-item" href="/accounts" aria-current={screen === 'accounts' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
+        {canManageAccounts && <a className="cx-header-item" href="/accounts" aria-current={screen === 'accounts' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
       </nav>
-      <div className="cx-mobile-ml"><MlMenu screen={screen} /></div>
-      {session?.namedAccount && session.capabilities.includes('accounts.manage') && <a className="cx-header-action cx-account-shortcut" href="/accounts" onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
 
-      {(here || screen === 'accounts') && <span className={screen === 'accounts' ? 'cx-crumb cx-account-crumb' : 'cx-crumb'}>{here?.title ?? 'Accounts'}</span>}
+      {(here || screen === 'accounts') && <span className="cx-crumb">{here?.title ?? 'Accounts'}</span>}
 
       <div className="cx-identity-actions">
         <span className="cx-who"><span className="cx-online" />{user}@team <span className="tag tag-neutral">{session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator'}</span></span>
@@ -94,6 +95,47 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
   );
 
+}
+
+function MobileNavigation({ path, canManageAccounts }: { path: string; canManageAccounts: boolean }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const id = useId();
+  const screen = screenOf(path);
+  useEffect(() => { setOpen(false); }, [path]);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false); };
+    const desktop = window.matchMedia('(min-width: 1057px)');
+    const resize = () => { if (desktop.matches) setOpen(false); };
+    // Pointer events inside the debug console's own document do not bubble
+    // here; its focus change still dismisses the overlaid navigation.
+    const blur = () => { if (document.activeElement instanceof HTMLIFrameElement) setOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    desktop.addEventListener('change', resize);
+    window.addEventListener('blur', blur);
+    return () => { document.removeEventListener('pointerdown', outside); desktop.removeEventListener('change', resize); window.removeEventListener('blur', blur); };
+  }, [open]);
+  const links = [
+    { title: 'Home', path: '/', n: '' },
+    ...MODULES,
+    ...(canManageAccounts ? [{ title: 'Accounts', path: '/accounts', n: '' }] : []),
+  ];
+  return <div className="cx-mobile-nav" ref={root}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+    onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setOpen(false); toggle.current?.focus(); } }}>
+    <button ref={toggle} className="cx-header-action cx-nav-toggle" aria-label="Navigation menu" title="Navigation menu"
+      aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}>
+      {open ? <XMark /> : <Menu />}
+    </button>
+    {open && <nav id={id} className="cx-mobile-dropdown" aria-label="Mobile navigation">
+      {links.map(link => <a key={link.path} href={link.path} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
+        onClick={event => { event.preventDefault(); setOpen(false); navigate(link.path); }}>
+        <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span>{link.title}
+      </a>)}
+    </nav>}
+  </div>;
 }
 
 
