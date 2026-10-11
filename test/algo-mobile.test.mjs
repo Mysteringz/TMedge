@@ -127,6 +127,8 @@ async function trainingFixtures(page) {
 
 
 async function mlDataFixtures(page, report = false) {
+  await page.route('**/api/ml-data/schema/diagram', route => route.fulfill({json:{available:true,generatedAt:1700000000000,revision:'fixture-diagram',error:null}}));
+  await page.route('**/api/ml-data/schema/diagram/image?*', route => route.fulfill({contentType:'image/png',body:process.env.ML_DATA_TEST_DIAGRAM ? readFileSync(process.env.ML_DATA_TEST_DIAGRAM) : Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1EAAAAASUVORK5CYII=','base64')}));
   await page.route('**/api/ml-data/schema', route => route.fulfill({ json: { available: true, report, error: null, tables: [
     { name: 'training.frames', kind: 'table', estimatedRows: 504924, bytes: 9017671680, columns: [
       { name: 'id', type: 'text', nullable: false, primaryKey: true, references: null },
@@ -755,9 +757,11 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
     const context = await sessionFor(browser, engine, 'operator', { viewport: { width: 390, height: 844 } });
     try {
       const page = await context.newPage();
+      await page.clock.install();
       await mlDataFixtures(page, true);
       await page.goto(`${base}/ml-data`);
       await page.getByText('Database connected', { exact: true }).waitFor();
+      await page.getByRole('img', {name:'Graphviz diagram of training database tables and foreign-key relationships'}).waitFor();
       await page.getByRole('button', { name: 'ML', exact: true }).click();
       await page.getByRole('link', { name: 'ML job', exact: true }).waitFor();
       await page.getByRole('link', { name: 'ML data', exact: true }).click();
@@ -786,6 +790,22 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await page.getByText('processing', { exact: true }).waitFor();
       assert.equal(await page.getByRole('button', { name: 'Preparing dataset…' }).isDisabled(), true);
       await page.setViewportSize({ width: 1440, height: 900 });
+      const workspace=await page.locator('.cx-data-workspace').boundingBox(), diagram=await page.getByRole('complementary',{name:'Database relationship diagram'}).boundingBox();
+      assert.ok(diagram.x >= workspace.x+workspace.width,'Graphviz is on the right at desktop width');
+      const image=page.getByRole('img',{name:'Graphviz diagram of training database tables and foreign-key relationships'});
+      await page.route('**/api/ml-data/schema/diagram', route => route.fulfill({json:{available:true,generatedAt:1700000030000,revision:'updated-diagram',error:null}}));
+      await page.clock.fastForward(16000);
+      await page.waitForFunction(() => document.querySelector('.cx-data-diagram-image img')?.getAttribute('src')?.includes('updated-diagram'));
+      assert.ok((await image.getAttribute('src')).includes('updated-diagram'),'A new server snapshot updates the image without reloading the page');
+      for(const scheme of ['dark','light']) {
+        await page.emulateMedia({colorScheme:scheme});
+        await shot(page,engine,`ml-data-diagram-${scheme}-1440`);
+      }
+      await page.route('**/api/ml-data/schema/diagram', route => route.fulfill({status:503,json:{error:'Temporary report connection failure'}}));
+      await page.clock.fastForward(16000);
+      await page.getByRole('status').filter({hasText:'Temporary report connection failure'}).waitFor();
+      assert.ok(await image.isVisible(),'A metadata refresh failure retains the last diagram');
+      assert.ok((await image.getAttribute('src')).includes('updated-diagram'));
       await page.getByRole('button', { name: 'ML', exact: true }).click();
       await page.getByRole('link', { name: 'ML job', exact: true }).click();
       await page.getByRole('heading', { name: 'ML job', exact: true }).waitFor();

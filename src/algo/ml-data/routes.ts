@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import type { AlgoAuth } from '../auth.js';
 import { DataError, PostgresTrainingDatabase, readerUrl, type TrainingDatabase } from './database.js';
-import { schemaHtml } from './schema-report.js';
+import { DIAGRAM_FILE, schemaDiagram, schemaHtml } from './schema-report.js';
 import { Exports, nativeDump, type ExportJob } from './exports.js';
 
 const summary = ({ id, state, tables, createdAt, expiresAt, bytes, sha256, error }: ExportJob) => ({ id, state, tables, createdAt, expiresAt, bytes, sha256, error });
@@ -46,6 +46,11 @@ export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'
       if (!current(req, user.name, epoch, res)) return;
       res.json({ available: true, tables, report: existsSync(join(schemaDir, 'index.html')), error: null });
     } catch { res.status(503).json({ available: false, tables: [], report: false, error: 'The training database is unavailable. Try again later.' }); }
+  });
+  router.get('/schema/diagram', (_req, res) => { res.json(schemaDiagram(schemaDir)); });
+  router.get('/schema/diagram/image', (_req, res) => {
+    if (!schemaDiagram(schemaDir).available) return void res.status(404).json({ error: 'Graphviz diagram unavailable.' });
+    res.type('png').sendFile(resolve(schemaDir, DIAGRAM_FILE));
   });
   router.use('/schema/report', (req, res, next) => {
     // SchemaSpy writes trusted static HTML with inline scripts/styles. Its

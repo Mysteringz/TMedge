@@ -1,0 +1,17 @@
+[Unit]
+Description=Privately synchronize the Proxmox SchemaSpy snapshot
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tmedge
+UMask=0077
+EnvironmentFile=/etc/tmedge-schemaspy-sync.env
+ExecStart=/usr/bin/python3 /opt/tmedge-schemaspy/sync-schemaspy.py --host ${SCHEMASPY_REPORT_HOST} --identity-file ${SCHEMASPY_REPORT_KEY} --known-hosts ${SCHEMASPY_KNOWN_HOSTS} --output ${ML_SCHEMA_DIR}
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tmedge/algo
+TimeoutStartSec=90

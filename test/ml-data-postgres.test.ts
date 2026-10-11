@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import pg from 'pg';
 import { PostgresTrainingDatabase } from '../src/algo/ml-data/database.js';
 import { Exports, nativeDump } from '../src/algo/ml-data/exports.js';
+import { TrainingDatabaseHealth } from '../src/infrastructure/analytics/training-database-health.js';
 
 test('real PostgreSQL reader bounds previews, rejects writes and multi-statements, and exports restorable SQL through native pg_dump', { skip: !process.env.ML_DATA_TEST_ADMIN_URL }, async () => {
   const admin = new pg.Client({connectionString:process.env.ML_DATA_TEST_ADMIN_URL});await admin.connect();
@@ -20,6 +21,8 @@ test('real PostgreSQL reader bounds previews, rejects writes and multi-statement
     await admin.query('GRANT USAGE ON SCHEMA training TO crowdaware_reader; GRANT SELECT ON ALL TABLES IN SCHEMA training TO crowdaware_reader; GRANT SELECT ON ALL SEQUENCES IN SCHEMA training TO crowdaware_reader');
     await admin.query("INSERT INTO training.frames(id,sensor_uid,modality,reference_at,timestamp_basis,width,height,encoding,payload,payload_sha256,t_min,t_step) VALUES ('test','02:00:00:00:00:01','thermal',now(),'edge_receive',32,24,'thermal_u8',decode(repeat('00',768),'hex'),encode(sha256(decode(repeat('00',768),'hex')),'hex'),20,0.1)");
     db=new PostgresTrainingDatabase(url.toString());
+    const health=new TrainingDatabaseHealth({ML_DATABASE_URL:url.toString()});
+    try {assert.equal(health.configured,true);assert.equal(await health.available(),true);} finally {await health.close();}
     const schema=await db.schema();assert.ok(schema.some(t=>t.name==='training.frames' && t.columns.some(c=>c.name==='id' && c.primaryKey)));assert.ok(schema.some(t=>t.name==='training.pairs' && t.columns.some(c=>c.references==='training.frames.id')));
     const preview=await db.query('SELECT id, payload, NULL AS empty FROM training.frames');assert.deepEqual(preview.columns,['id','payload','empty']);assert.deepEqual(preview.rows,[['test','[binary: 768 bytes]',null]]);
     assert.equal((await db.query('SELECT n FROM generate_series(1,300) n')).rows.length,200);assert.equal((await db.query('SELECT n FROM generate_series(1,300) n')).truncated,true);

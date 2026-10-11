@@ -127,32 +127,81 @@ explicitly PostgreSQL estimates.
 `deploy/training/generate-schemaspy.py` needs a private reader URL file,
 SchemaSpy 7.0.2, PostgreSQL JDBC 42.7.8, Java and Graphviz on Proxmox. Download
 jars from their official releases, verify the SchemaSpy release's SHA-512,
-and use absolute paths. The supplied daily systemd service/timer templates
+and use absolute paths. The supplied change-watching systemd service/timer templates
 use a dedicated `crowdaware-schemaspy` system user; install its tools into
 `/opt/crowdaware-schemaspy`, credential into `/etc/crowdaware-schemaspy/reader.url`
-and create `/var/lib/crowdaware-schemaspy` owned by that user (0700).
+and create `/var/lib/crowdaware-schemaspy` owned by that user and group (0750).
 Point the URL at a **server-side** private PostgreSQL forward with pinned SSH
 host keys and the existing permitted tunnel hop. The job's connection must
 not depend on a tunnel running on the Mac.
 
 ```sh
-python3 /opt/crowdaware-schemaspy/generate-schemaspy.py \
+python3 /opt/crowdaware-schemaspy/watch-schemaspy.py \
   --reader-url-file /etc/crowdaware-schemaspy/reader.url \
   --schemaspy-jar /opt/crowdaware-schemaspy/schemaspy-app.jar \
   --jdbc-jar /opt/crowdaware-schemaspy/postgresql.jar \
   --output /var/lib/crowdaware-schemaspy/report
 ```
 
+The watcher uses native `psql` to fingerprint the training catalog, including
+columns, constraints, indexes and views, and PostgreSQL's insert/update/delete
+counters. It never scans recording payloads or counts rows. The timer checks
+30 seconds after the previous run finishes; a burst of writes produces one
+snapshot rather than overlapping Java processes. PostgreSQL statistics can
+lag the writes briefly. `--schema-only` disables row-change monitoring where
+only structural changes should regenerate a diagram. See the official
+[cumulative statistics documentation](https://www.postgresql.org/docs/18/monitoring-stats.html).
+Row-change monitoring requires PostgreSQL `track_counts=on`; the watcher
+fails explicitly if it is disabled.
+
+Install `crowdaware-schemaspy-tunnel.service`, with a dedicated private SSH
+key and pinned `known_hosts` under `/etc/crowdaware-schemaspy`. Its
+`tunnel.env` sets `SCHEMASPY_DATABASE_HOP` to the established, permitted
+`training-tunnel` hop. That account's key allows only the PostgreSQL forward,
+with no shell; preserve existing keys and HBA. Enable the tunnel and
+`crowdaware-schemaspy.timer`. The job and tunnel run entirely on Proxmox.
+
 The generator locks concurrent runs, uses a private temporary properties file
 (no password in argv), caps runtime to 15 minutes, scans generated output for
 the credential, and replaces the previous report only after success. Failed
 Java diagnostics are redacted into a 0600 `schemaspy-error.log` alongside the
-report; they are never returned to browsers. Only the **report directory** is
-transferred privately to the edge's persistent `ML_SCHEMA_DIR`; never transfer
-a reader URL, properties file, jar, log or `.previous` directory. Stage and
-rename that report directory on the edge after a successful transfer, then
-remove the old snapshot. This data artifact lives outside `/opt/tmedge` and
-is independent of the application release pipeline.
+report; they are never returned to browsers. The watcher bundles only the
+**report directory** into `report.tar.gz` and publishes a SHA-256/size receipt.
+A separate report-only SSH account can read these two files through the
+forced `serve-schemaspy.py` command (`status` or `report`). Configure its
+authorized key with `restrict` and the forced command; give it read access
+to the report archive and receipt, never the reader URL or tunnel key.
+
+Where Tailscale SSH requires an interactive check on port 22, use the separate
+report-only listener on port 2222. Install `report-sshd.conf.example` as
+`/etc/crowdaware-schemaspy/report-sshd.conf`, replace its ListenAddress with
+the Proxmox tailnet address, validate it with `sshd -t`, and enable
+`crowdaware-schemaspy-report.service`. It accepts only the report account's
+public key, forces the two report commands, refuses forwarding and PTYs,
+and never binds a public address. Pin this listener's host key as
+`[<tailnet address>]:2222` on the edge. Interactive host SSH is unchanged.
+
+Install `sync-schemaspy.py` on the edge at `/opt/tmedge-schemaspy` and the
+`tmedge-schemaspy-sync.service`/timer. The private
+`/etc/tmedge-schemaspy-sync.env` supplies `SCHEMASPY_REPORT_HOST`,
+`SCHEMASPY_REPORT_KEY`, `SCHEMASPY_KNOWN_HOSTS` and `ML_SCHEMA_DIR`.
+The service's report key is 0600 and the host key must be pinned through
+the trusted admin connection. It polls every 30 seconds between runs,
+skips unchanged hashes, bounds compressed/unpacked size, refuses archive
+links and unsafe paths, verifies SHA-256, and stages a complete report before
+replacing the prior snapshot. Failed generation or transfer keeps the last
+published snapshot. No database credentials, jar or diagnostic log cross
+this report channel. These data artifacts and job tools live outside
+`/opt/tmedge` and are independent of the application release pipeline.
+The sync client's `--port` defaults to 2222.
+
+The ML data page displays the Graphviz image on the right (below the tools on
+narrow screens). Authenticated `GET /api/ml-data/schema/diagram` supplies
+the snapshot timestamp and content revision; `/schema/diagram/image` under
+the same API prefix serves the fixed PNG with private no-store headers.
+The page checks the revision every 15 seconds and reloads changed images;
+selecting the image opens its full size. An unavailable diagram is explicit,
+and a failed metadata refresh keeps the prior image and its timestamp.
 
 The report is available at `/api/ml-data/schema/report/` only after sign-in,
 inside an opaque sandboxed frame. Its navigation bridge only asks the parent
@@ -164,8 +213,8 @@ opaque-frame subresource cookies. Only SchemaSpy's generic bundled vendor
 libraries/fonts are public at `/ml-schema-assets/`, like the console's login
 bundle; no database metadata is served there. The opaque report alone permits
 inline/evaluated library scripts, without access to the parent console DOM. Missing output is stated explicitly,
-with live definitions still usable. SchemaSpy reports are snapshots; regenerate
-after schema changes. Official [SchemaSpy documentation](https://schemaspy.readthedocs.io/en/master/)
+with live definitions still usable. SchemaSpy reports are snapshots refreshed
+by the Proxmox watcher. Official [SchemaSpy documentation](https://schemaspy.readthedocs.io/en/master/)
 and [release](https://github.com/schemaspy/schemaspy/releases/tag/v7.0.2).
 
 ## Validation
@@ -180,6 +229,12 @@ CI runs that integration on PostgreSQL 17; local verification used PostgreSQL
 16. Live PostgreSQL 18 reader schema/query probes and the Proxmox-generated
 SchemaSpy snapshot are checked separately. No full live database backup is
 performed during development.
+
+`python3 deploy/training/test-schemaspy.py` checks change detection, failed
+generation recovery, the report-only channel, safe extraction, hash-verified
+private synchronization and retry after transfer failure. It mocks generation;
+Java/Graphviz never run on the Mac. The actual watcher and reader fingerprint
+are verified separately on Proxmox.
 
 Browser tests exercise the ML dropdown, query results, schema, table selection
 and async ZIP preparation in Chromium and WebKit, with both themes at phone

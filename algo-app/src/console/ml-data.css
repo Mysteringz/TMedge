@@ -1,4 +1,9 @@
-.cx-data { max-width: 1440px; }
+.cx-data { max-width: 1800px; }
+.cx-data-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(350px, 1fr); gap: 24px; align-items: start; }
+.cx-data-workspace { min-width: 0; }
+.cx-data-diagram { position: sticky; top: 24px; }
+.cx-data-diagram-image { display: block; background: white; overflow: auto; max-height: 720px; }
+.cx-data-diagram-image img { display: block; width: 100%; height: auto; }
 .cx-data-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 32px; }
 .cx-data-heading .tag { flex: none; margin-top: 32px; }
 .cx-data-lede { color: var(--text-secondary); max-width: 650px; margin-top: 16px !important; }
@@ -39,6 +44,10 @@
 .cx-data-job details { color: var(--text-helper); font-size: 12px; }
 .cx-data-job summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 .cx-data-hash { display: block; overflow-wrap: anywhere; }
+@media(max-width: 1150px) {
+  .cx-data-layout { grid-template-columns: minmax(0,1fr); }
+  .cx-data-diagram { position: static; }
+}
 @media(max-width: 700px) {
   .cx-data-heading { display: block; margin-bottom: 24px; }
   .cx-data-heading .tag { margin-top: 8px; }

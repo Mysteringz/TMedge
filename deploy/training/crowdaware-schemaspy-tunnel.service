@@ -1,0 +1,18 @@
+[Unit]
+Description=Private training reader tunnel for the Proxmox SchemaSpy job
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=crowdaware-schemaspy
+EnvironmentFile=/etc/crowdaware-schemaspy/tunnel.env
+ExecStart=/usr/bin/ssh -F /dev/null -NT -o BatchMode=yes -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/crowdaware-schemaspy/known_hosts -i /etc/crowdaware-schemaspy/tunnel_ed25519 -L 127.0.0.1:55436:192.168.3.180:5432 ${SCHEMASPY_DATABASE_HOP}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
