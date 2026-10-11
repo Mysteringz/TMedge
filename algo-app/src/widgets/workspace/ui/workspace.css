@@ -1,0 +1,233 @@
+/* The landing page's right-hand section, in Bluegrid: a terminal that is
+   always Gray 100 and Plex Mono, tiles and panels told apart by layer and
+   never by shadow, square corners, and orange only where something can be
+   acted on or is new. Scoped under .cx like everything else in this shell. */
+
+/* Two columns from the lg breakpoint, where there is room for both; below
+   it the workspace follows the module list. */
+.cx .cx-home-main:has(.ws) { align-items: flex-start; }
+/* A dialog inside this stacking context must cover the header. */
+.cx .cx-home-main:has(.cx-modal-back) { z-index: 30; }
+.cx .ws { flex: 1 1 440px; display: flex; flex-direction: column; gap: 24px; min-width: 0; max-width: 640px; margin-left: auto; }
+@media (max-width: 1055px) {
+  .cx .cx-home-main:has(.ws) { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+  .cx .cx-home-main:has(.ws) .cx-home-left { flex: none; }
+  .cx .ws { flex: none; margin-left: 0; max-width: 620px; }
+}
+
+.cx .ws-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.cx .ws-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.cx .ws-head__title { font: 600 14px/1.29 var(--font-sans); letter-spacing: .16px; }
+.cx .ws-head__note { font-size: 12px; letter-spacing: .32px; color: var(--text-helper); }
+.cx .ws-link { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--interactive); font-size: 12px; letter-spacing: .32px; text-decoration: none; }
+.cx .ws-link:hover { color: var(--orange-30); text-decoration: underline; }
+.cx .ws-link svg { font-size: 14px; }
+.cx .ws-inline { display: inline-flex; align-items: center; padding: 0; border: 0; background: none; color: var(--interactive); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.cx .ws-inline:hover { color: var(--orange-30); }
+.cx .cx-chips + .ws-inline { margin-top: 8px; }
+/* A count that is news: unread, yours. The word is in the label for a screen reader. */
+.cx .ws-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 1rem; background: var(--interactive); color: var(--on-interactive); font: 600 12px/1 var(--font-sans); letter-spacing: 0; }
+.cx .seg-opt:has(input:checked) .ws-count { background: var(--on-interactive); color: var(--interactive); }
+
+/* — terminal: always dark, always mono — */
+.cx .ws-term { min-width: 0; background: var(--background); box-shadow: inset 0 0 0 1px var(--border-subtle-00); font-family: var(--font-mono); }
+.cx .ws-term__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; padding: 0 12px 0 16px; background: var(--layer-01); font-size: 12px; color: var(--text-secondary); }
+.cx .ws-term__title { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx .ws-term__dim { color: var(--text-helper); }
+/* Status is an icon and a word; the colour is on the icon only. */
+.cx .ws-term__status { display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; }
+.cx .ws-term__status--ready .an-icon { color: var(--support-success); }
+.cx .ws-term__status--partial .an-icon { color: var(--support-warning); }
+.cx .ws-term__status--loading .an-icon { color: var(--text-helper); }
+.cx .ws .an-icon__inner { fill: #161616; }
+.cx .ws-term__prompt { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border-subtle-00); cursor: text; }
+/* The ring goes round the whole prompt, so the field itself draws none. */
+.cx .ws-term__prompt:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
+.cx .ws-term__glyph { color: var(--interactive); font-weight: 600; }
+.cx .ws-term__input { flex: 1; min-width: 0; height: 46px; padding: 0; border: 0; background: transparent; color: var(--text-primary); caret-color: var(--interactive); font: 400 14px var(--font-mono); letter-spacing: 0; }
+.cx .ws-term__input:focus-visible { outline: none; }
+.cx .ws-term__input::placeholder { color: var(--text-placeholder); }
+.cx .ws-term__prompt:focus-within .ws-term__key { visibility: hidden; }
+.cx .ws-term__output { position: relative; padding: 8px 0; }
+.cx .ws-term__line { margin: 0 !important; padding: 2px 16px; font-size: 12px; line-height: 18px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.cx .ws-term__line b { font-weight: 600; color: var(--text-primary); }
+.cx .ws-term__line kbd { min-width: 18px; font-size: 11px; line-height: 16px; }
+/* Results open over what is below, as a shell's completions do, so the page
+   does not move under the hands of someone typing. A floating layer is the
+   one place Bluegrid allows a shadow. */
+.cx .ws-term__results {
+  position: absolute; z-index: 5; top: 0; left: 0; right: 0; max-height: min(420px, 60vh); overflow-y: auto;
+  list-style: none; margin: 0; padding: 4px 0; background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border-subtle-01), var(--shadow-overlay);
+}
+.cx .ws-term__results[hidden] { display: none; }
+.cx .ws-term__row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: baseline; gap: 12px; padding: 6px 16px; font-size: 13px; line-height: 18px; cursor: pointer; }
+/* Selected is the accent edge and the layer step, never colour alone. */
+.cx .ws-term__row.is-on { background: var(--layer-01); box-shadow: inset 3px 0 0 var(--interactive); }
+.cx .ws-term__kind, .cx .ws-term__hint { font-size: 12px; color: var(--text-helper); white-space: nowrap; }
+.cx .ws-term__text { display: flex; flex-direction: column; min-width: 0; }
+.cx .ws-term__name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx .ws-term__row.is-on .ws-term__name { font-weight: 600; }
+.cx .ws-term__detail { font-size: 12px; color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx .ws-term__hint { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.cx .ws-term__foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 16px; border-top: 1px solid var(--border-subtle-00); font-size: 12px; color: var(--text-secondary); }
+.cx .ws-term__foot .tag { min-height: 18px; font-size: 11px; }
+
+/* — system figures: one band of tiles, hairlines between — */
+/* The gaps are drawn, not left open: the donut turning behind would otherwise
+   show through them as stray orange specks between the figures. */
+.cx .ws-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border-subtle-00); }
+.cx .ws-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 12px; background: var(--layer-01); }
+.cx .ws-tile__label { color: var(--text-secondary); font-size: 12px; line-height: 1.33; letter-spacing: .32px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The number leads; its last hour runs quietly beside it. */
+.cx .ws-tile__figure { display: flex; align-items: flex-end; gap: 8px; min-width: 0; min-height: 32px; }
+.cx .ws-tile__value { flex: none; font: 300 24px/1.25 var(--font-sans); letter-spacing: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cx .ws-tile__unit { margin-left: 4px; color: var(--text-secondary); font-size: 13px; font-weight: 400; }
+.cx .ws-tile__unknown { color: var(--text-helper); }
+/* Why a figure is missing is the one thing here that must not be cut short. */
+.cx .ws-tile__note { min-height: 16px; color: var(--text-helper); font-size: 12px; line-height: 1.33; letter-spacing: .32px; overflow-wrap: anywhere; }
+.cx .ws-tile .an-spark { flex: 1 1 0; min-width: 0; max-width: 96px; margin-left: auto; }
+/* An old reading is still shown, but it no longer looks like now. */
+.cx .ws-tiles.is-stale .ws-tile__value { color: var(--text-secondary); }
+
+/* — inline notification — */
+.cx .ws-notice { display: flex; gap: 12px; min-width: 0; margin-bottom: 8px; padding: 12px 16px 12px 13px; background: var(--layer-01); border-left: 3px solid var(--support-info); color: var(--text-secondary); font-size: 14px; line-height: 1.29; overflow-wrap: anywhere; }
+.cx .ws-notice strong { margin-right: 8px; color: var(--text-primary); font-weight: 600; }
+.cx .ws-notice__icon { color: var(--support-info); }
+.cx .ws-notice--warning { border-left-color: var(--support-warning); }
+.cx .ws-notice--warning .ws-notice__icon { color: var(--support-warning); }
+.cx .ws-notice--error { border-left-color: var(--support-error); }
+.cx .ws-notice--error .ws-notice__icon { color: var(--support-error); }
+
+/* — team panel: contained tabs, the selected one joining its panel — */
+.cx .ws-panel { min-width: 0; background: var(--layer-01); }
+.cx .ws-tabs { display: flex; background: var(--layer-accent-01); }
+.cx .ws-tab {
+  flex: 1 1 0; display: inline-flex; align-items: center; gap: 8px; min-width: 0; min-height: 48px; padding: 0 16px;
+  border: 0; border-top: 2px solid transparent; background: transparent; color: var(--text-secondary);
+  font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; text-align: left; white-space: nowrap; cursor: pointer;
+  transition: background 70ms var(--ease-productive), color 70ms var(--ease-productive);
+}
+.cx .ws-tab:hover { background: var(--layer-hover-02); color: var(--text-primary); }
+.cx .ws-tab[aria-selected="true"] { background: var(--layer-01); color: var(--text-primary); font-weight: 600; border-top-color: var(--interactive); }
+.cx .ws-panel__body { display: flex; flex-direction: column; min-height: 240px; }
+.cx .ws-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border-subtle-01); }
+.cx .ws-bar__note { font-size: 12px; letter-spacing: .32px; color: var(--text-helper); }
+.cx .ws-bar .btn { gap: 8px; }
+.cx .ws-back { padding-left: 8px; }
+.cx .ws-back svg { order: -1; }
+.cx .ws-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cx .ws-empty { max-width: 56ch; margin: 0 !important; padding: 32px 16px; color: var(--text-secondary); font-size: 14px; line-height: 1.43; text-wrap: pretty; }
+.cx .ws-foot { margin: 0 !important; padding: 8px 16px; }
+
+.cx .ws-list { list-style: none; margin: 0; padding: 0; max-height: min(400px, 60vh); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-subtle-01) transparent; }
+.cx .ws-list > li { border-bottom: 1px solid var(--border-subtle-01); }
+.cx .ws-list--inset { max-height: none; border-top: 1px solid var(--border-subtle-01); }
+.cx .ws-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; min-height: 56px; padding: 10px 16px;
+  border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  transition: background 70ms var(--ease-productive);
+}
+.cx .ws-row:hover { background: var(--layer-hover-01); }
+.cx .ws-row__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cx .ws-row__top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; letter-spacing: .32px; color: var(--text-secondary); }
+.cx .ws-row__time { flex: none; color: var(--text-helper); }
+/* A title may run to a second line before it is cut: it is what the row is. */
+.cx .ws-row__title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; font-size: 14px; line-height: 1.29; color: var(--text-primary); overflow-wrap: anywhere; }
+.cx .ws-row__sub { font-size: 12px; letter-spacing: .32px; color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* mail: unread is the mark, the weight and (for a screen reader) the word */
+.cx .ws-mail { align-items: flex-start; }
+.cx .ws-mail__mark { flex: none; width: 8px; height: 8px; margin-top: 5px; }
+.cx .ws-mail.is-unread .ws-mail__mark { background: var(--interactive); }
+.cx .ws-mail__who { min-width: 0; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx .ws-mail.is-unread .ws-mail__who { color: var(--text-primary); }
+.cx .ws-mail.is-unread .ws-row__title { font-weight: 600; }
+
+/* requests: the count of each status is also the way to see only those */
+/* Wrapping cells grow to fill their row, so five across or three and two both end flush. */
+.cx .ws-stats { display: flex; flex-wrap: wrap; gap: 1px; background: var(--border-subtle-01); border-bottom: 1px solid var(--border-subtle-01); }
+.cx .ws-stat { flex: 1 1 calc(20% - 1px); display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; min-height: 60px; padding: 8px 12px; border: 0; background: var(--layer-01); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background 70ms var(--ease-productive); }
+.cx .ws-stat:hover { background: var(--layer-hover-01); }
+.cx .ws-stat__value { font: 300 24px/1.17 var(--font-sans); font-variant-numeric: tabular-nums; }
+.cx .ws-stat__label { font-size: 12px; line-height: 1.33; letter-spacing: .32px; color: var(--text-secondary); }
+.cx .ws-stat.is-on { box-shadow: inset 0 -3px 0 var(--interactive); }
+.cx .ws-stat.is-on .ws-stat__label { font-weight: 600; color: var(--text-primary); }
+.cx .ws-req { display: flex; align-items: stretch; }
+.cx .ws-req .ws-row { padding-left: 12px; }
+.cx .ws-vote {
+  flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 48px; min-height: 48px; padding: 0;
+  border: 0; border-right: 1px solid var(--border-subtle-01); background: transparent; color: var(--text-secondary);
+  font: 400 12px/1.2 var(--font-mono); cursor: pointer; transition: background 70ms var(--ease-productive);
+}
+.cx .ws-vote svg { font-size: 16px; }
+.cx .ws-vote:hover:not(:disabled) { background: var(--layer-hover-01); color: var(--text-primary); }
+.cx .ws-vote.is-on { color: var(--interactive); font-weight: 600; box-shadow: inset 3px 0 0 var(--interactive); }
+.cx .ws-vote:disabled { cursor: not-allowed; color: var(--text-disabled); }
+.cx .ws-vote.is-on:disabled { color: var(--text-helper); box-shadow: inset 3px 0 0 var(--border-strong-01); }
+
+/* tasks: whoever may move one gets the control in the row */
+.cx .ws-task { display: flex; align-items: center; }
+.cx .ws-task .ws-row { padding-left: 12px; }
+.cx .ws-task__status { flex: none; width: 128px; margin-left: 16px; }
+.cx .ws-panel .input { background-color: var(--field-02); }
+.cx .ws-panel .input:hover:not(:disabled) { background-color: var(--field-hover-02); }
+@media (min-width: 901px) { .cx select.ws-task__status { min-height: 32px; padding-left: 12px; padding-right: 32px; font-size: 13px; background-position: right 8px center; } }
+.cx .ws-overdue { display: inline-flex; align-items: center; gap: 4px; color: var(--text-primary); vertical-align: bottom; }
+.cx .ws-overdue .an-icon { color: var(--support-warning); }
+
+/* status tags: the word is always there; colour only repeats it (Carbon's Gray 100 pairs) */
+.cx .ws-tag { flex: none; background: #525252; color: #f4f4f4; }
+.cx .ws-tag--planned { background: #6929c4; color: #e8daff; }
+.cx .ws-tag--in-progress, .cx .ws-tag--doing { background: #0043ce; color: #d0e2ff; }
+.cx .ws-tag--shipped, .cx .ws-tag--done { background: #0e6027; color: #a7f0ba; }
+.cx .ws-tag--declined { background: transparent; box-shadow: inset 0 0 0 1px var(--border-strong-01); color: var(--text-secondary); }
+
+/* — a message or a request, opened in the panel — */
+.cx .ws-detail { display: flex; flex-direction: column; min-width: 0; }
+.cx .ws-detail__body { display: flex; flex-direction: column; gap: 16px; padding: 16px; max-height: min(520px, 70vh); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-subtle-01) transparent; }
+.cx .ws-detail__head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.cx .ws-detail__head > div { min-width: 0; }
+.cx .ws-detail__head .ws-vote { border: 1px solid var(--border-subtle-01); }
+.cx .ws-detail__title { font: 400 20px/1.4 var(--font-sans); overflow-wrap: anywhere; }
+.cx .ws-detail__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 0 !important; font-size: 12px; line-height: 1.5; letter-spacing: .32px; color: var(--text-helper); overflow-wrap: anywhere; }
+.cx .ws-detail__meta b { font-weight: 400; color: var(--text-secondary); font-family: var(--font-mono); }
+.cx .ws-detail__sub { margin: 0 0 4px; font: 600 12px/1.33 var(--font-sans); letter-spacing: .32px; color: var(--text-secondary); }
+/* What a person wrote, as they wrote it: their line breaks, nothing interpreted. */
+.cx .ws-prose { max-width: 66ch; font-size: 14px; line-height: 1.5; letter-spacing: .16px; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cx .ws-detail__foot { padding-top: 12px; border-top: 1px solid var(--border-subtle-01); }
+.cx .ws-confirm { flex: 1 1 100%; font-size: 12px; letter-spacing: .32px; color: var(--text-secondary); }
+.cx .ws-inline-field { width: min(240px, 100%); }
+.cx .ws-facts { display: grid; margin: 0; }
+.cx .ws-facts > div { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 16px; min-height: 40px; border-bottom: 1px solid var(--border-subtle-01); }
+.cx .ws-facts dt { color: var(--text-secondary); font-size: 12px; letter-spacing: .32px; }
+.cx .ws-facts dd { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+
+/* — dialogs — */
+.cx .ws-modal { width: min(560px, 100%); }
+.cx .ws-modal__label { font-size: 12px; letter-spacing: .32px; color: var(--text-helper); }
+.cx .ws-modal__title { font: 400 20px/1.4 var(--font-sans); }
+.cx .ws-modal__context { margin: 0 !important; }
+.cx .ws-modal__context b { font-weight: 600; color: var(--text-secondary); }
+.cx .ws-textarea { width: 100%; font-family: var(--font-sans); font-size: 14px; }
+.cx .ws-form-error { margin-top: 0; }
+
+@media (max-width: 900px) {
+  /* 16px in the field so focusing it does not zoom the page on iOS. */
+  .cx .ws-term__input { font-size: 16px; }
+  .cx .ws-term__row { min-height: 44px; align-items: center; }
+  .cx .ws-inline, .cx .ws-link { min-height: 44px; }
+  .cx .ws-textarea { font-size: 16px; }
+  .cx .ws-task__status { width: 136px; }
+}
+@media (max-width: 560px) {
+  .cx .ws-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cx .ws-stat { flex-basis: calc(33.33% - 1px); }
+  .cx .ws-term__row { grid-template-columns: 56px minmax(0, 1fr); }
+  .cx .ws-term__hint, .cx .ws-term__key { display: none; }
+  .cx .ws-tab { padding: 0 12px; }
+  .cx .ws-task { flex-wrap: wrap; }
+  .cx .ws-task__status { margin: 8px 16px 0; width: calc(100% - 32px); }
+  .cx .ws-task .ws-row { padding-left: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .cx .ws-tab, .cx .ws-row, .cx .ws-stat, .cx .ws-vote { transition: none; } }

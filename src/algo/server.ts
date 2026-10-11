@@ -32,6 +32,10 @@ import { RuntimeNotificationQueries } from '../infrastructure/algo-admin/runtime
 import type { EdgeRuntime } from '../edge/runtime.js';
 import { createEdgeAnalytics } from '../infrastructure/analytics/edge-analytics.js';
 import { createAnalyticsRouter } from '../modules/analytics/routes/analytics-router.js';
+import { JsonDocumentStore } from '../infrastructure/workspace/json-document-store.js';
+import { Board, emptyBoard, parseBoard } from '../modules/workspace/application/board.js';
+import { emptyMail, Mailbox, parseMail } from '../modules/workspace/application/mailbox.js';
+import { createWorkspaceRouter } from '../modules/workspace/routes/workspace-router.js';
 import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
 import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
 import { AlgoWebSocketAdapter } from './websocket-adapter.js';
@@ -199,6 +203,22 @@ export function startAlgo(
   app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
   const notifications = express.Router();
   app.use('/api/admin/notifications', notifications);
+  // The landing page's team side: a mailbox and a board (docs/WORKSPACE.md).
+  // It checks the session itself and sits up here, with the other routers
+  // that do, for the sake of its body parser: auth.router below reads every
+  // JSON body with an 8 kB limit, and a full-length message in Chinese is 12.
+  // Its files live in the data directory, where the accounts are by default,
+  // because a release's own tree is replaced on the next deploy.
+  const workspaceDir = join(dataDir, 'algo', 'workspace');
+  const teamMembers = () => authCfg.enabled
+    ? auth.users.records().filter((user) => !user.disabled).map((user) => ({ name: user.name, since: user.createdAt }))
+    // With sign-in off there is one person, and they are "local".
+    : [{ name: 'local', since: 0 }];
+  app.use('/api/workspace', createWorkspaceRouter(auth, {
+    mailbox: new Mailbox(new JsonDocumentStore(join(workspaceDir, 'mail.json'), emptyMail, parseMail), teamMembers),
+    board: new Board(new JsonDocumentStore(join(workspaceDir, 'board.json'), emptyBoard, parseBoard), teamMembers),
+    members: teamMembers,
+  }));
   app.use(auth.router);
   const nativeLogin = consoleCore ? flasherLogin(auth, consoleCore) : null;
   if (nativeLogin) app.use('/api/tmflash', express.json({ limit: '4kb' }), nativeLogin.machine);

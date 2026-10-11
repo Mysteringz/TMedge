@@ -188,8 +188,10 @@
 @media (prefers-reduced-motion: reduce) { .cx-module.is-on .cx-arrow { transform: none; } }
 .cx-donut-stage {
   position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
-  /* Strongest behind the empty right of the screen, faint under the modules. */
-  mask-image: linear-gradient(to right, rgba(0, 0, 0, .16) 0%, rgba(0, 0, 0, .2) 42%, black 78%);
+  /* Faint everywhere there is something to read, which is now both columns:
+     the right of the screen used to be empty and took the ring at full
+     strength, and headings set over that could not be read. */
+  mask-image: linear-gradient(to right, rgba(0, 0, 0, .16) 0%, rgba(0, 0, 0, .2) 42%, rgba(0, 0, 0, .32) 100%);
 }
 /* 64 x 30 characters, about 38.4em x 30em in a monospace face at line-height
    1. The font size is whichever makes it at least 1.6 tabs wide *and* 1.5
@@ -429,7 +431,7 @@
   .cx-module { grid-template-columns: 28px 1fr 20px; gap: 12px; padding: 16px; }
   .cx-mod-title { font-size: 18px; }
   .cx-donut { left: 50%; top: 62%; }
-  .cx-donut-stage { mask-image: linear-gradient(to bottom, rgba(0, 0, 0, .14), rgba(0, 0, 0, .18) 55%, black 92%); }
+  .cx-donut-stage { mask-image: linear-gradient(to bottom, rgba(0, 0, 0, .14), rgba(0, 0, 0, .18) 55%, rgba(0, 0, 0, .3) 92%); }
   .cx-train { padding: 24px 16px 40px; }
   .cx-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cx-metric:nth-child(3) { padding-left: 0; }

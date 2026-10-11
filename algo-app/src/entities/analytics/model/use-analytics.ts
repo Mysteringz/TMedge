@@ -16,8 +16,12 @@ export interface AnalyticsState {
   refresh(): void;
 }
 
-/** One request at a time; a hidden tab stops asking and picks up again when it is looked at. */
-export function useAnalytics(range: RangeId): AnalyticsState {
+/**
+ * One request at a time; a hidden tab stops asking and picks up again when it is looked at.
+ * `refreshMs` is for a reader that needs the range but not its pace: the
+ * landing page shows six figures from the last hour and can wait longer for them.
+ */
+export function useAnalytics(range: RangeId, refreshMs: number = REFRESH_MS[range]): AnalyticsState {
   const [snapshot, setSnapshot] = useState<AnalyticsSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -47,7 +51,7 @@ export function useAnalytics(range: RangeId): AnalyticsState {
       } finally {
         clearTimeout(timeout);
         controller = null;
-        if (!disposed) { setLoading(false); next = setTimeout(() => void poll(), Math.min(120_000, REFRESH_MS[range] * 2 ** Math.min(failures, 3))); }
+        if (!disposed) { setLoading(false); next = setTimeout(() => void poll(), Math.min(120_000, refreshMs * 2 ** Math.min(failures, 3))); }
       }
     };
     const visible = (): void => {
@@ -64,7 +68,7 @@ export function useAnalytics(range: RangeId): AnalyticsState {
       document.removeEventListener('visibilitychange', visible);
       refreshRef.current = () => undefined;
     };
-  }, [range]);
+  }, [range, refreshMs]);
 
   return { snapshot, loading, error, now, pending: !!snapshot && snapshot.range.id !== range, refresh: () => refreshRef.current() };
 }
