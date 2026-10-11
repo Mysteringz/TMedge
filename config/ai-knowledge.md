@@ -86,6 +86,13 @@ Modules:
   exports fail and can be generated again. The table browser reads the live
   database; the SchemaSpy report is a separately generated snapshot. SchemaSpy generation
   runs on Proxmox; the console serves its static output.
+  A Graphviz relationship diagram sits on the right of ML data (below the
+  tools on narrow screens). A server-side watcher checks the training schema
+  and row-write counters every 30 seconds between jobs, regenerating SchemaSpy
+  when something changes. Updates during generation are picked up by the next
+  check. The edge privately synchronizes completed snapshots and the page
+  checks for a new diagram every 15 seconds. The last successful diagram stays
+  available if regeneration or synchronization fails, with its update time shown.
 - 03 Debug console, /console. Live thermal frames, the floor with fused
   occupancy, per-sensor health, and commands to a sensor (set a parameter,
   reset its background, identify, save, reboot).
@@ -98,6 +105,11 @@ Modules:
   doing (processor, memory, storage with a fill forecast, services, sensor
   ingest) at /analytics/server. Read-only. Counts only: no name, email or
   account id of a student is kept.
+  Service health distinguishes the registry database from the training
+  database. Registry storage may use files while the PostgreSQL training
+  database is operational. The training database has its own read-only
+  connectivity probe and uptime history; an unavailable database is reported
+  as an outage, and time before monitoring began has no invented history.
 - 06 Adoption, /adoption. Admitting a newly flashed sensor. TMflash creates a
   pending request; a person compares the board's UID and request code and
   approves it. An admitted sensor has no floor or position yet, so it cannot

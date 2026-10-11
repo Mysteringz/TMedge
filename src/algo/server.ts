@@ -682,7 +682,7 @@ export function startAlgo(
       broker.stop();
       for (const ws of wss.clients) ws.terminate();
       disposal = Promise.all([
-        algo.dispose(), consoleCore?.dispose(), analytics.collector.stop(), mlData.stop(),
+        algo.dispose(), consoleCore?.dispose(), analytics.stop(), mlData.stop(),
         new Promise<void>(resolve => wss.close(() => resolve())),
       ]).then(() => undefined);
       return disposal;

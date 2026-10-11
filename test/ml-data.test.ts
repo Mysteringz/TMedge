@@ -10,7 +10,7 @@ import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { DataError, readerUrl, type TrainingDatabase } from '../src/algo/ml-data/database.js';
 import { Exports, selectedTables, type ExportJob } from '../src/algo/ml-data/exports.js';
-import { schemaAssets, schemaHtml } from '../src/algo/ml-data/schema-report.js';
+import { DIAGRAM_FILE, schemaAssets, schemaDiagram, schemaHtml } from '../src/algo/ml-data/schema-report.js';
 import { createMlData } from '../src/algo/ml-data/routes.js';
 import { principal } from '../src/modules/algo-admin/domain/permissions.js';
 
@@ -127,4 +127,24 @@ test('SchemaSpy embeds private diagrams and report code while publishing only ge
     try { assert.equal((await fetch(base+'/bower/vendor.js')).status,200);assert.equal((await fetch(base+'/index.html')).status,404);assert.equal((await fetch(base+'/diagrams/relations.png')).status,404);assert.equal((await fetch(base+'/schema.js')).status,404); }
     finally { await new Promise<void>(resolve=>server.close(()=>resolve())); }
   } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('Graphviz diagram metadata and image require training access and revisions refresh when a new report is published', async () => {
+  const dir=mkdtempSync(join(tmpdir(),'ml-diagram-'));
+  const auth={principalOf:(req:{headers:{cookie?:string}})=>req.headers.cookie==='viewer'?principal('vi','viewer'):null,accountEpoch:()=>null};
+  const service=createMlData(auth,{env:{ML_SCHEMA_DIR:dir},dataDir:dir});
+  const app=express();app.use('/api/ml-data',service.router);const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));
+  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/ml-data/schema/diagram`,headers={cookie:'viewer'};
+  try {
+    assert.equal((await fetch(base)).status,401);assert.equal((await fetch(base+'/image')).status,401);
+    assert.equal((await(await fetch(base,{headers})).json() as {available:boolean}).available,false);
+    assert.equal((await fetch(base+'/image',{headers})).status,404);
+    mkdirSync(join(dir,'diagrams','summary'),{recursive:true});
+    const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1EAAAAASUVORK5CYII=','base64');
+    writeFileSync(join(dir,DIAGRAM_FILE),png);writeFileSync(join(dir,'generated.json'),JSON.stringify({generatedAt:1000}));
+    const first=schemaDiagram(dir);assert.equal(first.available,true);
+    const image=await fetch(base+'/image?v=first',{headers});assert.equal(image.status,200);assert.match(image.headers.get('cache-control')??'',/no-store/);assert.equal(image.headers.get('content-type'),'image/png');assert.deepEqual(Buffer.from(await image.arrayBuffer()),png);
+    writeFileSync(join(dir,'generated.json'),JSON.stringify({generatedAt:2000}));assert.notEqual(schemaDiagram(dir).revision,first.revision);
+    writeFileSync(join(dir,DIAGRAM_FILE),'bad image');assert.equal(schemaDiagram(dir).available,false);
+  } finally {await service.stop();await new Promise<void>(resolve=>server.close(()=>resolve()));rmSync(dir,{recursive:true,force:true});}
 });

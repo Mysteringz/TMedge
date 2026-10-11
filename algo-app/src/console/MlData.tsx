@@ -6,6 +6,7 @@ type Tab = 'query' | 'schema' | 'export';
 interface Column { name: string; type: string; nullable: boolean; primaryKey: boolean; references: string | null }
 interface Table { name: string; kind: 'table' | 'view'; estimatedRows: number | null; bytes: number | null; columns: Column[] }
 interface Schema { available: boolean; tables: Table[]; report: boolean; error: string | null }
+interface Diagram { available: boolean; generatedAt: number | null; revision: string | null; error: string | null }
 interface Result { columns: string[]; rows: unknown[][]; truncated: boolean; elapsedMs: number }
 interface Job { id: string; state: 'queued' | 'processing' | 'completed' | 'failed'; tables: string[]; createdAt: number; expiresAt: number; bytes: number; sha256: string | null; error: string | null }
 const INITIAL = 'SELECT id, sensor_uid, modality, reference_at\nFROM training.frames\nORDER BY reference_at DESC\nLIMIT 50;';
@@ -91,6 +92,7 @@ export function MlData() {
       <span className={`tag ${schema?.available ? 'cx-data-online' : 'tag-neutral'}`}>{schema?.available ? 'Database connected' : schema || schemaError ? 'Database unavailable' : 'Connecting…'}</span>
     </div>
     {(schemaError || schema?.error) && <div className="cx-data-notice" role="alert">{schemaError || schema?.error}<button className="btn btn-ghost" onClick={() => setRefresh(n => n + 1)}>Retry connection</button></div>}
+    <div className="cx-data-layout"><div className="cx-data-workspace">
     <div className="cx-data-tabs" role="tablist" aria-label="ML data tools">
       {(['query','schema','export'] as const).map(t => <button key={t} id={`data-tab-${t}`} role="tab" aria-selected={tab === t} aria-controls={`data-panel-${t}`} onClick={() => setTab(t)}>
         {{ query: 'SQL console', schema: 'Database schema', export: 'Download data' }[t]}</button>)}
@@ -151,7 +153,36 @@ export function MlData() {
         </div>
       </div>}
     </section>
+    </div><DatabaseDiagram /></div>
   </main>;
+}
+
+function DatabaseDiagram() {
+  const [diagram, setDiagram] = useState<Diagram | null>(null);
+  const [error, setError] = useState('');
+  const [imageError, setImageError] = useState(false);
+  useEffect(() => {
+    const abort = new AbortController(); let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const value = await request<Diagram>('/schema/diagram', abort.signal);
+        if (!abort.signal.aborted) { setDiagram(value); setError(''); setImageError(false); }
+      } catch (failure) { if (!abort.signal.aborted) setError((failure as Error).message); }
+      if (!abort.signal.aborted) timer = setTimeout(() => void poll(), 15_000);
+    };
+    void poll(); return () => { abort.abort(); clearTimeout(timer); };
+  }, []);
+  useEffect(() => setImageError(false), [diagram?.revision]);
+  return <aside className="cx-data-diagram cx-data-panel" aria-label="Database relationship diagram">
+    <div className="cx-data-panel-head"><h2>Database relationships</h2><span className="tag tag-neutral">Graphviz</span></div>
+    <p className="cx-hint">Tables and foreign keys from SchemaSpy. Updates automatically when the database changes.</p>
+    {diagram?.available && !imageError ? <a className="cx-data-diagram-image" href={`/api/ml-data/schema/diagram/image?v=${encodeURIComponent(diagram.revision ?? '')}`} target="_blank" rel="noopener noreferrer" aria-label="Open full-size database relationship diagram">
+      <img src={`/api/ml-data/schema/diagram/image?v=${encodeURIComponent(diagram.revision ?? '')}`} alt="Graphviz diagram of training database tables and foreign-key relationships" onError={() => setImageError(true)} />
+    </a> : <p className="cx-data-empty">{error || diagram?.error || (imageError ? 'The diagram could not be loaded. It will retry after the next update.' : 'Loading diagram…')}</p>}
+    {diagram?.generatedAt && <p className="cx-hint">Updated {new Date(diagram.generatedAt).toLocaleString()}</p>}
+    {diagram?.available && <p className="cx-hint">Select the diagram to view it at full size.</p>}
+    {diagram?.available && error && <p className="cx-data-error" role="status">{error} Showing the last published diagram.</p>}
+  </aside>;
 }
 
 function SchemaSpyReport() {

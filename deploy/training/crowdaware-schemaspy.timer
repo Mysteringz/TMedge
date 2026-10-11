@@ -1,10 +1,10 @@
 [Unit]
-Description=Daily training schema documentation on Proxmox
+Description=Detect training database changes on Proxmox
 
 [Timer]
-OnCalendar=daily
-Persistent=true
-RandomizedDelaySec=300
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target

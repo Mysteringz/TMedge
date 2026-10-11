@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep the console SchemaSpy snapshot current
+
+[Timer]
+OnBootSec=35s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

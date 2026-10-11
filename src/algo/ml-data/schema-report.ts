@@ -1,6 +1,26 @@
 import express from 'express';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, relative, resolve, sep } from 'node:path';
+
+export const DIAGRAM_FILE = 'diagrams/summary/relationships.real.large.png';
+export function schemaDiagram(dir: string) {
+  try {
+    const file = resolve(dir, DIAGRAM_FILE), info = statSync(file);
+    if (!info.isFile() || info.size > 8 * 1024 ** 2) throw new Error('invalid diagram');
+    const bytes = readFileSync(file);
+    if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('invalid PNG');
+    let generatedAt = info.mtimeMs;
+    try {
+      const metadata: unknown = JSON.parse(readFileSync(resolve(dir, 'generated.json'), 'utf8'));
+      if (metadata && typeof metadata === 'object' && 'generatedAt' in metadata
+        && typeof metadata.generatedAt === 'number' && Number.isSafeInteger(metadata.generatedAt) && metadata.generatedAt > 0) generatedAt = metadata.generatedAt;
+    } catch { /* Legacy reports can still show their file timestamp. */ }
+    return { available: true, generatedAt, revision: `${generatedAt}-${createHash('sha256').update(bytes).digest('hex')}`, error: null };
+  } catch {
+    return { available: false, generatedAt: null, revision: null, error: 'The Graphviz diagram has not been published yet.' };
+  }
+}
 
 /** These bundled libraries/fonts contain no database metadata, like the login bundle. */
 export function schemaAssets(dir: string) {

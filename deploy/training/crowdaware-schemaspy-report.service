@@ -1,0 +1,17 @@
+[Unit]
+Description=Private report-only SSH listener for SchemaSpy synchronization
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStartPre=/usr/sbin/sshd -t -f /etc/crowdaware-schemaspy/report-sshd.conf
+ExecStart=/usr/sbin/sshd -D -e -f /etc/crowdaware-schemaspy/report-sshd.conf
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/run
+
+[Install]
+WantedBy=multi-user.target

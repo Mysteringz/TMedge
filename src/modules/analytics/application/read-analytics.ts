@@ -27,7 +27,7 @@ export interface ReadAnalyticsDependencies {
   /** Resolves null where there is no systemd to ask. */
   units: { supported: boolean; read(now: number): Promise<UnitStatus[] | null> };
   directoryUsage: { read(now: number): DirectoryUsage | null };
-  identity: { edgeId: string; version: string; release: string | null; persistence: 'file' | 'postgres'; hasDatabase: boolean };
+  identity: { edgeId: string; version: string; release: string | null; persistence: 'file' | 'postgres'; hasDatabase: boolean; hasTrainingDatabase?: boolean };
   timeZone: string;
   now?: () => number;
   /** How long one assembled page is handed to everyone who asks; 0 turns that off (tests). */
@@ -234,12 +234,18 @@ export class ReadAnalytics {
     });
     rows.push(this.deps.identity.hasDatabase
       ? {
-        id: 'database', name: 'Database', detail: 'PostgreSQL',
+        id: 'database', name: 'Registry database', detail: 'PostgreSQL registry storage',
         status: r.databaseUp === null ? 'off' : r.databaseUp ? 'ok' : 'err',
         statusText: r.databaseUp === null ? 'Not checked yet' : r.databaseUp ? 'Operational' : 'Outage: not answering',
         ...record('db.up', 'mean', 0.99, 0.9),
       }
-      : { id: 'database', name: 'Database', detail: 'This edge keeps its records in files', status: 'off', statusText: 'Not configured', days: days.map((day) => ({ day, health: 'none' as DayHealth })), uptimePercent: null });
+      : { id: 'database', name: 'Registry database', detail: 'Registry storage uses files', status: 'off', statusText: 'Not configured', days: days.map((day) => ({ day, health: 'none' as DayHealth })), uptimePercent: null });
+    if (this.deps.identity.hasTrainingDatabase) rows.push({
+      id: 'training-database', name: 'Training database', detail: 'PostgreSQL ML recordings',
+      status: r.trainingDatabaseUp === null ? 'off' : r.trainingDatabaseUp ? 'ok' : 'err',
+      statusText: r.trainingDatabaseUp === null ? 'Not checked yet' : r.trainingDatabaseUp ? 'Operational' : 'Outage: not answering',
+      ...record('db.training.up', 'mean', 0.99, 0.9),
+    });
     return rows;
   }
 
