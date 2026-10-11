@@ -293,7 +293,16 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
     // when React Flow re-measures during a viewport change, at random, and it
     // blocked a deploy of unchanged code. Every other error still fails.
     const benign = /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)\.?$/;
-    context.on('page', page => page.on('pageerror', error => { if (!benign.test(error.message)) errors.push(error.message); }));
+    // WebKit reports a request the page made just as it was being left as
+    // "Fetch API cannot load <url> due to access control checks", and that
+    // console line reaches us as a page error. A request to the page's own
+    // origin cannot fail an access control check, so about this origin the
+    // words only ever mean "the test moved on while the page was starting".
+    // It failed main's build of code that had passed as a pull request an
+    // hour before. The same words about any other origin still fail.
+    const abandoned = message => message.endsWith(' due to access control checks.')
+      && (message.startsWith(`/${new URL(base).host}/`) || message.includes(`${base}/`));
+    context.on('page', page => page.on('pageerror', error => { if (!benign.test(error.message) && !abandoned(error.message)) errors.push(error.message); }));
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
     page.setDefaultNavigationTimeout(15_000);
