@@ -13,7 +13,7 @@ npm run db:migrate
 npm run web
 ```
 
-The config command creates `.env` with generated, distinct local credentials, chooses an available loopback web port from 8080..8089 and uses PostgreSQL on loopback 55433. It prints the selected web port and refuses to replace an existing `.env`. Visit `http://127.0.0.1:<WEB_PORT>/signup/` to register with an allowed university email or Portal UID and a password of at least 10 characters. Account storage does not verify ownership of the email; that authentication enhancement remains deferred.
+The config command creates `.env` with generated, distinct local credentials, chooses an available loopback web port from 8080..8089 and uses PostgreSQL on loopback 55433. It prints the selected web port and refuses to replace an existing `.env`. Visit `http://127.0.0.1:<WEB_PORT>/signup/` to register with an HKU UID (`u` followed by seven digits; the `connect.hku.hk` domain is added for you) and a password meeting every rule the form lists: at least 8 characters, plus a lowercase letter, an uppercase letter, a number and a symbol, and no more than 64 characters. Account storage does not verify ownership of the email; that authentication enhancement remains deferred.
 
 The database uses a persistent named volume. `docker compose -f docker-compose.postgres-local.yml stop` pauses it; `start` resumes it. Do not delete its volume when keeping accounts. Initial credentials are consumed only when the volume is first initialized; changing `.env` later does not rotate existing database role passwords. The local admin role is a database maintenance credential, not an application admin account.
 

@@ -49,6 +49,7 @@ export async function passwordHash(password: string, salt: Buffer): Promise<Buff
 }
 
 import { withPrivateFileLock, writePrivateJson, FileBusyError } from '../shared/private-file.js';
+import { PASSWORD_MAX_LENGTH, unmetPasswordRequirements } from '../shared/password-rules.js';
 
 export class UserStore {
   private users = new Map<string, User>();
@@ -101,8 +102,12 @@ export class UserStore {
     const email = this.normalise(emailRaw);
     if (!validEmail(email)) throw new AuthError('Enter a valid email address.');
     if (!this.domainAllowed(email)) throw new AuthError(`Use your university email (${this.allowedDomains.map((d) => '@' + d).join(' or ')}).`);
-    if (password.length > 1024) throw new AuthError('Use at most 1024 characters for your password.');
-    if (password.length < 10) throw new AuthError('Use at least 10 characters for your password.');
+    if (password.length > PASSWORD_MAX_LENGTH) throw new AuthError(`Use at most ${PASSWORD_MAX_LENGTH} characters for your password.`);
+    // The same list the sign-up form checks off (src/shared/password-rules.ts).
+    const unmet = unmetPasswordRequirements(password);
+    if (unmet.length > 0) {
+      throw new AuthError(`Your password still needs: ${unmet.map((requirement) => requirement.label.toLowerCase()).join(', ')}.`);
+    }
     this.refresh();
     if (this.users.has(email)) throw new AuthError('An account with that email already exists. Sign in instead.');
     const salt = randomBytes(16);
@@ -120,6 +125,10 @@ export class UserStore {
   }
 
   async verify(emailRaw: string, password: string): Promise<User | null> {
+    // Deliberately looser than create(): this bounds the work an anonymous
+    // request can ask for, but it must not refuse a password an account was
+    // legitimately made with before the ceiling existed. Sign-in may only ever
+    // end in a match or no match.
     if (typeof emailRaw !== 'string' || typeof password !== 'string' || emailRaw.length > 254 || password.length > 1024) return null;
     try { this.refresh(); } catch { return null; }
     const user = this.users.get(this.normalise(emailRaw));

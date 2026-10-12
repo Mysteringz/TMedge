@@ -314,7 +314,7 @@ test('analytics: end to end, the console shows the web tier\'s own count of stud
   await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
   const webBase = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
   const signup = await fetch(`${webBase}/signup`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ email: 'u3599999@connect.hku.hk', name: 'Private Name', password: 'correct horse battery' }) });
+    body: new URLSearchParams({ email: 'u3599999@connect.hku.hk', name: 'Private Name', password: 'Correct-Horse-Battery-1' }) });
   const studentCookie = (signup.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
   await fetch(`${webBase}/api/occupancy`, { headers: { cookie: studentCookie } });
 

@@ -59,8 +59,8 @@ test('production application mounts one session-protected console and disposes i
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const usersPath = join(cfg.dataDir, 'algo-users.json');
   const users = new AlgoUsers(usersPath);
-  await users.add('alice', 'correct horse battery', 'engineer');
-  await users.add('operator', 'correct horse battery', 'operator');
+  await users.add('alice', 'Correct-Horse-Battery-1', 'engineer');
+  await users.add('operator', 'Correct-Horse-Battery-1', 'operator');
   const previousSecret = process.env.SESSION_SECRET, previousUsers = process.env.ALGO_USERS_FILE;
   process.env.SESSION_SECRET = 'x'.repeat(40);
   process.env.ALGO_USERS_FILE = usersPath;
@@ -92,13 +92,13 @@ test('production application mounts one session-protected console and disposes i
     assert.equal((await fetch(oldBase + '/healthz', { headers: { authorization: `Basic ${Buffer.from('admin:admin-pass').toString('base64')}` } })).status, 200);
     assert.equal((await fetch(base + '/console-app/api/state')).status, 401);
     const login = await fetch(base + '/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'alice', password: 'correct horse battery' }) });
+      body: JSON.stringify({ username: 'alice', password: 'Correct-Horse-Battery-1' }) });
     assert.equal(login.status, 200);
     const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
     const headers = { cookie, 'x-tm-console': '1', 'x-tm-algo': '1' };
     assert.equal((await fetch(base + '/console-app/api/state', { headers })).status, 200);
     const operatorLogin = await fetch(base + '/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'operator', password: 'correct horse battery' }) });
+      body: JSON.stringify({ username: 'operator', password: 'Correct-Horse-Battery-1' }) });
     assert.equal(operatorLogin.status, 200);
     const operatorCookie = operatorLogin.headers.get('set-cookie')!.split(';')[0]!;
     const deniedBuild = await fetch(base + '/console-app/api/firmware/uploads/test/build', {

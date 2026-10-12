@@ -17,7 +17,7 @@ import { makerspace } from './fixtures.js';
 async function start(t: { after(fn: () => Promise<void>): void }, failActivity = false, fileMode = false) {
   const directory = mkdtempSync(join(tmpdir(), 'student-usage-'));
   const accounts = new JsonStudentAccountRepository(join(directory, 'users.json'), ['example.edu']);
-  const user = await accounts.create('known@example.edu', 'Known', 'correct horse battery');
+  const user = await accounts.create('known@example.edu', 'Known', 'Correct-Horse-Battery-1');
   const events: StudentActivityEvent[] = [];
   const activity = new StudentActivityLog({
     record: async (event) => { if (failActivity) throw new Error('private storage connection'); events.push(event); },

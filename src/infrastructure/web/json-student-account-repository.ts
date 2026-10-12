@@ -59,7 +59,7 @@ export class JsonStudentAccountRepository implements IStudentAccountRepository {
 
   async create(emailRaw: string, name: string, password: string): Promise<User> {
     const email = this.normalise(emailRaw);
-    validateStudentSignup(email, password, this.allowedDomains);
+    validateStudentSignup(email, name, password, this.allowedDomains);
     this.rejectDuplicate(email);
     const user = await createStudentUser(email, name, password);
     this.rejectDuplicate(email);

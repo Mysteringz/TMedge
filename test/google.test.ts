@@ -159,7 +159,7 @@ test('google: a matching email cannot auto-link an unverified password account',
   try {
     const signup = await fetch(`${w.base}/signup`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'u3587219', name: 'Password Person', password: 'a-long-enough-pin' }),
+      body: JSON.stringify({ email: 'u3587219', name: 'Password Person', password: 'A-Long-Enough-Pin-1' }),
     });
     assert.equal(signup.status, 200);
     w.answer((n) => w.good(n, { sub: 'g-222', email: 'u3587219@connect.hku.hk' }));
@@ -171,7 +171,7 @@ test('google: a matching email cannot auto-link an unverified password account',
     assert.equal(w.users.get('u3587219@connect.hku.hk')?.google, undefined);
     const pw = await fetch(`${w.base}/login`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'u3587219', password: 'a-long-enough-pin' }),
+      body: JSON.stringify({ email: 'u3587219', password: 'A-Long-Enough-Pin-1' }),
     });
     assert.equal(pw.status, 200, 'its original sign-in method is preserved');
   } finally { await w.close(); }

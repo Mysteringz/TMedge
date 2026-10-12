@@ -74,7 +74,7 @@ function rejectedSocket(base: string, cookie: string): Promise<number> {
 test('student activity follows signup/login/logout and excludes credentials and raw identifiers', async () => {
   const web = await start();
   try {
-    const credentials = { email: 'student@connect.hku.hk', name: 'Student', password: 'correct horse battery' };
+    const credentials = { email: 'u3200001@connect.hku.hk', name: 'Student', password: 'Correct-Horse-Battery-1' };
     const signup = await post(web.base, 'signup', credentials);
     assert.equal(signup.status, 200);
     assert.deepEqual(await signup.json(), { redirect: '/dashboard/' });
@@ -120,7 +120,7 @@ test('HTTP and WebSocket account checks await storage and fail closed', async ()
     const missing = `tm_session=${web.sessions.issue('missing@connect.hku.hk')}`;
     assert.equal((await fetch(`${web.base}/api/occupancy`, { headers: { cookie: missing } })).status, 401);
     assert.equal(await rejectedSocket(web.base, missing), 401);
-    const user = await web.accounts.create('known@connect.hku.hk', 'Known', 'correct horse battery');
+    const user = await web.accounts.create('u3200002@connect.hku.hk', 'Known', 'Correct-Horse-Battery-1');
     const cookie = `tm_session=${web.sessions.issue(user.email, Date.now(), studentSessionVersion(user))}`;
     const client = new WebSocket(web.base.replace('http:', 'ws:') + '/ws', { headers: { cookie } });
     await new Promise<void>((resolve, reject) => { client.once('message', () => resolve()); client.once('error', reject); });
@@ -128,9 +128,9 @@ test('HTTP and WebSocket account checks await storage and fail closed', async ()
   } finally { await web.close(); }
   const unavailable = await start({ unavailable: true });
   try {
-    const cookie = `tm_session=${unavailable.sessions.issue('known@connect.hku.hk')}`;
+    const cookie = `tm_session=${unavailable.sessions.issue('u3200002@connect.hku.hk')}`;
     assert.equal((await fetch(`${unavailable.base}/api/me`, { headers: { cookie } })).status, 503);
-    assert.equal((await post(unavailable.base, 'login', { email: 'known@connect.hku.hk', password: 'correct horse battery' })).status, 503);
+    assert.equal((await post(unavailable.base, 'login', { email: 'u3200002@connect.hku.hk', password: 'Correct-Horse-Battery-1' })).status, 503);
     assert.equal(await rejectedSocket(unavailable.base, cookie), 503);
     assert.equal((await post(unavailable.base, 'logout', {}, cookie)).status, 200);
   } finally { await unavailable.close(); }
@@ -139,7 +139,7 @@ test('HTTP and WebSocket account checks await storage and fail closed', async ()
 test('activity storage failure leaves valid authentication usable and exposes failed writes', async () => {
   const web = await start({ failActivity: true });
   try {
-    const credentials = { email: 'known@connect.hku.hk', name: 'Known', password: 'correct horse battery' };
+    const credentials = { email: 'u3200002@connect.hku.hk', name: 'Known', password: 'Correct-Horse-Battery-1' };
     assert.equal((await post(web.base, 'signup', credentials)).status, 200);
     assert.equal((await post(web.base, 'login', credentials)).status, 200);
     await web.activity?.flush();
@@ -213,7 +213,7 @@ test('rejected WebSocket upgrades release half-open client connections', async (
     try {
       let response = '';
       client.on('data', (bytes: Buffer) => { response += bytes.toString(); });
-      const cookie = unavailable ? `tm_session=${web.sessions.issue('known@connect.hku.hk')}` : '';
+      const cookie = unavailable ? `tm_session=${web.sessions.issue('u3200002@connect.hku.hk')}` : '';
       const ended = new Promise<void>((resolve, reject) => { client.once('end', resolve); client.once('error', reject); });
       client.write(`GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nCookie: ${cookie}\r\n\r\n`);
       await ended;
@@ -231,7 +231,7 @@ test('logout revokes access before a delayed account lookup completes', async ()
   const lookup = new Promise<void>(resolve => { markLookup = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
   const web = await start({ beforeGet: async () => { markLookup(); await gate; } });
-  const user = await web.accounts.create('delayed@connect.hku.hk', 'Student', 'correct horse battery');
+  const user = await web.accounts.create('u3200003@connect.hku.hk', 'Student', 'Correct-Horse-Battery-1');
   const token = web.sessions.issue(user.email, Date.now(), studentSessionVersion(user));
   const logout = post(web.base, 'logout', {}, `tm_session=${token}`);
   try {
