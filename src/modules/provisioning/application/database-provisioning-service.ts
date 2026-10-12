@@ -8,6 +8,7 @@ import type {
   NodeRegistration, ProvisioningRepository, ProvisioningRequestRecord, ProvisioningTransaction,
 } from '../repositories/provisioning-repository.js';
 import { MAX_PENDING, REQUEST_TTL_MS } from '../domain/provisioning-policy.js';
+import type { RegistryMutationCoordinator } from '../../location-config/repositories/location-storage.js';
 const UID_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
 const LABEL_RE = /^[\w .,'()/-]{1,60}$/;
 
@@ -15,6 +16,7 @@ export interface DatabaseProvisioningOptions {
   token: string | null;
   now?: () => number;
   requestId?: () => string;
+  mutationCoordinator?: RegistryMutationCoordinator;
 }
 
 /** PostgreSQL-authoritative provisioning; durable changes precede live activation. */
@@ -44,6 +46,7 @@ export class DatabaseProvisioningService implements ProvisioningService {
   async ready(): Promise<void> { await this.requests(); }
 
   async request(input: unknown, from: string): Promise<JoinRequestResult> {
+    this.options.mutationCoordinator?.assertHealthy();
     const normalized = validateRequest(input);
     const id = this.requestId();
     const now = this.now();
@@ -88,6 +91,7 @@ export class DatabaseProvisioningService implements ProvisioningService {
   }
 
   async statusOf(uid: string): Promise<'registered' | 'pending' | 'unknown'> {
+    this.options.mutationCoordinator?.assertHealthy();
     try {
       const normalized = uid.toLowerCase();
       if (await this.repository.findNode(normalized)) return 'registered';
@@ -104,6 +108,7 @@ export class DatabaseProvisioningService implements ProvisioningService {
   }
 
   async requests(): Promise<JoinRequestView[]> {
+    this.options.mutationCoordinator?.assertHealthy();
     try {
       await this.repository.transaction((tx) => expirePending(tx, this.now()));
       return (await this.repository.listPendingRequests()).map(toView);
@@ -113,6 +118,13 @@ export class DatabaseProvisioningService implements ProvisioningService {
   }
 
   async approve(id: string, actor: string): Promise<ProvisionedNodeView> {
+    if (this.options.mutationCoordinator) {
+      return this.options.mutationCoordinator.withMutationLock(() => this.approveWithinMutation(id, actor));
+    }
+    return this.approveWithinMutation(id, actor);
+  }
+
+  private async approveWithinMutation(id: string, actor: string): Promise<ProvisionedNodeView> {
     const at = this.now();
     let node: NodeRegistration;
     let targetUid: string | null = null;
@@ -148,7 +160,11 @@ export class DatabaseProvisioningService implements ProvisioningService {
     } catch (error) {
       if (error instanceof ApplicationError) throw error;
       const reconciled = targetUid ? await this.repository.reconcile(id, targetUid).catch(() => null) : null;
-      if (!reconciled || reconciled.status !== 'approved') throw provisioningError(error);
+      if (!reconciled) {
+        this.options.mutationCoordinator?.quarantine(error);
+        throw provisioningError(error);
+      }
+      if (reconciled.status !== 'approved') throw provisioningError(error);
       node = reconciled.node;
     }
     try {

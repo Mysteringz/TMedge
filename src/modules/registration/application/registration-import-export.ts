@@ -1,5 +1,6 @@
 import { buildRegistry, ConfigError, type NodeDef, type Registry } from '../../../edge/registry.js';
 import type { RegistryNodeRecord, RegistryRepository } from '../repositories/registry-repository.js';
+import type { RegistryMutationCoordinator } from '../../location-config/repositories/location-storage.js';
 
 export interface ImportDiagnostic {
   code: 'duplicate_uid' | 'missing_floor' | 'missing_table' | 'invalid_coverage' | 'invalid_registry' | 'database_conflict';
@@ -34,9 +35,10 @@ export interface RegistrationExport {
 
 /** Validates JSON against the existing geometry rules before persistence. */
 export class RegistrationImportExport {
-  constructor(private readonly repository: RegistryRepository) {}
+  constructor(private readonly repository: RegistryRepository, private readonly mutationCoordinator?: RegistryMutationCoordinator) {}
 
   async preview(siteJson: unknown, nodesJson: unknown): Promise<ImportPreview> {
+    this.mutationCoordinator?.assertHealthy();
     const diagnostics = inspectInputs(siteJson, nodesJson);
     const parsed = parseNodeArray(nodesJson);
     if (parsed) {
@@ -87,6 +89,13 @@ export class RegistrationImportExport {
   }
 
   async import(siteJson: unknown, nodesJson: unknown, options: { dryRun?: boolean } = {}): Promise<ImportResult> {
+    if (!options.dryRun && this.mutationCoordinator) {
+      return this.mutationCoordinator.withMutationLock(() => this.importWithinMutation(siteJson, nodesJson, options));
+    }
+    return this.importWithinMutation(siteJson, nodesJson, options);
+  }
+
+  private async importWithinMutation(siteJson: unknown, nodesJson: unknown, options: { dryRun?: boolean }): Promise<ImportResult> {
     const preview = await this.preview(siteJson, nodesJson);
     if (options.dryRun || !preview.valid) return { ...preview, inserted: 0 };
     const nodes = nodesFromRegistry(buildRegistry(siteJson, nodesJson));
@@ -96,6 +105,7 @@ export class RegistrationImportExport {
 
   /** Combines static geometry with the committed database node view. */
   async loadRegistry(siteJson: unknown): Promise<Registry> {
+    this.mutationCoordinator?.assertHealthy();
     const persistedNodes = await this.repository.listNodes();
     return buildRegistry(siteJson, { nodes: persistedNodes.map(toJsonNode) });
   }

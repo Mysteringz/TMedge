@@ -1,6 +1,6 @@
 # PostgreSQL foundation
 
-This foundation adds a PostgreSQL driver and explicit TypeORM migration entry points. The current edge and web processes continue to use their existing JSON and in-memory stores; adding the database does not change authority or make live frame handling depend on PostgreSQL.
+This foundation adds a PostgreSQL driver and explicit TypeORM migration entry points. PostgreSQL mode now stores registrations and durable location configuration; file mode keeps its JSON registry. Neither mode makes live frame handling depend on database availability when file persistence is selected. See the [location configuration storage and backup guide](location-configuration-storage.md) for persistent paths and recovery steps.
 
 ## Disposable local database
 
@@ -66,4 +66,4 @@ npm run db:revert
 
 Both commands compile the project first. Migrations run in a transaction and are never applied during DataSource initialization. TypeORM schema synchronization is disabled in every DataSource. A failed connection or migration prints a generic failure without logging driver connection details or credentials.
 
-Add production schema changes under `src/infrastructure/postgres/migrations/` as reviewed TypeORM migrations. No business tables are created by this foundation; the first domain schema belongs to Task 4.2.
+Add production schema changes under `src/infrastructure/postgres/migrations/` as reviewed TypeORM migrations. The location configuration migration creates drafts, immutable published revisions, an active pointer, asset metadata and a global registry revision. It does not migrate or overwrite existing registrations, placements or ownership; use the explicit registry import command when importing legacy node records.

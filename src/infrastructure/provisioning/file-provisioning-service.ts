@@ -36,7 +36,7 @@ export class FileProvisioningService implements ProvisioningService {
 
   async approve(id: string, actor: string): Promise<ProvisionedNodeView> {
     try {
-      const node = this.provisioning.approve(id, actor);
+      const node = await this.provisioning.approve(id, actor);
       return { uid: node.uid, label: node.label, floorId: null, pose: null, owns: [], rgb: false };
     } catch (error) {
       if (error instanceof ApplicationError) throw error;

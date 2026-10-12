@@ -30,6 +30,7 @@ import { PostgresRolloutRepository } from '../infrastructure/postgres/rollout-re
 import { DurableRolloutService } from '../modules/rollouts/application/durable-rollout-service.js';
 import type { RolloutRepository } from '../modules/rollouts/repositories/rollout-repository.js';
 import { postgresAvailability } from '../infrastructure/postgres/data-source.js';
+import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 
 /** Persistence adapters are optional in legacy file mode. */
 export interface EdgeRuntimePersistenceOptions {
@@ -118,6 +119,7 @@ export function createEdgeRuntime(
 export interface EdgeApplicationOptions {
   firmwareBuildJobs?: FirmwareBuildJobService;
   provisioningService?: ProvisioningService;
+  registryMutationCoordinator?: RegistryMutationCoordinator;
   postgres?: DataSource;
   closePersistence?: () => Promise<void>;
   occupancyHistory?: BoundedOccupancyHistorySink;
@@ -134,6 +136,7 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
   // Both listeners share the injected services and the same live feed.
   const consoleCore = createConsole(runtime, {
     firmwareBuildJobs: builds, provisioningService: options.provisioningService,
+    registryMutationCoordinator: options.registryMutationCoordinator,
   });
   const consoleServer = startConsole(runtime, consoleCore, {
     listen: false, uiMovedTo: cfg.algoPort > 0 ? consoleMovedTo(cfg.algoPort) : undefined,

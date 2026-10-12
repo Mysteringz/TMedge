@@ -160,7 +160,15 @@ Release manifests are checked again before rollback. `QUARANTINED` marks a
 release whose provenance is not trustworthy; it is excluded from rollback
 selection. Never use raw rsync to modify `/opt/tmedge` or a release directory.
 Rollback changes code, not user data. Future database/schema changes need
-backward-compatible migrations and a separate data recovery plan.
+backward-compatible migrations and a separate data recovery plan. Location
+configuration uses persistent `NODES_CONFIG`/`DATA_DIR` in file mode or
+PostgreSQL tables plus edge `DATA_DIR` in database mode. Apply the reviewed
+location schema migration with `npm run db:migrate` before starting the new
+edge release; automatic application startup does not create or upgrade schema.
+Back up the database and edge data directory as one recovery set so asset
+metadata, drafts and stored asset bytes remain aligned. See the
+[location storage guide](../docs/location-configuration-storage.md) for the
+backup and restore procedure.
 
 A local rehearsal uses real web/edge processes on isolated ports and fake
 systemd control. It covers migration, archive promotion, permissions, failed

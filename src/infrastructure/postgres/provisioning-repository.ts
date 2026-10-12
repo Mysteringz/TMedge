@@ -7,6 +7,7 @@ import type {
   ProvisioningResolution,
   ProvisioningTransaction,
 } from '../../modules/provisioning/repositories/provisioning-repository.js';
+import { incrementLocationRegistryRevision } from './location-registry-revision.js';
 
 const PENDING_QUEUE_LOCK_ID = 1_414_412_097;
 
@@ -143,6 +144,7 @@ function transactionFor(manager: EntityManager): ProvisioningTransaction {
         `INSERT INTO public.registered_nodes (uid, label, simulated, rgb) VALUES ($1, $2, false, false)`,
         [node.uid, node.label],
       );
+      await incrementLocationRegistryRevision(manager);
     },
     async appendAudit(event) {
       await manager.query(

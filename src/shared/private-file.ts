@@ -1,6 +1,7 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { syncDirectory, syncFileDescriptor } from './directory-sync.js';
 
 export class FileBusyError extends Error {}
 /** Short exclusive commit section shared by service and CLI writers. */
@@ -25,14 +26,11 @@ export function writePrivateJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.${randomBytes(8).toString('hex')}.tmp`;
   const fd = openSync(temp, 'wx', 0o600);
-  try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); }
+  try { writeFileSync(fd, JSON.stringify(value)); syncFileDescriptor(fd); }
   catch (err) { closeSync(fd); try { unlinkSync(temp); } catch { /* absent */ } throw err; }
   closeSync(fd);
   try {
     renameSync(temp, path);
-    // Windows cannot fsync directory handles; the file itself was already flushed before renaming.
-    if (process.platform === 'win32') return;
-    const directory = openSync(dirname(path), 'r');
-    try { fsyncSync(directory); } finally { closeSync(directory); }
+    syncDirectory(dirname(path));
   } catch (err) { try { unlinkSync(temp); } catch { /* already renamed */ } throw err; }
 }

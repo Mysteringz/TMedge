@@ -22,9 +22,13 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import type { NodeDef, Registry } from './registry.js';
+import { buildRegistry, loadRegistry, type NodeDef, type Registry } from './registry.js';
 import { ApplicationError } from '../modules/shared/application/contracts.js';
 import { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
+import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
+import { parseNodesConfig } from '../modules/location-config/domain/nodes-config.js';
+import { atomicWriteNodesConfig, recoverNodesConfig } from '../infrastructure/location-config/file-nodes-config.js';
+import type { AtomicFileOperations } from '../infrastructure/location-config/atomic-file-write.js';
 export { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
 
 const UID_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
@@ -50,6 +54,10 @@ export interface ProvisioningOptions {
   /** Shared secret TMflash presents. Provisioning is off when null. */
   token: string | null;
   nodesPath: string;
+  sitePath?: string;
+  mutationCoordinator?: RegistryMutationCoordinator;
+  /** Narrow I/O seam for commit-boundary fault tests; production uses native fsync/rename. */
+  nodesConfigWriteOperations?: AtomicFileOperations;
   /** Appended to, never rewritten: the record of who admitted what. */
   auditPath: string;
   now?: () => number;
@@ -64,6 +72,7 @@ function safeEqual(a: string, b: string): boolean {
 export class Provisioning {
   private readonly pending = new Map<string, JoinRequest>();
   private readonly now: () => number;
+  private durabilityRecovery: (() => void) | null = null;
 
   constructor(private readonly reg: Registry, private readonly opts: ProvisioningOptions) {
     this.now = opts.now ?? Date.now;
@@ -111,8 +120,9 @@ export class Provisioning {
     if (/[/\\]tmedge-releases[/\\]/.test(real) || real.startsWith(resolve(process.cwd()) + '/config/')) {
       throw new Error('registration must survive a release');
     }
-    const doc = JSON.parse(readFileSync(real, 'utf8')) as { nodes?: unknown };
-    if (!Array.isArray(doc.nodes)) throw new Error('invalid registration file');
+    const doc: unknown = JSON.parse(readFileSync(real, 'utf8'));
+    parseNodesConfig(doc);
+    if (this.opts.sitePath) loadRegistry(this.opts.sitePath, real);
   }
 
   requests(): JoinRequest[] {
@@ -170,7 +180,15 @@ export class Provisioning {
    * has no pose, so no table's ownership, coverage or count can change --
    * the registry's derived state stays exactly as it was built.
    */
-  approve(id: string, by: string): NodeDef {
+  async approve(id: string, by: string): Promise<NodeDef> {
+    if (this.opts.mutationCoordinator) {
+      return this.opts.mutationCoordinator.withMutationLock(() => this.approveWithinMutation(id, by));
+    }
+    return this.approveWithinMutation(id, by);
+  }
+
+  private approveWithinMutation(id: string, by: string): NodeDef {
+    this.recoverRegistryWrite();
     this.expire();
     const req = this.pending.get(id);
     if (!req) throw new ApplicationError('not-found', 'no such request (it may have expired)');
@@ -224,20 +242,37 @@ export class Provisioning {
   private appendToNodesFile(node: NodeDef): void {
     const path = this.opts.nodesPath;
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { nodes?: unknown }).nodes)) {
-      throw new Error(`${path} is not a nodes config with a "nodes" array`);
-    }
-    const doc = parsed as { nodes: unknown[] };
+    const current = parseNodesConfig(parsed);
+    const doc = current.kind === 'legacy'
+      ? { schemaVersion: 2 as const, revision: 0, nodes: structuredClone(current.nodes), publishedLocations: [] }
+      : structuredClone(current.document);
     if (doc.nodes.some((n) => typeof n === 'object' && n !== null && (n as { uid?: unknown }).uid === node.uid)) {
       throw new ApplicationError('conflict', `${node.uid} is already registered`);
     }
     // Only the fields an unplaced node has: floor, pose and owns are what
     // placing it later will add.
     doc.nodes.push({ uid: node.uid, label: node.label });
+    doc.revision += 1;
+    if (this.opts.sitePath) {
+      const site = JSON.parse(readFileSync(this.opts.sitePath, 'utf8')) as unknown;
+      loadRegistry(this.opts.sitePath, path);
+      // Validate the candidate before replacing the last known-good file.
+      buildRegistry(site, doc);
+    }
+    const outcome = atomicWriteNodesConfig(path, doc, this.opts.nodesConfigWriteOperations);
+    if (outcome.durability === 'unconfirmed') {
+      const recover = () => recoverNodesConfig(path, outcome.revision, outcome.contentSha256, this.opts.nodesConfigWriteOperations);
+      if (this.opts.mutationCoordinator?.latchDurabilityRecovery) this.opts.mutationCoordinator.latchDurabilityRecovery(recover);
+      else this.durabilityRecovery = recover;
+    }
+  }
 
-    const tmp = join(dirname(path), `.nodes.json.${process.pid}.tmp`);
-    writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o644 });
-    renameSync(tmp, path);
+  private recoverRegistryWrite(): void {
+    if (!this.durabilityRecovery) return;
+    try {
+      this.durabilityRecovery();
+      this.durabilityRecovery = null;
+    } catch { throw new ApplicationError('unavailable', 'registry storage is unavailable'); }
   }
 
   private expire(): void {

@@ -10,6 +10,8 @@ Security fixes, validation and deployment requirements are tracked in
 [the security specsheet](docs/SECURITY_BUG_SPEC.md). TMsense 1.7 encrypted
 telemetry and per-device/gateway/publisher credentials are documented in
 [the coordinated protocol and migration runbook](docs/ENCRYPTED_NODE_PROTOCOL.md).
+Persistent location records and paired database/data-directory backups are
+described in the [location storage guide](docs/location-configuration-storage.md).
 
 The edge and student web services run separately. The student service receives [occupancy snapshots](src/shared/types.ts) containing seat states and totals, without thermal pixels or person detections. Thermal frames and optional calibration camera images belong to privileged diagnostics and [training storage](docs/TRAINING_POSTGRES.md).
 

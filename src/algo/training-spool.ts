@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { syncDirectory, syncFileDescriptor } from '../shared/directory-sync.js';
 import type { RawFrameMessage } from '../shared/types.js';
 import type { FrameStore } from './frames.js';
 import { MAX_SKEW_MS, type PairStats } from './pairs.js';
@@ -110,10 +111,9 @@ export class TrainingSpool {
       }
       writeFileSync(temporary, contents, { mode: 0o600 });
       const fd = openSync(temporary, 'r');
-      try { fsyncSync(fd); } finally { closeSync(fd); }
+      try { syncFileDescriptor(fd); } finally { closeSync(fd); }
       renameSync(temporary, name);
-      const directory = openSync(this.dir, 'r');
-      try { fsyncSync(directory); } finally { closeSync(directory); }
+      syncDirectory(this.dir);
       this.lastError = null;
       this.budget.bytes += bytes;
       this.budget.files += 1;

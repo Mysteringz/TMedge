@@ -29,6 +29,8 @@ and module 07 of this console, which does the same from a browser.
 The Mac app preserves saved node settings and boot counters; damaged
 firmware is refused before USB writes.
 
+- Location storage: read docs/location-configuration-storage.md.
+
 ## How a count is made
 
 1. The node subtracts a learned background from each thermal frame and finds

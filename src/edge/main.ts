@@ -2,12 +2,17 @@
 import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadEdgeConfig, EnvError } from './config.js';
-import { createEdgeApplication } from './composition-root.js';import { ConfigError, loadRegistry } from './registry.js';
+import { createEdgeApplication } from './composition-root.js';
+import { ConfigError, loadRegistry } from './registry.js';
 import { RegistrationImportExport } from '../modules/registration/application/registration-import-export.js';
 import { DatabaseProvisioningService } from '../modules/provisioning/application/database-provisioning-service.js';
 import { PostgresRegistryRepository } from '../infrastructure/postgres/registry-repository.js';
 import { PostgresProvisioningRepository } from '../infrastructure/postgres/provisioning-repository.js';
 import { closePostgres, openPostgres } from '../infrastructure/postgres/data-source.js';
+import { initializeFileLocationPersistence } from '../infrastructure/location-config/file-location-storage.js';
+import { PostgresRegistryMutationCoordinator } from '../infrastructure/location-config/postgres-registry-mutation-coordinator.js';
+import { bootstrapPostgresLegacyLocations } from '../infrastructure/postgres/location-storage-bootstrap.js';
+import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import type { DataSource } from 'typeorm';
 
 function checkNodesWritable(nodesPath: string): void {
@@ -28,8 +33,9 @@ async function main(): Promise<void> {
   const { cfg, registry, source, provisioningService } = loaded;
   const edge = createEdgeApplication(cfg, registry, {
     provisioningService,
+    registryMutationCoordinator: loaded.registryMutationCoordinator,
     postgres: source ?? undefined,
-    closePersistence: source ? () => closePostgres(source) : undefined,
+    closePersistence: loaded.closePersistence,
   });
   const rejectBudgetTimer = installRuntimeLogs(edge.runtime);
   let shuttingDown = false;  const shutdown = async () => {
@@ -66,14 +72,19 @@ async function loadConfiguration(): Promise<{
   registry: ReturnType<typeof loadRegistry>;
   source: DataSource | null;
   provisioningService: DatabaseProvisioningService | undefined;
+  registryMutationCoordinator: RegistryMutationCoordinator;
+  closePersistence: () => Promise<void>;
 } | null> {
   let source: DataSource | null = null;
+  let filePersistence: ReturnType<typeof initializeFileLocationPersistence> | null = null;
   try {
     const cfg = loadEdgeConfig();
     if (cfg.persistenceMode === 'file') {
-      const registry = loadRegistry(cfg.sitePath, cfg.nodesPath);
+      filePersistence = initializeFileLocationPersistence(cfg.sitePath, cfg.nodesPath, cfg.dataDir);
+      const registry = filePersistence.registry;
       if (cfg.flashToken) checkNodesWritable(cfg.nodesPath);
-      return { cfg, registry, source: null, provisioningService: undefined };
+      return { cfg, registry, source: null, provisioningService: undefined,
+        registryMutationCoordinator: filePersistence.coordinator, closePersistence: async () => filePersistence?.close() };
     }
     if (!cfg.postgres) throw new EnvError('PostgreSQL runtime configuration is missing');
     source = await openPostgres(cfg.postgres);
@@ -83,16 +94,19 @@ async function loadConfiguration(): Promise<{
     } catch (error) {
       throw new ConfigError(`${cfg.sitePath}: ${(error as Error).message}`);
     }
-    const registryRepository = new PostgresRegistryRepository(source);
-    const registration = new RegistrationImportExport(registryRepository);
-    const registry = await registration.loadRegistry(site);
+    const mutationCoordinator = new PostgresRegistryMutationCoordinator(source);
+    const registryRepository = new PostgresRegistryRepository(source, mutationCoordinator);
+    const registration = new RegistrationImportExport(registryRepository, mutationCoordinator);
+    const registry = await bootstrapPostgresLegacyLocations(source, () => registration.loadRegistry(site), mutationCoordinator);
     const provisioningService = new DatabaseProvisioningService(
       new PostgresProvisioningRepository(source),
       registry,
-      { token: cfg.flashToken },
+      { token: cfg.flashToken, mutationCoordinator },
     );
-    return { cfg, registry, source, provisioningService };
+    return { cfg, registry, source, provisioningService,
+      registryMutationCoordinator: mutationCoordinator, closePersistence: () => closePostgres(source!) };
   } catch (error) {
+    if (filePersistence) filePersistence.close();
     if (source) await closePostgres(source).catch(() => undefined);
     if (error instanceof EnvError || error instanceof ConfigError) {
       console.error(`[edge] refusing to start: ${error.message}`);

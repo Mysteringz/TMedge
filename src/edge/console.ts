@@ -37,6 +37,7 @@ import { AdoptionCredentials } from './adoption-credentials.js';
 import { createAdoptionRouter } from '../modules/provisioning/routes/adoption-router.js';
 import { FileProvisioningService } from '../infrastructure/provisioning/file-provisioning-service.js';
 import type { ProvisioningService } from '../modules/provisioning/application/provisioning-service.js';
+import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import { createProvisioningAdminRouter, createProvisioningToolRouter } from '../modules/provisioning/routes/provisioning-routers.js';
 import { applicationErrorHandler } from '../infrastructure/http/errors.js';
 import { ApplicationError } from '../modules/shared/application/contracts.js';
@@ -73,6 +74,8 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   const registration = options.provisioningService ?? new FileProvisioningService(new Provisioning(rt.reg, {
     token: rt.cfg.flashToken,
     nodesPath: rt.cfg.nodesPath,
+    sitePath: rt.cfg.sitePath,
+    mutationCoordinator: options.registryMutationCoordinator,
     auditPath: join(rt.cfg.dataDir, 'provisioning.jsonl'),
   }));
   const credentials = new AdoptionCredentials(join(rt.cfg.dataDir, 'flasher-credentials.json'));
@@ -364,6 +367,7 @@ function safeEqual(a: string, b: string): boolean {
 export interface ConsoleOptions {
   firmwareBuildJobs?: FirmwareBuildJobService;
   provisioningService?: ProvisioningService;
+  registryMutationCoordinator?: RegistryMutationCoordinator;
   listen?: boolean;
   uiMovedTo?: (req: Request) => string;
 }

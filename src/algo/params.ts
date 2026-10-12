@@ -13,9 +13,10 @@
  * and outlives whoever set it. Everything is logged with its old value, which
  * is what makes a mistake recoverable rather than archaeological.
  */
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { syncDirectory, syncFileDescriptor } from '../shared/directory-sync.js';
 import { CMD_SAVE_PARAMS, CMD_SET_PARAM, PARAM_LIMITS, PARAM_NAMES } from '../edge/protocol.js';
 import type { EdgeRuntime } from '../edge/runtime.js';
 import type { OccupancyOptions } from '../edge/occupancy.js';
@@ -113,8 +114,7 @@ export class ParamBroker {
     const temporary = `${this.pendingPath}.tmp`;
     writeFileSync(temporary, JSON.stringify([...this.pending.values()].filter((c) => c.binding === 'device')), { mode: 0o600, flush: true });
     renameSync(temporary, this.pendingPath);
-    const directory = openSync(dirname(this.pendingPath), 'r');
-    try { fsyncSync(directory); } finally { closeSync(directory); }
+    syncDirectory(dirname(this.pendingPath));
   }
 
   private log(e: AuditEntry): void {

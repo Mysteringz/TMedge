@@ -68,13 +68,13 @@ test('pending identity and request code survive a restart, while a denial stays 
   assert.equal(again.statusOf(NEW_UID), 'unknown');
 });
 
-test('approval admits an identity, never a placement', () => {
+test('approval admits an identity, never a placement', async () => {
   const { p, reg, nodesPath } = setup();
   const before = [...reg.tables.values()].map((t) => ({ id: t.id, owner: t.owner, covered: [...t.coveredBy] }));
 
   const out = p.request({ uid: NEW_UID, label: 'Above M11' }, '10.0.0.9');
   assert.equal(out.status, 'pending');
-  const node = p.approve(out.status === 'pending' ? out.request.id : '', 'console');
+  const node = await p.approve(out.status === 'pending' ? out.request.id : '', 'console');
 
   assert.equal(node.floorId, null, 'admitted nowhere');
   assert.equal(node.pose, null, 'with no pose to project through');
@@ -102,7 +102,7 @@ test('approval admits an identity, never a placement', () => {
   assert.equal(reloaded.nodes.get(NEW_UID)?.pose, null);
 });
 
-test('a denied request leaves nothing behind, and a stale one expires', () => {
+test('a denied request leaves nothing behind, and a stale one expires', async () => {
   let now = 1_000;
   const { p, reg, nodesPath } = setup(() => now);
 
@@ -116,7 +116,7 @@ test('a denied request leaves nothing behind, and a stale one expires', () => {
   const id = stale.status === 'pending' ? stale.request.id : '';
   now += 31 * 60_000;
   assert.equal(p.statusOf(NEW_UID), 'unknown', 'an unanswered request does not wait forever');
-  assert.throws(() => p.approve(id, 'console'), /no such request/);
+  await assert.rejects(p.approve(id, 'console'), /no such request/);
 });
 
 test('a request is checked before it reaches anyone, and cannot flood the console', () => {

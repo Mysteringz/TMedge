@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { floorToPixel, GRID_H, GRID_W } from '../shared/geometry.js';
 import { generateSeats, type SeatSpec } from '../shared/seats.js';
 import type { NodePose, Point, Rect } from '../shared/types.js';
+import { nodesArrayForRegistry } from '../modules/location-config/domain/nodes-config.js';
 
 export interface TableDef {
   id: string;
@@ -237,10 +238,13 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   });
 
   const nodes = new Map<string, NodeDef>();
-  const nroot = obj(nodesJson, 'nodes.json');
-  only(nroot, 'nodes.json', ['nodes']);
-  if (!Array.isArray(nroot.nodes)) throw new ConfigError('nodes.json.nodes: expected an array');
-  nroot.nodes.forEach((nv, ni) => {
+  let configuredNodes: unknown[];
+  try {
+    configuredNodes = nodesArrayForRegistry(nodesJson);
+  } catch (error) {
+    throw new ConfigError(error instanceof Error ? error.message : String(error));
+  }
+  configuredNodes.forEach((nv, ni) => {
     const w = `nodes[${ni}]`;
     const n = obj(nv, w);
     only(n, w, ['uid', 'label', 'floor', 'pose', 'owns', 'simulated', 'rgb', 'detector']);

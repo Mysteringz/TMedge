@@ -4,6 +4,7 @@ import { RegistrationImportExport } from '../modules/registration/application/re
 import { PostgresRegistryRepository } from '../infrastructure/postgres/registry-repository.js';
 import { loadPostgresConnectionConfig } from '../infrastructure/postgres/config.js';
 import { closePostgres, openPostgres } from '../infrastructure/postgres/data-source.js';
+import { PostgresRegistryMutationCoordinator } from '../infrastructure/location-config/postgres-registry-mutation-coordinator.js';
 
 const args = new Set(process.argv.slice(2));
 const apply = args.has('--apply');
@@ -14,7 +15,8 @@ const site = JSON.parse(readFileSync(sitePath, 'utf8')) as unknown;
 const nodes = JSON.parse(readFileSync(resolve(inputPath), 'utf8')) as unknown;
 const source = await openPostgres(loadPostgresConnectionConfig('runtime'));
 try {
-  const service = new RegistrationImportExport(new PostgresRegistryRepository(source));
+  const mutationCoordinator = new PostgresRegistryMutationCoordinator(source);
+  const service = new RegistrationImportExport(new PostgresRegistryRepository(source, mutationCoordinator), mutationCoordinator);
   const result = await service.import(site, nodes, { dryRun: !apply });
   process.stdout.write(`${JSON.stringify({ mode: apply ? 'applied' : 'dry-run', ...result }, null, 2)}\n`);
   if (!result.valid) process.exitCode = 1;

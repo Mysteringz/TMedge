@@ -1,5 +1,6 @@
-import { closeSync, existsSync, fsync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { syncDirectory, syncFileDescriptor } from '../shared/directory-sync.js';
 
 export interface Cursor { boot: number; seq: number }
 const UID = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
@@ -153,7 +154,7 @@ export class ReplayStore {
     // Never replace an inode while a worker is making its batch durable.
     if (!this.flushing && this.records >= 10000) this.checkpoint();
     const fd = openSync(this.path, 'a', 0o600);
-    try { this.write(fd, `${JSON.stringify(record)}\n`); fsyncSync(fd); }
+    try { this.write(fd, `${JSON.stringify(record)}\n`); syncFileDescriptor(fd); }
     catch (error) { this.failed = error instanceof Error ? error : new Error(String(error)); throw this.failed; }
     finally { closeSync(fd); }
     this.records += 1;
@@ -175,11 +176,10 @@ export class ReplayStore {
     try {
       this.write(fd, `${JSON.stringify(['cmd', this.commandSeq])}\n`);
       for (const [uid, c] of this.cursors) this.write(fd, `${JSON.stringify([uid, c.boot, c.seq])}\n`);
-      fsyncSync(fd);
+      syncFileDescriptor(fd);
     } finally { closeSync(fd); }
     renameSync(temporary, this.path);
-    const dir = openSync(dirname(this.path), 'r');
-    try { fsyncSync(dir); } finally { closeSync(dir); }
+    syncDirectory(dirname(this.path));
     this.records = 0;
   }
 }

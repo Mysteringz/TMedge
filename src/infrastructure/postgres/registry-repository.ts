@@ -1,6 +1,9 @@
 import type { DataSource, EntityManager } from 'typeorm';
 import type { NodePose } from '../../shared/types.js';
 import { RegistrationConflictError, type RegistryNodeRecord, type RegistryRepository } from '../../modules/registration/repositories/registry-repository.js';
+import type { RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
+import { LocationStorageUnavailableError, UnknownRegistryMutationOutcomeError } from '../../modules/location-config/domain/location-records.js';
+import { incrementLocationRegistryRevision, readLocationRegistryRevision } from './location-registry-revision.js';
 
 interface RegistryNodeRow {
   uid: string;
@@ -19,14 +22,40 @@ interface RegistryNodeRow {
 
 /** PostgreSQL adapter for registered identities, placements, and ownership. */
 export class PostgresRegistryRepository implements RegistryRepository {
-  constructor(private readonly source: DataSource) {}
+  constructor(
+    private readonly source: DataSource,
+    private readonly mutationCoordinator?: RegistryMutationCoordinator,
+    private readonly runTransaction: <T>(work: (manager: EntityManager) => Promise<T>) => Promise<T> = (work) => source.transaction(work),
+  ) {}
 
   async listNodes(): Promise<RegistryNodeRecord[]> {
+    this.mutationCoordinator?.assertHealthy();
     return queryNodes(this.source.manager);
   }
 
   async importNodes(nodes: readonly RegistryNodeRecord[]): Promise<{ inserted: number; unchanged: number }> {
-    return this.source.transaction(async (manager) => {
+    const coordinator = this.mutationCoordinator;
+    if (!coordinator) throw new LocationStorageUnavailableError();
+    coordinator.assertHealthy();
+    const baseRevision = await readLocationRegistryRevision(this.source.manager);
+    const before = new Map<string, RegistryNodeRecord | null>();
+    const expected = new Map<string, RegistryNodeRecord>();
+    let expectedInserted = 0;
+    let expectedUnchanged = 0;
+    for (const node of nodes) {
+      const current = expected.get(node.uid) ?? before.get(node.uid) ?? await queryNode(this.source.manager, node.uid, false);
+      if (!before.has(node.uid)) before.set(node.uid, current);
+      if (current) {
+        if (!sameNode(current, node)) throw new RegistrationConflictError(`Registration ${node.uid} already exists with different data`);
+        expectedUnchanged += 1;
+      } else {
+        expectedInserted += 1;
+      }
+      expected.set(node.uid, node);
+    }
+    const candidateRevision = baseRevision + (expectedInserted > 0 ? 1 : 0);
+    try {
+      return await this.runTransaction(async (manager) => {
       let inserted = 0;
       let unchanged = 0;
       for (const node of nodes) {
@@ -52,8 +81,26 @@ export class PostgresRegistryRepository implements RegistryRepository {
         }
         inserted += 1;
       }
+      if (inserted > 0) await incrementLocationRegistryRevision(manager);
       return { inserted, unchanged };
-    });
+      });
+    } catch (error) {
+      try {
+        const currentRevision = await readLocationRegistryRevision(this.source.manager);
+        const current = new Map<string, RegistryNodeRecord | null>();
+        for (const uid of before.keys()) current.set(uid, await queryNode(this.source.manager, uid, false));
+        if (currentRevision === candidateRevision && [...expected].every(([uid, node]) => sameNullableNode(current.get(uid) ?? null, node))) {
+          return { inserted: expectedInserted, unchanged: expectedUnchanged };
+        }
+        if (currentRevision === baseRevision && [...before].every(([uid, node]) => sameNullableNode(current.get(uid) ?? null, node))) throw error;
+      } catch (readbackError) {
+        if (readbackError === error) throw error;
+        coordinator.quarantine(readbackError);
+        throw new UnknownRegistryMutationOutcomeError(baseRevision, candidateRevision);
+      }
+      coordinator.quarantine(error);
+      throw new UnknownRegistryMutationOutcomeError(baseRevision, candidateRevision);
+    }
   }
 }
 
@@ -102,4 +149,8 @@ function sameNode(a: RegistryNodeRecord, b: RegistryNodeRecord): boolean {
     && JSON.stringify(a.pose) === JSON.stringify(b.pose)
     && [...a.owns].sort().join('\0') === [...b.owns].sort().join('\0')
     && a.simulated === b.simulated && a.rgb === b.rgb && a.detector === b.detector;
+}
+
+function sameNullableNode(a: RegistryNodeRecord | null, b: RegistryNodeRecord | null): boolean {
+  return a === null || b === null ? a === b : sameNode(a, b);
 }
