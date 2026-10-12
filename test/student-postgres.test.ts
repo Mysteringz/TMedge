@@ -241,14 +241,14 @@ async function assertHttp(source: DataSource): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'student-http-pg-'));
   const usersPath = join(directory, 'never-written-users.json');
   const web = await createConfiguredWebApp(loadWebConfig({ ...process.env, STUDENT_PERSISTENCE_MODE: 'postgres',
-    SESSION_SECRET: 's'.repeat(40), WEB_PUSH_TOKEN: 't'.repeat(20), ALLOWED_EMAIL_DOMAINS: 'example.edu',
+    SESSION_SECRET: 's'.repeat(40), WEB_PUSH_TOKEN: 't'.repeat(20), ALLOWED_EMAIL_DOMAINS: 'connect.hku.hk',
     USERS_FILE: usersPath, SIGNUP_OPEN: '1', COOKIE_SECURE: '0', WEB_PORT: '8080', WEB_HOST: '127.0.0.1' }));
   try {
     await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
     await assertHttpRequests(base);
     await web.activity?.flush();
-    const user = await new PostgresStudentAccountRepository(source).get('http@example.edu');
+    const user = await new PostgresStudentAccountRepository(source).get('u3100900@connect.hku.hk');
     assert.ok(user?.id);
     const events = (await new PostgresStudentActivityRepository(source).list()).filter((event) => event.userId === user.id);
     assert.deepEqual(events.map((event) => `${event.action}/${event.outcome}`).sort(),
@@ -263,15 +263,15 @@ async function assertHttp(source: DataSource): Promise<void> {
 }
 
 async function assertHttpRequests(base: string): Promise<void> {
-  const signup = await authRequest(base, '/signup', { email: 'http@example.edu', name: 'HTTP', password: 'Strong-Password-1' });
+  const signup = await authRequest(base, '/signup', { email: 'u3100900@connect.hku.hk', name: 'HTTP', password: 'Strong-Password-1' });
   assert.equal(signup.status, 200);
   const cookie = signup.headers.get('set-cookie')?.split(';')[0];
   assert.ok(cookie);
   assert.equal(signup.headers.get('set-cookie')?.includes('HttpOnly'), true);
   const me = await fetch(base + '/api/me', { headers: { cookie } });
-  assert.deepEqual(await me.json(), { email: 'http@example.edu', name: 'HTTP' });
-  assert.equal((await authRequest(base, '/login', { email: 'http@example.edu', password: 'incorrect password' })).status, 401);
-  assert.equal((await authRequest(base, '/login', { email: 'http@example.edu', password: 'Strong-Password-1' })).status, 200);
+  assert.deepEqual(await me.json(), { email: 'u3100900@connect.hku.hk', name: 'HTTP' });
+  assert.equal((await authRequest(base, '/login', { email: 'u3100900@connect.hku.hk', password: 'incorrect password' })).status, 401);
+  assert.equal((await authRequest(base, '/login', { email: 'u3100900@connect.hku.hk', password: 'Strong-Password-1' })).status, 200);
   const logout = await authRequest(base, '/logout', {}, cookie);
   assert.deepEqual(await logout.json(), { redirect: '/login/' });
   assert.equal((await fetch(base + '/api/me')).status, 401);
