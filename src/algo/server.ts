@@ -67,6 +67,8 @@ import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
 import { GitHubReleaseSource, type PublishedReleaseSource } from '../infrastructure/firmware-release/github-release-source.js';
 import { createPublishedReleaseRouter } from '../modules/firmware/routes/published-release-router.js';
+import { createTMflashDownloadRouter } from '../modules/tmflash/routes/tmflash-download-router.js';
+import { GitHubTMflashSource, type TMflashReleaseSource } from '../infrastructure/tmflash-release/github-tmflash-source.js';
 import { sendLatest } from '../shared/fanout.js';
 import { requestUrl, sameOrigin } from '../shared/http.js';
 import { encodeFrame } from './frames.js';
@@ -78,6 +80,7 @@ export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
 export interface AlgoServerServices {
   /** Where module 07's firmware comes from. Default: the TMsense repository's releases on GitHub. */
   firmwareRelease?: PublishedReleaseSource;
+  tmflashRelease?: TMflashReleaseSource;
   /** What sends email; null for a server that cannot. Default: Amazon SES if EMAIL_FROM and EMAIL_SES_REGION are set. */
   mailer?: Mailer | null;
 }
@@ -348,6 +351,7 @@ export function startAlgo(
   // Module 07's firmware: the latest TMsense release, fetched from GitHub by
   // this edge. Nothing is fetched until somebody opens the page.
   app.use('/api/flash', createPublishedReleaseRouter(services.firmwareRelease ?? new GitHubReleaseSource()));
+  app.use('/api/tmflash-download', createTMflashDownloadRouter(services.tmflashRelease ?? new GitHubTMflashSource(join(dataDir, 'tmflash-download'))));
 
   // Module 02: training jobs for HKU HPC2021 (src/algo/train/, docs/hpc/).
   const train = createTrain({

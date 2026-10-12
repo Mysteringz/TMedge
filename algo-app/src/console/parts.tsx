@@ -25,7 +25,8 @@ export const MODULES = [
   { n: '04', title: 'Updates', path: '/updates', group: 'Devices', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
   { n: '05', title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
   { n: '06', title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
-  { n: '07', title: 'TMflash', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
+  { n: '07', title: 'TMflash web', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
+  { n: '08', title: 'TMflash download', path: '/tmflash-download', group: 'Devices', desc: 'Download the latest self-contained Mac app, with firmware, flashing tools and installation instructions.' },
 ] as const;
 
 type ConsoleModule = typeof MODULES[number];

@@ -1,5 +1,9 @@
 # TMflash in the browser (module 07)
 
+This is **TMflash web** in Devices. **TMflash download** is a separate page
+for the portable Mac app and installation instructions; it follows published
+TMflash builds automatically. See [Mac app downloads](TMFLASH_DOWNLOAD.md).
+
 `algo.hkumyseat.com/flash` does what the TMflash Mac app does, from a browser,
 to the board plugged into the computer that browser runs on: write the release
 firmware, set the node up over its serial console, read the settings back, ask

@@ -482,7 +482,7 @@ export function Flash() {
 }
 
 function Heading() {
-  return <><p className="cx-eyebrow">Module 07 · Flash over USB</p><h1>TMflash</h1></>;
+  return <><p className="cx-eyebrow">Module 07 · Flash over USB</p><h1>TMflash web</h1></>;
 }
 
 function Choice({ legend, value, options, disabled, onChange }: { legend: string; value: string; options: [string, string][]; disabled: boolean; onChange(value: string): void }): ReactNode {

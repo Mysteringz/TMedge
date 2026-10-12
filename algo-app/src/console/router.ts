@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 
-export type Screen = 'login' | 'home' | 'flow' | 'train' | 'ml-data' | 'console' | 'updates' | 'analytics' | 'accounts' | 'account' | 'adoption' | 'flash' | 'tmflash-connect';
+export type Screen = 'login' | 'home' | 'flow' | 'train' | 'ml-data' | 'console' | 'updates' | 'analytics' | 'accounts' | 'account' | 'adoption' | 'flash' | 'tmflash-download' | 'tmflash-connect';
 
 export function screenOf(path: string): Screen {
   if (path.startsWith('/login')) return 'login';
@@ -19,6 +19,7 @@ export function screenOf(path: string): Screen {
   if (path === '/analytics' || path.startsWith('/analytics/')) return 'analytics';
   if (path === '/adoption' || path.startsWith('/adoption/')) return 'adoption';
   if (path === '/flash' || path.startsWith('/flash/')) return 'flash';
+  if (path === '/tmflash-download' || path.startsWith('/tmflash-download/')) return 'tmflash-download';
   if (path === '/tmflash/connect') return 'tmflash-connect';
   return 'home';
 }

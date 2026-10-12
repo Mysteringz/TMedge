@@ -40,6 +40,7 @@ src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMfl
 src/shared/flasher/      module 07's core, no DOM: settings, the node's serial console, the flash write plan (docs/WEB_FLASHER.md)
 algo-app/src/console/flash/  module 07's I/O: Web Serial, esptool-js, loading the TMsense release
 src/infrastructure/firmware-release/  module 07's firmware: the latest GitHub release of TMsense, fetched and checked by the edge; /api/flash
+src/infrastructure/tmflash-release/  module 08's latest native app: verified GitHub DMG, persistent disk cache; /api/tmflash-download
 src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
@@ -181,6 +182,11 @@ has hidden Linux failures before.
   `sponsor…` are removed from the page by EasyList's generic rules, with no
   error -- it emptied Adoption and TMflash for anyone running one. Those two
   pages use `dv-`. `test/console-classes.test.ts`.
+- **The native app download comes only from TMflash GitHub releases.**
+  Its manifest must identify a clean universal build; the DMG must match
+  its size and SHA-256 and have a UDIF trailer. Cache files stay outside
+  server releases. A GitHub outage may offer a clearly labelled last checked
+  build; an invalid latest release must never be disguised as an older one.
 - **Team roles are labels, never authority.** ML, front-end, back-end and the
   rest say what somebody works on. No permission check may read them; access
   is the access role and only that.

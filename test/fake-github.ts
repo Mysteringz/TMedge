@@ -12,6 +12,20 @@ import { createHash } from 'node:crypto';
 
 export interface FakeRelease { tag: string; files: Record<string, Buffer> }
 
+/** A portable app release: a small UDIF-shaped file for transport tests. */
+export function tmflashRelease(version = '1.5.0', commit = 'a'.repeat(40)): FakeRelease {
+  const dmg = Buffer.alloc(4096, 0x51);
+  dmg.write(version, 0);
+  dmg.write('koly', dmg.length - 512);
+  const filename = `TMflash-${version}-universal.dmg`, tag = `build-${commit}`;
+  const manifest = {
+    format: 1, project: 'TMflash', version, tag, commit, sourceModified: false, filename,
+    size: dmg.length, sha256: createHash('sha256').update(dmg).digest('hex'), minimumMacOS: '14.0',
+    architectures: ['arm64', 'x86_64'], firmware: 'tmsense-1.8', notarized: false, builtAt: '2026-10-12T12:00:00.000Z',
+  };
+  return { tag, files: { [filename]: dmg, 'tmflash-app.json': Buffer.from(JSON.stringify(manifest)) } };
+}
+
 export function partitionTable(entries: [label: string, type: number, subtype: number, offset: number, size: number][] = [
   ['nvs', 1, 2, 0x9000, 0x5000], ['otadata', 1, 0, 0xe000, 0x2000],
   ['app0', 0, 0x10, 0x10000, 0x330000], ['app1', 0, 0x11, 0x340000, 0x330000],

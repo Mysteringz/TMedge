@@ -21,14 +21,17 @@ import { AlgoUsers, loadAlgoAuthConfig } from '../dist/src/algo/auth.js';
 import { buildRegistry } from '../dist/src/edge/registry.js';
 import { DEFAULT_NODE_LIMITS } from '../dist/src/edge/config.js';
 import { KEY, siteJson, nodesJson } from '../dist/test/fixtures.js';
-import { FakeGitHub, tmsenseRelease } from '../dist/test/fake-github.js';
+import { FakeGitHub, tmsenseRelease, tmflashRelease } from '../dist/test/fake-github.js';
 import { GitHubReleaseSource } from '../dist/src/infrastructure/firmware-release/github-release-source.js';
+import { GitHubTMflashSource } from '../dist/src/infrastructure/tmflash-release/github-tmflash-source.js';
 
 const PASSWORD = 'local browser test password';
 let runtime, handle, base, directory;
 const originalDataDir = process.env.DATA_DIR;
 const github = new FakeGitHub();
 github.latest = tmsenseRelease('tmsense-1.6');
+const appGitHub = new FakeGitHub('Mysteringz/TMflash');
+appGitHub.latest = tmflashRelease();
 /** The mail service: keeps what it is handed, so a test can read the code a person would. */
 const outbox = { sent: [], async send(mail) { this.sent.push(mail); } };
 
@@ -52,7 +55,8 @@ before(async () => {
   await accounts.add('viewer', PASSWORD, 'viewer');
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users, SESSION_SECRET: 'local-only-test-secret'.repeat(3),
-  }, config.adminPassword), createConsole(runtime), { firmwareRelease: new GitHubReleaseSource(undefined, github.fetch), mailer: outbox });
+  }, config.adminPassword), createConsole(runtime), { firmwareRelease: new GitHubReleaseSource(undefined, github.fetch),
+    tmflashRelease: new GitHubTMflashSource(join(directory, 'tmflash'), appGitHub.fetch), mailer: outbox });
   await new Promise(resolve => handle.server.once('listening', resolve));
   base = `http://127.0.0.1:${handle.server.address().port}`;
 });
@@ -113,18 +117,18 @@ test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is st
     const modules = page.locator('.cx-header').getByRole('navigation', { name: 'Modules', exact: true });
     assert.deepEqual(await modules.locator(':scope > *').evaluateAll((items) => items.map((item) => item.textContent.replace(/\s*▾$/, ''))),
       ['Algorithm flow', 'ML', 'Debug console', 'Devices', 'Analytics'], 'five places in the bar, in the order of the modules');
-    for (const name of ['Updates', 'Adoption', 'TMflash']) assert.equal(await modules.getByRole('link', { name, exact: true }).count(), 0, `${name} is inside the menu, not beside it`);
+    for (const name of ['Updates', 'Adoption', 'TMflash web', 'TMflash download']) assert.equal(await modules.getByRole('link', { name, exact: true }).count(), 0, `${name} is inside the menu, not beside it`);
 
     const devices = modules.getByRole('button', { name: 'Devices', exact: true });
     assert.equal(await devices.getAttribute('aria-expanded'), 'false');
     await devices.click();
-    assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['Updates', 'Adoption', 'TMflash']);
+    assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['Updates', 'Adoption', 'TMflash web', 'TMflash download']);
     await shot(page, 'devices-menu-1280');
     await page.keyboard.press('Escape');
     assert.equal(await devices.getAttribute('aria-expanded'), 'false');
     assert.equal(await devices.evaluate((button) => button === document.activeElement), true, 'Escape returns focus to the menu');
 
-    for (const [name, path, heading] of [['Updates', '/updates', 'Updates'], ['Adoption', '/adoption', 'Adoption'], ['TMflash', '/flash', 'TMflash']]) {
+    for (const [name, path, heading] of [['Updates', '/updates', 'Updates'], ['Adoption', '/adoption', 'Adoption'], ['TMflash web', '/flash', 'TMflash web'], ['TMflash download', '/tmflash-download', 'TMflash download']]) {
       await devices.click();
       await modules.getByRole('link', { name, exact: true }).click();
       await page.waitForURL(`${base}${path}`);
@@ -144,7 +148,7 @@ test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is st
     await devices.click();
     await gone(modules.locator('.cx-group-dropdown[data-state="leaving"]'));
     assert.equal(await modules.locator('.cx-group-dropdown').count(), 1);
-    assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['Updates', 'Adoption', 'TMflash']);
+    assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['Updates', 'Adoption', 'TMflash web', 'TMflash download']);
     assert.deepEqual(errors, []);
   } finally { await context.close(); await browser.close(); }
 });
