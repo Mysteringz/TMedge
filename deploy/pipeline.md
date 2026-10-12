@@ -26,10 +26,19 @@ silently change a release. Update the pins through a PR after coordinated
 protocol changes. Manual CI can override `tmsense_ref` to test an unmerged
 firmware change; those runs cannot produce a production artifact.
 
-The required `check` job runs typechecks, unit/integration tests, both protocol
+The `changes` job verifies README automation and classifies the complete git
+diff. When only the root `README.md` is modified, it skips runtime jobs. Any
+other file, missing history, README deletion or mixed change runs the full
+pipeline. `config/ai-knowledge.md` is runtime configuration and is never exempt.
+
+The `build-test` job runs typechecks, unit/integration tests, both protocol
 crosschecks, archive security tests, the complete build, mobile browser
 regressions, and a local deployment rehearsal. The required `container` job
-checks the documented Docker build.
+checks the documented Docker build for runtime changes and is skipped for
+README-only changes. The required `check` job verifies that classification
+succeeded and that both runtime jobs succeeded or both were intentionally
+skipped. Workflow-level path filters are deliberately avoided, because they
+leave required checks pending and block documentation PRs.
 PR jobs have read-only tokens and no production secrets. Actions are pinned to
 commit SHAs; Dependabot proposes dependency and action updates weekly.
 
@@ -41,7 +50,7 @@ reviewer joins. Production release approval is a separate gate.
 
 ## Build once, approve, deploy
 
-A successful **push CI run on main** stores `release-<full commit SHA>` for
+A successful **runtime push CI run on main** stores `release-<full commit SHA>` for
 30 days. It contains the compiled runtime, static assets, configuration,
 lockfile, `RELEASE.json`, file SHA-256 manifest, and archive checksum. It never
 contains `.env`, private keys, recordings, local data or a copy of the firmware
@@ -51,9 +60,54 @@ server with lifecycle scripts disabled, or reused when the lockfile matches.
 `Deploy production` validates the source run, repository, event, workflow and
 commit, then waits for the **production** environment's required reviewer.
 Approve the release in GitHub Actions after inspecting its CI run and commit.
-An older commit is refused if main changed while approval was pending. The
+An older commit is refused if any path except the root README changed while
+approval was pending. Before validation and again after approval, the complete
+Git root trees must match apart from `README.md`; directory tree hashes cover
+all descendant source and configuration files. This lets documentation move
+forward without invalidating an already checked runtime artifact. The
 workflow also supports an admin-only manual dispatch with a successful main
 CI `run_id`. PR runs and manual CI runs cannot be promoted.
+README-only CI has no runtime artifact. Its production validation exits
+without entering the production environment or requesting approval; manually
+trying to promote such a run is refused.
+
+## README maintenance
+
+`Update README structure` runs on GitHub daily at approximately 09:17 Hong Kong
+time and can be started with Run workflow. It needs no API key and no running
+local computer. GitHub may delay scheduled runs.
+
+`ci/readme_structure.py` builds a compact directory tree from `git ls-files`:
+all tracked directories and visible root files, with generated/private data
+directories excluded. It replaces only the block between
+`project-structure:start` and `project-structure:end` in `README.md` and never
+updates prose or links. No tree difference means no commit and no PR.
+
+For changes, the bot reuses `automation/readme-structure`, opens a README-only
+PR, explicitly dispatches CI with `readme_only=true`, waits for the brief
+required checks, then squash-merges through branch protection. It never uses
+an admin bypass, force push or production credentials. Manual CI still runs
+the full pipeline by default, and the README-only input is honored only when
+the actual diff modifies just `README.md` and no firmware override is set.
+
+The built-in GitHub token needs contents, pull-request and actions write
+permissions for this workflow. Enable **Allow GitHub Actions to create and
+approve pull requests** in repository Settings → Actions → General. The bot
+creates PRs but does not submit reviews. The explicit CI dispatch avoids an
+extra personal token and supplies required checks for bot-created PRs.
+
+If main advances during the check, branch protection prevents a stale PR merge.
+The next daily run merges current main into the bot branch and regenerates
+the tree. A merge conflict or any edits outside the generated tree stop the
+automation and leave the PR for inspection.
+
+To preview or verify locally:
+
+```sh
+python3 ci/readme_structure.py
+python3 ci/readme_structure.py --check
+python3 -m unittest discover -s ci -p 'test_*.py'
+```
 
 The environment accepts only `main`; only that job gets the dedicated SSH key.
 Production runs are serialized and running deployments are never cancelled by
