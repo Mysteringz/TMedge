@@ -30,6 +30,7 @@ const Analytics = lazy(() => import('../pages/analytics/index.tsx').then((m) => 
 const Adoption = lazy(() => import('./Adoption.tsx').then((m) => ({ default: m.Adoption })));
 // esptool-js arrives with the first flash, not with the page (flash/esp.ts).
 const Flash = lazy(() => import('./Flash.tsx').then((m) => ({ default: m.Flash })));
+const TMflashDownload = lazy(() => import('./TMflashDownload.tsx').then((m) => ({ default: m.TMflashDownload })));
 const TMflashConnect = lazy(() => import('./TMflashConnect.tsx').then((m) => ({ default: m.TMflashConnect })));
 
 export function Shell() {
@@ -159,6 +160,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
           : screen === 'analytics' ? <Suspense fallback={<main className="cx-train cx-hint">Loading analytics…</main>}><Analytics /></Suspense>
           : screen === 'adoption' ? <Suspense fallback={<main className="cx-train cx-hint">Loading adoption…</main>}><Adoption /></Suspense>
           : screen === 'flash' ? <Suspense fallback={<main className="cx-train cx-hint">Loading TMflash…</main>}><Flash /></Suspense>
+          : screen === 'tmflash-download' ? <Suspense fallback={<main className="cx-train cx-hint">Loading TMflash download…</main>}><TMflashDownload /></Suspense>
           : screen === 'tmflash-connect' ? <Suspense fallback={null}><TMflashConnect user={user} /></Suspense>
           : <Home user={user} flash={flash} />}
     </div>

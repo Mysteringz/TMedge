@@ -1,0 +1,70 @@
+.cx-tmflash-download { width: min(1184px, 100%); margin: 0 auto; padding: 40px 32px 64px; }
+.cx-tmflash-download h1 { font-size: 42px; margin: 0 0 8px; }
+.td-intro { color: var(--text-secondary); font-size: 18px; margin: 0 0 32px; }
+.td-hero { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, 1fr); border: 1px solid var(--border-subtle-01); background: var(--layer-01); }
+.td-app { padding: 40px 32px; display: flex; gap: 20px; align-items: flex-start; min-width: 0; }
+.td-logo { width: 120px; height: 120px; flex: none; margin: -12px -4px 0 -12px; }
+.td-kicker { color: var(--interactive); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; margin: 0 0 12px; }
+.td-app h2 { font-size: clamp(30px, 3.4vw, 42px); font-weight: 400; line-height: 1.15; letter-spacing: -.025em; margin: 0 0 20px; }
+.td-app p:last-child { color: var(--text-secondary); line-height: 1.65; margin: 0; max-width: 38ch; }
+.td-get { padding: 36px 28px; background: var(--layer-02); border-left: 1px solid var(--border-subtle-01); display: flex; flex-direction: column; align-items: flex-start; justify-content: center; }
+.td-version { display: inline-block; font: 12px var(--font-mono, 'IBM Plex Mono', monospace); color: var(--text-primary); border: 1px solid var(--border-strong-01); padding: 5px 9px; margin-bottom: 12px; }
+.td-platform { margin: 0 0 22px; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }
+.td-download { width: 100%; min-height: 52px; display: flex; align-items: center; justify-content: flex-start; gap: 12px; padding: 14px 18px; border: 1px solid var(--interactive); background: var(--interactive); color: var(--text-on-color, #161616); text-decoration: none; font: inherit; font-size: 14px; font-weight: 600; }
+.td-download > svg { width: 20px; height: 20px; flex: none; }
+.td-download > svg:last-child { margin-left: auto; }
+.td-download:not(:disabled):hover { filter: brightness(1.06); }
+.td-download:disabled { cursor: default; opacity: .55; }
+.td-file { margin: 12px 0 20px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.td-update { margin: 0; color: var(--text-helper); font-size: 12px; line-height: 1.5; }
+.td-check { min-height: 44px; padding: 8px 0; border: 0; background: transparent; font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; color: var(--text-secondary); cursor: pointer; }
+.td-check:disabled { opacity: .6; cursor: default; }
+.td-message { margin: 20px 0; padding: 16px 20px; border-left: 3px solid var(--interactive); background: var(--layer-01); color: var(--text-secondary); line-height: 1.6; }
+.td-features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; padding: 36px 0; border-bottom: 1px solid var(--border-subtle-01); }
+.td-feature-mark { font: 12px var(--font-mono, 'IBM Plex Mono', monospace); color: var(--text-helper); }
+.td-features h3 { margin: 14px 0 8px; font-size: 16px; font-weight: 500; }
+.td-features p { margin: 0; color: var(--text-secondary); font-size: 14px; line-height: 1.65; }
+.td-install { margin: 40px 0; }
+.td-section-heading h2, .td-release h2 { font-size: 26px; font-weight: 400; line-height: 1.3; margin: 0 0 24px; }
+.td-install-steps { padding: 0; margin: 0; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border-subtle-01); background: var(--layer-01); }
+.td-install-steps li { display: flex; gap: 16px; padding: 24px; }
+.td-install-steps li + li { border-left: 1px solid var(--border-subtle-01); }
+.td-install-steps li > span { width: 28px; height: 28px; display: grid; place-items: center; flex: none; background: var(--layer-03); color: var(--interactive); font: 13px var(--font-mono, 'IBM Plex Mono', monospace); }
+.td-install-steps h3 { margin: 2px 0 10px; font-size: 14px; font-weight: 600; }
+.td-install-steps p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text-secondary); }
+.td-opening { margin-top: 16px; padding: 20px 24px; background: var(--layer-01); border-left: 3px solid var(--interactive); }
+.td-opening h3 { font-size: 14px; margin: 0 0 8px; }
+.td-opening p { font-size: 13px; color: var(--text-secondary); line-height: 1.65; margin: 0 0 4px; }
+.td-opening a, .td-release a, .td-web-link a { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; color: var(--interactive); text-underline-offset: 3px; font-size: 13px; }
+.td-release { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 36px; padding-top: 32px; border-top: 1px solid var(--border-subtle-01); }
+.td-release h2 { font-size: 22px; margin-bottom: 12px; }
+.td-release p:not(.td-kicker) { color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
+.td-build { color: var(--text-helper); }
+.td-integrity { align-self: start; background: var(--layer-01); padding: 0 20px; border: 1px solid var(--border-subtle-01); }
+.td-integrity summary { padding: 16px 0; min-height: 52px; cursor: pointer; font-size: 13px; }
+.td-integrity code { display: block; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; margin-bottom: 20px; user-select: all; }
+.td-web-link { margin-top: 24px; color: var(--text-secondary); font-size: 13px; }
+.cx-tmflash-download :is(a, button, summary):focus-visible { outline: 2px solid var(--interactive); outline-offset: 4px; }
+@media (max-width: 980px) {
+  .td-app { flex-direction: column; padding: 28px; }
+  .td-logo { width: 96px; height: 96px; margin: -8px 0 -4px -12px; }
+  .td-install-steps li { padding: 20px 16px; gap: 12px; }
+}
+@media (max-width: 700px) {
+  .cx-tmflash-download { padding: 24px 16px 48px; }
+  .cx-tmflash-download h1 { font-size: 32px; }
+  .td-intro { font-size: 16px; margin-bottom: 24px; }
+  .td-hero, .td-features, .td-install-steps, .td-release { grid-template-columns: 1fr; }
+  .td-app { padding: 24px; gap: 12px; }
+  .td-app h2 { font-size: 36px; }
+  .td-get { border-left: 0; border-top: 1px solid var(--border-subtle-01); padding: 24px; }
+  .td-features { gap: 24px; padding: 28px 0; }
+  .td-features > div { display: grid; grid-template-columns: 28px 1fr; gap: 0 12px; }
+  .td-features h3 { margin: 0 0 8px; }
+  .td-feature-mark { margin-top: 3px; }
+  .td-features p { grid-column: 2; }
+  .td-install { margin: 32px 0; }
+  .td-install-steps li { padding: 24px 20px; }
+  .td-install-steps li + li { border-left: 0; border-top: 1px solid var(--border-subtle-01); }
+  .td-release { gap: 20px; }
+}

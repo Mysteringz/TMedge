@@ -148,7 +148,7 @@ async function open(browser, user, options = {}) {
     await page.addInitScript(serialShim);
   }
   await page.goto(`${base}/flash`);
-  await page.getByRole('heading', { name: 'TMflash', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'TMflash web', exact: true }).waitFor();
   return { context, page, board, sent, errors };
 }
 

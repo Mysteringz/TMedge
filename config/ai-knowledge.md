@@ -1,9 +1,7 @@
-This file is what "Ask AI" on the algo console knows. It is sent to the model
-before every question, word for word, so it is written for a reader that
-knows nothing else. Keep it true: when the system changes, change this file
-in the same commit (CLAUDE.md, "The assistant's knowledge base"). Keep it
-under 16 kB, and never put a secret, an address of a machine, or anything
-about a named person in it.
+This is Ask AI's system knowledge, sent before every question. Keep it true
+and update it in the same commit as system changes (CLAUDE.md, "The
+assistant's knowledge base"). Keep it under 16 kB; no secrets, machine
+addresses or information about named people.
 
 ## What the system is
 
@@ -28,6 +26,8 @@ Sensors reach the edge by UDP, through a Wi-Fi site gateway (TMWAccess), or
 directly over a secure WebSocket. All three go through the same checks.
 TMflash flashes and provisions a sensor over USB. It exists twice: a Mac app,
 and module 07 of this console, which does the same from a browser.
+The Mac app preserves saved node settings and boot counters; damaged
+firmware is refused before USB writes.
 
 ## How a count is made
 
@@ -55,14 +55,13 @@ Rules that are never broken:
 
 ## The console, algo.hkumyseat.com
 
-On phones and tablets, the navigation menu button beside the logo opens Home
-and every module, including both ML job and ML data. Accounts appears only
-for named accounts with account-management access. The current page is
-highlighted. Selecting a page, tapping outside or pressing Escape closes the
-menu. On wide screens the header has five places: Algorithm flow, an ML
-dropdown (ML job, ML data), Debug console, a Devices dropdown (Updates,
-Adoption, TMflash) and Analytics. Every page keeps its own address and its
-own card on the landing page.
+On phones/tablets the navigation button opens Home and every module,
+including both ML pages. Accounts appears only for named accounts with
+account-management access. The current page is highlighted; selecting,
+tapping outside or Escape closes the menu. The wide header has Algorithm
+flow, ML (ML job, ML data), Debug console, Devices (Updates, Adoption,
+TMflash web, TMflash download) and Analytics. Each page has its own address
+and landing-page card.
 
 At the right of the header are the notifications bell and an account icon.
 The account icon opens a menu with the person's username and access role,
@@ -106,13 +105,11 @@ Modules:
   exports fail and can be generated again. The table browser reads the live
   database; the SchemaSpy report is a separately generated snapshot. SchemaSpy generation
   runs on Proxmox; the console serves its static output.
-  A Graphviz relationship diagram sits on the right of ML data (below the
-  tools on narrow screens). A server-side watcher checks the training schema
-  and row-write counters every 30 seconds between jobs, regenerating SchemaSpy
-  when something changes. Updates during generation are picked up by the next
-  check. The edge privately synchronizes completed snapshots and the page
-  checks for a new diagram every 15 seconds. The last successful diagram stays
-  available if regeneration or synchronization fails, with its update time shown.
+  A Graphviz diagram sits beside the tools, below them on phones. A watcher
+  checks schema and row-write counters every 30 seconds between jobs and
+  regenerates SchemaSpy on Proxmox; changes during generation trigger the
+  next check. The edge privately synchronizes completed snapshots and the
+  page polls every 15 seconds. Failures retain the last diagram and timestamp.
 - 03 Debug console, /console. Live thermal frames, the floor with fused
   occupancy, per-sensor health, and commands to a sensor (set a parameter,
   reset its background, identify, save, reboot).
@@ -134,7 +131,7 @@ Modules:
   pending request; a person compares the board's UID and request code and
   approves it. An admitted sensor has no floor or position yet, so it cannot
   affect any number a student sees until it is placed.
-- 07 TMflash, /flash. Flash and set up a sensor from the browser, with no app
+- 07 TMflash web, /flash. Flash and set up a sensor from the browser, with no app
   to install. The board is plugged into the computer the browser runs on. The
   person clicks Connect, the browser shows its own list of USB devices, and
   only the one they pick becomes reachable. It needs Chrome or Edge on a
@@ -166,6 +163,15 @@ Modules:
   admins only. Opening a board's serial port restarts it. A browser cannot
   scan for Wi-Fi networks, so the name is typed; flashing several boards at
   once is only in the Mac app.
+- 08 TMflash download, /tmflash-download. Everyone signed in can download
+  the latest published Mac app. TMflash master updates automatically publish
+  a DMG and size/SHA-256 manifest; the portal checks every minute and hosts
+  verified files in a persistent cache. New builds need no portal deploy.
+  Intel and Apple Silicon, macOS 14+, with firmware and tools included; no
+  Python, PlatformIO or source folder. Open the DMG and drag into Applications.
+  Included firmware works offline; account adoption needs internet.
+  Unnotarized builds have Apple's Open Anyway instructions. GitHub outages
+  label the last checked build; invalid newest releases are refused.
 - Accounts, /accounts (admins only). Create accounts, set access roles and
   team roles, reset passwords, revoke sessions.
 - Account settings, /account (everyone, for their own account only; opened
@@ -177,20 +183,15 @@ Modules:
   Changing the password keeps that browser signed in and signs out every
   other device and any TMflash app session. The email address is private to
   its owner: no admin, page or list shows it to anyone else, and Ask AI is
-  never given it. Email is sent through Amazon SES when the server is
-  configured for it; when it is not, the page says the address is kept and
-  nothing is sent. An address must be confirmed first: "Send confirmation
-  code" emails a six-digit code (good for 30 minutes, five tries) and the
-  person types it into the page. Nothing else is ever sent to an
-  unconfirmed address, and changing the address means confirming again.
-  After that, the console emails the ticked topics as plain text, checking
-  once a minute: only things that happen after email was turned on; a
-  fault that can clear by itself (a sensor offline, a parameter change
-  waiting) only once it has lasted 10 minutes, and not again for the same
-  thing within a day; everything ready goes in one message, at most one
-  message per 15 minutes and 12 a day per person. Team mail emails say who
-  wrote and the subject, never the body. A person is only emailed what
-  their own role lets them see in the console.
+  never given it. Email uses Amazon SES when configured; otherwise the page
+  says the address is kept and delivery is off. "Send confirmation code"
+  sends six digits, valid for 30 minutes and five tries. The owner types them
+  back; an unconfirmed address receives nothing else. Changing it requires
+  confirmation again. Ticked topics arrive as plain-text digests, checked
+  each minute: only events after opt-in; clearable faults only after ten
+  minutes and not again that day; at most one digest per 15 minutes and 12
+  per day. Team mail includes sender and subject, never body. Each recipient
+  receives only what their own role permits them to see.
 
 System figures on the landing page: sensors reporting, seats taken now,
 students online, processor, memory, storage. A dash means the source did not
@@ -253,6 +254,6 @@ can move its status (to do, in progress, done) whatever their role.
 - Server health and storage: Analytics, server view.
 - Student usage: Analytics, usage view.
 - A sensor that will not join: Adoption, and docs/ADOPTION.md.
-- Flashing a sensor over USB: TMflash (module 07), and docs/WEB_FLASHER.md.
+- Browser flashing: TMflash web (07), docs/WEB_FLASHER.md. Mac app: TMflash download (08), docs/TMFLASH_DOWNLOAD.md.
 - Firmware: Updates. Training: ML job, and docs/hpc/. Database: ML data, and docs/ML_DATA.md.
 - The workspace and this assistant: docs/WORKSPACE.md, docs/ASSISTANT.md.

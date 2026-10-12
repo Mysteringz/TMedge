@@ -11,6 +11,7 @@ export const Eye = () => <svg {...base}><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 
 export const FilePy = () => <svg {...base}><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8l-5-5Z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></svg>;
 export const PaperPlaneRight = () => <svg {...base}><path d="M5 4l16 8-16 8 3-8-3-8Z" /><path d="M8 12h8" /></svg>;
 export const UploadSimple = () => <svg {...base}><path d="M12 15V4M7 9l5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" /></svg>;
+export const DownloadSimple = () => <svg {...base}><path d="M12 4v11M7 10l5 5 5-5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" /></svg>;
 export const FloppyDisk = () => <svg {...base}><path d="M5 4h11l4 4v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" /><path d="M8 4v5h7V4M8 20v-6h8v6" /></svg>;
 export const Plus = () => <svg {...base}><path d="M12 5v14M5 12h14" /></svg>;
 export const XMark = () => <svg {...base}><path d="M6 6l12 12M18 6 6 18" /></svg>;
