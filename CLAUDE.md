@@ -26,7 +26,7 @@ src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no
 src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports (docs/ML_DATA.md)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, 04 /updates, 05 /analytics, 06 /adoption
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, 04 /updates, 05 /analytics, 06 /adoption, 07 /flash
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
 src/modules/workspace/   the landing page's team side: mailbox, feature requests, tasks (docs/WORKSPACE.md); /api/workspace
@@ -34,6 +34,9 @@ src/modules/assistant/   Ask AI: a model on the team's Proxmox cluster, told con
 config/ai-knowledge.md   what Ask AI knows about the system -- UPDATE IT WITH EVERY CHANGE TO THE SYSTEM (rule below)
 algo-app/src/widgets/workspace/  the landing page under the welcome: the search/ask box, suggestions, system figures, mailbox, board
 src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMflash access
+src/shared/flasher/      module 07's core, no DOM: settings, the node's serial console, the flash write plan (docs/WEB_FLASHER.md)
+algo-app/src/console/flash/  module 07's I/O: Web Serial, esptool-js, loading the TMsense release
+src/infrastructure/firmware-release/  module 07's firmware: the latest GitHub release of TMsense, fetched and checked by the edge; /api/flash
 src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
@@ -99,6 +102,24 @@ has hidden Linux failures before.
   and stream but cannot move a number a student sees until it is placed.
   `NodeDef.floorId` and `.pose` are nullable so the compiler finds every
   place that would otherwise do geometry on a pose nobody measured.
+- **The web flasher never erases a board, and keeps its secrets off the
+  server.** Module 07 writes four images to an allow-list of regions read
+  from the partition table being flashed (`src/shared/flasher/images.ts`); a
+  plan that would reach an NVS partition is refused, never trimmed, and no
+  erase command is sent. NVS holds the boot counter, and a counter that goes
+  back to zero makes the edge reject the node as a replay. The Wi-Fi password
+  and the signing key go from the page to the USB port: never to an endpoint,
+  never to storage, never to the log or an error message.
+  The firmware has one source, the latest GitHub release of the TMsense
+  repository: the edge fetches it from GitHub's hosts only, and offers it
+  only if every file matches the release's manifest and the three make a
+  flash plan. No route, picker or upload may hand the page or the edge any
+  other image, and a release that fails a check is never replaced by an
+  older one.
+  It queues an adoption request with the signed-in account and waits at a
+  button; pressing it is the person's approval, and nothing answers for them.
+  `src/shared/flasher` mirrors TMflash's Swift core and TMsense's console:
+  change the three together.
 - **nodes.json is the one config the edge writes.** It lives in
   a persistent writable directory with `NODES_CONFIG` pointing at it, because a release's
   own copy is replaced on the next deploy. The edge refuses to start if

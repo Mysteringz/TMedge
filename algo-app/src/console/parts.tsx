@@ -20,6 +20,7 @@ export const MODULES = [
   { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
   { n: '05', title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
   { n: '06', title: 'Adoption', path: '/adoption', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
+  { n: '07', title: 'TMflash', path: '/flash', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
 ] as const;
 
 

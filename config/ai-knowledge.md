@@ -26,7 +26,8 @@ Three parts:
 
 Sensors reach the edge by UDP, through a Wi-Fi site gateway (TMWAccess), or
 directly over a secure WebSocket. All three go through the same checks.
-TMflash is the Mac app that flashes and provisions a new sensor over USB.
+TMflash flashes and provisions a sensor over USB. It exists twice: a Mac app,
+and module 07 of this console, which does the same from a browser.
 
 ## How a count is made
 
@@ -121,6 +122,38 @@ Modules:
   pending request; a person compares the board's UID and request code and
   approves it. An admitted sensor has no floor or position yet, so it cannot
   affect any number a student sees until it is placed.
+- 07 TMflash, /flash. Flash and set up a sensor from the browser, with no app
+  to install. The board is plugged into the computer the browser runs on. The
+  person clicks Connect, the browser shows its own list of USB devices, and
+  only the one they pick becomes reachable. It needs Chrome or Edge on a
+  computer (Web Serial); Safari, Firefox and phones are told they cannot.
+  The firmware is always the latest release published by the TMsense
+  firmware repository on GitHub; nobody chooses or uploads a file. The
+  console server downloads the release from GitHub, checks every file
+  against the SHA-256 list in the release, and refuses a release that is
+  incomplete or is not TMsense firmware. The page shows the version, tag and
+  commit it will write. If no release has been published, or GitHub cannot
+  be reached and nothing was checked before, the page says so and only
+  settings can be changed. A new firmware version reaches the page when the
+  firmware repository's Release workflow is run on its main branch.
+  The page writes four images (bootloader,
+  partition table, boot selector, application), checks each by reading it
+  back, then sets the node up over its serial console: node ID, uplink (Wi-Fi
+  through a local gateway, Wi-Fi direct to cloud, or LoRa), network name and
+  password, gateway address or cloud URL, signing key, frame rate. A blank
+  field keeps what the node has. It reads the settings back to verify them.
+  It never erases a board: the node's saved settings and boot counter (NVS)
+  are left untouched, and a build whose layout would reach them is refused.
+  The Wi-Fi password and the signing key go from the page to the USB port.
+  They are never sent to the server, stored, or logged.
+  "Write firmware" can be turned off to change only the settings of a board
+  that already runs TMsense. With "Ask TMedge to admit this node" on, the
+  page queues the adoption request itself and stops at an "Admit this board"
+  button showing the UID read from the board; pressing it is the approval,
+  and someone else may approve or deny it in Adoption instead. Engineers and
+  admins only. Opening a board's serial port restarts it. A browser cannot
+  scan for Wi-Fi networks, so the name is typed; flashing several boards at
+  once is only in the Mac app.
 - Accounts, /accounts (admins only). Create accounts, set access roles and
   team roles, reset passwords, revoke sessions.
 
@@ -134,7 +167,8 @@ Access roles decide what someone may do:
 - Viewer: read everything operational; cannot change settings.
 - Operator: also change algorithm parameters, use routine sensor commands,
   run their own training jobs.
-- Engineer: also firmware, provisioning and advanced sensor commands.
+- Engineer: also firmware, flashing and provisioning, and advanced sensor
+  commands.
 - Admin: also manage accounts.
 Being an admin does not let anyone read another person's mail, training jobs
 or cluster credentials.
@@ -177,5 +211,6 @@ can move its status (to do, in progress, done) whatever their role.
 - Server health and storage: Analytics, server view.
 - Student usage: Analytics, usage view.
 - A sensor that will not join: Adoption, and docs/ADOPTION.md.
+- Flashing a sensor over USB: TMflash (module 07), and docs/WEB_FLASHER.md.
 - Firmware: Updates. Training: ML job, and docs/hpc/. Database: ML data, and docs/ML_DATA.md.
 - The workspace and this assistant: docs/WORKSPACE.md, docs/ASSISTANT.md.

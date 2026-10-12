@@ -56,6 +56,8 @@ import { schemaAssets } from './ml-data/schema-report.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
+import { GitHubReleaseSource, type PublishedReleaseSource } from '../infrastructure/firmware-release/github-release-source.js';
+import { createPublishedReleaseRouter } from '../modules/firmware/routes/published-release-router.js';
 import { sendLatest } from '../shared/fanout.js';
 import { requestUrl, sameOrigin } from '../shared/http.js';
 import { encodeFrame } from './frames.js';
@@ -63,6 +65,11 @@ import { validate } from './graph.js';
 import { NODE_SPECS, specOf } from './nodes.js';
 
 export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
+/** Parts a test replaces with its own; production passes none. */
+export interface AlgoServerServices {
+  /** Where module 07's firmware comes from. Default: the TMsense repository's releases on GitHub. */
+  firmwareRelease?: PublishedReleaseSource;
+}
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
 
@@ -77,6 +84,7 @@ export function startAlgo(
   authOrOptions: AlgoAuthConfig | AlgoServerOptions = {},
   /** The debug console, hosted here as module 03 when given (edge/console.ts). */
   consoleCore?: ConsoleCore,
+  services: AlgoServerServices = {},
 ): AlgoServerHandle {
   const options = 'enabled' in authOrOptions ? {} : authOrOptions;
   const authCfg: AlgoAuthConfig = 'enabled' in authOrOptions ? authOrOptions : loadAlgoAuthConfig(process.env, rt.cfg.adminPassword);
@@ -320,6 +328,9 @@ export function startAlgo(
     return next();
   }, consoleCore.adoption);
   if (nativeLogin) app.use('/api/tmflash', nativeLogin.browser);
+  // Module 07's firmware: the latest TMsense release, fetched from GitHub by
+  // this edge. Nothing is fetched until somebody opens the page.
+  app.use('/api/flash', createPublishedReleaseRouter(services.firmwareRelease ?? new GitHubReleaseSource()));
 
   // Module 02: training jobs for HKU HPC2021 (src/algo/train/, docs/hpc/).
   const train = createTrain({

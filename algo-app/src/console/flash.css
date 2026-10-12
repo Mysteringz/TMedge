@@ -1,0 +1,69 @@
+/* Module 07, the web flasher. Laid out with Adoption's panels (adoption.css);
+   only what that page has no word for is here. */
+.cx-flash code { overflow-wrap: anywhere; }
+.cx-flash small { display: block; color: var(--text-helper); font-size: 12px; line-height: 1.4; }
+.cx-flash .ad-panel > p { margin: 0 0 12px; }
+
+/* adoption.css sizes every input as a text field; these are not text fields. */
+.cx-flash input[type=checkbox], .cx-flash input[type=radio] { width: 20px; height: 20px; flex: none; padding: 0; margin: 0; accent-color: var(--interactive); }
+.cx-flash input[type=file] { height: auto; padding: 10px 12px; border-bottom: 1px solid var(--border-strong-01); }
+.cx-flash input:disabled, .cx-flash fieldset:disabled label { opacity: .5; cursor: not-allowed; }
+
+.fl-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 24px; margin: 16px 0 20px; }
+.cx-flash label.fl-check { flex-direction: row; align-items: flex-start; gap: 12px; min-height: 44px; margin: 16px 0; color: var(--text-primary); cursor: pointer; }
+.cx-flash label.fl-check input { margin-top: 2px; }
+
+.fl-choice { border: 0; padding: 0; margin: 0; min-width: 0; }
+.fl-choice legend { padding: 0; margin-bottom: 6px; color: var(--text-secondary); }
+.fl-choice > div { display: flex; flex-wrap: wrap; gap: 1px; background: var(--border-subtle-01); border: 1px solid var(--border-subtle-01); width: fit-content; max-width: 100%; }
+.cx-flash .fl-choice label { flex: 1 1 auto; flex-direction: row; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 16px; background: var(--layer-02); color: var(--text-primary); cursor: pointer; white-space: nowrap; }
+.cx-flash .fl-choice label.is-on { background: var(--interactive); color: var(--on-interactive, #161616); font-weight: 600; }
+/* The selected option is the filled one; the radio stays for the keyboard and for screen readers. */
+.fl-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.fl-choice label:focus-within { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+
+.fl-board, .fl-build { padding: 16px; margin: 0 0 16px; background: var(--layer-02); border-left: 3px solid var(--interactive); }
+.fl-board p, .fl-build p { margin: 0 0 8px; }
+.fl-build table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 14px; }
+.fl-build th, .fl-build td { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border-subtle-01); }
+.fl-build th { color: var(--text-secondary); font-weight: 400; font-size: 12px; }
+.fl-build td:last-child, .fl-build th:last-child { text-align: right; padding-right: 0; font-variant-numeric: tabular-nums; }
+
+.fl-problems { margin: 0 0 16px; padding: 12px 16px 12px 32px; background: var(--layer-02); border-left: 3px solid var(--support-warning, #f1c21b); }
+.fl-problems li + li { margin-top: 4px; }
+
+.fl-steps { list-style: none; padding: 0; margin: 20px 0; }
+.fl-steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--border-subtle-01); color: var(--text-secondary); }
+.fl-steps li.is-running, .fl-steps li.is-done, .fl-steps li.is-failed { color: var(--text-primary); }
+.fl-mark { font-family: var(--font-mono, monospace); text-align: center; }
+.fl-steps li.is-done .fl-mark { color: var(--support-success, #42be65); }
+.fl-steps li.is-failed .fl-mark, .fl-steps li.is-failed .fl-step-state { color: var(--text-error, #ff8389); }
+.fl-steps li.is-running .fl-mark { color: var(--interactive); }
+.fl-step-state { font-size: 12px; font-variant-numeric: tabular-nums; }
+.fl-steps progress { grid-column: 2 / -1; width: 100%; height: 4px; appearance: none; border: 0; background: var(--layer-03); }
+.fl-steps progress::-webkit-progress-bar { background: var(--layer-03); }
+.fl-steps progress::-webkit-progress-value { background: var(--interactive); }
+.fl-steps progress::-moz-progress-bar { background: var(--interactive); }
+
+.fl-admit, .fl-outcome { padding: 20px; margin: 20px 0; background: var(--layer-02); border-left: 3px solid var(--interactive); }
+.fl-outcome.is-ok { border-color: var(--support-success, #42be65); }
+.fl-outcome.is-check { border-color: var(--support-warning, #f1c21b); }
+.fl-outcome.is-failed { border-color: var(--support-error, #fa4d56); }
+.fl-outcome h3 span { display: inline-block; width: 24px; font-family: var(--font-mono, monospace); }
+.fl-outcome.is-ok h3 span { color: var(--support-success, #42be65); }
+.fl-outcome.is-check h3 span { color: var(--support-warning, #f1c21b); }
+.fl-outcome.is-failed h3 span { color: var(--text-error, #ff8389); }
+.fl-outcome .ad-match, .fl-admit .ad-match { margin-bottom: 0; }
+
+.fl-log { margin-top: 20px; border-top: 1px solid var(--border-subtle-01); }
+.fl-log summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--text-secondary); }
+.fl-log pre { margin: 0; padding: 12px; max-height: 320px; overflow: auto; background: var(--background, #161616); color: var(--text-secondary); font: 12px/1.5 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (max-width: 700px) {
+  .fl-fields { grid-template-columns: 1fr; }
+  .fl-choice > div { width: 100%; }
+  .cx-flash .fl-choice label { flex: 1 1 40%; white-space: normal; text-align: center; padding: 8px 12px; }
+  .fl-steps li { grid-template-columns: 24px minmax(0, 1fr); }
+  .fl-step-state { grid-column: 2; }
+  .fl-steps progress { grid-column: 1 / -1; }
+}

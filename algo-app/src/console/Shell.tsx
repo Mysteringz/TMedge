@@ -4,7 +4,8 @@
  * the edge's debug console (formerly console.hkumyseat.com), each under the
  * console's top bar. Module 04 owns firmware builds and OTA rollouts, and
  * module 05 is analytics: usage of the student site and the state of the
- * server, read-only.
+ * server, read-only. Module 07 is TMflash in the browser: it flashes the
+ * board on this computer's USB port (Flash.tsx).
  */
 import { AdminSessionContext, type AdminSession } from '../entities/admin-session/index.tsx';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -26,6 +27,8 @@ const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Upd
 const Accounts = lazy(() => import('../pages/admin-accounts/index.tsx').then((m) => ({ default: m.Accounts })));
 const Analytics = lazy(() => import('../pages/analytics/index.tsx').then((m) => ({ default: m.Analytics })));
 const Adoption = lazy(() => import('./Adoption.tsx').then((m) => ({ default: m.Adoption })));
+// esptool-js arrives with the first flash, not with the page (flash/esp.ts).
+const Flash = lazy(() => import('./Flash.tsx').then((m) => ({ default: m.Flash })));
 const TMflashConnect = lazy(() => import('./TMflashConnect.tsx').then((m) => ({ default: m.TMflashConnect })));
 
 export function Shell() {
@@ -93,7 +96,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
   // The landing page offers the modules this person opens most; this is where
   // it learns which those are. Analytics' views count as the places they are.
   useEffect(() => {
-    if (!user || !['flow', 'train', 'ml-data', 'console', 'updates', 'analytics', 'adoption'].includes(screen)) return;
+    if (!user || !['flow', 'train', 'ml-data', 'console', 'updates', 'analytics', 'adoption', 'flash'].includes(screen)) return;
     recordVisit(user, `/${path.split('/')[1] ?? ''}`);
   }, [user, screen, path]);
 
@@ -153,6 +156,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>
           : screen === 'analytics' ? <Suspense fallback={<main className="cx-train cx-hint">Loading analytics…</main>}><Analytics /></Suspense>
           : screen === 'adoption' ? <Suspense fallback={<main className="cx-train cx-hint">Loading adoption…</main>}><Adoption /></Suspense>
+          : screen === 'flash' ? <Suspense fallback={<main className="cx-train cx-hint">Loading TMflash…</main>}><Flash /></Suspense>
           : screen === 'tmflash-connect' ? <Suspense fallback={null}><TMflashConnect user={user} /></Suspense>
           : <Home user={user} flash={flash} />}
     </div>
