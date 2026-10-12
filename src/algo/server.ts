@@ -23,6 +23,10 @@ import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig }
 import { accountRoutes } from '../modules/algo-admin/controllers/accounts.js';
 import { ManageAccounts } from '../modules/algo-admin/use-cases/manage-accounts.js';
 import { FileAccountRepository } from '../infrastructure/algo-admin/file-account-repository.js';
+import { FileAccountSettings, FileOwnAccount } from '../infrastructure/algo-admin/file-own-account.js';
+import { ownAccountRoutes } from '../modules/algo-admin/controllers/own-account.js';
+import { ManageOwnAccount } from '../modules/algo-admin/use-cases/manage-own-account.js';
+import { emptySettings, parseSettings } from '../modules/algo-admin/domain/account-settings.js';
 import { createHealthRouter } from '../modules/algo-admin/controllers/health-controller.js';
 import { ReadOperationalHealth } from '../modules/algo-admin/use-cases/read-operational-health.js';
 import { RuntimeOperationalQueries } from '../infrastructure/algo-admin/runtime-operational-queries.js';
@@ -219,6 +223,10 @@ export function startAlgo(
 
   // --- before sign-in: the form, the endpoints it posts to, the bundle -----
   app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
+  // Each person's own account: their address, notification choices, password
+  // and sessions. Kept beside the accounts, in a private file of its own.
+  app.use('/api/account', ownAccountRoutes(auth, new ManageOwnAccount(new FileOwnAccount(auth.users),
+    new FileAccountSettings(new JsonDocumentStore(join(dirname(authCfg.usersPath), 'account-settings.json'), emptySettings, parseSettings)))));
   const notifications = express.Router();
   app.use('/api/admin/notifications', notifications);
   // The landing page's team side: a mailbox and a board (docs/WORKSPACE.md).

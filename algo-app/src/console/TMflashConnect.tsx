@@ -60,15 +60,15 @@ export function TMflashConnect({ user }: { user: string }) {
   }
   return <main className="cx-adoption">
     <p className="cx-eyebrow">TMflash · Account verification</p><h1>Connect TMflash</h1>
-    <section className="ad-panel">
+    <section className="dv-panel">
       <h2>Signed in as {user}</h2>
-      {valid && canCommission && <p className="ad-notice" role="status">{busy ? 'Completing sign-in… TMflash will open automatically.' : handoff ? 'Returning to TMflash… If this window stays open, click Return to TMflash.' : 'Sign-in could not finish. Retry to return to TMflash.'}</p>}
+      {valid && canCommission && <p className="dv-notice" role="status">{busy ? 'Completing sign-in… TMflash will open automatically.' : handoff ? 'Returning to TMflash… If this window stays open, click Return to TMflash.' : 'Sign-in could not finish. Retry to return to TMflash.'}</p>}
       <p>This Mac's access lasts 24 hours and lets TMflash queue new devices for adoption and check their approval status.</p>
       <p>Device approval requires your signed-in console account and the UID and request code from the physical board. You can revoke this Mac's access in Adoption.</p>
-      {!valid && <p className="ad-error" role="alert">This sign-in request is invalid. Start again from TMflash.</p>}
-      {error && <p className="ad-error" role="alert">{error}</p>}
+      {!valid && <p className="dv-error" role="alert">This sign-in request is invalid. Start again from TMflash.</p>}
+      {error && <p className="dv-error" role="alert">{error}</p>}
       {!canCommission && <p role="status">Engineer or Admin access is required to authorize TMflash.</p>}
-      <div className="ad-match"><button className="ad-primary" disabled={!canCommission || !valid || busy} onClick={returnToApp}>{busy ? 'Connecting…' : handoff ? 'Return to TMflash' : 'Retry connection'}</button><button disabled={busy} onClick={cancel}>{valid ? 'Cancel' : 'Back to Adoption'}</button></div>
+      <div className="dv-match"><button className="dv-primary" disabled={!canCommission || !valid || busy} onClick={returnToApp}>{busy ? 'Connecting…' : handoff ? 'Return to TMflash' : 'Retry connection'}</button><button disabled={busy} onClick={cancel}>{valid ? 'Cancel' : 'Back to Adoption'}</button></div>
     </section>
   </main>;
 }

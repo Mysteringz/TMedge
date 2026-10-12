@@ -14,6 +14,8 @@ export const UploadSimple = () => <svg {...base}><path d="M12 15V4M7 9l5-5 5 5M4
 export const FloppyDisk = () => <svg {...base}><path d="M5 4h11l4 4v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" /><path d="M8 4v5h7V4M8 20v-6h8v6" /></svg>;
 export const Plus = () => <svg {...base}><path d="M12 5v14M5 12h14" /></svg>;
 export const XMark = () => <svg {...base}><path d="M6 6l12 12M18 6 6 18" /></svg>;
+export const UserCircle = () => <svg {...base}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="10" r="3.2" /><path d="M5.8 18.4a7 7 0 0 1 12.4 0" /></svg>;
+export const Gear = () => <svg {...base}><circle cx="12" cy="12" r="3" /><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8" /></svg>;
 export const Menu = () => <svg {...base}><path d="M4 6h16M4 12h16M4 18h16" /></svg>;
 export const EyeSlash =() => <svg {...base}><path d="M4 4l16 16M9.9 5.3A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.8M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 5.4-1.6M9.9 9.9a3.2 3.2 0 0 0 4.2 4.2" /></svg>;
 export const ArrowLeft = () => <svg {...base}><path d="M20 12H4M10 6l-6 6 6 6" /></svg>;

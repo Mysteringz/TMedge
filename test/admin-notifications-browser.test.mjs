@@ -76,7 +76,7 @@ try {
   await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); }); const hiddenReads = reads;
   await page.waitForTimeout(15500); assert.equal(reads, hiddenReads); await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); }); await page.waitForTimeout(200);
   }
-  await page.getByRole('button', { name: 'Sign out' }).click(); await page.waitForURL('**/login**'); assert.equal(await page.getByRole('heading', { name: 'New failed job' }).count(), 0);
+  await page.getByRole('button', { name: 'Account', exact: true }).click(); await page.getByRole('button', { name: 'Sign out' }).click(); await page.waitForURL('**/login**'); assert.equal(await page.getByRole('heading', { name: 'New failed job' }).count(), 0);
   await login(context, 'bob'); snapshot = bob; await page.goto(base); await page.getByRole('button', { name: /Notifications/ }).click(); await page.getByRole('heading', { name: 'bob history 0', exact: true }).waitFor(); assert.equal(await page.getByRole('heading', { name: /alice history/ }).count(), 0); assert.deepEqual(await page.evaluate(() => window.notificationToasts), []);
   evidence.push({ realOwnerTrainingCounts: [25, 1], fullSourceNotHealthSubset: true, layoutOnly: !!process.env.NOTIFICATION_LAYOUT_ONLY, checks: ['source-recovery silent baseline', 'new ID once', 'repeat/reconnect/reload no replay', 'read persistence', '360px and200% zoom', 'keyboard close/open', ...(!process.env.NOTIFICATION_LAYOUT_ONLY ? ['hung fetch10s abort/retry', 'single-flight and hidden15sec pause'] : []), 'logout/user switch privacy'], peakRequests: peak });
   await context.close();

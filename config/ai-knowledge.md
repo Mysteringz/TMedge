@@ -59,8 +59,15 @@ On phones and tablets, the navigation menu button beside the logo opens Home
 and every module, including both ML job and ML data. Accounts appears only
 for named accounts with account-management access. The current page is
 highlighted. Selecting a page, tapping outside or pressing Escape closes the
-menu. On wide screens the module links stay in the header, with ML grouped
-in its dropdown.
+menu. On wide screens the header has five places: Algorithm flow, an ML
+dropdown (ML job, ML data), Debug console, a Devices dropdown (Updates,
+Adoption, TMflash) and Analytics. Every page keeps its own address and its
+own card on the landing page.
+
+At the right of the header are the notifications bell and an account icon.
+The account icon opens a menu with the person's username and access role,
+"Account settings", and "Sign out". The username and role are no longer
+written in the header itself.
 
 The landing page has, top to bottom: a welcome line, one search box, quick
 suggestions (the modules this person uses most), six live system figures, the
@@ -156,6 +163,17 @@ Modules:
   once is only in the Mac app.
 - Accounts, /accounts (admins only). Create accounts, set access roles and
   team roles, reset passwords, revoke sessions.
+- Account settings, /account (everyone, for their own account only; opened
+  from the account icon). It shows the username, access role, team roles and
+  when the account was created; an admin sets those. The person can save an
+  email address and tick what they want to be emailed about (sensors,
+  training jobs, firmware, live parameter changes, team mail, tasks), change
+  their own password by giving the current one, and "Sign out everywhere".
+  Changing the password keeps that browser signed in and signs out every
+  other device and any TMflash app session. The email address is private to
+  its owner: no admin, page or list shows it to anyone else, and Ask AI is
+  never given it. This server does not send email yet, so an address and
+  its choices are saved and nothing is delivered; the page says so.
 
 System figures on the landing page: sensors reporting, seats taken now,
 students online, processor, memory, storage. A dash means the source did not
@@ -170,8 +188,8 @@ Access roles decide what someone may do:
 - Engineer: also firmware, flashing and provisioning, and advanced sensor
   commands.
 - Admin: also manage accounts.
-Being an admin does not let anyone read another person's mail, training jobs
-or cluster credentials.
+Being an admin does not let anyone read another person's mail, training jobs,
+cluster credentials or the email address in their account settings.
 
 Team roles say what someone works on: ML, front-end, back-end, firmware,
 hardware. They are labels for finding and assigning people. They grant no

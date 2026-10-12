@@ -52,15 +52,18 @@ try {
       await page.screenshot({ path: join(artifactDir, 'viewer-console.png'), fullPage: true });
       await page.setViewportSize({ width: 360, height: 800 }); await page.goto(`${base}/updates`);
       await page.getByRole('heading', { name: 'Updates', exact: true }).waitFor();
+      // Who is signed in, and the way out, are behind the account icon.
+      await page.getByRole('button', { name: 'Account', exact: true }).click();
       await page.getByText('Viewer', { exact: true }).waitFor();
       assert.equal(await page.getByRole('button', { name: 'Sign out', exact: true }).isVisible(), true);
+      await page.keyboard.press('Escape');
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
       await page.screenshot({ path: join(artifactDir, 'viewer-mobile.png'), fullPage: true });
       const writes = [];
       page.on('request', (request) => { if (request.method() !== 'GET' && /\/api\//.test(request.url())) writes.push(request.url()); });
       for (const path of ['/flow', '/console']) {
         await page.goto(`${base}${path}`);
-        await page.getByText('Viewer', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Account', exact: true }).waitFor();
         await page.evaluate(() => window.dispatchEvent(new CustomEvent('admin-access-change', { detail: 403 })));
         await page.getByText('Your access has changed. This action is unavailable.', { exact: true }).waitFor();
       }
@@ -72,7 +75,7 @@ try {
       await page.getByText('Your access has changed. This action is unavailable.', { exact: true }).waitFor();
       await page.screenshot({ path: join(artifactDir, 'access-check-feedback.png'), fullPage: true });
       releaseAccess();
-      await page.getByText('Viewer', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Account', exact: true }).waitFor();
       await page.unroute('**/api/me');
       await page.evaluate(() => window.dispatchEvent(new CustomEvent('admin-access-change', { detail: 401 })));
       await page.waitForURL('**/login**');

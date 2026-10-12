@@ -33,3 +33,14 @@ Account deletion requires a current revision and another enabled Admin when dele
 ## Team roles
 
 Separately from the access roles above, an account can carry team roles: ML, front-end, back-end, firmware, hardware. An Admin sets them on the Accounts page. They are labels the team uses to find and assign each other; they are shown in the landing page's mailbox, task assignment and search. They grant no capability, are not consulted by any permission check, and changing them does not increment the session version or end a session. A legacy record with no `teamRoles` key has none; a value outside the list fails the account file closed, like an invalid role.
+
+## A person's own account
+
+Every role has **Account settings** (`/account`), opened from the account icon at the right of the header. That icon is also where the username, the access role and **Sign out** now live; the header no longer spells the name out. `/api/account` serves the page, acts only on the account the session belongs to, and takes no username in any route or body.
+
+- **Profile**: username, access role, team roles, creation date. Read-only; an Admin sets them on the Accounts page.
+- **Email notifications**: one address and what it should hear about (sensors, training jobs, firmware, live parameter changes, team mail, tasks). Stored in `account-settings.json` beside the account file, mode 0600. The address is the owner's alone: no Admin route, team list or Ask AI prompt carries it. It is bound to the account's creation time, so a reused username does not inherit it, and it is dropped at the next save once its account no longer exists. **The console does not send email yet.** The API reports `emailDelivery: false` and the page says the address is kept and nothing is sent. Delivery needs a mail provider and credentials, which is a deployment decision still to be made.
+- **Password**: needs the current password, at least 12 characters, and a different one. It ends every session of the account and any TMflash app session; the browser it was changed from is given a new session so it carries on. Five tries of the current password per five minutes.
+- **Sessions**: **Sign out everywhere** ends every session of the account, that browser's included.
+
+With sign-in off (local mode) there is no account, so the page shows the local operator and nothing to save. Every write needs the `x-tm-algo` header and a same-origin request, like the rest of the console.

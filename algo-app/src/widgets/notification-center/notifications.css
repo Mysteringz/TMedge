@@ -14,4 +14,4 @@
 .cx-source-summaries > div { display: grid; grid-template-columns: 1fr 1.5fr; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-subtle-01); }
 .cx-source-summaries dd { margin: 0; font-size: 12px; }
 .cx-source-summaries small { display: block; color: var(--text-helper); }
-@media (max-width: 672px) { .cx-identity-actions { flex: 1 1 100%; } .cx-identity-actions .cx-who { flex: 1; padding-left: 16px; } .cx-notifications { right: 8px; } }
+@media (max-width: 672px) { .cx-notifications { right: 8px; } }

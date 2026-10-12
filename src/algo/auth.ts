@@ -243,6 +243,14 @@ export interface AlgoAuth {
   onLogout(listener: (token: string) => void): void;
   /** A native credential stops working when its account or password changes. */
   accountSubject(name: string): string | null;
+  /**
+   * After a person changed their own password: the session this request came
+   * with is replaced by one for the account as it is now. Every other
+   * session of the account stays ended.
+   */
+  renewSession(req: Request, res: Response, name: string): void;
+  /** Ends the session this request came with and clears its cookie. */
+  forgetSession(req: Request, res: Response): void;
 }
 
 export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
@@ -302,6 +310,30 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
     return next();
   };
 
+  const startSession = (req: Request, res: Response, issuedSubject: string) => {
+    res.cookie(ALGO_COOKIE, sessions.issue(issuedSubject), {
+      httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: sessions.ttl, path: '/',
+    });
+  };
+  /** The token is dead from here on, and whatever was listening on it (a live feed) is closed. */
+  const endSession = (req: Request) => {
+    const token = sessionToken(req);
+    sessions.revoke(token);
+    for (const listener of logoutListeners) listener(token);
+  };
+  const forgetSession: AlgoAuth['forgetSession'] = (req, res) => {
+    endSession(req);
+    res.clearCookie(ALGO_COOKIE, { path: '/' });
+  };
+  const renewSession: AlgoAuth['renewSession'] = (req, res, name) => {
+    if (!cfg.enabled) return;
+    endSession(req);
+    const current = subject(name);
+    // One Set-Cookie, the new session: a clear and a set for the same name
+    // leaves it to the browser which of the two it keeps.
+    if (current) startSession(req, res, current); else res.clearCookie(ALGO_COOKIE, { path: '/' });
+  };
+
   const router = express.Router();
   router.use(express.json({ limit: '8kb' }));
 
@@ -330,9 +362,7 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
     // the x-tm-algo header, which no cross-site form can send.
     const user = verified.name, issuedSubject = subjectFor(verified);
     if (subject(user) !== issuedSubject) return res.status(401).json({ error: 'wrong username or password' });
-    res.cookie(ALGO_COOKIE, sessions.issue(issuedSubject), {
-      httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: sessions.ttl, path: '/',
-    });
+    startSession(req, res, issuedSubject);
     return res.json({ ok: true, user, redirect: safeAlgoNext(body.next) });
     } catch (err) {
       if (err instanceof AuthBusyError) return res.status(429).json({ error: err.message });
@@ -341,10 +371,7 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
   });
 
   router.post('/auth/logout', sameOrigin, (req, res) => {
-    const token = sessionToken(req);
-    sessions.revoke(token);
-    for (const listener of logoutListeners) listener(token);
-    res.clearCookie(ALGO_COOKIE, { path: '/' });
+    forgetSession(req, res);
     res.json({ ok: true, redirect: '/login' });
   });
 
@@ -352,5 +379,5 @@ export function createAlgoAuth(cfg: AlgoAuthConfig): AlgoAuth {
     const current = cfg.enabled ? users.get(name) : undefined;
     return current && principal(name, current.role ?? 'engineer').capabilities.includes('nodes.admin') ? subject(name) : null;
   };
-  return { userOf, accountEpoch: subject, accountSubject, principalOf, requireCapability, requireUser, router, users, sessionToken, onLogout: (listener) => { logoutListeners.add(listener); } };
+  return { userOf, accountEpoch: subject, accountSubject, principalOf, requireCapability, requireUser, router, users, sessionToken, renewSession, forgetSession, onLogout: (listener) => { logoutListeners.add(listener); } };
 }

@@ -24,6 +24,7 @@ import './console.css';
 const MlData = lazy(() => import('./MlData.tsx').then(m => ({ default: m.MlData })));
 const Train = lazy(() => import('./Train.tsx').then((m) => ({ default: m.Train })));
 const Updates = lazy(() => import('./Updates.tsx').then((m) => ({ default: m.Updates })));
+const AccountSettings = lazy(() => import('../pages/account-settings/index.tsx').then((m) => ({ default: m.AccountSettings })));
 const Accounts = lazy(() => import('../pages/admin-accounts/index.tsx').then((m) => ({ default: m.Accounts })));
 const Analytics = lazy(() => import('../pages/analytics/index.tsx').then((m) => ({ default: m.Analytics })));
 const Adoption = lazy(() => import('./Adoption.tsx').then((m) => ({ default: m.Adoption })));
@@ -151,6 +152,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
       <Backdrop />
       <ShellNavigation user={user} onSignOut={signOut} />
       {screen === 'accounts' ? <Suspense fallback={<main aria-busy="true">Loading accounts…</main>}><Accounts /></Suspense>
+        : screen === 'account' ? <Suspense fallback={<main className="cx-train cx-hint" aria-busy="true">Loading your account…</main>}><AccountSettings /></Suspense>
         : screen === 'ml-data' ? <Suspense fallback={<main className="cx-train cx-hint">Loading ML data…</main>}><MlData /></Suspense>
         : screen === 'train' ? <Suspense fallback={null}><Train /></Suspense>
         : screen === 'updates' ? <Suspense fallback={<main className="cx-train cx-hint">Loading updates…</main>}><Updates /></Suspense>

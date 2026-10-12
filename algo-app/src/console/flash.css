@@ -2,7 +2,7 @@
    only what that page has no word for is here. */
 .cx-flash code { overflow-wrap: anywhere; }
 .cx-flash small { display: block; color: var(--text-helper); font-size: 12px; line-height: 1.4; }
-.cx-flash .ad-panel > p { margin: 0 0 12px; }
+.cx-flash .dv-panel > p { margin: 0 0 12px; }
 
 /* adoption.css sizes every input as a text field; these are not text fields. */
 .cx-flash input[type=checkbox], .cx-flash input[type=radio] { width: 20px; height: 20px; flex: none; padding: 0; margin: 0; accent-color: var(--interactive); }
@@ -53,7 +53,7 @@
 .fl-outcome.is-ok h3 span { color: var(--support-success, #42be65); }
 .fl-outcome.is-check h3 span { color: var(--support-warning, #f1c21b); }
 .fl-outcome.is-failed h3 span { color: var(--text-error, #ff8389); }
-.fl-outcome .ad-match, .fl-admit .ad-match { margin-bottom: 0; }
+.fl-outcome .dv-match, .fl-admit .dv-match { margin-bottom: 0; }
 
 .fl-log { margin-top: 20px; border-top: 1px solid var(--border-subtle-01); }
 .fl-log summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--text-secondary); }
