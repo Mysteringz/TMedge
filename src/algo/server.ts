@@ -26,6 +26,11 @@ import { FileAccountRepository } from '../infrastructure/algo-admin/file-account
 import { FileAccountSettings, FileOwnAccount } from '../infrastructure/algo-admin/file-own-account.js';
 import { ownAccountRoutes } from '../modules/algo-admin/controllers/own-account.js';
 import { ManageOwnAccount } from '../modules/algo-admin/use-cases/manage-own-account.js';
+import { DeliverEmailNotifications } from '../modules/algo-admin/use-cases/deliver-email-notifications.js';
+import { emptyDelivery, parseDelivery, TICK_MS as EMAIL_TICK_MS } from '../modules/algo-admin/domain/email-delivery.js';
+import type { Mailer } from '../modules/algo-admin/repositories/mailer.js';
+import { RuntimeAccountNews } from '../infrastructure/algo-admin/runtime-account-news.js';
+import { loadEmailConfig, SesMailer } from '../infrastructure/email/ses-mailer.js';
 import { emptySettings, parseSettings } from '../modules/algo-admin/domain/account-settings.js';
 import { createHealthRouter } from '../modules/algo-admin/controllers/health-controller.js';
 import { ReadOperationalHealth } from '../modules/algo-admin/use-cases/read-operational-health.js';
@@ -73,6 +78,8 @@ export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
 export interface AlgoServerServices {
   /** Where module 07's firmware comes from. Default: the TMsense repository's releases on GitHub. */
   firmwareRelease?: PublishedReleaseSource;
+  /** What sends email; null for a server that cannot. Default: Amazon SES if EMAIL_FROM and EMAIL_SES_REGION are set. */
+  mailer?: Mailer | null;
 }
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
@@ -225,8 +232,12 @@ export function startAlgo(
   app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
   // Each person's own account: their address, notification choices, password
   // and sessions. Kept beside the accounts, in a private file of its own.
-  app.use('/api/account', ownAccountRoutes(auth, new ManageOwnAccount(new FileOwnAccount(auth.users),
-    new FileAccountSettings(new JsonDocumentStore(join(dirname(authCfg.usersPath), 'account-settings.json'), emptySettings, parseSettings)))));
+  // Email (docs/EMAIL.md) is off unless it is configured, and the page says so.
+  const emailConfig = services.mailer === undefined ? loadEmailConfig(process.env) : null;
+  const mailer: Mailer | null = services.mailer !== undefined ? services.mailer : emailConfig ? SesMailer.fromEnvironment(emailConfig, process.env) : null;
+  const ownAccounts = new FileOwnAccount(auth.users);
+  const accountSettings = new FileAccountSettings(new JsonDocumentStore(join(dirname(authCfg.usersPath), 'account-settings.json'), emptySettings, parseSettings));
+  app.use('/api/account', ownAccountRoutes(auth, new ManageOwnAccount(ownAccounts, accountSettings, mailer)));
   const notifications = express.Router();
   app.use('/api/admin/notifications', notifications);
   // The landing page's team side: a mailbox and a board (docs/WORKSPACE.md).
@@ -241,11 +252,9 @@ export function startAlgo(
     // With sign-in off there is one person, and they are "local".
     : [{ name: 'local', since: 0, teamRoles: [] }];
   const boardStore = new JsonDocumentStore(join(workspaceDir, 'board.json'), emptyBoard, parseBoard);
-  app.use('/api/workspace', createWorkspaceRouter(auth, {
-    mailbox: new Mailbox(new JsonDocumentStore(join(workspaceDir, 'mail.json'), emptyMail, parseMail), teamMembers),
-    board: new Board(boardStore, teamMembers),
-    members: teamMembers,
-  }));
+  const mailbox = new Mailbox(new JsonDocumentStore(join(workspaceDir, 'mail.json'), emptyMail, parseMail), teamMembers);
+  const board = new Board(boardStore, teamMembers);
+  app.use('/api/workspace', createWorkspaceRouter(auth, { mailbox, board, members: teamMembers }));
   // Ask AI (docs/ASSISTANT.md): a model on the Proxmox cluster that has read
   // config/ai-knowledge.md. Off unless AI_OLLAMA_URL and AI_MODEL are set.
   // What it is shown besides that file is below and nothing else: figures
@@ -355,7 +364,18 @@ export function startAlgo(
   const mlData = createMlData(auth, { env: process.env, dataDir });
   app.use('/api/ml-data', mlData.router);
   app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
-  notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth }))));
+  const notificationQueries = new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth });
+  notifications.use(createNotificationRouter(auth, new ReadNotifications(notificationQueries)));
+  // The same notifications, emailed to whoever asked for them. Its own reader:
+  // a pass must not make somebody's open page see a source as busy.
+  let emailTimer: ReturnType<typeof setInterval> | undefined;
+  if (mailer && authCfg.enabled) {
+    const news = new RuntimeAccountNews(new ReadNotifications(notificationQueries), mailbox, board);
+    const delivery = new DeliverEmailNotifications(ownAccounts, accountSettings, (account) => news.for(account),
+      new JsonDocumentStore(join(dirname(authCfg.usersPath), 'email-delivery.json'), emptyDelivery, parseDelivery), mailer, emailConfig?.consoleUrl ?? null);
+    emailTimer = setInterval(() => { void delivery.run(); }, EMAIL_TICK_MS);
+    emailTimer.unref();
+  }
   app.use('/api/analytics', createAnalyticsRouter(auth, analytics.read));
 
   app.get('/api/catalogue', (_req, res) => res.json({
@@ -695,6 +715,7 @@ export function startAlgo(
       if (disposal) return disposal;
       clearTimeout(pickTimer);
       clearInterval(stateTimer);
+      clearInterval(emailTimer);
       rt.off('raw', onRaw);
       rt.off('rgb', onRgb);
       rt.off('report', onReport);

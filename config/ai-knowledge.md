@@ -172,8 +172,20 @@ Modules:
   Changing the password keeps that browser signed in and signs out every
   other device and any TMflash app session. The email address is private to
   its owner: no admin, page or list shows it to anyone else, and Ask AI is
-  never given it. This server does not send email yet, so an address and
-  its choices are saved and nothing is delivered; the page says so.
+  never given it. Email is sent through Amazon SES when the server is
+  configured for it; when it is not, the page says the address is kept and
+  nothing is sent. An address must be confirmed first: "Send confirmation
+  code" emails a six-digit code (good for 30 minutes, five tries) and the
+  person types it into the page. Nothing else is ever sent to an
+  unconfirmed address, and changing the address means confirming again.
+  After that, the console emails the ticked topics as plain text, checking
+  once a minute: only things that happen after email was turned on; a
+  fault that can clear by itself (a sensor offline, a parameter change
+  waiting) only once it has lasted 10 minutes, and not again for the same
+  thing within a day; everything ready goes in one message, at most one
+  message per 15 minutes and 12 a day per person. Team mail emails say who
+  wrote and the subject, never the body. A person is only emailed what
+  their own role lets them see in the console.
 
 System figures on the landing page: sensors reporting, seats taken now,
 students online, processor, memory, storage. A dash means the source did not

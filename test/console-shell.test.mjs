@@ -29,6 +29,8 @@ let runtime, handle, base, directory;
 const originalDataDir = process.env.DATA_DIR;
 const github = new FakeGitHub();
 github.latest = tmsenseRelease('tmsense-1.6');
+/** The mail service: keeps what it is handed, so a test can read the code a person would. */
+const outbox = { sent: [], async send(mail) { this.sent.push(mail); } };
 
 before(async () => {
   directory = mkdtempSync(join(tmpdir(), 'tmedge-shell-'));
@@ -50,7 +52,7 @@ before(async () => {
   await accounts.add('viewer', PASSWORD, 'viewer');
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users, SESSION_SECRET: 'local-only-test-secret'.repeat(3),
-  }, config.adminPassword), createConsole(runtime), { firmwareRelease: new GitHubReleaseSource(undefined, github.fetch) });
+  }, config.adminPassword), createConsole(runtime), { firmwareRelease: new GitHubReleaseSource(undefined, github.fetch), mailer: outbox });
   await new Promise(resolve => handle.server.once('listening', resolve));
   base = `http://127.0.0.1:${handle.server.address().port}`;
 });
@@ -216,7 +218,18 @@ test('chromium: the account icon holds who is signed in, their settings and the 
     const save = page.getByRole('button', { name: 'Save email settings', exact: true });
     assert.equal(await page.getByRole('checkbox', { name: /^Sensors/ }).isDisabled(), true, 'nothing to choose until there is an address');
     assert.equal(await save.isDisabled(), true);
+    // A server that cannot send email says so, rather than letting the page promise mail.
+    await page.route('**/api/account', async (route) => {
+      const response = await route.fetch(), body = await response.json();
+      body.data.emailDelivery = false;
+      await route.fulfill({ response, json: body });
+    });
+    await page.reload();
     await page.getByRole('note').filter({ hasText: 'This server is not set up to send email yet' }).waitFor();
+    await page.unroute('**/api/account');
+    await page.reload();
+    await page.getByText('once you have confirmed it is yours').waitFor();
+    assert.equal(await page.getByRole('note').filter({ hasText: 'not set up to send email' }).count(), 0);
     await email.fill('not an address');
     await save.click();
     assert.equal(await email.evaluate((input) => input.validity.valid), false, 'the browser stops a malformed address');
@@ -233,7 +246,38 @@ test('chromium: the account icon holds who is signed in, their settings and the 
     }
     await save.click();
     await page.getByRole('status').filter({ hasText: 'Email settings saved.' }).waitFor();
+
+    // --- the address is confirmed with a code before anything is sent to it -----
+    const confirming = page.getByRole('group', { name: 'Confirm this address', exact: true });
+    await confirming.getByText('eng@example.com is not confirmed yet, so nothing is sent to it.').waitFor();
+    assert.equal(outbox.sent.length, 0, 'saving an address sends nothing');
+    await email.fill('eng2@example.com');
+    assert.equal(await confirming.getByRole('button', { name: 'Send confirmation code', exact: true }).isDisabled(), true, 'a code is for the address that was saved, not one half typed');
+    await email.fill('eng@example.com');
+    await confirming.getByRole('button', { name: 'Send confirmation code', exact: true }).click();
+    const code = confirming.getByLabel('Confirmation code', { exact: true });
+    await code.waitFor();
+    assert.deepEqual([outbox.sent.length, outbox.sent[0].to], [1, 'eng@example.com']);
+    const sentCode = /code is (\d{6})/.exec(outbox.sent[0].text)[1];
+    const confirm = confirming.getByRole('button', { name: 'Confirm address', exact: true });
+    assert.equal(await confirm.isDisabled(), true);
+    await code.fill('12ab');
+    assert.equal(await code.inputValue(), '12', 'digits only');
+    await code.fill(sentCode === '000000' ? '000001' : '000000');
+    for (const [width, height] of [[390, 844], [1280, 900]]) {
+      await page.setViewportSize({ width, height });
+      await fits(page, width);
+      await shot(page, `account-confirm-${width}`);
+    }
+    await confirm.click();
+    await confirming.getByRole('alert').filter({ hasText: 'That code is not right.' }).waitFor();
+    await code.fill(sentCode);
+    await confirm.click();
+    await page.getByRole('status').filter({ hasText: 'eng@example.com is confirmed.' }).waitFor();
+    assert.equal(await confirming.count(), 0);
+
     await page.reload();
+    await page.getByRole('status').filter({ hasText: 'eng@example.com is confirmed.' }).waitFor();
     assert.equal(await page.getByLabel('Email address', { exact: true }).inputValue(), 'eng@example.com', 'kept on the server, not in the tab');
     assert.deepEqual([await page.getByRole('checkbox', { name: /^Sensors/ }).isChecked(), await page.getByRole('checkbox', { name: /^Tasks/ }).isChecked(), await page.getByRole('checkbox', { name: /^Firmware/ }).isChecked()], [true, true, false]);
     assert.ok(readFileSync(join(directory, 'account-settings.json'), 'utf8').includes('eng@example.com'));
