@@ -96,8 +96,13 @@ Modules:
   data and sequence values for exports, but cannot advance or change sequences.
   Every signed-in access role may query and inspect the schema; Operator,
   Engineer and Admin may prepare exports. Each export belongs to the account
-  that requested it. Preparation runs in the background and the page polls
-  for completion; completed ZIPs expire after 24 hours. Restarted unfinished
+  that requested it. With the private worker configured, Proxmox stores the
+  ZIP; the edge keeps account-owned receipts and streams the download without
+  storing the ZIP. Downloads resume and fail on truncation. Existing local ZIPs work.
+  Preparation runs in the background and the page polls
+  for completion; completed ZIPs expire after 24 hours. Active downloads are
+  protected from cleanup. The worker enforces disk and archive limits; raising
+  a quota does not create free space. Restarted unfinished
   exports fail and can be generated again. The table browser reads the live
   database; the SchemaSpy report is a separately generated snapshot. SchemaSpy generation
   runs on Proxmox; the console serves its static output.

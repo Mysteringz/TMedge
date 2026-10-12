@@ -32,6 +32,7 @@ COPY public-console ./public-console
 RUN npm run build && npm prune --omit=dev
 
 FROM node:${NODE_VERSION}-alpine
+RUN apk add --no-cache openssh-client
 LABEL org.opencontainers.image.title="TMedge" \
       org.opencontainers.image.description="Thermal occupancy edge, student web tier and debug console"
 ENV NODE_ENV=production DATA_DIR=/data

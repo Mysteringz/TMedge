@@ -6,12 +6,14 @@ import { Readable, Transform, type TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { ZipFile } from 'yazl';
 import { DataError, type TrainingDatabase } from './database.js';
+import type { RemoteExportBackend } from './remote-exports.js';
 
 export interface ExportJob {
   id: string; owner: string; epoch: string | null;
   state: 'queued' | 'processing' | 'completed' | 'failed';
   tables: string[]; createdAt: number; expiresAt: number;
   bytes: number; sha256: string | null; error: string | null;
+  storage?: 'remote';
 }
 export type Dump = (tables: readonly string[]) => ChildProcess;
 const TTL = 24 * 3600_000;
@@ -46,7 +48,8 @@ export class Exports {
   private readonly timer: NodeJS.Timeout;
   private stopped = false;
   constructor(readonly dir: string, private readonly db: TrainingDatabase, private readonly dump: Dump,
-    private readonly maxBytes = 8 * 1024 ** 3, private readonly reserveBytes = 1024 ** 3) {
+    private readonly maxBytes = 8 * 1024 ** 3, private readonly reserveBytes = 1024 ** 3,
+    readonly remote?: RemoteExportBackend) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     for (const name of readdirSync(dir)) {
       if (!name.endsWith('.json') || !ID.test(name.slice(0, -5))) continue;
@@ -98,7 +101,7 @@ export class Exports {
     if (this.jobs.size >= 32) throw new DataError('The export queue is full. Try again after older exports expire.', 429);
     const now = Date.now();
     const job: ExportJob = { id: randomUUID(), owner, epoch, state: 'queued', tables: selected, createdAt: now,
-      expiresAt: now + TTL, bytes: 0, sha256: null, error: null };
+      expiresAt: now + TTL, bytes: 0, sha256: null, error: null, ...(this.remote ? { storage: 'remote' as const } : {}) };
     this.save(job); this.jobs.set(job.id, job);
     // Return 202 before any database access, child process or compression.
     const task = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.generate(job));
@@ -129,6 +132,16 @@ export class Exports {
       const tables = await this.db.schema();
       if (abort.signal.aborted || this.stopped) throw new Error('stopped');
       if (job.tables.some(name => !tables.some(t => t.name === name && t.kind === 'table'))) throw new DataError('A selected table is unavailable. Refresh the schema and select again.');
+      if (job.storage === 'remote') {
+        if (!this.remote) throw new DataError('The remote export service is not configured.', 503);
+        const archive = await this.remote.generate(job.id, job.tables, this.maxBytes, this.reserveBytes, bytes => {
+          job.bytes = bytes; this.save(job);
+        }, abort.signal);
+        if (abort.signal.aborted || this.stopped) throw new Error('stopped');
+        job.bytes = archive.bytes; job.sha256 = archive.sha256; job.state = 'completed';
+        job.expiresAt = Math.min(Date.now() + TTL, archive.expiresAt); this.save(job);
+        return;
+      }
       const space = statfsSync(this.dir);
       const available = Number(space.bavail) * Number(space.bsize) - this.reserveBytes;
       if (available < 256 * 1024 ** 2) throw new DataError('Insufficient disk space to prepare this export.');

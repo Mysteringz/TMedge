@@ -64,7 +64,9 @@ the previous allowed tunnel hop can still reach it. Credentials remain private.
 3. SQL goes directly into a streaming, deflated ZIP64 archive, with
    `dataset.sql` and `manifest.json`. No uncompressed dump touches disk. `yazl`
    is the one new runtime dependency: it supports streams, deflate and ZIP64
-   for datasets whose uncompressed SQL exceeds 4 GiB.
+   for datasets whose uncompressed SQL exceeds 4 GiB. With the remote worker
+   configured, Python's standard-library ZIP64 compressor runs on Proxmox
+   instead; no dump or ZIP is staged on the edge.
 4. The page polls `GET /api/ml-data/exports` every five seconds. The individual
    status URL is `GET /api/ml-data/exports/:id`.
 5. `GET /api/ml-data/exports/:id/download` streams the completed file. It
@@ -77,7 +79,8 @@ Files and atomic receipts live in `DATA_DIR/algo/ml-exports` (private directory,
 and its identity epoch. Another account, including an Admin, cannot inspect
 or download them. Recreated/reset accounts do not inherit them. Session or
 permission revocation also ends an active download on the next five-second
-check. A failed pg_dump, disk/quota failure or shutdown never publishes a
+check. In remote mode only the receipts live here; the ZIP and working file
+stay on Proxmox. A failed pg_dump, disk/quota failure or shutdown never publishes a
 partial archive. On startup, unfinished jobs become failed and their partial
 files are removed. Completed jobs survive restarts. No dump is resumed blindly.
 
@@ -85,11 +88,79 @@ Cleanup runs at startup, hourly and when listing/starting jobs. Completed ZIPs
 expire 24 hours after completion; failed receipts expire after 24 hours.
 Active downloads are leased while streaming. At most 32 receipts are retained
 and one export is prepared globally at a time. A two-hour timeout kills stuck
-dumps. `ML_EXPORT_MAX_BYTES` defaults to 8 GiB compressed and
+dumps. `ML_EXPORT_MAX_BYTES` defaults to 8 GiB compressed locally, or 16 GiB
+with the private remote worker, and
 `ML_EXPORT_RESERVE_BYTES` to 1 GiB free; the actual job quota is the smaller of
 the configured cap and available space minus the reserve. It rechecks space
 while writing. Other services can also write to this filesystem, so monitor
 disk use and size these limits for the host.
+
+The database's table size is not a ZIP-size estimate. An 8.4-GiB table cannot
+be assumed to fit into a nearly full edge volume, even with streaming
+compression. Raising the size limit or lowering the reserve does not add
+physical capacity. Use the Proxmox worker when the edge cannot hold a large
+dataset archive.
+
+## Private Proxmox export worker
+
+Configure `ML_EXPORT_SSH_HOST`, `ML_EXPORT_SSH_KEY` and
+`ML_EXPORT_SSH_KNOWN_HOSTS` together; `ML_EXPORT_SSH_PORT` defaults to 2223.
+The edge uses an absolute 0600 private key and an explicitly pinned host key,
+with no agent or port forwarding. These settings select remote generation for
+new exports; there is no automatic fallback to edge storage on an SSH error.
+Previously completed local exports keep their original local download path.
+The existing private reader URL remains necessary for live schema/SQL queries.
+
+On Proxmox, install PostgreSQL **18 or newer** `pg_dump` from the official
+[PostgreSQL Debian packages](https://www.postgresql.org/download/linux/debian/).
+The client must match the training server; psql 17 alone is not sufficient
+for dumping PostgreSQL 18. Create a dedicated `crowdaware-ml-export` system
+account. Install root-owned `remote-exports.py` at
+`/opt/crowdaware-ml-exports/`, a separate 0600 reader URL owned by that account
+at `/etc/crowdaware-ml-exports/reader.url`, and a private output directory at
+`/var/lib/crowdaware-ml-exports` (0700, owned by the account).
+
+The private 0600 `/etc/crowdaware-ml-exports/config.json` is owned by the
+worker account and has these fields:
+
+```json
+{
+  "root": "/var/lib/crowdaware-ml-exports",
+  "reader_url_file": "/etc/crowdaware-ml-exports/reader.url",
+  "pg_dump": "/opt/crowdaware-ml-exports/pg_dump",
+  "max_bytes": 17179869184,
+  "reserve_bytes": 8589934592
+}
+```
+
+The worker enforces the smaller client/server archive cap and larger
+client/server free-space reserve on **Proxmox's** filesystem. The example
+keeps 8 GiB free for the host; the built-in minimum default is 2 GiB.
+The worker uses the established server-side PostgreSQL tunnel. It never
+needs a Mac tunnel, writer credentials or PostgreSQL superuser access.
+
+Install `ml-export-sshd.conf.example` as
+`/etc/crowdaware-ml-exports/sshd.conf`, replacing its ListenAddress with the
+Proxmox tailnet address. Validate with `sshd -t`. Install the edge's public
+key for this account with `restrict` and a forced command pointing to
+`remote-exports.py`. Enable `crowdaware-ml-exports.service` and
+`crowdaware-ml-exports-cleanup.timer`. This separate private listener accepts
+only the worker account, rejects shells/PTYs/forwarding, and permits only
+generation of named training tables or a bounded byte range from a completed
+archive UUID. Interactive host SSH and the SchemaSpy report channel are unchanged.
+The hourly cleanup skips archives leased by active streams and removes ZIPs,
+partial files and receipts once they expire. Generation uses a single global
+lock, a two-hour timeout and private child credentials; progress is bounded
+JSON, never SQL or database diagnostics.
+
+The existing authenticated download URL stays unchanged. The edge forwards
+only the requested bytes from Proxmox to the browser with backpressure,
+Content-Length, byte ranges, private no-store headers and account/permission
+revocation checks. It verifies the stream length and SSH completion so a
+truncated transfer fails. This removes AWS **disk staging**; transfer traffic
+still passes through the edge and its Cloudflare Tunnel. Docker includes
+`openssh-client`; mount the private key/pinned hosts read-only and make the
+key readable only by the container's unprivileged service user.
 
 A ZIP contains **selected tables**, not a whole-database backup. A training
 schema preamble is included, but dependencies outside the selection are not.
@@ -235,6 +306,13 @@ generation recovery, the report-only channel, safe extraction, hash-verified
 private synchronization and retry after transfer failure. It mocks generation;
 Java/Graphviz never run on the Mac. The actual watcher and reader fingerprint
 are verified separately on Proxmox.
+
+`test/ml-data-remote.test.ts` covers remote progress/receipts, an 8.4-GiB
+selection without any local dump or ZIP, restart persistence, owner isolation,
+HEAD/ranges/resumption, truncation, account revocation and SSH configuration.
+`python3 deploy/training/test-remote-exports.py` verifies actual ZIP64 output,
+checksum/CRC, native-process failure cleanup, quota, safe fixed commands,
+concurrent-job rejection and retention of leased downloads.
 
 Browser tests exercise the ML dropdown, query results, schema, table selection
 and async ZIP preparation in Chromium and WebKit, with both themes at phone

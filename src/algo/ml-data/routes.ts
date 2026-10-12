@@ -5,6 +5,8 @@ import type { AlgoAuth } from '../auth.js';
 import { DataError, PostgresTrainingDatabase, readerUrl, type TrainingDatabase } from './database.js';
 import { DIAGRAM_FILE, schemaDiagram, schemaHtml } from './schema-report.js';
 import { Exports, nativeDump, type ExportJob } from './exports.js';
+import { remoteExports } from './remote-exports.js';
+import { pipeline } from 'node:stream/promises';
 
 const summary = ({ id, state, tables, createdAt, expiresAt, bytes, sha256, error }: ExportJob) => ({ id, state, tables, createdAt, expiresAt, bytes, sha256, error });
 function positive(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
@@ -17,9 +19,10 @@ export interface MlDataOptions { env: NodeJS.ProcessEnv; dataDir: string; db?: T
 export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'>, options: MlDataOptions) {
   const url = readerUrl(options.env);
   const db = options.db ?? (url ? new PostgresTrainingDatabase(url) : null);
+  const remote = options.exports ? null : remoteExports(options.env);
   const exports = options.exports ?? (db && url ? new Exports(join(options.dataDir, 'algo', 'ml-exports'), db,
-    nativeDump(url, options.env.ML_PG_DUMP || 'pg_dump'), positive(options.env, 'ML_EXPORT_MAX_BYTES', 8 * 1024 ** 3),
-    positive(options.env, 'ML_EXPORT_RESERVE_BYTES', 1024 ** 3)) : null);
+    nativeDump(url, options.env.ML_PG_DUMP || 'pg_dump'), positive(options.env, 'ML_EXPORT_MAX_BYTES', (remote ? 16 : 8) * 1024 ** 3),
+    positive(options.env, 'ML_EXPORT_RESERVE_BYTES', 1024 ** 3), remote ?? undefined) : null);
   const schemaDir = options.env.ML_SCHEMA_DIR || join(options.dataDir, 'algo', 'ml-schema');
   const router = express.Router();
   router.use((req, res, next) => {
@@ -100,6 +103,28 @@ export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'
       if (!exports) throw new DataError('Export not found.', 404);
       const job = exports.get(String(req.params.id), user.name, epoch);
       if (job.state !== 'completed') throw new DataError('This export is not ready to download.', 409);
+      if (job.storage === 'remote') {
+        if (!exports.remote) throw new DataError('The remote export service is not configured.', 503);
+        const etag = '"' + job.sha256 + '"';
+        const range = (!req.get('If-Range') || req.get('If-Range') === etag) ? req.range(job.bytes, { combine: true }) : undefined;
+        res.set({ 'Accept-Ranges': 'bytes', ETag: etag });
+        if (range === -1) return void res.status(416).set('Content-Range', 'bytes */' + job.bytes).end();
+        const first = range && range !== -2 && range.type === 'bytes' && range.length === 1 ? range[0] : undefined;
+        const start = first?.start ?? 0, end = first?.end ?? job.bytes - 1, length = end - start + 1;
+        res.status(first ? 206 : 200).type('application/zip').attachment('ml-data-' + job.id + '.zip').set('Content-Length', String(length));
+        if (first) res.set('Content-Range', 'bytes ' + start + '-' + end + '/' + job.bytes);
+        if (req.method === 'HEAD') return void res.end();
+        const download = exports.remote.download(job.id, start, length), release = exports.lease(job.id);
+        const check = setInterval(() => {
+          const principal = auth.principalOf(req);
+          if (!principal || principal.name !== user.name || auth.accountEpoch(user.name) !== epoch || !principal.capabilities.includes('training.read')) res.destroy();
+        }, 5000).unref();
+        res.once('close', () => { clearInterval(check); release(); download.cancel(); });
+        void pipeline(download.stream, res).catch(() => res.destroy()).finally(() => {
+          clearInterval(check); release(); download.cancel();
+        });
+        return;
+      }
       const release = exports.lease(job.id);
       const check = setInterval(() => {
         const principal = auth.principalOf(req);
