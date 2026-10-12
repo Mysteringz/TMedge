@@ -43,6 +43,7 @@ paths:
                 name: { type: string, minLength: 2, maxLength: 32, pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,31}$' }
                 role: { $ref: '#/components/schemas/Role' }
                 password: { $ref: '#/components/schemas/Password' }
+                teamRoles: { $ref: '#/components/schemas/TeamRoles' }
       responses:
         '201': { $ref: '#/components/responses/Account' }
         default: { $ref: '#/components/responses/Error' }
@@ -92,7 +93,8 @@ paths:
                 revision: { $ref: '#/components/schemas/Revision' }
                 role: { $ref: '#/components/schemas/Role' }
                 disabled: { type: boolean }
-              anyOf: [{ required: [role] }, { required: [disabled] }]
+                teamRoles: { $ref: '#/components/schemas/TeamRoles' }
+              anyOf: [{ required: [role] }, { required: [disabled] }, { required: [teamRoles] }]
       responses:
         '200': { $ref: '#/components/responses/Account' }
         default: { $ref: '#/components/responses/Error' }
@@ -150,9 +152,15 @@ components:
       properties:
         name: { type: string }
         role: { $ref: '#/components/schemas/Role' }
+        teamRoles: { $ref: '#/components/schemas/TeamRoles' }
         disabled: { type: boolean }
         createdAt: { type: number, description: Unix milliseconds }
         revision: { $ref: '#/components/schemas/Revision' }
+    TeamRoles:
+      description: What the person works on. Labels only; grants no capability and ends no session when changed.
+      type: array
+      uniqueItems: true
+      items: { type: string, enum: [ml, frontend, backend, firmware, hardware] }
   responses:
     Account:
       description: Public account in data; error is null

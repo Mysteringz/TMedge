@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useNotifications } from '../../entities/operation-notification/index.tsx';
 import { KINDS, type NotificationItem } from '../../entities/operation-notification/model.ts';
+import { usePresence } from '../../console/motion.tsx';
 import './notifications.css';
 
 const CATEGORIES = { sensor: { label: 'Sensors', href: '/console' }, training: { label: 'My training', href: '/train' }, firmware: { label: 'Firmware', href: '/updates' }, parameter: { label: 'Parameter reversions', href: '/flow' } };
@@ -22,7 +23,8 @@ export function NotificationCenter() {
     document.addEventListener('pointerdown', outside); window.addEventListener('blur', iframe);
     return () => { document.removeEventListener('pointerdown', outside); window.removeEventListener('blur', iframe); };
   }, [feed?.open]);
-  if (!feed?.open) return null;
+  const state = usePresence(!!feed?.open);
+  if (!feed || !state) return null;
   const returnFocus = () => { feed.close(); document.getElementById('notification-toggle')?.focus(); };
   const concerns = feed.items.filter((item) => item.classification === 'active'), outcomes = feed.items.filter((item) => item.classification !== 'active');
   const renderItem = (item: NotificationItem) => <li key={item.id}>
@@ -34,7 +36,7 @@ export function NotificationCenter() {
     <div className="cx-notification-actions"><a href={item.href}>View {CATEGORIES[item.kind].label.toLowerCase()}</a><button className="btn btn-secondary" disabled={feed.isRead(item.id)} onClick={() => feed.markRead([item.id])}>Mark as read</button></div>
   </li>;
   const clear = !feed.loading && !feed.error && !feed.unavailable;
-  return <section ref={panel} id="notification-center" className="cx-notifications" aria-labelledby="notification-heading" onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); returnFocus(); } }}>
+  return <section ref={panel} id="notification-center" className="cx-notifications" aria-labelledby="notification-heading" data-state={state} inert={state === 'leaving'} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); returnFocus(); } }}>
     <div className="cx-notification-actions"><h2 id="notification-heading" ref={heading} tabIndex={-1}>Notifications</h2><button className="btn btn-secondary" onClick={returnFocus}>Close notifications</button></div>
     {feed.loading && <p role="status">Loading notifications...</p>}
     {(feed.error || feed.unavailable) && <p role="alert">{feed.error || 'Some sources are unavailable.'} <button className="btn btn-secondary" onClick={feed.retry}>Retry notifications</button></p>}

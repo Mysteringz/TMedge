@@ -48,3 +48,6 @@
   .accounts-page .accounts-table-wrap td, .accounts-page .accounts-table-wrap th { padding: 8px 4px; border: 0; }
   .accounts-page .accounts-mobile-label { display: inline; color: var(--text-secondary); }
 }
+.accounts-page .accounts-editor .accounts-team { display: flex; flex-wrap: wrap; gap: 0 24px; margin-block: 16px 0; }
+.accounts-page .accounts-editor .accounts-team legend { padding: 0; margin-bottom: 4px; color: var(--text-secondary); }
+.accounts-page .accounts-editor .accounts-team .accounts-check { margin-block: 0; }

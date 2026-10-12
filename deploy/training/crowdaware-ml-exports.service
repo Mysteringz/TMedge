@@ -1,0 +1,17 @@
+[Unit]
+Description=Private Proxmox ML archive SSH worker
+After=network-online.target tailscaled.service crowdaware-schemaspy-tunnel.service
+Wants=network-online.target crowdaware-schemaspy-tunnel.service
+
+[Service]
+ExecStartPre=/usr/sbin/sshd -t -f /etc/crowdaware-ml-exports/sshd.conf
+ExecStart=/usr/sbin/sshd -D -e -f /etc/crowdaware-ml-exports/sshd.conf
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/run /var/lib/crowdaware-ml-exports
+
+[Install]
+WantedBy=multi-user.target

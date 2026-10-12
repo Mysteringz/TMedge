@@ -44,12 +44,46 @@ The [student styles](web-app/src/tokens.css) use [CSS custom properties](https:/
 
 ## Project structure
 
+<!-- project-structure:start -->
 ```text
 TMedge/
 ├── .github/workflows/
-├── algo-app/src/console/
-│   ├── train/
-│   └── updates/
+├── algo-app/src/
+│   ├── console/
+│   │   ├── flash/
+│   │   ├── train/
+│   │   └── updates/
+│   ├── entities/
+│   │   ├── admin-account/
+│   │   ├── admin-session/
+│   │   ├── analytics/
+│   │   │   ├── api/
+│   │   │   └── model/
+│   │   ├── assistant/
+│   │   ├── connection-state/model/
+│   │   ├── operation-notification/
+│   │   ├── operational-health/
+│   │   │   ├── api/
+│   │   │   └── model/
+│   │   ├── usage/
+│   │   └── workspace/
+│   │       ├── api/
+│   │       ├── lib/
+│   │       └── model/
+│   ├── features/manage-admin-accounts/
+│   ├── pages/
+│   │   ├── admin-accounts/
+│   │   └── analytics/
+│   │       ├── lib/
+│   │       └── ui/
+│   └── widgets/
+│       ├── charts/
+│       │   ├── lib/
+│       │   └── ui/
+│       ├── connection-status/ui/
+│       ├── health-overview/ui/
+│       ├── notification-center/
+│       └── workspace/ui/
 ├── ci/
 ├── config/
 ├── deploy/training/
@@ -65,18 +99,81 @@ TMedge/
 │   └── vendor/three/
 ├── rigs/intern-demo/
 ├── src/
-│   ├── algo/train/hpc/
+│   ├── algo/
+│   │   ├── ml-data/
+│   │   └── train/hpc/
 │   ├── console-client/
 │   ├── edge/
 │   ├── infrastructure/
 │   │   ├── algo/
+│   │   ├── algo-admin/
+│   │   ├── analytics/
+│   │   ├── assistant/
 │   │   ├── firmware-build/
+│   │   ├── firmware-release/
 │   │   ├── http/
 │   │   ├── postgres/migrations/
 │   │   ├── provisioning/
-│   │   └── web/
+│   │   ├── web/
+│   │   └── workspace/
 │   ├── modules/
-│   ├── shared/logging/
+│   │   ├── algo-admin/
+│   │   │   ├── controllers/
+│   │   │   ├── domain/
+│   │   │   ├── repositories/
+│   │   │   └── use-cases/
+│   │   ├── analytics/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   └── routes/
+│   │   ├── assistant/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   └── routes/
+│   │   ├── console-live/
+│   │   ├── firmware/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   ├── repositories/
+│   │   │   └── routes/
+│   │   ├── nodes/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   ├── repositories/
+│   │   │   └── routes/
+│   │   ├── occupancy/
+│   │   │   ├── application/
+│   │   │   └── routes/
+│   │   ├── occupancy-history/
+│   │   │   ├── application/
+│   │   │   └── repositories/
+│   │   ├── provisioning/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   ├── repositories/
+│   │   │   └── routes/
+│   │   ├── recordings/repositories/
+│   │   ├── registration/
+│   │   │   ├── application/
+│   │   │   └── repositories/
+│   │   ├── rollouts/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   └── repositories/
+│   │   ├── shared/application/
+│   │   ├── student-auth/
+│   │   │   ├── application/
+│   │   │   ├── domain/
+│   │   │   ├── repositories/
+│   │   │   └── routes/
+│   │   └── workspace/
+│   │       ├── application/
+│   │       ├── domain/
+│   │       ├── repositories/
+│   │       └── routes/
+│   ├── shared/
+│   │   ├── flasher/
+│   │   └── logging/
 │   ├── tools/
 │   └── web/
 ├── test/
@@ -84,11 +181,24 @@ TMedge/
 │   └── hpc-stack/fake-slurm/
 ├── tools/
 ├── web-app/src/pages/
+├── CLAUDE.md
+├── docker-compose.postgres-local.yml
+├── docker-compose.postgres-test.yml
+├── docker-compose.yml
+├── DOCKER.md
 ├── Dockerfile
 ├── Dockerfile.firmware-worker
+├── package-lock.json
+├── package.json
 ├── README.md
-└── package.json
+├── tsconfig.base.json
+├── tsconfig.console.json
+└── tsconfig.json
 ```
+<!-- project-structure:end -->
+
+The directory tree is generated daily from tracked repository paths. Written
+descriptions below are maintained separately. See [README automation](deploy/pipeline.md#readme-maintenance).
 
 - [src/edge/](src/edge/) owns telemetry, sensor authority, counting, and firmware operations. [src/web/](src/web/) serves student accounts and occupancy.
 - [src/modules/](src/modules/) separates application rules from the storage and process integrations in [src/infrastructure/](src/infrastructure/).

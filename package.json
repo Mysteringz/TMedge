@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck && npm --prefix algo-app run typecheck",
     "pretest": "npm run build:app",
     "test": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && node --test --test-concurrency=1 dist/test/*.test.js",
-    "test:algo-mobile": "node --test test/algo-mobile.test.mjs",
+    "test:algo-mobile": "node --test test/algo-mobile.test.mjs test/web-flasher.test.mjs test/console-shell.test.mjs test/tmflash-download.test.mjs",
     "crosscheck": "tsc -p tsconfig.json && node dist/src/tools/crosscheck.js",
     "build:app": "npm --prefix web-app run build",
     "build:algo": "npm --prefix algo-app run build",
@@ -37,12 +37,15 @@
     "express": "^5.2.1",
     "pg": "^8.23.1",
     "typeorm": "^1.1.1",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "yazl": "^3.3.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
+    "@types/yazl": "^3.3.1",
     "playwright": "^1.63.0",
     "typescript": "^7.0.2"
   }

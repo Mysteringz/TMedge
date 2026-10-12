@@ -35,6 +35,8 @@ export interface WorkspaceSnapshot {
   me: { name: string; canTriage: boolean; isAdmin: boolean };
   /** Everyone who can be written to, the reader included. */
   members: string[];
+  /** What each member works on, for those who have been given team roles. Labels, not access. */
+  teamRoles: Record<string, string[]>;
   mail: Mailbox;
   board: { requests: FeatureRequest[]; tasks: Task[] };
 }
@@ -42,3 +44,11 @@ export interface WorkspaceSnapshot {
 export interface MessageDraft { to: string[]; subject: string; body: string; replyTo: string | null }
 export interface RequestDraft { title: string; detail: string }
 export interface TaskDraft { title: string; detail: string; assignee: string | null; due: string | null; requestId: string | null }
+
+export const TEAM_ROLES = ['ml', 'frontend', 'backend', 'firmware', 'hardware'] as const;
+export type TeamRole = typeof TEAM_ROLES[number];
+export const TEAM_ROLE_LABEL: Record<string, string> = { ml: 'ML', frontend: 'Front-end', backend: 'Back-end', firmware: 'Firmware', hardware: 'Hardware' };
+/** "ML, Back-end" for a member, or nothing when they have no team role. */
+export function teamRoleText(roles: readonly string[] | undefined): string {
+  return (roles ?? []).map((role) => TEAM_ROLE_LABEL[role] ?? role).join(', ');
+}

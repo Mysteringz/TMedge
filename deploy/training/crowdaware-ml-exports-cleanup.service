@@ -1,0 +1,13 @@
+[Unit]
+Description=Remove expired Proxmox ML dataset archives
+
+[Service]
+Type=oneshot
+User=crowdaware-ml-export
+ExecStart=/usr/bin/python3 /opt/crowdaware-ml-exports/remote-exports.py cleanup
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/crowdaware-ml-exports

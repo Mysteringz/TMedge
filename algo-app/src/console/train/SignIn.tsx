@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { packCredentials, sealCredentials, type Sealed } from '../../../../src/shared/hpcseal.js';
 import { ArrowRight, XMark } from '../icons.tsx';
+import { Switcher } from '../motion.tsx';
 import { train, type HpcState, type SignInAction } from './api.ts';
 
 export interface SignInProps {
@@ -99,11 +100,11 @@ export function SignIn({ hpc, action, jobId, jobName, onCancel, onSealed }: Sign
           </div>
           <div className="field">
             <label>VPN login</label>
-            <div className="seg">
+            <Switcher>
               {hpc.domains.map((d) => (
                 <label key={d} className="seg-opt"><input type="radio" name="hku-domain" checked={domain === d} onChange={() => setDomain(d)} />@{d}</label>
               ))}
-            </div>
+            </Switcher>
           </div>
         </div>
         <div className="field">

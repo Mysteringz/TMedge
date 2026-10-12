@@ -1,0 +1,21 @@
+# Bind only the Proxmox tailnet address; use a dedicated report-only account.
+# This listener does not change the host's interactive SSH configuration.
+ListenAddress <PROXMOX_TAILNET_IP>
+Port 2222
+HostKey /etc/ssh/ssh_host_ed25519_key
+PidFile /run/crowdaware-schemaspy-report.pid
+UsePAM yes
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers schemaspy-report
+AuthorizedKeysFile .ssh/authorized_keys
+DisableForwarding yes
+PermitTTY no
+X11Forwarding no
+MaxAuthTries 3
+MaxSessions 2
+LoginGraceTime 20
+ForceCommand /usr/bin/python3 /opt/crowdaware-schemaspy/serve-schemaspy.py

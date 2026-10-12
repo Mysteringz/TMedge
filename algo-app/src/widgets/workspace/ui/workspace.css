@@ -1,19 +1,17 @@
-/* The landing page's right-hand section, in Bluegrid: a terminal that is
-   always Gray 100 and Plex Mono, tiles and panels told apart by layer and
-   never by shadow, square corners, and orange only where something can be
-   acted on or is new. Scoped under .cx like everything else in this shell. */
+/* The landing page under the welcome, in Bluegrid: panels told apart by
+   layer and never by shadow, square corners, orange only where something can
+   be acted on or is new. The one exception is the box at the top and what
+   belongs to it, which are rounded on purpose: it is the page's single way
+   in, and is meant to read as an assistant's prompt, not as a form field.
+   Scoped under .cx like everything else in this shell. */
 
-/* Two columns from the lg breakpoint, where there is room for both; below
-   it the workspace follows the module list. */
-.cx .cx-home-main:has(.ws) { align-items: flex-start; }
 /* A dialog inside this stacking context must cover the header. */
 .cx .cx-home-main:has(.cx-modal-back) { z-index: 30; }
-.cx .ws { flex: 1 1 440px; display: flex; flex-direction: column; gap: 24px; min-width: 0; max-width: 640px; margin-left: auto; }
-@media (max-width: 1055px) {
-  .cx .cx-home-main:has(.ws) { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
-  .cx .cx-home-main:has(.ws) .cx-home-left { flex: none; }
-  .cx .ws { flex: none; margin-left: 0; max-width: 620px; }
-}
+.cx .ws { display: flex; flex-direction: column; gap: 32px; width: 100%; max-width: 1200px; min-width: 0; }
+.cx .ws-top { position: relative; display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 760px; margin: 0 auto; }
+.cx .ws-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.cx .ws-section { min-width: 0; }
+@media (max-width: 899px) { .cx .ws-cols { grid-template-columns: minmax(0, 1fr); } }
 
 .cx .ws-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .cx .ws-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
@@ -29,54 +27,90 @@
 .cx .ws-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 1rem; background: var(--interactive); color: var(--on-interactive); font: 600 12px/1 var(--font-sans); letter-spacing: 0; }
 .cx .seg-opt:has(input:checked) .ws-count { background: var(--on-interactive); color: var(--interactive); }
 
-/* — terminal: always dark, always mono — */
-.cx .ws-term { min-width: 0; background: var(--background); box-shadow: inset 0 0 0 1px var(--border-subtle-00); font-family: var(--font-mono); }
-.cx .ws-term__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; padding: 0 12px 0 16px; background: var(--layer-01); font-size: 12px; color: var(--text-secondary); }
-.cx .ws-term__title { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cx .ws-term__dim { color: var(--text-helper); }
-/* Status is an icon and a word; the colour is on the icon only. */
-.cx .ws-term__status { display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; }
-.cx .ws-term__status--ready .an-icon { color: var(--support-success); }
-.cx .ws-term__status--partial .an-icon { color: var(--support-warning); }
-.cx .ws-term__status--loading .an-icon { color: var(--text-helper); }
-.cx .ws .an-icon__inner { fill: #161616; }
-.cx .ws-term__prompt { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border-subtle-00); cursor: text; }
-/* The ring goes round the whole prompt, so the field itself draws none. */
-.cx .ws-term__prompt:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
-.cx .ws-term__glyph { color: var(--interactive); font-weight: 600; }
-.cx .ws-term__input { flex: 1; min-width: 0; height: 46px; padding: 0; border: 0; background: transparent; color: var(--text-primary); caret-color: var(--interactive); font: 400 14px var(--font-mono); letter-spacing: 0; }
-.cx .ws-term__input:focus-visible { outline: none; }
-.cx .ws-term__input::placeholder { color: var(--text-placeholder); }
-.cx .ws-term__prompt:focus-within .ws-term__key { visibility: hidden; }
-.cx .ws-term__output { position: relative; padding: 8px 0; }
-.cx .ws-term__line { margin: 0 !important; padding: 2px 16px; font-size: 12px; line-height: 18px; color: var(--text-secondary); overflow-wrap: anywhere; }
-.cx .ws-term__line b { font-weight: 600; color: var(--text-primary); }
-.cx .ws-term__line kbd { min-width: 18px; font-size: 11px; line-height: 16px; }
-/* Results open over what is below, as a shell's completions do, so the page
-   does not move under the hands of someone typing. A floating layer is the
-   one place Bluegrid allows a shadow. */
-.cx .ws-term__results {
-  position: absolute; z-index: 5; top: 0; left: 0; right: 0; max-height: min(420px, 60vh); overflow-y: auto;
-  list-style: none; margin: 0; padding: 4px 0; background: var(--background);
-  box-shadow: inset 0 0 0 1px var(--border-subtle-01), var(--shadow-overlay);
+/* — the box: search the site, or ask — */
+.cx .ws-ask { position: relative; }
+.cx .ws-ask__bar {
+  display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 6px 6px 6px 22px; border-radius: 30px;
+  background: var(--layer-01); box-shadow: inset 0 0 0 1px var(--border-subtle-01), 0 8px 32px rgba(0, 0, 0, .35);
+  transition: box-shadow 110ms var(--ease-productive);
 }
-.cx .ws-term__results[hidden] { display: none; }
-.cx .ws-term__row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: baseline; gap: 12px; padding: 6px 16px; font-size: 13px; line-height: 18px; cursor: pointer; }
-/* Selected is the accent edge and the layer step, never colour alone. */
-.cx .ws-term__row.is-on { background: var(--layer-01); box-shadow: inset 3px 0 0 var(--interactive); }
-.cx .ws-term__kind, .cx .ws-term__hint { font-size: 12px; color: var(--text-helper); white-space: nowrap; }
-.cx .ws-term__text { display: flex; flex-direction: column; min-width: 0; }
-.cx .ws-term__name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cx .ws-term__row.is-on .ws-term__name { font-weight: 600; }
-.cx .ws-term__detail { font-size: 12px; color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cx .ws-term__hint { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-.cx .ws-term__foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 16px; border-top: 1px solid var(--border-subtle-00); font-size: 12px; color: var(--text-secondary); }
-.cx .ws-term__foot .tag { min-height: 18px; font-size: 11px; }
+/* The ring goes round the whole pill, so the field itself draws none. */
+.cx .ws-ask__bar:focus-within { box-shadow: inset 0 0 0 2px var(--focus), 0 8px 32px rgba(0, 0, 0, .35); }
+.cx .ws-ask__icon { display: grid; flex: none; color: var(--text-helper); font-size: 20px; }
+.cx .ws-ask__input { flex: 1; min-width: 0; height: 48px; padding: 0; border: 0; background: transparent; color: var(--text-primary); caret-color: var(--interactive); font: 400 16px var(--font-sans); letter-spacing: 0; }
+.cx .ws-ask__input:focus-visible { outline: none; }
+.cx .ws-ask__input::placeholder { color: var(--text-placeholder); }
+.cx .ws-ask__ai {
+  display: inline-flex; align-items: center; gap: 8px; flex: none; height: 48px; padding: 0 18px 0 14px; border: 0; border-radius: 24px;
+  background: var(--interactive); color: var(--on-interactive); font: 600 14px var(--font-sans); letter-spacing: .16px; white-space: nowrap; cursor: pointer;
+}
+.cx .ws-ask__ai svg { font-size: 18px; }
+.cx .ws-ask__ai:hover:not(:disabled) { background: var(--interactive-hover); }
+.cx .ws-ask__ai:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.cx .ws-ask__ai:disabled { background: var(--layer-02); color: var(--text-disabled); cursor: not-allowed; }
+/* Results open over what is below, so the page does not move under the
+   hands of someone typing. A floating layer is where a shadow is allowed. */
+.cx .ws-ask__results {
+  position: absolute; z-index: 6; top: 68px; left: 0; right: 0; max-height: min(440px, 60vh); overflow-y: auto;
+  list-style: none; margin: 0; padding: 8px; border-radius: 20px; text-align: left;
+  background: var(--layer-01); box-shadow: inset 0 0 0 1px var(--border-subtle-01), var(--shadow-overlay);
+}
+.cx .ws-ask__results[hidden] { display: none; }
+.cx .ws-ask__row { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 48px; padding: 6px 12px; border-radius: 12px; cursor: pointer; }
+/* Selected is the layer step and the weight, never colour alone. */
+.cx .ws-ask__row.is-on { background: var(--layer-02); }
+.cx .ws-ask__kind { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; letter-spacing: .32px; color: var(--text-helper); white-space: nowrap; }
+.cx .ws-ask__row--ai .ws-ask__kind { color: var(--interactive); font-weight: 600; }
+.cx .ws-ask__kind svg { font-size: 16px; }
+.cx .ws-ask__text { display: flex; flex-direction: column; min-width: 0; }
+.cx .ws-ask__name { color: var(--text-primary); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx .ws-ask__row.is-on .ws-ask__name { font-weight: 600; }
+.cx .ws-ask__detail { font-size: 12px; letter-spacing: .32px; color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx .ws-ask__hint { max-width: 160px; font: 400 12px var(--font-mono); color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx .ws-ask__note { margin: 10px 22px 0 !important; font-size: 12px; line-height: 1.5; letter-spacing: .32px; color: var(--text-helper); }
+.cx .ws-ask__note b { font-weight: 600; color: var(--text-secondary); }
+
+/* — the places this person goes most — */
+.cx .ws-places { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+.cx .ws-places__label { margin-right: 4px; font-size: 12px; letter-spacing: .32px; color: var(--text-helper); }
+.cx .ws-place {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 14px; border-radius: 16px; white-space: nowrap;
+  background: color-mix(in srgb, var(--layer-01) 88%, transparent); box-shadow: inset 0 0 0 1px var(--border-subtle-01);
+  color: var(--text-secondary); font-size: 14px; letter-spacing: .16px; text-decoration: none;
+}
+.cx .ws-place:hover { background: var(--layer-hover-01); color: var(--text-primary); }
+/* Where the header already lists every module, only the most used are repeated here. */
+@media (min-width: 1057px) { .cx .ws-place--more { display: none; } }
+
+/* — what the assistant said: marked as AI, edge to edge — */
+.cx .ws-answer {
+  overflow: hidden; border-radius: 20px; text-align: left;
+  /* Carbon's AI aura: a blue rising from the bottom, used for nothing else. */
+  background: linear-gradient(to top, rgba(69, 137, 255, .16), transparent 60%), var(--layer-01);
+  box-shadow: inset 0 0 0 1px rgba(120, 169, 255, .4);
+}
+.cx .ws-answer__head { display: flex; align-items: center; gap: 10px; padding: 10px 10px 6px 20px; }
+.cx .ws-ai-label { display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; box-shadow: inset 0 0 0 1px #78a9ff; color: #a6c8ff; font: 600 11px/1 var(--font-sans); letter-spacing: .32px; }
+.cx .ws-answer__title { font: 600 14px/1.29 var(--font-sans); }
+.cx .ws-answer__model { min-width: 0; font: 400 12px var(--font-mono); color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx .ws-answer__tools { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.cx .ws-answer__tools .btn { gap: 8px; }
+.cx .ws-answer__body { display: flex; flex-direction: column; gap: 20px; max-height: min(440px, 55vh); overflow-y: auto; padding: 6px 20px 16px; scrollbar-width: thin; scrollbar-color: var(--border-subtle-01) transparent; }
+.cx .ws-answer__turn { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cx .ws-answer__q { margin: 0 !important; font-weight: 600; color: var(--text-primary); overflow-wrap: anywhere; }
+.cx .ws-answer__a { max-width: 68ch; font-size: 14px; line-height: 1.55; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cx .ws-answer__a code { padding: 1px 5px; background: var(--layer-02); font-size: 13px; }
+.cx .ws-answer__cursor { display: inline-block; width: 7px; height: 1em; margin-left: 2px; background: #78a9ff; vertical-align: -.15em; animation: cx-caret 1s steps(1) infinite; }
+.cx .ws-answer__wait { margin: 0 !important; font-size: 13px; color: var(--text-helper); }
+.cx .ws-answer__foot { margin: 0 !important; padding: 10px 20px 14px; border-top: 1px solid rgba(120, 169, 255, .22); font-size: 12px; line-height: 1.5; letter-spacing: .32px; color: var(--text-helper); }
+.cx .ws-chip-role { margin-left: 6px; font-size: 11px; color: var(--text-helper); }
+.cx .seg-opt:has(input:checked) .ws-chip-role { color: var(--on-interactive); }
 
 /* — system figures: one band of tiles, hairlines between — */
 /* The gaps are drawn, not left open: the donut turning behind would otherwise
    show through them as stray orange specks between the figures. */
-.cx .ws-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border-subtle-00); }
+.cx .ws-tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; background: var(--border-subtle-00); }
+@media (max-width: 1055px) { .cx .ws-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .cx .ws-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 12px; background: var(--layer-01); }
 .cx .ws-tile__label { color: var(--text-secondary); font-size: 12px; line-height: 1.33; letter-spacing: .32px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The number leads; its last hour runs quietly beside it. */
@@ -106,7 +140,6 @@
   flex: 1 1 0; display: inline-flex; align-items: center; gap: 8px; min-width: 0; min-height: 48px; padding: 0 16px;
   border: 0; border-top: 2px solid transparent; background: transparent; color: var(--text-secondary);
   font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; text-align: left; white-space: nowrap; cursor: pointer;
-  transition: background 70ms var(--ease-productive), color 70ms var(--ease-productive);
 }
 .cx .ws-tab:hover { background: var(--layer-hover-02); color: var(--text-primary); }
 .cx .ws-tab[aria-selected="true"] { background: var(--layer-01); color: var(--text-primary); font-weight: 600; border-top-color: var(--interactive); }
@@ -126,7 +159,6 @@
 .cx .ws-row {
   display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; min-height: 56px; padding: 10px 16px;
   border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
-  transition: background 70ms var(--ease-productive);
 }
 .cx .ws-row:hover { background: var(--layer-hover-01); }
 .cx .ws-row__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -147,7 +179,7 @@
 /* requests: the count of each status is also the way to see only those */
 /* Wrapping cells grow to fill their row, so five across or three and two both end flush. */
 .cx .ws-stats { display: flex; flex-wrap: wrap; gap: 1px; background: var(--border-subtle-01); border-bottom: 1px solid var(--border-subtle-01); }
-.cx .ws-stat { flex: 1 1 calc(20% - 1px); display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; min-height: 60px; padding: 8px 12px; border: 0; background: var(--layer-01); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background 70ms var(--ease-productive); }
+.cx .ws-stat { flex: 1 1 calc(20% - 1px); display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; min-height: 60px; padding: 8px 12px; border: 0; background: var(--layer-01); color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .cx .ws-stat:hover { background: var(--layer-hover-01); }
 .cx .ws-stat__value { font: 300 24px/1.17 var(--font-sans); font-variant-numeric: tabular-nums; }
 .cx .ws-stat__label { font-size: 12px; line-height: 1.33; letter-spacing: .32px; color: var(--text-secondary); }
@@ -158,7 +190,7 @@
 .cx .ws-vote {
   flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 48px; min-height: 48px; padding: 0;
   border: 0; border-right: 1px solid var(--border-subtle-01); background: transparent; color: var(--text-secondary);
-  font: 400 12px/1.2 var(--font-mono); cursor: pointer; transition: background 70ms var(--ease-productive);
+  font: 400 12px/1.2 var(--font-mono); cursor: pointer;
 }
 .cx .ws-vote svg { font-size: 16px; }
 .cx .ws-vote:hover:not(:disabled) { background: var(--layer-hover-01); color: var(--text-primary); }
@@ -213,21 +245,23 @@
 .cx .ws-form-error { margin-top: 0; }
 
 @media (max-width: 900px) {
-  /* 16px in the field so focusing it does not zoom the page on iOS. */
-  .cx .ws-term__input { font-size: 16px; }
-  .cx .ws-term__row { min-height: 44px; align-items: center; }
-  .cx .ws-inline, .cx .ws-link { min-height: 44px; }
+  .cx .ws-inline, .cx .ws-link, .cx .ws-place { min-height: 44px; }
   .cx .ws-textarea { font-size: 16px; }
   .cx .ws-task__status { width: 136px; }
 }
 @media (max-width: 560px) {
   .cx .ws-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cx .ws-stat { flex-basis: calc(33.33% - 1px); }
-  .cx .ws-term__row { grid-template-columns: 56px minmax(0, 1fr); }
-  .cx .ws-term__hint, .cx .ws-term__key { display: none; }
+  .cx .ws-ask__bar { padding-left: 16px; gap: 8px; }
+  .cx .ws-ask__icon { display: none; }
+  .cx .ws-ask__ai { padding: 0 14px 0 12px; }
+  .cx .ws-ask__row { grid-template-columns: 64px minmax(0, 1fr); }
+  .cx .ws-ask__hint { display: none; }
+  .cx .ws-places__label { flex-basis: 100%; margin: 0; text-align: center; }
+  .cx .ws-answer__head { padding-left: 16px; }
+  .cx .ws-answer__body, .cx .ws-answer__foot { padding-inline: 16px; }
   .cx .ws-tab { padding: 0 12px; }
   .cx .ws-task { flex-wrap: wrap; }
   .cx .ws-task__status { margin: 8px 16px 0; width: calc(100% - 32px); }
   .cx .ws-task .ws-row { padding-left: 16px; }
 }
-@media (prefers-reduced-motion: reduce) { .cx .ws-tab, .cx .ws-row, .cx .ws-stat, .cx .ws-vote { transition: none; } }

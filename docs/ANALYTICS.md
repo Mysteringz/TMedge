@@ -103,9 +103,19 @@ of recorded time it was up:
 | Student web tier | every snapshot push target answered | 99% / 90% |
 | Sensor ingest | sensors reporting ÷ sensors registered | 90% / 50% |
 | Recorder | no stream has a write error | 99% / 90% |
-| Database | it answers `SELECT 1` within 3 s (only where one is configured) | 99% / 90% |
+| Registry database | registry PostgreSQL answers `SELECT 1` within 3 s (only where configured) | 99% / 90% |
+| Training database | the ML reader answers `SELECT 1` within 3 s (only where configured) | 99% / 90% |
 
 A day before history began has no mark at all.
+
+Registry and training storage are independent. File-backed registry storage
+shows “Not configured” for its database row even when the training database
+is healthy. The training row uses the same private `ML_DATABASE_URL_FILE`
+(or `ML_DATABASE_URL`) as ML data, with a separate one-connection read-only
+pool and bounded query/connect timeouts. Each is checked once a minute,
+without blocking host samples or accumulating probes if one hangs.
+Training uptime begins when its own `db.training.up` metric is first
+recorded; it never borrows the registry's earlier history.
 
 ## Cost
 
@@ -118,7 +128,7 @@ Several tabs on the same range within two seconds share one assembly.
 
 - Per-student activity. Where accounts are in PostgreSQL the durable activity
   log has it (`docs/student-accounts.md`); this module deliberately does not.
-- Sensor, training, firmware and parameter status: that is the notification
+- Sensor, training jobs, firmware and parameter status: that is the notification
   bell and each module's own page.
 - Alerts. This page shows; it does not notify.
 

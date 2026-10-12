@@ -1,0 +1,16 @@
+[Unit]
+Description=SchemaSpy training database documentation (Proxmox only)
+After=network-online.target crowdaware-schemaspy-tunnel.service
+Wants=network-online.target crowdaware-schemaspy-tunnel.service
+
+[Service]
+Type=oneshot
+User=crowdaware-schemaspy
+ExecStart=/usr/bin/python3 /opt/crowdaware-schemaspy/watch-schemaspy.py --reader-url-file /etc/crowdaware-schemaspy/reader.url --schemaspy-jar /opt/crowdaware-schemaspy/schemaspy-app.jar --jdbc-jar /opt/crowdaware-schemaspy/postgresql.jar --output /var/lib/crowdaware-schemaspy/report
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/crowdaware-schemaspy
+TimeoutStartSec=1000

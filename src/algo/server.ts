@@ -23,6 +23,15 @@ import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig }
 import { accountRoutes } from '../modules/algo-admin/controllers/accounts.js';
 import { ManageAccounts } from '../modules/algo-admin/use-cases/manage-accounts.js';
 import { FileAccountRepository } from '../infrastructure/algo-admin/file-account-repository.js';
+import { FileAccountSettings, FileOwnAccount } from '../infrastructure/algo-admin/file-own-account.js';
+import { ownAccountRoutes } from '../modules/algo-admin/controllers/own-account.js';
+import { ManageOwnAccount } from '../modules/algo-admin/use-cases/manage-own-account.js';
+import { DeliverEmailNotifications } from '../modules/algo-admin/use-cases/deliver-email-notifications.js';
+import { emptyDelivery, parseDelivery, TICK_MS as EMAIL_TICK_MS } from '../modules/algo-admin/domain/email-delivery.js';
+import type { Mailer } from '../modules/algo-admin/repositories/mailer.js';
+import { RuntimeAccountNews } from '../infrastructure/algo-admin/runtime-account-news.js';
+import { loadEmailConfig, SesMailer } from '../infrastructure/email/ses-mailer.js';
+import { emptySettings, parseSettings } from '../modules/algo-admin/domain/account-settings.js';
 import { createHealthRouter } from '../modules/algo-admin/controllers/health-controller.js';
 import { ReadOperationalHealth } from '../modules/algo-admin/use-cases/read-operational-health.js';
 import { RuntimeOperationalQueries } from '../infrastructure/algo-admin/runtime-operational-queries.js';
@@ -36,6 +45,12 @@ import { JsonDocumentStore } from '../infrastructure/workspace/json-document-sto
 import { Board, emptyBoard, parseBoard } from '../modules/workspace/application/board.js';
 import { emptyMail, Mailbox, parseMail } from '../modules/workspace/application/mailbox.js';
 import { createWorkspaceRouter } from '../modules/workspace/routes/workspace-router.js';
+import { KnowledgeFile } from '../infrastructure/assistant/knowledge-file.js';
+import { OllamaChatModel } from '../infrastructure/assistant/ollama-chat-model.js';
+import { runtimeAnalyticsSource } from '../infrastructure/analytics/runtime-analytics-source.js';
+import { AskAssistant } from '../modules/assistant/application/ask-assistant.js';
+import { loadAssistantConfig } from '../modules/assistant/domain/assistant.js';
+import { createAssistantRouter } from '../modules/assistant/routes/assistant-router.js';
 import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
 import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
 import { AlgoWebSocketAdapter } from './websocket-adapter.js';
@@ -45,9 +60,15 @@ import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
 import { recordModeOf } from './autorecord.js';
 import { createTrain, trainRoot } from './train/routes.js';
+import { createMlData } from './ml-data/routes.js';
+import { schemaAssets } from './ml-data/schema-report.js';
 import { EDGE_PARAMS, ParamBroker, REVERT_MS } from './params.js';
 import { AlgoRuntime } from './runtime.js';
 import type { Pipeline } from './types.js';
+import { GitHubReleaseSource, type PublishedReleaseSource } from '../infrastructure/firmware-release/github-release-source.js';
+import { createPublishedReleaseRouter } from '../modules/firmware/routes/published-release-router.js';
+import { createTMflashDownloadRouter } from '../modules/tmflash/routes/tmflash-download-router.js';
+import { GitHubTMflashSource, type TMflashReleaseSource } from '../infrastructure/tmflash-release/github-tmflash-source.js';
 import { sendLatest } from '../shared/fanout.js';
 import { requestUrl, sameOrigin } from '../shared/http.js';
 import { encodeFrame } from './frames.js';
@@ -55,6 +76,14 @@ import { validate } from './graph.js';
 import { NODE_SPECS, specOf } from './nodes.js';
 
 export interface AlgoServerOptions { listen?: boolean; dataDir?: string }
+/** Parts a test replaces with its own; production passes none. */
+export interface AlgoServerServices {
+  /** Where module 07's firmware comes from. Default: the TMsense repository's releases on GitHub. */
+  firmwareRelease?: PublishedReleaseSource;
+  tmflashRelease?: TMflashReleaseSource;
+  /** What sends email; null for a server that cannot. Default: Amazon SES if EMAIL_FROM and EMAIL_SES_REGION are set. */
+  mailer?: Mailer | null;
+}
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
 
@@ -69,6 +98,7 @@ export function startAlgo(
   authOrOptions: AlgoAuthConfig | AlgoServerOptions = {},
   /** The debug console, hosted here as module 03 when given (edge/console.ts). */
   consoleCore?: ConsoleCore,
+  services: AlgoServerServices = {},
 ): AlgoServerHandle {
   const options = 'enabled' in authOrOptions ? {} : authOrOptions;
   const authCfg: AlgoAuthConfig = 'enabled' in authOrOptions ? authOrOptions : loadAlgoAuthConfig(process.env, rt.cfg.adminPassword);
@@ -199,8 +229,18 @@ export function startAlgo(
     next();
   });
 
+  app.use('/ml-schema-assets', schemaAssets(process.env.ML_SCHEMA_DIR || join(dataDir, 'algo', 'ml-schema')));
+
   // --- before sign-in: the form, the endpoints it posts to, the bundle -----
   app.use('/api/admin/accounts', accountRoutes(auth, new ManageAccounts(new FileAccountRepository(auth.users, authCfg.sessionSecret))));
+  // Each person's own account: their address, notification choices, password
+  // and sessions. Kept beside the accounts, in a private file of its own.
+  // Email (docs/EMAIL.md) is off unless it is configured, and the page says so.
+  const emailConfig = services.mailer === undefined ? loadEmailConfig(process.env) : null;
+  const mailer: Mailer | null = services.mailer !== undefined ? services.mailer : emailConfig ? SesMailer.fromEnvironment(emailConfig, process.env) : null;
+  const ownAccounts = new FileOwnAccount(auth.users);
+  const accountSettings = new FileAccountSettings(new JsonDocumentStore(join(dirname(authCfg.usersPath), 'account-settings.json'), emptySettings, parseSettings));
+  app.use('/api/account', ownAccountRoutes(auth, new ManageOwnAccount(ownAccounts, accountSettings, mailer)));
   const notifications = express.Router();
   app.use('/api/admin/notifications', notifications);
   // The landing page's team side: a mailbox and a board (docs/WORKSPACE.md).
@@ -211,13 +251,43 @@ export function startAlgo(
   // because a release's own tree is replaced on the next deploy.
   const workspaceDir = join(dataDir, 'algo', 'workspace');
   const teamMembers = () => authCfg.enabled
-    ? auth.users.records().filter((user) => !user.disabled).map((user) => ({ name: user.name, since: user.createdAt }))
+    ? auth.users.records().filter((user) => !user.disabled).map((user) => ({ name: user.name, since: user.createdAt, teamRoles: user.teamRoles ?? [] }))
     // With sign-in off there is one person, and they are "local".
-    : [{ name: 'local', since: 0 }];
-  app.use('/api/workspace', createWorkspaceRouter(auth, {
-    mailbox: new Mailbox(new JsonDocumentStore(join(workspaceDir, 'mail.json'), emptyMail, parseMail), teamMembers),
-    board: new Board(new JsonDocumentStore(join(workspaceDir, 'board.json'), emptyBoard, parseBoard), teamMembers),
-    members: teamMembers,
+    : [{ name: 'local', since: 0, teamRoles: [] }];
+  const boardStore = new JsonDocumentStore(join(workspaceDir, 'board.json'), emptyBoard, parseBoard);
+  const mailbox = new Mailbox(new JsonDocumentStore(join(workspaceDir, 'mail.json'), emptyMail, parseMail), teamMembers);
+  const board = new Board(boardStore, teamMembers);
+  app.use('/api/workspace', createWorkspaceRouter(auth, { mailbox, board, members: teamMembers }));
+  // Ask AI (docs/ASSISTANT.md): a model on the Proxmox cluster that has read
+  // config/ai-knowledge.md. Off unless AI_OLLAMA_URL and AI_MODEL are set.
+  // What it is shown besides that file is below and nothing else: figures
+  // every signed-in member already sees. No mail, no frames, no student.
+  const assistantConfig = loadAssistantConfig(process.env);
+  const liveSource = runtimeAnalyticsSource(rt);
+  const liveFacts = (): string[] => {
+    const lines: string[] = [];
+    try {
+      const nodes = liveSource.pipeline(Date.now()).nodes;
+      lines.push(`Sensors: ${nodes.online} of ${nodes.registered} registered are reporting; ${nodes.realOnline} of ${nodes.real} physical sensors (the rest are simulated).`);
+      for (const floor of liveSource.floors(Date.now())) {
+        const known = floor.seats - floor.unknownSeats;
+        lines.push(floor.occupied === null || known <= 0
+          ? `Floor "${floor.name}" (${floor.id}): ${floor.seats} seats, occupancy unknown because no working sensor covers it.`
+          : `Floor "${floor.name}" (${floor.id}): ${floor.occupied} of ${known} covered seats taken${floor.unknownSeats > 0 ? `; ${floor.unknownSeats} more seats are not covered by a working sensor` : ''}.`);
+      }
+    } catch { lines.push('Sensor and floor figures could not be read just now.'); }
+    try {
+      const board = boardStore.read();
+      const open = board.requests.filter((request) => request.status === 'open' || request.status === 'planned' || request.status === 'in-progress');
+      lines.push(`Feature requests still in play: ${open.length}. Tasks not done: ${board.tasks.filter((task) => task.status !== 'done').length}.`);
+      for (const request of open.sort((a, b) => b.votes.length - a.votes.length).slice(0, 8)) lines.push(`Request ${request.id} (${request.status}, ${request.votes.length} votes): "${request.title}"`);
+      for (const task of board.tasks.filter((item) => item.status !== 'done').slice(0, 8)) lines.push(`Task ${task.id} (${task.status}, ${task.assignee ? `assigned to ${task.assignee}` : 'unassigned'}${task.due ? `, due ${task.due}` : ''}): "${task.title}"`);
+    } catch { /* the board is told about on its own tab; the assistant just goes without */ }
+    return lines;
+  };
+  app.use('/api/assistant', createAssistantRouter(auth, {
+    assistant: assistantConfig ? new AskAssistant(new OllamaChatModel(assistantConfig), new KnowledgeFile(process.env.AI_KNOWLEDGE_FILE || join(ROOT, 'config', 'ai-knowledge.md')), liveFacts) : null,
+    teamRolesOf: (name) => teamMembers().find((member) => member.name === name)?.teamRoles ?? [],
   }));
   app.use(auth.router);
   const nativeLogin = consoleCore ? flasherLogin(auth, consoleCore) : null;
@@ -278,6 +348,10 @@ export function startAlgo(
     return next();
   }, consoleCore.adoption);
   if (nativeLogin) app.use('/api/tmflash', nativeLogin.browser);
+  // Module 07's firmware: the latest TMsense release, fetched from GitHub by
+  // this edge. Nothing is fetched until somebody opens the page.
+  app.use('/api/flash', createPublishedReleaseRouter(services.firmwareRelease ?? new GitHubReleaseSource()));
+  app.use('/api/tmflash-download', createTMflashDownloadRouter(services.tmflashRelease ?? new GitHubTMflashSource(join(dataDir, 'tmflash-download'))));
 
   // Module 02: training jobs for HKU HPC2021 (src/algo/train/, docs/hpc/).
   const train = createTrain({
@@ -291,8 +365,21 @@ export function startAlgo(
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
+  const mlData = createMlData(auth, { env: process.env, dataDir });
+  app.use('/api/ml-data', mlData.router);
   app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
-  notifications.use(createNotificationRouter(auth, new ReadNotifications(new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth }))));
+  const notificationQueries = new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth });
+  notifications.use(createNotificationRouter(auth, new ReadNotifications(notificationQueries)));
+  // The same notifications, emailed to whoever asked for them. Its own reader:
+  // a pass must not make somebody's open page see a source as busy.
+  let emailTimer: ReturnType<typeof setInterval> | undefined;
+  if (mailer && authCfg.enabled) {
+    const news = new RuntimeAccountNews(new ReadNotifications(notificationQueries), mailbox, board);
+    const delivery = new DeliverEmailNotifications(ownAccounts, accountSettings, (account) => news.for(account),
+      new JsonDocumentStore(join(dirname(authCfg.usersPath), 'email-delivery.json'), emptyDelivery, parseDelivery), mailer, emailConfig?.consoleUrl ?? null);
+    emailTimer = setInterval(() => { void delivery.run(); }, EMAIL_TICK_MS);
+    emailTimer.unref();
+  }
   app.use('/api/analytics', createAnalyticsRouter(auth, analytics.read));
 
   app.get('/api/catalogue', (_req, res) => res.json({
@@ -513,6 +600,7 @@ export function startAlgo(
 
   const server = createServer(app);
   server.on('close', train.stop);
+  server.on('close', () => { void mlData.stop(); });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
   const clients = new Map<WebSocket, { req: IncomingMessage; binding: string }>();
   auth.onLogout((binding) => {
@@ -631,13 +719,14 @@ export function startAlgo(
       if (disposal) return disposal;
       clearTimeout(pickTimer);
       clearInterval(stateTimer);
+      clearInterval(emailTimer);
       rt.off('raw', onRaw);
       rt.off('rgb', onRgb);
       rt.off('report', onReport);
       broker.stop();
       for (const ws of wss.clients) ws.terminate();
       disposal = Promise.all([
-        algo.dispose(), consoleCore?.dispose(), analytics.collector.stop(),
+        algo.dispose(), consoleCore?.dispose(), analytics.stop(), mlData.stop(),
         new Promise<void>(resolve => wss.close(() => resolve())),
       ]).then(() => undefined);
       return disposal;

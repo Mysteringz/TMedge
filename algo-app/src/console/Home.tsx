@@ -1,62 +1,92 @@
-/** Module select: where an engineer lands after signing in. */
+/** Where an engineer lands after signing in: a welcome, and under it the workspace. */
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { donutFrame } from './donut.ts';
-import { ArrowRight } from './icons.tsx';
-import { MODULES } from './parts.tsx';
-import { navigate } from './router.ts';
 
 // Nobody needs a mailbox to sign in: the workspace arrives with the page
-// that shows it, and the module list does not wait for it.
+// that shows it, and the welcome does not wait for it.
 const Workspace = lazy(() => import('../widgets/workspace/index.ts').then((m) => ({ default: m.Workspace })));
 
 export function Home({ user, flash }: { user: string; flash(message: string): void }) {
-  const [sel, setSel] = useState(0);
-  const selRef = useRef(sel);
-  selRef.current = sel;
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (document.activeElement instanceof HTMLElement && document.activeElement.closest('button, a, input, select, textarea, [contenteditable="true"]')) return;
-      if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => (s + 1) % MODULES.length); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => (s + MODULES.length - 1) % MODULES.length); }
-      else if (/^[1-9]$/.test(e.key) && Number(e.key) <= MODULES.length) setSel(Number(e.key) - 1);
-      // A focused module button handles Enter itself; this is for the page.
-      else if (e.key === 'Enter' && document.activeElement === document.body) {
-        navigate(MODULES[selRef.current]?.path ?? '/');
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
   return (
     <>
-    {/* Behind everything, and bigger than the tab: only part of the ring is
-        ever on screen, turning slowly past the modules. */}
+    {/* Behind everything, and bigger than the tab: a slow, soft ring of light. */}
     <div className="cx-donut-stage" aria-hidden="true"><Donut /></div>
     <main className="cx-home-main">
-      <section className="cx-home-left">
-        <h1 className="cx-welcome">Welcome back, {user}.</h1>
-        <p className="cx-eyebrow">Select module</p>
-        <p className="cx-help">Pick where to work. Use <kbd>↑</kbd> <kbd>↓</kbd> and <kbd>Enter</kbd>, or <kbd>1</kbd>–<kbd>{MODULES.length}</kbd>. Press <kbd>/</kbd> to search.</p>
-        <div className="cx-modules">
-          {MODULES.map((m, i) => (
-            <button key={m.n} className={`cx-module ${sel === i ? 'is-on' : ''}`}
-              onClick={() => navigate(m.path)} onMouseEnter={() => setSel(i)} onFocus={() => setSel(i)}>
-              <span className="cx-n">{m.n}</span>
-              <span className="cx-mod-text">
-                <span className="cx-mod-title">{m.title}<span className="cx-path">{m.path}</span></span>
-                <span className="cx-mod-desc">{m.desc}</span>
-              </span>
-              <span className="cx-arrow"><ArrowRight /></span>
-            </button>
-          ))}
-        </div>
-      </section>
-      {/* Beside the modules: finding things, how the system is, and the team's own business. */}
+      <Welcome user={user} />
       <Suspense fallback={null}><Workspace user={user} flash={flash} /></Suspense>
     </main>
     </>
+  );
+}
+
+/**
+ * "Welcome back" in the languages of the people this is for and around. Each
+ * is written with its own punctuation; the name is never translated.
+ */
+interface Greeting { lang: string; text: string; before: string; after: string }
+const ENGLISH: Greeting = { lang: 'en', text: 'Welcome back', before: ', ', after: '.' };
+const GREETINGS: Greeting[] = [
+  ENGLISH,
+  { lang: 'zh-Hant', text: '歡迎回來', before: '，', after: '。' },
+  { lang: 'th', text: 'ยินดีต้อนรับกลับมา', before: ' ', after: '' },
+  { lang: 'ja', text: 'おかえりなさい', before: '、', after: '。' },
+  { lang: 'es', text: 'Bienvenido de nuevo', before: ', ', after: '.' },
+  { lang: 'ko', text: '다시 오신 것을 환영합니다', before: ', ', after: '.' },
+  { lang: 'fr', text: 'Bon retour', before: ', ', after: '.' },
+  { lang: 'de', text: 'Willkommen zurück', before: ', ', after: '.' },
+];
+
+/** What a person would call one character: a Thai consonant keeps its vowel marks, a Korean syllable stays whole. */
+function letters(text: string, lang: string): string[] {
+  try { return [...new Intl.Segmenter(lang, { granularity: 'grapheme' }).segment(text)].map((part) => part.segment); }
+  catch { return Array.from(text); }
+}
+
+const TYPE_MS = 75, ERASE_MS = 38, HOLD_MS = 3200, GAP_MS = 450;
+
+/**
+ * The greeting types itself out, rests, erases and comes back in another
+ * language. It is decoration and is treated as such: the heading's name for
+ * a screen reader is always the plain English line, and someone who asked
+ * for less motion gets that line, still.
+ */
+function Welcome({ user }: { user: string }) {
+  const [index, setIndex] = useState(0);
+  const [shown, setShown] = useState(() => letters(ENGLISH.text, ENGLISH.lang).length);
+  const greeting = GREETINGS[index % GREETINGS.length] ?? ENGLISH;
+  const parts = letters(greeting.text, greeting.lang);
+
+  useEffect(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let at = 0, count = letters(ENGLISH.text, ENGLISH.lang).length, erasing = true;
+    const step = () => {
+      // A tab nobody is looking at does not need to be typing.
+      if (document.hidden) { timer = setTimeout(step, 1000); return; }
+      const next = GREETINGS[at] ?? ENGLISH;
+      const total = letters(next.text, next.lang).length;
+      if (erasing) {
+        if (count > 0) { count--; setShown(count); timer = setTimeout(step, ERASE_MS); return; }
+        erasing = false; at = (at + 1) % GREETINGS.length; setIndex(at);
+        timer = setTimeout(step, GAP_MS); return;
+      }
+      if (count < total) { count++; setShown(count); timer = setTimeout(step, TYPE_MS); return; }
+      erasing = true; timer = setTimeout(step, HOLD_MS);
+    };
+    timer = setTimeout(step, HOLD_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const whole = shown >= parts.length;
+  return (
+    <h1 className="cx-welcome" aria-label={`Welcome back, ${user}.`}>
+      <span aria-hidden="true" lang={greeting.lang}>
+        <span className="cx-welcome__typed">{parts.slice(0, shown).join('')}</span>
+        <span className={`cx-welcome__caret ${whole ? 'is-resting' : ''}`} />
+        {/* The name stays put and stays bold while the words around it change. */}
+        <span className="cx-welcome__rest">{greeting.before}<b>{user}</b>{greeting.after}</span>
+      </span>
+    </h1>
   );
 }
 
@@ -66,19 +96,24 @@ export function Home({ user, flash }: { user: string; flash(message: string): vo
  */
 const SPIN_A = 0.08;
 const SPIN_B = 0.035;
+/** Blurred to a glow, the ring needs a dozen frames a second, not sixty: each one is a large blurred repaint. */
+const FRAME_MS = 80;
 
 function Donut() {
   const el = useRef<HTMLPreElement>(null);
   useEffect(() => {
     // Someone who asked for less motion gets a still torus.
     const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let raf = 0;
+    let raf = 0, drawn = -Infinity;
     const t0 = performance.now();
     // Start mid-turn: a torus seen exactly edge-on or face-on is the least
     // interesting frame there is, and a slow spin would hold it for seconds.
     const tick = (now: number) => {
-      const t = (now - t0) / 1000;
-      if (el.current) el.current.textContent = donutFrame(1.1 + t * SPIN_A, 0.6 + t * SPIN_B);
+      if (now - drawn >= FRAME_MS && !document.hidden) {
+        drawn = now;
+        const t = (now - t0) / 1000;
+        if (el.current) el.current.textContent = donutFrame(1.1 + t * SPIN_A, 0.6 + t * SPIN_B);
+      }
       if (!still) raf = requestAnimationFrame(tick);
     };
     tick(t0);

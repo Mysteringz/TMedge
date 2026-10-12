@@ -9,18 +9,23 @@ import { DirectoryUsageCache } from './directory-usage.js';
 import { runtimeAnalyticsSource } from './runtime-analytics-source.js';
 import { DEFAULT_UNITS, SystemdProbe } from './systemd-probe.js';
 import { WebUsageClient } from './web-usage-client.js';
+import { TrainingDatabaseHealth } from './training-database-health.js';
 
 export interface EdgeAnalytics {
   collector: EdgeAnalyticsCollector;
   read: ReadAnalytics;
+  stop(): Promise<void>;
 }
 
-export function createEdgeAnalytics(runtime: EdgeRuntime): EdgeAnalytics {
+export function createEdgeAnalytics(runtime: EdgeRuntime, env: NodeJS.ProcessEnv = process.env): EdgeAnalytics {
   const { cfg } = runtime;
   // The edge's own data directory: the volume its recordings fill, and the
   // one place the unit is allowed to write.
   const dataDir = cfg.dataDir;
-  const collector = new EdgeAnalyticsCollector(runtimeAnalyticsSource(runtime), {
+  const training = new TrainingDatabaseHealth(env);
+  const collector = new EdgeAnalyticsCollector({ ...runtimeAnalyticsSource(runtime),
+    trainingDatabaseAvailable: training.configured ? () => training.available() : null,
+  }, {
     // Its own directory rather than one shared with the web tier's history:
     // the two services may run as different users, and neither should depend
     // on the other having created a parent it can write into.
@@ -34,10 +39,12 @@ export function createEdgeAnalytics(runtime: EdgeRuntime): EdgeAnalytics {
     identity: {
       edgeId: cfg.edgeId, version: EDGE_VERSION, release: releaseId(),
       persistence: cfg.persistenceMode ?? 'file', hasDatabase: runtime.persistenceAvailable !== null,
+      hasTrainingDatabase: training.configured,
     },
     timeZone: cfg.analytics?.timeZone ?? DEFAULT_ANALYTICS_TIMEZONE,
   });
-  return { collector, read };
+  let stopping: Promise<void> | undefined;
+  return { collector, read, stop: () => stopping ??= Promise.all([collector.stop(), training.close()]).then(() => undefined) };
 }
 
 /**

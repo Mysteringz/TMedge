@@ -28,7 +28,12 @@ jobs:
     outputs:
       run_id: ${{ steps.release.outputs.run_id }}
       sha: ${{ steps.release.outputs.sha }}
+      deployable: ${{ steps.release.outputs.deployable }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
       - name: Validate source run and caller
         id: release
         env:
@@ -48,12 +53,28 @@ jobs:
           gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" > run.json
           jq -e --arg repo "$REPOSITORY" '.conclusion == "success" and .event == "push" and .head_branch == "main" and .path == ".github/workflows/ci.yml" and .head_repository.full_name == $repo' run.json
           sha=$(jq -r .head_sha run.json)
-          [[ "$sha" == "$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)" ]]
+          # README-only CI is successful for branch protection, but it did
+          # not build a runtime artifact and must not request production approval.
+          gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" > jobs.json
+          if jq -e '
+            ([.jobs[] | select(.name == "changes" and .conclusion == "success")] | length) == 1 and
+            ([.jobs[] | select(.name == "check" and .conclusion == "success")] | length) == 1 and
+            ([.jobs[] | select(.name == "build-test" and .conclusion == "skipped")] | length) == 1 and
+            ([.jobs[] | select(.name == "container" and .conclusion == "skipped")] | length) == 1
+          ' jobs.json; then
+            [[ "$EVENT" != workflow_dispatch ]] || { echo "README-only CI has no deployable artifact" >&2; exit 1; }
+            echo "deployable=false" >> "$GITHUB_OUTPUT"
+            echo "README-only change: no production deployment." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 ci/runtime_identity.py "$sha" "$REPOSITORY"
+          echo "deployable=true" >> "$GITHUB_OUTPUT"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Release commit: $sha; CI run: $RUN_ID" >> "$GITHUB_STEP_SUMMARY"
   deploy:
     needs: validate
+    if: needs.validate.outputs.deployable == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -79,8 +100,10 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # A newer main may have landed while this release awaited approval.
-          [[ "$EXPECTED_SHA" == "$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)" ]]
+          # A newer runtime may have landed while approval was pending. A
+          # README refresh must neither invalidate a checked release nor allow
+          # any source/configuration change to bypass a fresh artifact.
+          python3 ci/runtime_identity.py "$EXPECTED_SHA" "$REPOSITORY"
           (cd release && sha256sum --check tmedge.tar.gz.sha256)
           python3 deploy/release.py extract release/tmedge.tar.gz "$RUNNER_TEMP/validated"
           [[ "$EXPECTED_SHA" == "$(jq -r .commit "$RUNNER_TEMP/validated/RELEASE.json")" ]]

@@ -1,0 +1,10 @@
+[Unit]
+Description=Detect training database changes on Proxmox
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -46,7 +46,7 @@ const pipeline = (over: Partial<PipelineStatus> = {}): PipelineStatus => ({
   recorder: { bytesToday: 5_000_000, rawEnabled: false, healthy: true }, ...over,
 });
 
-function harness(source: Partial<EdgeAnalyticsSource> = {}, extra: { usage?: ConstructorParameters<typeof ReadAnalytics>[0]['usage']; disks?: () => DiskUsage[]; hasDatabase?: boolean; shareMs?: number } = {}) {
+function harness(source: Partial<EdgeAnalyticsSource> = {}, extra: { usage?: ConstructorParameters<typeof ReadAnalytics>[0]['usage']; disks?: () => DiskUsage[]; hasDatabase?: boolean; hasTrainingDatabase?: boolean; shareMs?: number } = {}) {
   let now = T0;
   const collector = new EdgeAnalyticsCollector({
     pipeline: () => pipeline(), floors: () => [], databaseAvailable: null, ...source,
@@ -56,7 +56,7 @@ function harness(source: Partial<EdgeAnalyticsSource> = {}, extra: { usage?: Con
   });
   const read = new ReadAnalytics({
     collector, usage: extra.usage ?? null, units: { supported: false, read: async () => null }, directoryUsage: { read: () => null },
-    identity: { edgeId: 'analytics-test', version: '1.0.0', release: null, persistence: 'file', hasDatabase: extra.hasDatabase ?? false },
+    identity: { edgeId: 'analytics-test', version: '1.0.0', release: null, persistence: 'file', hasDatabase: extra.hasDatabase ?? false, hasTrainingDatabase: extra.hasTrainingDatabase ?? false },
     timeZone: 'Asia/Hong_Kong', now: () => now, shareMs: extra.shareMs ?? 0,
   });
   return { collector, read, advance: (ms: number) => { now += ms; }, now: () => now };
@@ -212,6 +212,36 @@ test('analytics: a database that hangs is reported down without stalling the sam
   await h.collector.sample();
   assert.equal((await h.read.execute('1h')).services.data?.find((row) => row.id === 'database')?.status, 'err');
   await h.collector.stop();
+});
+
+test('analytics: the training database is monitored independently of file-based registry storage and retains its own outage history', async () => {
+  let up = true;
+  const h = harness({ trainingDatabaseAvailable: async () => up }, { hasTrainingDatabase: true });
+  try {
+    await h.collector.sample(); await new Promise(resolve => setImmediate(resolve));
+    h.advance(10_000); await h.collector.sample();
+    const rows = (await h.read.execute('1h')).services.data ?? [];
+    assert.equal(rows.find(row => row.id === 'database')?.status, 'off');
+    assert.equal(rows.find(row => row.id === 'database')?.name, 'Registry database');
+    assert.equal(rows.find(row => row.id === 'training-database')?.statusText, 'Operational');
+    assert.equal(rows.find(row => row.id === 'training-database')?.days.at(-1)?.health, 'ok');
+    assert.ok(rows.find(row => row.id === 'training-database')?.days.slice(0,-1).every(day => day.health === 'none'));
+    up = false; h.advance(60_000); await h.collector.sample(); await new Promise(resolve => setImmediate(resolve));
+    h.advance(10_000); await h.collector.sample();
+    assert.equal((await h.read.execute('1h')).services.data?.find(row => row.id === 'training-database')?.status, 'err');
+    assert.equal(h.collector.reading?.databaseUp, null);
+  } finally { await h.collector.stop(); }
+});
+
+test('analytics: a hung training probe reports an outage and cannot accumulate more checks', async () => {
+  let calls = 0;
+  const h = harness({ trainingDatabaseAvailable: () => { calls++; return new Promise<boolean>(() => undefined); } }, { hasTrainingDatabase: true });
+  try {
+    await h.collector.sample(); await new Promise(resolve => setTimeout(resolve, 3100));
+    h.advance(120_000); await h.collector.sample(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1); assert.equal(h.collector.reading?.trainingDatabaseUp, false);
+    assert.equal((await h.read.execute('1h')).services.data?.find(row => row.id === 'training-database')?.statusText, 'Outage: not answering');
+  } finally { await h.collector.stop(); }
 });
 
 test('analytics: several tabs on one range within two seconds cost the web tier one report, and a failure is not handed on', async () => {

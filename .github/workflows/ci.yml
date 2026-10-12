@@ -1,8 +1,6 @@
-# Every PR and every push to main runs the checks that "before calling work
-# done" asks for, on a clean Linux machine: the same OS family and Node major
-# as the EC2 box, so "passes on the dev Mac" stops being the only evidence.
-# Branch protection on main should require the "check" job (see
-# deploy/pipeline.md).
+# Runtime changes are checked on the production OS/Node family. Keep the
+# required checks present for README-only PRs: workflow-level path filters
+# leave required checks pending forever.
 name: CI
 
 on:
@@ -16,6 +14,10 @@ on:
       tmsense_ref:
         description: TMsense branch, tag or commit to crosscheck against
         default: ""
+      readme_only:
+        description: Check a bot README branch without runtime jobs (the diff is verified)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,7 +28,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.scope.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify README automation and classify the complete diff
+        id: scope
+        run: |
+          python3 -m unittest discover -s ci -p 'test_*.py'
+          bash -n ci/update_readme.sh
+          python3 ci/change_scope.py
+
+  build-test:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -122,6 +143,8 @@ jobs:
         run: |
           psql --host 127.0.0.1 --username postgres --dbname tmedge_test \
             --set ON_ERROR_STOP=1 --file TMedge/docker/postgres-test/init/001-roles.sql
+          psql --host 127.0.0.1 --username postgres --dbname tmedge_test --set ON_ERROR_STOP=1 \
+            --command "CREATE DATABASE crowdaware_training"
 
       - name: Typecheck
         working-directory: TMedge
@@ -150,6 +173,8 @@ jobs:
           PG_INTEGRATION_TEST: '1'
           PG_TEST_CONTAINER_ID: ${{ job.services.postgres.id }}
           TMEDGE_TEST_WORKER_URL: http://127.0.0.1:8123/build
+          ML_DATA_TEST_ADMIN_URL: postgresql://postgres:ci-admin-test-only@127.0.0.1:5432/crowdaware_training
+          ML_DATA_TEST_CONTAINER: ${{ job.services.postgres.id }}
         run: npm test
 
       # Compiles the firmware's own packet code (g++ + OpenSSL, both on the
@@ -169,6 +194,8 @@ jobs:
           python3 deploy/test-adoption-storage.py
           python3 deploy/test-receiver.py
           python3 deploy/training/test-offline.py
+          python3 deploy/training/test-schemaspy.py
+          python3 deploy/training/test-remote-exports.py
 
       - name: Real PostgreSQL schema migration and ingest regressions
         working-directory: TMedge
@@ -213,6 +240,8 @@ jobs:
           retention-days: 30
 
   container:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -221,3 +250,27 @@ jobs:
           persist-credentials: false
       - name: Verify documented Docker build
         run: docker build --tag tmedge:ci .
+
+  check:
+    # A classifier failure must fail a required check, not merely skip both
+    # required jobs and accidentally allow an unverified PR to merge.
+    if: always()
+    needs: [changes, build-test, container]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require successful classification and the appropriate checks
+        env:
+          SCOPE_RESULT: ${{ needs.changes.result }}
+          RUNTIME: ${{ needs.changes.outputs.runtime }}
+          BUILD_RESULT: ${{ needs.build-test.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
+        run: |
+          set -euo pipefail
+          [[ "$SCOPE_RESULT" == success ]] || exit 1
+          if [[ "$RUNTIME" == false ]]; then
+            [[ "$BUILD_RESULT" == skipped && "$CONTAINER_RESULT" == skipped ]] || exit 1
+            echo "README-only change: no runtime build, tests, containers or release artifact." >> "$GITHUB_STEP_SUMMARY"
+          else
+            [[ "$RUNTIME" == true && "$BUILD_RESULT" == success && "$CONTAINER_RESULT" == success ]] || exit 1
+          fi

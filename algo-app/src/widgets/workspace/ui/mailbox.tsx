@@ -1,7 +1,8 @@
 /** The mailbox: what other members wrote to you, what you sent, and writing to them. */
 import { useEffect, useState } from 'react';
-import { LIMITS, workspaceApi, WorkspaceRequestError, type Message, type MessageDraft, type MessageHeader, type WorkspaceSnapshot, type WorkspaceState } from '../../../entities/workspace/index.ts';
+import { LIMITS, teamRoleText, workspaceApi, WorkspaceRequestError, type Message, type MessageDraft, type MessageHeader, type WorkspaceSnapshot, type WorkspaceState } from '../../../entities/workspace/index.ts';
 import { ArrowBendUpLeft, ArrowLeft, PaperPlaneRight, Plus, Trash } from '../../../console/icons.tsx';
+import { Switcher } from '../../../console/motion.tsx';
 import { Dialog, Field, fullTime, reason, when } from './parts.tsx';
 
 export type Box = 'inbox' | 'sent';
@@ -20,20 +21,20 @@ export function MailboxPanel({ ws, snapshot, box, openId, now, onBox, onOpen, on
   return (
     <>
       <div className="ws-bar">
-        <div className="seg" role="radiogroup" aria-label="Mailbox">
+        <Switcher role="radiogroup" aria-label="Mailbox">
           <label className="seg-opt"><input type="radio" name="ws-box" checked={box === 'inbox'} onChange={() => onBox('inbox')} />Inbox{mail.unread > 0 && <span className="ws-count">{mail.unread}<span className="ws-sr"> unread</span></span>}</label>
           <label className="seg-opt"><input type="radio" name="ws-box" checked={box === 'sent'} onChange={() => onBox('sent')} />Sent</label>
-        </div>
+        </Switcher>
         <button type="button" className="btn btn-primary cx-btn-px" onClick={() => onCompose(null)} disabled={others.length === 0}
           title={others.length === 0 ? 'There is nobody else to write to yet' : undefined}>Compose<Plus /></button>
       </div>
       {rows.length === 0 ? (
-        <p className="ws-empty">
+        <p className="ws-empty" key={box}>
           {others.length === 0 ? 'You are the only member of this console. When an admin adds accounts, you can write to each other here.'
             : box === 'inbox' ? 'No messages. What other members write to you appears here.' : 'Nothing sent yet.'}
         </p>
       ) : (
-        <ul className="ws-list" aria-label={box === 'inbox' ? 'Inbox' : 'Sent messages'}>
+        <ul className="ws-list" key={box} aria-label={box === 'inbox' ? 'Inbox' : 'Sent messages'}>
           {rows.map((m) => <MessageRow key={m.id} message={m} me={me.name} now={now} onOpen={() => onOpen(m.id)} />)}
         </ul>
       )}
@@ -176,7 +177,7 @@ export function ComposeDialog({ ws, snapshot, initial, onClose, onSent }: {
         <div className="cx-chips" role="group" aria-labelledby="ws-to-label">
           {others.map((name, index) => (
             <label key={name} className="seg-opt cx-chip"><input type="checkbox" id={index === 0 ? 'ws-to-first' : undefined} checked={to.includes(name)} onChange={() => toggle(name)} data-autofocus={index === 0 && to.length === 0 ? '' : undefined}
-              aria-describedby={tried && problems.to ? 'ws-to-hint' : undefined} />{name}</label>
+              aria-describedby={tried && problems.to ? 'ws-to-hint' : undefined} />{name}{snapshot.teamRoles[name] && <span className="ws-chip-role">{teamRoleText(snapshot.teamRoles[name])}</span>}</label>
           ))}
         </div>
         {others.length > 2 && (

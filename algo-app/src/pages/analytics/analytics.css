@@ -13,7 +13,6 @@
 .cx .an-tab {
   flex: none; height: 40px; padding: 0 16px; border: 0; border-bottom: 2px solid var(--border-subtle-01); background: transparent;
   color: var(--text-secondary); font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; white-space: nowrap; cursor: pointer;
-  transition: color 70ms var(--ease-productive), border-color 70ms var(--ease-productive);
 }
 .cx .an-tab:hover { color: var(--text-primary); border-bottom-color: var(--border-strong-01); }
 /* Selected is the accent edge and a weight change, never colour alone. */
@@ -133,4 +132,3 @@
   .cx .an-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
 @media (max-width: 380px) { .cx .an-metrics { grid-template-columns: minmax(0, 1fr); } }
-@media (prefers-reduced-motion: reduce) { .cx .an-tab, .cx .an-uptime span { transition: none; } }

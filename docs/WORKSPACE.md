@@ -1,43 +1,54 @@
-# Workspace (the right-hand side of the algo console's landing page)
+# Workspace (the algo console's landing page)
 
-`algo.hkumyseat.com/` used to be a list of modules. Beside that list there is
-now a section for the things a team otherwise keeps in four other tools:
-**finding something on the site, writing to each other, deciding what to build
-next, and seeing at a glance whether the system is well.**
+`algo.hkumyseat.com/` is one page that answers what a team otherwise keeps in
+four other tools: **finding something on the site or asking how it works,
+writing to each other, deciding what to build next, and seeing at a glance
+whether the system is well.** Top to bottom:
 
 | part | what it is |
 |---|---|
-| Search terminal | A prompt that finds modules, pages, members, messages, requests, tasks and sensors, and opens what it finds. Press `/` (or Ctrl/Cmd+K) to reach it. |
+| Welcome | The greeting, with the person's name in bold. It types itself in several languages; that is decoration, and the heading's name for a screen reader is always the English line. Reduced motion gets the English line, still. |
+| The box | One rounded field. It searches the site first (modules, pages, members, your own mail, requests, tasks, sensors) and offers anything that reads as a question, or matches nothing, to Ask AI. `/` or Ctrl/Cmd+K reaches it. See [ASSISTANT.md](ASSISTANT.md). |
+| Suggested for you | The modules this person opens most, most used first. There is no module list on this page any more; the header still lists every module on a wide screen, and on a narrow one, where it does not, all of them are shown here. |
 | System now | Six figures from the last hour of Analytics: sensors reporting, seats taken, students online, processor, memory, storage. |
-| Mailbox | Messages between the people who hold accounts: inbox, sent, compose, reply. |
-| Requests | Feature requests anyone may file and vote on, counted by status. |
-| Tasks | Work handed to a member, with a status, an optional due date and, usually, the request it delivers. |
+| Mailbox | Messages between the people who hold accounts: inbox, sent, compose, reply. Its own panel. |
+| Requests and tasks | A second panel: feature requests anyone may file and vote on, counted by status, and tasks handed to a member. |
 
-Below 1056 px the section follows the module list instead of sitting beside it.
-
-It is not a module and has no path of its own; it has no number. Nothing in it
+It is not a module and has no path or number of its own. Nothing in it
 touches a sensor, a parameter or the student site, and nothing a student can
-reach reads it: the routes are on the algo console only (`/api/workspace`).
+reach reads it: the routes are on the algo console only (`/api/workspace`,
+`/api/assistant`).
 
-## Search, and what "Ask AI" means
+## Search
 
-The terminal searches one flat list of entries built in the browser
+The box searches one flat list of entries built in the browser
 (`algo-app/src/entities/workspace/lib/search.ts`): the modules, the pages
-inside them that have an address, the people, what is in the reader's own
-mailbox, the board, and the sensor registry (fetched from `/api/sources` the
-first time the prompt is focused). Every word typed must be answered by an
-entry, so a second word only ever narrows the list; an entry is ranked by its
-worst-answered word first, so the page named by both words comes before a
-module that is called one of them and mentions the other.
+inside them that have an address, the people (by name and by what they work
+on), what is in the reader's own mailbox, the board, and the sensor registry
+(fetched from `/api/sources` the first time the box is focused). Every word
+typed must be answered by an entry, so a second word only ever narrows the
+list; an entry is ranked by its worst-answered word first, so the page named
+by both words comes before a module that is called one of them and mentions
+the other. Each entry carries what choosing it *does* (`SearchTarget`).
 
-Each entry carries what choosing it *does* (`SearchTarget`): go to a path,
-open a message, start a message to someone, open a request, start a task.
-**That list is the seam for the assistant.** The terminal says "Ask AI: not
-available yet" because that is true: there is no model behind it, nothing is
-sent anywhere, and no part of the page pretends otherwise. Whatever is built
-later needs the same thing a person searching does -- the places and items
-that exist and what opening each one means -- and should be given those
-entries rather than its own idea of the site.
+## Suggestions from personal use
+
+Which modules somebody opens is counted in their own browser
+(`algo-app/src/entities/usage`, `localStorage`, keyed by username) and never
+sent anywhere. A visit is worth half as much for every week since the module
+was last opened, so the list follows what a person does now. With no history
+the modules are offered in their usual order under "Jump to". It is a
+convenience: per browser, and the page works the same where storage is blocked.
+
+## Team roles
+
+Each account can carry team roles: ML, front-end, back-end, firmware,
+hardware (`TEAM_ROLES` in `src/modules/algo-admin/domain/permissions.ts`).
+An admin sets them on the Accounts page. They say what somebody works on and
+are shown where people are chosen: when writing a message, assigning a task,
+and in search ("ml" finds the people who do ML). **They grant nothing.**
+Access is the access role (viewer, operator, engineer, admin) and only that;
+changing a team role signs nobody out.
 
 ## Who may do what
 
@@ -123,7 +134,7 @@ backs up the data volume.
 - The page reads one snapshot (`GET /api/workspace`: the reader's mailbox
   headers, the board, the member names) every 20 s while the tab is visible,
   and again after each change. Message bodies are fetched when opened. Member
-  **names** are in the snapshot; roles are not.
+  **names** and team roles are in the snapshot; access roles are not.
 - The six figures re-read `GET /api/analytics?range=1h` every 30 s while the
   tab is visible (the Analytics page itself asks every 10 s on that range).
   It is the whole Analytics snapshot for six numbers, about 10 kB compressed;
@@ -134,7 +145,7 @@ backs up the data volume.
 
 ## Not here
 
-- **An assistant.** See above. Not built.
+- Anything the assistant *does*. It answers; see [ASSISTANT.md](ASSISTANT.md).
 - Threads, attachments, drafts kept on the server, read receipts, and mail to
   anyone who is not a member. A reply records what it answers; that is all.
 - Comments on a request. The mailbox is for discussion.
@@ -149,6 +160,7 @@ backs up the data volume.
 the board, stale revisions, the unreadable store, limits, sign-in off, and the
 routes inside the real algo server), and the workspace step in
 `test/algo-mobile.test.mjs` (search, a message from an engineer arriving for a
-viewer, a request becoming a task, and what a viewer is and is not offered, on
-a phone in Chromium and WebKit; the landing page is also in its "all modules
-fit" matrix from 320 px to 1440 px).
+viewer, a request becoming a task, what a viewer is and is not offered, the
+welcome line, and suggestions from personal use, on a phone in Chromium and
+WebKit; the landing page is also in its "all modules fit" matrix from 320 px
+to 1440 px). `test/admin-accounts.test.ts` covers team roles.

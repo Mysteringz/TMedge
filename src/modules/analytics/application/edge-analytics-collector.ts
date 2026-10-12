@@ -20,6 +20,7 @@ export interface EdgeAnalyticsSource {
   floors(now: number): FloorOccupancy[];
   /** Null when this edge has no database to ask. */
   databaseAvailable: (() => Promise<boolean>) | null;
+  trainingDatabaseAvailable?: (() => Promise<boolean>) | null;
 }
 
 export interface CollectorOptions {
@@ -41,6 +42,7 @@ export interface CollectorReading {
   process: { rssBytes: number; heapBytes: number; cpuPercent: number | null; eventLoopLagMs: number };
   /** Null when there is no database, or it has not been asked yet. */
   databaseUp: boolean | null;
+  trainingDatabaseUp: boolean | null;
   /** False during the first seconds after a start, when pipeline figures are not yet meaningful. */
   warm: boolean;
 }
@@ -66,6 +68,8 @@ export class EdgeAnalyticsCollector {
   private latest: CollectorReading | null = null;
   private disks: DiskUsage[] = [];
   private databaseUp: boolean | null = null;
+  private trainingDatabaseUp: boolean | null = null;
+  private readonly databaseChecks = new Set<'registry' | 'training'>();
   private lastSlowAt = -Infinity;
   private cpu: { at: number; usage: NodeJS.CpuUsage } | null = null;
   /** Samples that failed and were skipped. */
@@ -100,7 +104,8 @@ export class EdgeAnalyticsCollector {
         this.lastSlowAt = now;
         this.disks = await (this.options.disks ?? diskUsage)(this.options.dataDir).catch(() => []);
         // Not awaited: a database that hangs must not stop the host being sampled.
-        if (this.source.databaseAvailable) void this.checkDatabase(this.source.databaseAvailable);
+        if (this.source.databaseAvailable) void this.checkDatabase('registry', this.source.databaseAvailable);
+        if (this.source.trainingDatabaseAvailable) void this.checkDatabase('training', this.source.trainingDatabaseAvailable);
       }
       const host = this.host.sample(now);
       const usage = process.cpuUsage();
@@ -113,7 +118,8 @@ export class EdgeAnalyticsCollector {
       const pipeline = this.source.pipeline(now);
       const floors = this.source.floors(now);
       this.latest = {
-        at: now, host, disks: this.disks, pipeline, floors, databaseUp: this.databaseUp, warm: now - this.startedAt >= WARM_UP_MS,
+        at: now, host, disks: this.disks, pipeline, floors, databaseUp: this.databaseUp,
+        trainingDatabaseUp: this.trainingDatabaseUp, warm: now - this.startedAt >= WARM_UP_MS,
         process: { rssBytes: memory.rss, heapBytes: memory.heapUsed, cpuPercent, eventLoopLagMs: lag },
       };
       this.history.record(now, this.metrics(this.latest));
@@ -126,13 +132,18 @@ export class EdgeAnalyticsCollector {
     }
   }
 
-  private async checkDatabase(ask: () => Promise<boolean>): Promise<void> {
+  private async checkDatabase(kind: 'registry' | 'training', ask: () => Promise<boolean>): Promise<void> {
+    if (this.databaseChecks.has(kind)) return;
+    this.databaseChecks.add(kind);
     let timer: NodeJS.Timeout | undefined;
     try {
-      this.databaseUp = await Promise.race([
-        ask(), new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), 3000); }),
+      const answer = Promise.resolve().then(ask).finally(() => this.databaseChecks.delete(kind));
+      const up = await Promise.race([
+        answer, new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), 3000); }),
       ]);
-    } catch { this.databaseUp = false; } finally { if (timer) clearTimeout(timer); }
+      if (kind === 'registry') this.databaseUp = up; else this.trainingDatabaseUp = up;
+    } catch { if (kind === 'registry') this.databaseUp = false; else this.trainingDatabaseUp = false; }
+    finally { if (timer) clearTimeout(timer); }
   }
 
   private metrics(r: CollectorReading): Record<string, number | null> {
@@ -148,6 +159,7 @@ export class EdgeAnalyticsCollector {
       'edge.rss': r.process.rssBytes, 'edge.heap': r.process.heapBytes, 'edge.cpu': r.process.cpuPercent, 'edge.lag': r.process.eventLoopLagMs,
       'rec.ok': Number(pipeline.recorder.healthy),
       'db.up': r.databaseUp === null ? null : Number(r.databaseUp),
+      'db.training.up': r.trainingDatabaseUp === null ? null : Number(r.trainingDatabaseUp),
     };
     if (r.warm) {
       Object.assign(out, {

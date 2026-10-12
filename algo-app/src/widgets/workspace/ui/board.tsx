@@ -6,11 +6,12 @@
  */
 import { useState } from 'react';
 import {
-  LIMITS, REQUEST_STATUSES, REQUEST_STATUS_LABEL, TASK_STATUSES, TASK_STATUS_LABEL, workspaceApi,
+  LIMITS, REQUEST_STATUSES, REQUEST_STATUS_LABEL, TASK_STATUSES, TASK_STATUS_LABEL, teamRoleText, workspaceApi,
   type FeatureRequest, type RequestStatus, type Task, type TaskStatus, type WorkspaceSnapshot, type WorkspaceState,
 } from '../../../entities/workspace/index.ts';
 import { ArrowLeft, CaretUp, FloppyDisk, PencilSimple, Plus, Trash } from '../../../console/icons.tsx';
 import { Icons } from '../../charts/index.ts';
+import { Switcher } from '../../../console/motion.tsx';
 import { dayLabel, Dialog, Field, reason, today, when } from './parts.tsx';
 
 const ACTIVE: ReadonlySet<RequestStatus> = new Set(['open', 'planned', 'in-progress']);
@@ -198,12 +199,12 @@ export function TasksPanel({ ws, snapshot, filter, now, onFilter, onNew, onOpen,
   return (
     <>
       <div className="ws-bar">
-        <div className="seg" role="radiogroup" aria-label="Which tasks">
+        <Switcher role="radiogroup" aria-label="Which tasks">
           {TASK_FILTERS.map((option) => (
             <label key={option.id} className="seg-opt"><input type="radio" name="ws-task-filter" checked={filter === option.id} onChange={() => onFilter(option.id)} />{option.label}
               {option.id === 'mine' && mine > 0 && <span className="ws-count">{mine}<span className="ws-sr"> open</span></span>}</label>
           ))}
-        </div>
+        </Switcher>
         {me.canTriage && <button type="button" className="btn btn-primary cx-btn-px" onClick={onNew}>New task<Plus /></button>}
       </div>
       {error && <p className="cx-hint is-err ws-foot" role="alert">{error}</p>}
@@ -295,7 +296,7 @@ function TaskCard({ task, snapshot, onClose }: { task: Task; snapshot: Workspace
       {request && <p className="cx-hint ws-modal__context">Delivers <b>{request.title}</b></p>}
       <dl className="ws-facts">
         <div><dt>Status</dt><dd><StatusTag status={task.status} /></dd></div>
-        <div><dt>Assigned to</dt><dd>{task.assignee === snapshot.me.name ? `${task.assignee} (you)` : task.assignee ?? 'Nobody yet'}</dd></div>
+        <div><dt>Assigned to</dt><dd>{task.assignee === snapshot.me.name ? `${task.assignee} (you)` : task.assignee ?? 'Nobody yet'}{task.assignee && snapshot.teamRoles[task.assignee] ? ` · ${teamRoleText(snapshot.teamRoles[task.assignee])}` : ''}</dd></div>
         <div><dt>Due</dt><dd>{task.due ? dayLabel(task.due) : 'No date set'}</dd></div>
         <div><dt>Created by</dt><dd>{task.createdBy}</dd></div>
       </dl>
@@ -350,7 +351,7 @@ function TaskForm({ ws, snapshot, editing, requestId, onClose, onSaved, onRemove
         <Field id="ws-task-assignee" label="Assigned to">
           <select id="ws-task-assignee" className="input" value={assignee} onChange={(event) => setAssignee(event.target.value)}>
             <option value="">Unassigned</option>
-            {choices.map((name) => <option key={name} value={name}>{name === snapshot.me.name ? `${name} (you)` : name}{snapshot.members.includes(name) ? '' : ' (no longer a member)'}</option>)}
+            {choices.map((name) => <option key={name} value={name}>{name === snapshot.me.name ? `${name} (you)` : name}{snapshot.teamRoles[name] ? ` · ${teamRoleText(snapshot.teamRoles[name])}` : ''}{snapshot.members.includes(name) ? '' : ' (no longer a member)'}</option>)}
           </select>
         </Field>
         <Field id="ws-task-due" label="Due (optional)">

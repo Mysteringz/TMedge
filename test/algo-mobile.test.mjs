@@ -16,13 +16,26 @@ import { AlgoUsers, loadAlgoAuthConfig } from '../dist/src/algo/auth.js';
 import { buildRegistry } from '../dist/src/edge/registry.js';
 import { DEFAULT_NODE_LIMITS } from '../dist/src/edge/config.js';
 import { KEY, siteJson, nodesJson } from '../dist/test/fixtures.js';
+import { FakeGitHub, tmsenseRelease, tmflashRelease } from '../dist/test/fake-github.js';
+import { GitHubReleaseSource } from '../dist/src/infrastructure/firmware-release/github-release-source.js';
+import { GitHubTMflashSource } from '../dist/src/infrastructure/tmflash-release/github-tmflash-source.js';
 
 let runtime, handle, base, directory;
+// Module 07 shows the TMsense release it would flash; in a test, GitHub is not asked.
+const publishedFirmware = new FakeGitHub();
+publishedFirmware.latest = tmsenseRelease('tmsense-1.6');
+const publishedApp = new FakeGitHub('Mysteringz/TMflash');
+publishedApp.latest = tmflashRelease();
 const originalDataDir = process.env.DATA_DIR;
+const originalSchemaDir = process.env.ML_SCHEMA_DIR;
 before(async () => {
   directory = mkdtempSync(join(tmpdir(), 'tmedge-mobile-'));
   writeFileSync(join(directory, 'nodes.json'), JSON.stringify(nodesJson()));
   process.env.DATA_DIR = directory;
+  process.env.ML_SCHEMA_DIR = join(directory, 'ml-schema');
+  mkdirSync(process.env.ML_SCHEMA_DIR);
+  writeFileSync(join(process.env.ML_SCHEMA_DIR, 'index.html'), '<html><body><h1>SchemaSpy fixture</h1><a href="relationships.html">Relationships</a><map name="diagram"><area href="relationships.html" alt="Diagram relationship"></map></body></html>');
+  writeFileSync(join(process.env.ML_SCHEMA_DIR, 'relationships.html'), '<html><body><h1>Training relationships</h1><a href="index.html">Tables</a></body></html>');
   const config = {
     edgeId: 'mobile-preview', keys: [KEY], allowUnsigned: false,
     udpPort: 0, udpHost: '127.0.0.1', sitePath: '', nodesPath: join(directory, 'nodes.json'), dataDir: directory,
@@ -41,7 +54,8 @@ before(async () => {
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users,
     SESSION_SECRET: 'local-only-test-secret'.repeat(3),
-  }, config.adminPassword), createConsole(runtime));
+  }, config.adminPassword), createConsole(runtime), { firmwareRelease: new GitHubReleaseSource(undefined, publishedFirmware.fetch),
+    tmflashRelease: new GitHubTMflashSource(join(directory, 'tmflash'), publishedApp.fetch) });
   await new Promise(resolve => handle.server.once('listening', resolve));
   base = `http://127.0.0.1:${handle.server.address().port}`;
 });
@@ -52,7 +66,16 @@ after(async () => {
   if (directory) rmSync(directory, { recursive: true, force: true });
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
+  if (originalSchemaDir === undefined) delete process.env.ML_SCHEMA_DIR;
+  else process.env.ML_SCHEMA_DIR = originalSchemaDir;
 });
+
+// What closes leaves before it goes (algo-app/src/console/motion.tsx): it is
+// inert at once and off the page an exit later, so "closed" is waited for.
+const gone = (locator) => locator.waitFor({ state: 'detached' });
+// A dialog is measured once it has arrived, not while it is still coming down.
+const arrived = (locator) => locator.evaluate((element) => Promise.all(element.getAnimations({ subtree: true })
+  .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime)).map((animation) => animation.finished.catch(() => undefined))));
 
 async function fits(target, width) {
   const layout = await target.evaluate(() => ({
@@ -116,6 +139,24 @@ async function trainingFixtures(page) {
     running: null, firstUse: { hostKey: true, password: true },
   } }));
   await page.route('**/api/train/hpc/connect', route => route.fulfill({ status: 428, json: { needs: 'credentials' } }));
+}
+
+
+async function mlDataFixtures(page, report = false) {
+  await page.route('**/api/ml-data/schema/diagram', route => route.fulfill({json:{available:true,generatedAt:1700000000000,revision:'fixture-diagram',error:null}}));
+  await page.route('**/api/ml-data/schema/diagram/image?*', route => route.fulfill({contentType:'image/png',body:process.env.ML_DATA_TEST_DIAGRAM ? readFileSync(process.env.ML_DATA_TEST_DIAGRAM) : Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1EAAAAASUVORK5CYII=','base64')}));
+  await page.route('**/api/ml-data/schema', route => route.fulfill({ json: { available: true, report, error: null, tables: [
+    { name: 'training.frames', kind: 'table', estimatedRows: 504924, bytes: 9017671680, columns: [
+      { name: 'id', type: 'text', nullable: false, primaryKey: true, references: null },
+      { name: 'payload', type: 'bytea', nullable: false, primaryKey: false, references: null },
+    ] },
+    { name: 'training.pairs', kind: 'table', estimatedRows: 112779, bytes: 142852096, columns: [
+      { name: 'thermal_id', type: 'text', nullable: false, primaryKey: false, references: 'training.frames.id' },
+    ] },
+  ] } }));
+  await page.route('**/api/ml-data/exports', route => route.request().method() === 'GET'
+    ? route.fulfill({ json: { jobs: [] } }) : route.fulfill({ status: 202, json: { id: 'fixture-export', state: 'processing', tables: ['training.frames'], createdAt: Date.now(), expiresAt: Date.now()+86400000, bytes: 12345, sha256: null, error: null } }));
+  await page.route('**/api/ml-data/query', route => route.fulfill({ json: { columns: ['id', 'payload'], rows: [['a-long-frame-id', '[binary: 768 bytes]']], truncated: false, elapsedMs: 12 } }));
 }
 
 async function updatesFixtures(page) {
@@ -226,7 +267,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       });
       assert.equal(queued.status(), 202);
       const request = await queued.json();
-      const card = page.locator('.ad-request').filter({ hasText: uid });
+      const card = page.locator('.dv-request').filter({ hasText: uid });
       await card.waitFor();
       assert.equal(await card.getByRole('button', { name: 'Approve device' }).isDisabled(), true);
       for (const scheme of ['dark', 'light']) {
@@ -241,10 +282,10 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await card.getByLabel(`Code from TMflash for ${uid}`).fill(request.pairingCode);
       await card.getByRole('button', { name: 'Approve device' }).click();
       await page.getByRole('status').filter({ hasText: `${uid} approved` }).waitFor();
-      const device = page.locator('.ad-device').filter({ hasText: uid });
+      const device = page.locator('.dv-device').filter({ hasText: uid });
       await device.getByText('Waiting for reports', { exact: true }).waitFor();
       await device.getByText('Unplaced', { exact: true }).waitFor();
-      const tokenRow = page.locator('.ad-token-list li').filter({ hasText: 'TMflash on Mac' }).last();
+      const tokenRow = page.locator('.dv-token-list li').filter({ hasText: 'TMflash on Mac' }).last();
       await tokenRow.getByRole('button', { name: 'Revoke' }).click();
       await page.getByRole('status').filter({ hasText: 'TMflash session revoked.' }).waitFor();
       const refused = await context.request.get(`${base}/api/provision/preflight`, { headers: { authorization: `Bearer ${issued.token}` } });
@@ -293,7 +334,16 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
     // when React Flow re-measures during a viewport change, at random, and it
     // blocked a deploy of unchanged code. Every other error still fails.
     const benign = /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)\.?$/;
-    context.on('page', page => page.on('pageerror', error => { if (!benign.test(error.message)) errors.push(error.message); }));
+    // WebKit reports a request the page made just as it was being left as
+    // "Fetch API cannot load <url> due to access control checks", and that
+    // console line reaches us as a page error. A request to the page's own
+    // origin cannot fail an access control check, so about this origin the
+    // words only ever mean "the test moved on while the page was starting".
+    // It failed main's build of code that had passed as a pull request an
+    // hour before. The same words about any other origin still fail.
+    const abandoned = message => message.endsWith(' due to access control checks.')
+      && (message.startsWith(`/${new URL(base).host}/`) || message.includes(`${base}/`));
+    context.on('page', page => page.on('pageerror', error => { if (!benign.test(error.message) && !abandoned(error.message)) errors.push(error.message); }));
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
     page.setDefaultNavigationTimeout(15_000);
@@ -312,7 +362,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await page.getByLabel('Username').fill('mobiletest');
       await page.getByLabel('Password', { exact: true }).fill('local browser test password');
       await page.getByRole('button', { name: 'Sign in', exact: true }).tap();
-      await page.getByText('Welcome back, mobiletest.').waitFor();
+      await page.getByRole('heading', { name: 'Welcome back, mobiletest.' }).waitFor();
 
       for (const viewport of [
         { width: 320, height: 844 }, { width: 390, height: 844 },
@@ -321,9 +371,10 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       ]) {
         await t.test(`${viewport.width}×${viewport.height}: all modules fit`, async () => {
           await page.setViewportSize(viewport);
-          for (const path of ['/', '/flow', '/train', '/console', '/updates', '/analytics', '/analytics/usage', '/analytics/server', '/adoption']) {
+          for (const path of ['/', '/flow', '/train', '/ml-data', '/console', '/updates', '/analytics', '/analytics/usage', '/analytics/server', '/adoption', '/flash', '/tmflash-download']) {
             await page.unrouteAll({ behavior: 'wait' });
             if (path === '/train') await trainingFixtures(page);
+            if (path === '/ml-data') await mlDataFixtures(page);
             if (path === '/updates') await updatesFixtures(page);
             await page.goto(`${base}${path}`);
             await page.locator('.cx-header').waitFor();
@@ -337,6 +388,13 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
             if (path === '/train') await page.locator('.cx-jobs').getByText('SUBMIT_FAILED').waitFor();
             if (path === '/updates') await page.getByText('Connected to edge', { exact: false }).waitFor();
             if (path === '/adoption') await page.getByText('No requests waiting.', { exact: false }).waitFor();
+            // Chromium has Web Serial and shows the flasher; WebKit shows why it cannot.
+            if (path === '/flash') {
+              await page.locator('.cx-flash .dv-panel').first().waitFor();
+              // Measured with the write plan on screen: it is the widest thing on the page.
+              if (await page.locator('#fl-firmware').count()) await page.locator('.fl-build table').waitFor();
+            }
+            if (path === '/tmflash-download') await page.getByRole('link', { name: 'Download for macOS' }).waitFor();
             // The landing page's workspace arrives after the module list: measure it, not the gap it will fill.
             if (path === '/') { await page.locator('.ws[data-ready]').waitFor(); await page.locator('.ws-panel__body > *').first().waitFor(); }
             if (path.startsWith('/analytics')) await page.locator('.an-view .an-metrics, .an-view .an-notice').first().waitFor();
@@ -354,6 +412,92 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         });
       }
 
+      await t.test('the landing page: one box that searches the site first and asks the assistant otherwise, a welcome that is always readable, and the modules this person uses', async () => {
+        await page.unrouteAll({ behavior: 'wait' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        const home = async () => { await page.goto(base); await page.locator('.ws[data-ready]').waitFor(); };
+        const box = page.getByRole('combobox', { name: 'Search the site or ask a question' });
+        const options = page.getByRole('option');
+
+        // No model is set up in this fixture: the page says so and offers only what works.
+        await home();
+        await page.getByText('Ask AI is not set up on this server yet.').waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Ask AI' }).isDisabled(), true);
+        await box.fill('how does counting work?');
+        await page.getByText('Nothing on the site matches').waitFor();
+        assert.equal(await options.count(), 0, 'nothing is offered that cannot answer');
+        await fits(page, 390);
+
+        // The welcome types itself in other languages. Its name for a screen
+        // reader never changes, and the person's name is never part of the act.
+        assert.equal(await page.locator('.cx-welcome b').textContent(), 'mobiletest');
+        assert.equal(await page.locator('.cx-module').count() + await page.getByText('Select module').count(), 0, 'the module selector is gone');
+        await page.waitForFunction(() => document.querySelector('.cx-welcome [lang]')?.getAttribute('lang') !== 'en', null, { timeout: 15_000 });
+        assert.equal(await page.getByRole('heading', { level: 1 }).getAttribute('aria-label'), 'Welcome back, mobiletest.');
+        assert.equal(await page.locator('.cx-welcome b').textContent(), 'mobiletest');
+        await fits(page, 390);
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await home();
+        await page.waitForTimeout(4500);
+        assert.equal(await page.locator('.cx-welcome__typed').textContent(), 'Welcome back', 'someone who asked for less motion gets the line, still');
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+
+        // With a model: a stand-in that answers, and remembers what it was asked.
+        const asked = [];
+        await page.route('**/api/assistant', route => route.fulfill({ json: { data: { available: true, reason: null, model: 'test-model:1b', knowledgeUpdatedAt: Date.now() }, error: null } }));
+        await page.route('**/api/assistant/ask', route => {
+          asked.push(route.request().postDataJSON());
+          return route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: delta\ndata: {"text":"Each table has **one** authority sensor."}\n\nevent: done\ndata: {}\n\n' });
+        });
+        await home();
+        // The name of something on the site is looked up on the site, and Enter opens it.
+        await box.fill('debug console');
+        await options.filter({ hasText: 'Live thermal frames' }).waitFor();
+        assert.match(await options.first().textContent(), /Debug console/, 'the site comes first for what the site has');
+        assert.match(await options.last().textContent(), /Ask AI/, 'and the assistant is still one row away');
+        // A question goes to the assistant first, even when the site has matches for its words.
+        await box.fill('how does the debug console work?');
+        await options.filter({ hasText: 'Ask AI' }).waitFor();
+        assert.match(await options.first().textContent(), /Ask AI/);
+        // So does anything the site has no name for.
+        await box.fill('thermal drift');
+        await options.first().waitFor();
+        assert.match(await options.first().textContent(), /Ask AI/);
+        assert.equal(await options.count(), 1);
+        await fits(page, 390);
+        await box.fill('why is a table unknown?');
+        await box.press('Enter');
+        await page.locator('.ws-answer__a').filter({ hasText: 'Each table has one authority sensor.' }).waitFor();
+        assert.equal(await page.locator('.ws-answer__a strong').textContent(), 'one', 'emphasis is shown as emphasis, built as elements');
+        assert.deepEqual(asked[0], { question: 'why is a table unknown?', history: [] });
+        await page.locator('.ws-ai-label').waitFor();
+        await page.getByText('it can be wrong', { exact: false }).waitFor();
+        await fits(page, 390);
+        // A follow-up carries what was just said, so "it" means something.
+        await box.fill('and when is it not?');
+        await box.press('Enter');
+        await page.waitForFunction(() => document.querySelectorAll('.ws-answer__turn').length === 2);
+        assert.deepEqual(asked[1].history, [{ role: 'user', content: 'why is a table unknown?' }, { role: 'assistant', content: 'Each table has **one** authority sensor.' }]);
+        await page.getByRole('button', { name: 'Close answers' }).tap();
+        assert.equal(await page.locator('.ws-answer').count(), 0);
+
+        // What this person opens is what the page offers first next time.
+        await page.evaluate(() => { for (const key of Object.keys(localStorage)) if (key.startsWith('tm-algo-usage')) localStorage.removeItem(key); });
+        await home();
+        assert.equal(await page.locator('.ws-places__label').textContent(), 'Jump to');
+        assert.equal(await page.locator('.ws-place').first().textContent(), 'Algorithm flow');
+        await page.getByRole('link', { name: 'Adoption', exact: true }).tap();
+        await page.getByText('No requests waiting.', { exact: false }).waitFor();
+        await home();
+        assert.equal(await page.locator('.ws-places__label').textContent(), 'Suggested for you');
+        assert.equal(await page.locator('.ws-place').first().textContent(), 'Adoption');
+        assert.equal(await page.locator('.ws-place').count(), 9, 'on a phone, where the header lists no modules, every module is still one tap away');
+        await fits(page, 390);
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        assert.equal(await page.locator('.ws-place:visible').count(), 4, 'beside a header that lists them all, only the most used are repeated');
+        await page.setViewportSize({ width: 390, height: 844 });
+      });
+
       await t.test('the landing page workspace finds things, delivers mail to the person it was sent to, and offers each role only what it may do', async () => {
         await page.unrouteAll({ behavior: 'wait' });
         await page.setViewportSize({ width: 390, height: 844 });
@@ -363,8 +507,8 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         const toast = (target, text) => target.locator('.cx-toast').filter({ hasText: text }).waitFor();
         await home(page);
 
-        // The terminal: every word narrows the list, and Enter opens the first answer.
-        const prompt = page.getByRole('combobox', { name: 'Search the site' });
+        // The box: every word narrows the list, and Enter opens the first answer.
+        const prompt = page.getByRole('combobox', { name: 'Search the site or ask a question' });
         await prompt.fill('analytics');
         await page.getByRole('option').filter({ hasText: 'HKUMySeat usage' }).waitFor();
         const broad = await page.getByRole('option').count();
@@ -377,7 +521,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await page.waitForURL(/\/analytics\/server/);
         await home(page);
         await prompt.fill('no such thing anywhere');
-        await page.getByText('No match for').waitFor();
+        await page.getByText('Nothing on the site matches').waitFor();
         assert.equal(await page.getByRole('option').count(), 0);
 
         // A member's name is a way to write to them.
@@ -395,10 +539,10 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await fits(page, 390);
         await dialog.getByRole('button', { name: 'Send message' }).tap();
         await toast(page, 'Message sent to viewertest.');
-        assert.equal(await dialog.count(), 0);
+        await gone(dialog);
 
         // A request, and from it a task for somebody else.
-        await page.getByRole('tab', { name: /Requests/ }).tap();
+        await page.getByRole('tab', { name: /Feature requests/ }).tap();
         await page.getByRole('button', { name: 'New request' }).tap();
         await dialog.getByLabel('Title').fill(wish);
         await dialog.getByRole('button', { name: 'File request' }).tap();
@@ -419,11 +563,11 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           const viewer = await theirs.newPage();
           viewer.setDefaultTimeout(10_000);
           await home(viewer);
-          await viewer.getByRole('tab', { name: /Mailbox\s*1 unread/ }).tap();
+          await viewer.getByRole('radiogroup', { name: 'Mailbox' }).getByText('1 unread').waitFor({ state: 'attached' });
           await viewer.getByRole('button', { name: new RegExp(`Unread: ${subject.replace(/[()]/g, '\\$&')}`) }).tap();
           await viewer.locator('.ws-prose').waitFor();
           assert.equal(await viewer.locator('.ws-prose').textContent(), 'Please check it before the pilot.\nThanks.', 'a message is shown as it was written');
-          await viewer.waitForFunction(() => !document.querySelector('#ws-tab-mail .ws-count'), null, { timeout: 10_000 });
+          await viewer.waitForFunction(() => !document.querySelector('[aria-labelledby="ws-mail-title"] .ws-count'), null, { timeout: 10_000 });
           await fits(viewer, 390);
 
           await viewer.getByRole('tab', { name: /Tasks/ }).tap();
@@ -436,7 +580,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           await fits(viewer, 390);
           await viewer.getByRole('dialog').getByRole('button', { name: 'Close' }).last().tap();
 
-          await viewer.getByRole('tab', { name: /Requests/ }).tap();
+          await viewer.getByRole('tab', { name: /Feature requests/ }).tap();
           await viewer.getByRole('button', { name: `Vote for ${wish}. 1 vote.` }).tap();
           await viewer.getByRole('button', { name: `Remove your vote from ${wish}. 2 votes.` }).waitFor();
           await viewer.locator('.ws-req .ws-row').filter({ hasText: wish }).tap();
@@ -609,6 +753,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         const dialog = page.getByRole('dialog');
         await dialog.waitFor();
         await fits(page, 320);
+        await arrived(dialog);
         assert.ok((await dialog.boundingBox()).height <= 536);
         await dialog.getByRole('button', { name: 'Sign in', exact: true }).scrollIntoViewIfNeeded();
         await shot(page, engine, 'hku-sign-in');
@@ -621,11 +766,165 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         const confirmation = page.getByRole('dialog');
         await confirmation.waitFor();
         await fits(page, 320);
+        await arrived(confirmation);
         assert.ok((await confirmation.boundingBox()).height <= 536);
         await confirmation.getByRole('button', { name: 'Back', exact: true }).tap();
-        assert.equal(await confirmation.isVisible(), false);
+        await confirmation.waitFor({ state: 'hidden' });
       });
       assert.deepEqual(errors, [], 'no browser runtime errors');
     } finally { await browser.close(); }
+  });
+}
+
+for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
+  test(`${engine}: mobile navigation beside the logo reaches every module and respects account access`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    const context = await sessionFor(browser, engine, 'operator', { viewport: { width: 390, height: 844 }, hasTouch: true });
+    try {
+      const page = await context.newPage();
+      page.setDefaultTimeout(5_000);
+      await trainingFixtures(page);
+      await mlDataFixtures(page);
+      await updatesFixtures(page);
+      await page.goto(base);
+      const toggle = page.getByRole('button', { name: 'Navigation menu', exact: true });
+      const menu = page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
+      await toggle.waitFor();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+      assert.equal(await menu.count(), 0, 'closed navigation is absent from the tab order');
+
+      for (const scheme of ['dark', 'light']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 844, height: 390 }, { width: 1024, height: 844 }]) {
+          await page.setViewportSize(viewport);
+          // Resizing and web-font loading can reflow the header between two
+          // browser calls. Compare both controls from the same layout.
+          const { brand, button } = await page.locator('.cx-header').evaluate(header => {
+            const home = header.querySelector('.cx-home');
+            const toggle = header.querySelector('.cx-nav-toggle');
+            if (!home || !toggle) throw new Error('Navigation controls are missing');
+            return { brand: home.getBoundingClientRect().toJSON(), button: toggle.getBoundingClientRect().toJSON() };
+          });
+          assert.ok(Math.abs(button.x - brand.right) < 1 && Math.abs(button.y - brand.y) < 1,
+            `navigation sits immediately beside the logo: ${JSON.stringify({ viewport, brand, button })}`);
+          assert.ok(button.width >= 44 && button.height >= 44, 'navigation has a touch-sized target');
+          await toggle.tap();
+          assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+          assert.equal(await menu.getByRole('link').count(), 10, 'Home and all nine module pages are available');
+          assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0, 'non-admins have no Accounts link');
+          const bounds = await menu.boundingBox();
+          assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1 && bounds.y + bounds.height <= viewport.height, 'open navigation fits even in landscape');
+          await fits(page, viewport.width);
+          await menu.getByRole('link', { name: 'TMflash download', exact: true }).scrollIntoViewIfNeeded();
+          await shot(page, engine, `navigation-${scheme}-${viewport.width}`);
+          await toggle.tap();
+        }
+      }
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Debug console', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['TMflash web', '/flash'], ['TMflash download', '/tmflash-download'], ['Home', '/']]) {
+        await toggle.tap();
+        await menu.getByRole('link', { name, exact: true }).tap();
+        await page.waitForURL(`${base}${path}`);
+        assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'selecting a module closes navigation');
+        await toggle.tap();
+        assert.equal(await menu.getByRole('link', { name, exact: true }).getAttribute('aria-current'), 'page');
+        await toggle.tap();
+      }
+
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      // WebKit on macOS uses Option-Tab to include links in keyboard focus.
+      await page.keyboard.press(engine === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
+      assert.equal(await menu.getByRole('link', { name: 'Home', exact: true }).evaluate(link => link === document.activeElement), true);
+      await page.keyboard.press('Escape');
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+      assert.equal(await toggle.evaluate(button => button === document.activeElement), true, 'Escape returns focus to the toggle');
+      await toggle.tap();
+      await page.getByRole('button', { name: /^Notifications,/ }).tap();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'an outside tap closes navigation');
+      await page.getByRole('button', { name: 'Close notifications', exact: true }).tap();
+      await toggle.tap();
+      await toggle.focus();
+      await page.getByRole('button', { name: 'Account', exact: true }).focus();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'moving focus out closes navigation');
+      await toggle.tap();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      assert.equal(await toggle.isVisible(), false, 'desktop retains its inline module links');
+      await page.getByRole('navigation', { name: 'Modules', exact: true }).getByRole('link', { name: 'Algorithm flow' }).waitFor();
+      await page.waitForFunction(() => document.querySelector('.cx-nav-toggle')?.getAttribute('aria-expanded') === 'false');
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'resizing to desktop dismisses the mobile menu');
+
+      const session = await (await context.request.get(`${base}/api/me`)).json();
+      await page.route('**/api/me', route => route.fulfill({ json: { ...session, role: 'admin', namedAccount: true, capabilities: [...session.capabilities, 'accounts.manage'] } }));
+      await page.reload();
+      await toggle.tap();
+      await menu.getByRole('link', { name: 'Accounts', exact: true }).waitFor();
+      await page.route('**/api/me', route => route.fulfill({ json: { ...session, namedAccount: false, capabilities: [...session.capabilities, 'accounts.manage'] } }));
+      await page.reload();
+      await toggle.tap();
+      assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0, 'local fallback operators do not gain account management');
+    } finally { await context.close(); await browser.close(); }
+  });
+  test(`${engine}: ML dropdown, queries, schema and ZIP preparation work at phone width in both themes`, { timeout: 60_000 }, async () => {
+    const browser = await browserType.launch({ headless: true });
+    const context = await sessionFor(browser, engine, 'operator', { viewport: { width: 390, height: 844 } });
+    try {
+      const page = await context.newPage();
+      await page.clock.install();
+      await mlDataFixtures(page, true);
+      await page.goto(`${base}/ml-data`);
+      await page.getByText('Database connected', { exact: true }).waitFor();
+      await page.getByRole('img', {name:'Graphviz diagram of training database tables and foreign-key relationships'}).waitFor();
+      await page.getByRole('button', { name: 'Navigation menu', exact: true }).click();
+      const navigation = page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
+      await navigation.getByRole('link', { name: 'ML job', exact: true }).waitFor();
+      await navigation.getByRole('link', { name: 'ML data', exact: true }).click();
+      assert.equal(await page.getByRole('button', { name: 'Navigation menu', exact: true }).getAttribute('aria-expanded'), 'false');
+      await page.getByRole('button', { name: 'Run query', exact: true }).click();
+      await page.getByRole('region', { name: 'SQL query results' }).getByText('[binary: 768 bytes]', { exact: true }).waitFor();
+      for (const scheme of ['dark','light']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        for (const tab of ['SQL console','Database schema','Download data']) {
+          await page.getByRole('tab', { name: tab, exact: true }).click();
+          await fits(page,390); await shot(page,engine,`ml-data-${tab.replaceAll(' ','-')}-${scheme}-390`);
+        }
+      }
+      await page.getByRole('tab', { name: 'Database schema', exact: true }).click();
+      await page.getByRole('button', { name: 'Open SchemaSpy report' }).click();
+      const reportFrame = page.frameLocator('iframe[title="SchemaSpy database visualization"]');
+      await reportFrame.getByRole('link', { name: 'Relationships', exact: true }).click();
+      await reportFrame.getByRole('heading', { name: 'Training relationships' }).waitFor();
+      await reportFrame.getByRole('link', { name: 'Tables', exact: true }).click();
+      await reportFrame.getByRole('heading', { name: 'SchemaSpy fixture' }).waitFor();
+      await reportFrame.locator('area').evaluate(area => area.click());
+      await reportFrame.getByRole('heading', { name: 'Training relationships' }).waitFor();
+      assert.equal(await page.locator('iframe[title="SchemaSpy database visualization"]').getAttribute('sandbox'), 'allow-scripts');
+      await page.getByRole('tab', { name: 'Download data', exact: true }).click();
+      await page.getByRole('button', { name: 'Prepare ZIP' }).click();
+      await page.getByText('processing', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Preparing dataset…' }).isDisabled(), true);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      const workspace=await page.locator('.cx-data-workspace').boundingBox(), diagram=await page.getByRole('complementary',{name:'Database relationship diagram'}).boundingBox();
+      assert.ok(diagram.x >= workspace.x+workspace.width,'Graphviz is on the right at desktop width');
+      const image=page.getByRole('img',{name:'Graphviz diagram of training database tables and foreign-key relationships'});
+      await page.route('**/api/ml-data/schema/diagram', route => route.fulfill({json:{available:true,generatedAt:1700000030000,revision:'updated-diagram',error:null}}));
+      await page.clock.fastForward(16000);
+      await page.waitForFunction(() => document.querySelector('.cx-data-diagram-image img')?.getAttribute('src')?.includes('updated-diagram'));
+      assert.ok((await image.getAttribute('src')).includes('updated-diagram'),'A new server snapshot updates the image without reloading the page');
+      for(const scheme of ['dark','light']) {
+        await page.emulateMedia({colorScheme:scheme});
+        await shot(page,engine,`ml-data-diagram-${scheme}-1440`);
+      }
+      await page.route('**/api/ml-data/schema/diagram', route => route.fulfill({status:503,json:{error:'Temporary report connection failure'}}));
+      await page.clock.fastForward(16000);
+      await page.getByRole('status').filter({hasText:'Temporary report connection failure'}).waitFor();
+      assert.ok(await image.isVisible(),'A metadata refresh failure retains the last diagram');
+      assert.ok((await image.getAttribute('src')).includes('updated-diagram'));
+      await page.getByRole('button', { name: 'ML', exact: true }).click();
+      await page.getByRole('link', { name: 'ML job', exact: true }).click();
+      await page.getByRole('heading', { name: 'ML job', exact: true }).waitFor();
+    } finally { await context.close(); await browser.close(); }
   });
 }
