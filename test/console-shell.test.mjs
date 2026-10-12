@@ -168,6 +168,21 @@ test('chromium: a switch moves its fill to what was chosen, a menu leaves before
       const check = () => (getComputedStyle(chosen).backgroundColor === 'rgba(0, 0, 0, 0)' ? resolve() : requestAnimationFrame(check));
       check();
     }));
+    // The font can resize the chosen option after the mark first appears.
+    // Measure the destination after its width transition has actually settled.
+    const settled = () => mailbox.evaluate(async (row) => {
+      await document.fonts.ready;
+      await new Promise((resolve) => {
+        const check = () => {
+          const chosen = row.querySelector('.seg-opt:has(input:checked)');
+          if (getComputedStyle(row, '::after').width === `${chosen.offsetWidth}px`
+            && row.style.getPropertyValue('--glide-x') === `${chosen.offsetLeft}px`) resolve();
+          else requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
+      });
+    });
+    await settled();
     const fill = () => mailbox.evaluate((row) => {
       const chosen = row.querySelector('.seg-opt:has(input:checked)');
       const mark = getComputedStyle(row, '::after');
@@ -182,9 +197,11 @@ test('chromium: a switch moves its fill to what was chosen, a menu leaves before
     assert.equal(inbox.wide, true, 'and is as wide as it');
     assert.match(inbox.moves, /0\.24s/, 'and it travels rather than jumps');
     await mailbox.getByText('Sent', { exact: true }).click();
+    await settled();
     const sent = await fill();
     assert.equal(sent.chosen, 'Sent');
     assert.equal(sent.at, sent.option, 'choosing Sent sends the fill to Sent');
+    assert.equal(sent.wide, true, 'the settled fill fits the newly chosen option');
     assert.notEqual(sent.at, inbox.at);
 
     // --- a menu that closes is inert at once, and gone an exit later -------------
