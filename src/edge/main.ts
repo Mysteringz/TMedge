@@ -51,7 +51,7 @@ async function main(): Promise<void> {
   process.once('SIGTERM', onSignal);
   try {
     await edge.start();
-    logStartup(edge.runtime, cfg, registry);
+    logStartup(cfg, registry);
   } catch (error) {
     clearInterval(rejectBudgetTimer);
     process.off('SIGINT', onSignal);
@@ -127,7 +127,7 @@ function installRuntimeLogs(runtime: ReturnType<typeof createEdgeApplication>['r
   return timer;
 }
 
-function logStartup(runtime: ReturnType<typeof createEdgeApplication>['runtime'], cfg: ReturnType<typeof loadEdgeConfig>, registry: ReturnType<typeof loadRegistry>): void {
+function logStartup(cfg: ReturnType<typeof loadEdgeConfig>, registry: ReturnType<typeof loadRegistry>): void {
   const tables = [...registry.tables.values()];
   console.log(`[edge] debug console http://${cfg.consoleHost}:${cfg.consolePort}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);
   if (cfg.algoPort > 0) console.log(`[edge] algo debugger http://${cfg.consoleHost}:${cfg.algoPort}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);

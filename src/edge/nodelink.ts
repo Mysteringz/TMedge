@@ -24,7 +24,7 @@ import { requestUrl } from '../shared/http.js';
 import { DeviceKeys, deriveKey, encryptPayload, SECURE_MAX, TYPE_CONTROL, type DeviceKey } from './secure.js';
 import type { NodeListenerLimits } from './config.js';
 import type { DirectSession, IngestResult, Route } from './ingest.js';
-import { HEADER_SIZE, TAG_SIZE, GRID_SIZE, type Packet } from './protocol.js';
+import type { Packet } from './protocol.js';
 
 export const SUBPROTOCOL = 'tmnode.v1';
 export const DIRECT_VERSION = 1;

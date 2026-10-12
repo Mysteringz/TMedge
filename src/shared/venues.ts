@@ -97,10 +97,6 @@ export const SPACES: Record<string, SpaceInfo> = {
   },
 };
 
-export function venueOfFloor(floorId: string): Venue | null {
-  return VENUES.find((v) => v.floorIds.includes(floorId)) ?? null;
-}
-
 export function spaceInfo(floorId: string): SpaceInfo {
   return SPACES[floorId] ?? {
     floorLabel: '',

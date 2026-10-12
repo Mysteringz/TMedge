@@ -9,7 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { allocate, floorIsDark, gridPosition, knownFree, label, largestTableFree, walkOrder } from '../src/shared/allocate.js';
+import { allocate, floorIsDark, knownFree, label, walkOrder } from '../src/shared/allocate.js';
 import { spaceInfo, VENUES } from '../src/shared/venues.js';
 import { Sessions } from '../src/web/auth.js';
 import { JsonStudentAccountRepository } from '../src/infrastructure/web/json-student-account-repository.js';
@@ -88,7 +88,6 @@ test('a group larger than the free run gets no answer, never a guess', () => {
   const f = floor([2, 0, 2, 0, 2, 0, 2, 0, 2, 0]);
   assert.equal(allocate(f, 3), null, 'nothing contiguous adds up to three');
   assert.equal(knownFree(f), 10, 'the seats are still counted as free');
-  assert.equal(largestTableFree(f), 2);
 });
 
 test('a table with no working sensor is never allocated and never bridges a run', () => {
@@ -110,8 +109,6 @@ test('tables are ordered and addressed the way a person walks the room', () => {
   const f = floor([6, 6, 6, 6, 6, 6, 6, 6, 6, 6]);
   assert.deepEqual(walkOrder(f.tables).map((t) => t.name), ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10'],
     'front row left to right, then the row behind');
-  assert.deepEqual(gridPosition(f.tables, 'M1'), { row: 0, column: 0, rows: 2, columns: 5 });
-  assert.deepEqual(gridPosition(f.tables, 'M10'), { row: 1, column: 4, rows: 2, columns: 5 });
   assert.equal(label(['M3']), 'Table M3');
   assert.equal(label(['M3', 'M4']), 'Tables M3–M4');
   assert.equal(label(['M3', 'M4', 'M5']), 'Tables M3–M5');

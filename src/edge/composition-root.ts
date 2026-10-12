@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import type { Server } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { startAlgo, type AlgoServerHandle } from '../algo/server.js';
@@ -155,7 +155,7 @@ function createFirmwareBuildJobs(runtime: EdgeRuntime): FirmwareBuildJobs {
 }
 
 function createDurableFirmwareBuildJobs(runtime: EdgeRuntime, source: DataSource): DurableFirmwareBuildJobService {
-  const artifacts = new PostgresFirmwareArtifactRepository(source, { read: (id, sha256, size) => runtime.firmware.readArtifactContent(id, sha256, size) });
+  const artifacts = new PostgresFirmwareArtifactRepository(source);
   return new DurableFirmwareBuildJobService({
     repository: new PostgresFirmwareBuildJobRepository(source, { read: (id, sha256, size) => runtime.firmware.readArtifactContent(id, sha256, size) }),
     artifacts,

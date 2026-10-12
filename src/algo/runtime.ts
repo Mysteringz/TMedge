@@ -26,7 +26,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { specOf } from './nodes.js';
 import type { ParamBroker } from './params.js';
-import type { FramePair, NodeEnvelope, Pipeline } from './types.js';
+import type { NodeEnvelope, Pipeline } from './types.js';
 
 /** Defaults the firmware itself starts from, for a node that has not reported yet. */
 const FALLBACK_DETECTOR: DetectorParams = {
@@ -137,7 +137,7 @@ export class AlgoRuntime {
     const bgNode = nodes.find((n) => n.type === 'background_subtraction');
     const humanNode = nodes.find((n) => n.type === 'human_detection');
     const edits = { ...(bgNode?.params ?? {}), ...(humanNode?.params ?? {}) };
-    const { params, wire, dirty } = this.resolveDetector(uid, edits);
+    const { params, wire } = this.resolveDetector(uid, edits);
 
     let preview: FrameResult | null = null;
     let previewUnavailable: string | null = this.detector.unavailable;

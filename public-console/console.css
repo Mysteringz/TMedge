@@ -88,7 +88,6 @@ code { font-family: var(--font-mono); font-size: .92em; }
 #fusion .node { fill: var(--interactive); }
 #fusion .node.offline { fill: var(--bad); }
 #fusion .node.sel { stroke: var(--text-primary); stroke-width: 4; }
-#fusion .nlabel { fill: var(--interactive); font: 400 16px var(--font-mono); }
 #fusion .fp { fill: var(--interactive); fill-opacity: 0.04; stroke: var(--interactive); stroke-opacity: 0.45; stroke-width: 2; stroke-dasharray: 10 6; }
 #fusion .fp.sel { fill-opacity: 0.1; stroke-opacity: 0.9; }
 #fusion .det.counted { fill: var(--counted); stroke: #000; stroke-width: 1.5; }

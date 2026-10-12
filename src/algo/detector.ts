@@ -148,7 +148,6 @@ export class DetectorHost {
       this.children.add(child);
       const chunks: Buffer[] = [];
       let err = '';
-      let bytes = 0;
       const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
       child.stdout.on('data', (c: Buffer) => chunks.push(c));
       child.stderr.on('data', (c: Buffer) => { err += c.toString(); });

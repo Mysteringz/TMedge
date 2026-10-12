@@ -53,25 +53,6 @@ export function walkOrder(tables: TableState[]): TableState[] {
   });
 }
 
-/** Row (0 = nearest the entrance) and column of each table, in walk order. */
-export function gridPosition(tables: TableState[], tableId: string): { row: number; column: number; rows: number; columns: number } | null {
-  const ordered = walkOrder(tables);
-  const rowHeight = Math.max(1, ...tables.map((t) => t.rect.height));
-  const rows: TableState[][] = [];
-  for (const t of ordered) {
-    const last = rows[rows.length - 1];
-    const lastY = last?.[0] ? last[0].rect.y + last[0].rect.height / 2 : null;
-    const y = t.rect.y + t.rect.height / 2;
-    if (last && lastY !== null && Math.abs(y - lastY) <= rowHeight * 0.75) last.push(t);
-    else rows.push([t]);
-  }
-  for (const [r, row] of rows.entries()) {
-    const c = row.findIndex((t) => t.id === tableId);
-    if (c >= 0) return { row: r, column: c, rows: rows.length, columns: Math.max(...rows.map((x) => x.length)) };
-  }
-  return null;
-}
-
 /**
  * The best run of neighbouring tables seating `n` together, or null when the
  * space has no such run.
@@ -142,11 +123,6 @@ function consecutive(names: string[]): boolean {
 /** Free seats a space can actually promise: unknown tables count for nothing. */
 export function knownFree(floor: FloorState): number {
   return floor.tables.reduce((sum, t) => sum + (t.status === 'unknown' || t.free === null ? 0 : t.free), 0);
-}
-
-/** The most seats free at any one table, for the "scattered" explanation. */
-export function largestTableFree(floor: FloorState): number {
-  return Math.max(0, ...floor.tables.map((t) => (t.status === 'unknown' || t.free === null ? 0 : t.free)));
 }
 
 /** True when no table on the floor has a working sensor behind it. */

@@ -9,7 +9,7 @@
  * swept after an hour.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createWriteStream, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 import { Transform, type TransformCallback } from 'node:stream';
@@ -179,10 +179,5 @@ export class Uploads {
       const p = join(this.incoming, f);
       try { if (now - statSync(p).mtimeMs >= PENDING_TTL_MS) rmSync(p, { force: true }); } catch { /* gone */ }
     }
-  }
-
-  /** For tests and shutdown: is anything left half-written? */
-  incomingFiles(): string[] {
-    return existsSync(this.incoming) ? readdirSync(this.incoming) : [];
   }
 }

@@ -14,11 +14,3 @@ export class ApplicationError extends Error {
     this.name = 'ApplicationError';
   }
 }
-
-/** A bounded lifecycle for a long-running operation. */
-export interface OperationLifecycle {
-  state: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted';
-  startedAt: number;
-  finishedAt: number | null;
-  error?: string;
-}

@@ -31,6 +31,6 @@ export function accountRoutes(auth: AlgoAuth, accounts: ManageAccounts) {
   router.post('/', mutation('create')); router.patch('/:name', mutation('update'));
   router.delete('/:name', mutation('delete'));
   router.post('/:name/password-resets', mutation('password')); router.post('/:name/session-revocations', mutation('revoke'));
-  router.use((error: unknown, _req: Request, res: Response, _next: express.NextFunction) => { fail(res, new AccountError('VALIDATION', 400, 'Invalid or oversized JSON body.')); });
+  router.use((_error: unknown, _req: Request, res: Response, _next: express.NextFunction) => { fail(res, new AccountError('VALIDATION', 400, 'Invalid or oversized JSON body.')); });
   return router;
 }

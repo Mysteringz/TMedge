@@ -5,14 +5,9 @@ import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import { asyncHandler, applicationErrorHandler } from '../src/infrastructure/http/errors.js';
 import { ApplicationError } from '../src/modules/shared/application/contracts.js';
-import { objectBody, validateBody } from '../src/infrastructure/http/validation.js';
 
 async function withServer(work: (base: string) => Promise<void>): Promise<void> {
   const app = express();
-  app.use(express.json());
-  app.post('/validated', validateBody(objectBody), asyncHandler(async (_req, res) => {
-    res.json({ ok: true });
-  }));
   app.get('/async-error', asyncHandler(async () => {
     throw new ApplicationError('unavailable', 'storage unavailable');
   }));
@@ -29,18 +24,6 @@ async function withServer(work: (base: string) => Promise<void>): Promise<void> 
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 }
-
-test('request body validation rejects non-object payloads before handler execution', async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/validated`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '[]',
-    });
-    assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), { error: 'request body must be an object' });
-  });
-});
 
 test('async route errors map typed unavailable failures centrally', async () => {
   await withServer(async (base) => {

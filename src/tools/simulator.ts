@@ -161,7 +161,7 @@ class World {
 }
 
 /** Heat of one person as this node sees them: more pixels the closer they are. */
-function personHeat(node: PlacedNode, x: number, y: number, px: [number, number]): { heat: number; area: number } {
+function personHeat(node: PlacedNode, px: [number, number]): { heat: number; area: number } {
   const pixelCm2 = pixelAreaCm2(node.pose, px[0], px[1]);
   const personCm2 = Math.PI * 26 * 26;                 // head and shoulders from above
   const pixels = personCm2 / pixelCm2;
@@ -175,7 +175,7 @@ function observe(node: PlacedNode, people: Person[], r: ReturnType<typeof rng>):
     const px = floorToPixel(node.pose, p.x, p.y);
     if (!px || px[0] < 0.3 || px[0] > 31.7 || px[1] < 0.3 || px[1] > 23.7) continue;
     if (r.next() < 0.03) continue;                     // missed this frame
-    const { heat, area } = personHeat(node, p.x, p.y, px);
+    const { heat, area } = personHeat(node, px);
     const d = { x: px[0] + 0.12 * r.gauss(), y: px[1] + 0.12 * r.gauss(), area, contrast: 4.5 + 0.8 * r.gauss(), peak: 30 + r.gauss(), heat: heat * p.heat * (1 + 0.1 * r.gauss()), n: 1 };
     // Closer than ~1.3 px: the sensor sees one blob.
     const near = blobs.find((b) => Math.hypot(b.x - d.x, b.y - d.y) < 1.3);
