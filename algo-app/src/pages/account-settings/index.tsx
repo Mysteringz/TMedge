@@ -76,8 +76,11 @@ function EmailSettings({ account, onSaved }: { account: OwnAccount; onSaved(acco
           onChange={(event) => { setEmail(event.target.value); setMessage(''); setError(''); }} />
       </label>
       {account.emailDelivery
-        ? <p className="acct-hint">The console emails this address about what you tick below. Only you can see it.</p>
+        ? <p className="acct-hint">The console emails this address about what you tick below, once you have confirmed it is yours. Only you can see it.</p>
         : <p className="acct-note" role="note">This server is not set up to send email yet. Your address and choices are saved, and nothing is sent until it is.</p>}
+      {saved && account.emailDelivery && (account.settings.confirmed
+        ? <p className="acct-state acct-state-ok" role="status">{saved} is confirmed.</p>
+        : <ConfirmAddress address={saved} disabled={typed !== saved} onConfirmed={(value) => { onSaved(value); setMessage('Address confirmed. Notifications start with the next thing that happens.'); }} />)}
       <fieldset className="acct-topics" disabled={busy || !typed}>
         <legend>Email me when</legend>
         {EMAIL_TOPICS.map((topic) => <label key={topic.id} className="acct-check">
@@ -94,6 +97,48 @@ function EmailSettings({ account, onSaved }: { account: OwnAccount; onSaved(acco
       </div>
     </form>
   </section>;
+}
+
+/** An address is only written to once a code sent to it has been typed back here. */
+function ConfirmAddress({ address, disabled, onConfirmed }: { address: string; disabled: boolean; onConfirmed(account: OwnAccount): void }) {
+  const [sent, setSent] = useState(false), [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  // A code belongs to the address it went to.
+  useEffect(() => { setSent(false); setCode(''); setError(''); }, [address]);
+
+  async function send() {
+    if (busy) return;
+    setBusy(true); setError('');
+    try { await ownAccount('/email-codes', 'POST', {}); setSent(true); setCode(''); }
+    catch (problem) { setError(failure(problem)); }
+    finally { setBusy(false); }
+  }
+  async function confirm() {
+    if (busy || code.length !== 6) return;
+    setBusy(true); setError('');
+    try { onConfirmed(await ownAccount<OwnAccount>('/email-confirmations', 'POST', { code })); }
+    catch (problem) { setError(failure(problem)); setBusy(false); }
+  }
+
+  return <div className="acct-confirm" role="group" aria-label="Confirm this address">
+    <p className="acct-state">{address} is not confirmed yet, so nothing is sent to it.</p>
+    {sent
+      ? <>
+        <p>A six-digit code is on its way to {address}. It works for 30 minutes.</p>
+        <label className="acct-field">Confirmation code
+          <input className="acct-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} disabled={busy || disabled}
+            onChange={(event) => { setCode(event.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }}
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void confirm(); } }} />
+        </label>
+      </>
+      : <p>Send a code to it, then type the code here. That shows the address is yours, and that this server's email reaches it.</p>}
+    <p className="acct-feedback acct-error" role="alert">{error}</p>
+    <div className="acct-actions">
+      {sent && <button className="btn btn-primary" type="button" disabled={busy || disabled || code.length !== 6} onClick={() => void confirm()}>{busy ? 'Checking…' : 'Confirm address'}</button>}
+      <button className={sent ? 'btn btn-secondary' : 'btn btn-primary'} type="button" disabled={busy || disabled} onClick={() => void send()}>{sent ? 'Send a new code' : busy ? 'Sending…' : 'Send confirmation code'}</button>
+    </div>
+    {disabled && <p className="acct-hint">Save or undo your change to the address first.</p>}
+  </div>;
 }
 
 function Password() {

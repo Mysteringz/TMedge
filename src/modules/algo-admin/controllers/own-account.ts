@@ -13,6 +13,9 @@ export function ownAccountRoutes(auth: AlgoAuth, account: ManageOwnAccount) {
   const router = express.Router();
   // Trying a current password costs a scrypt hash and is a guess at it, so tries are few and per account.
   const passwords = new RateLimiter(5, 300_000), writes = new RateLimiter(30, 300_000);
+  // Each code is a message to an address the console has only been told about. Few per person, and few
+  // altogether: a mail service judges its sender by what is sent to addresses that never asked.
+  const codes = new RateLimiter(3, 900_000), allCodes = new RateLimiter(30, 3_600_000);
   const fail = (res: Response, error: unknown) => {
     const known = error instanceof AccountError ? error : error instanceof AuthBusyError ? new AccountError('RATE_LIMITED', 429, 'Try again later.') : new AccountError('STORAGE_UNAVAILABLE', 503, 'Account storage is unavailable.');
     return res.status(known.status).json({ data: null, error: { code: known.code, message: known.message } });
@@ -37,6 +40,16 @@ export function ownAccountRoutes(auth: AlgoAuth, account: ManageOwnAccount) {
   });
   router.put('/settings', (req, res) => {
     try { res.json({ data: account.saveSettings(writer(req, writes), req.body), error: null }); } catch (error) { fail(res, error); }
+  });
+  router.post('/email-codes', async (req, res) => {
+    try {
+      const actor = writer(req, writes);
+      if (!codes.allow(actor.name) || !allCodes.allow('all')) throw new AccountError('RATE_LIMITED', 429, 'Too many codes sent. Wait a few minutes.');
+      res.json({ data: await account.sendCode(actor), error: null });
+    } catch (error) { fail(res, error); }
+  });
+  router.post('/email-confirmations', (req, res) => {
+    try { res.json({ data: account.confirmEmail(writer(req, writes), req.body), error: null }); } catch (error) { fail(res, error); }
   });
   router.post('/password', async (req, res) => {
     try {

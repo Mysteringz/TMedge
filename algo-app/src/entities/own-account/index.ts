@@ -13,7 +13,8 @@ export const EMAIL_TOPICS = [
 export interface OwnAccount {
   name: string; role: 'viewer' | 'operator' | 'engineer' | 'admin'; teamRoles: string[]; createdAt: number;
   namedAccount: boolean;
-  settings: { email: string | null; notify: string[] };
+  /** `confirmed`: a code sent to the address was typed back. Nothing else is sent to it until then. */
+  settings: { email: string | null; notify: string[]; confirmed: boolean };
   /** False until this server can send email: the address is kept, and nothing is sent to it. */
   emailDelivery: boolean;
 }
