@@ -40,6 +40,17 @@ export function createAdoptionRouter(rt: EdgeRuntime, service: ProvisioningServi
     credentials.revoke(routeParam(req.params, 'id'), `algo:${String(res.locals.user)}`);
     return res.json({ ok: true });
   });
+  // The web flasher (module 07) asking on behalf of the board on its USB
+  // port. The same question TMflash asks with its account session, from the
+  // account itself -- and still only a question: it queues a request and
+  // admits nothing. Whoever answers it does so below, as for any other.
+  router.post('/requests', mutating, asyncHandler(async (req, res) => {
+    await service.ready();
+    if (!stillAuthorized(res)) return;
+    const result = await service.request(req.body, `algo:${String(res.locals.user)}`);
+    if (result.status === 'already-registered') return res.json({ status: 'registered', uid: result.uid });
+    return res.status(202).json({ status: 'pending', id: result.request.id, uid: result.request.uid, pairingCode: pairingCode(result.request.id) });
+  }));
   router.post('/requests/:id/:verdict', mutating, asyncHandler(async (req, res) => {
     const id = routeParam(req.params, 'id'), verdict = routeParam(req.params, 'verdict');
     if (!['approve', 'deny'].includes(verdict)) return res.status(400).json({ error: 'verdict must be approve or deny' });

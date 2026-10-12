@@ -39,3 +39,4 @@
   .ad-token-form, .ad-match { align-items: stretch; }
   .ad-token-form button, .ad-match button { flex: 1 1 140px; }
 }
+.cx-adoption a { color: var(--interactive); text-underline-offset: 2px; }

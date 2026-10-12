@@ -16,8 +16,13 @@ import { AlgoUsers, loadAlgoAuthConfig } from '../dist/src/algo/auth.js';
 import { buildRegistry } from '../dist/src/edge/registry.js';
 import { DEFAULT_NODE_LIMITS } from '../dist/src/edge/config.js';
 import { KEY, siteJson, nodesJson } from '../dist/test/fixtures.js';
+import { FakeGitHub, tmsenseRelease } from '../dist/test/fake-github.js';
+import { GitHubReleaseSource } from '../dist/src/infrastructure/firmware-release/github-release-source.js';
 
 let runtime, handle, base, directory;
+// Module 07 shows the TMsense release it would flash; in a test, GitHub is not asked.
+const publishedFirmware = new FakeGitHub();
+publishedFirmware.latest = tmsenseRelease('tmsense-1.6');
 const originalDataDir = process.env.DATA_DIR;
 const originalSchemaDir = process.env.ML_SCHEMA_DIR;
 before(async () => {
@@ -46,7 +51,7 @@ before(async () => {
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users,
     SESSION_SECRET: 'local-only-test-secret'.repeat(3),
-  }, config.adminPassword), createConsole(runtime));
+  }, config.adminPassword), createConsole(runtime), { firmwareRelease: new GitHubReleaseSource(undefined, publishedFirmware.fetch) });
   await new Promise(resolve => handle.server.once('listening', resolve));
   base = `http://127.0.0.1:${handle.server.address().port}`;
 });
@@ -355,7 +360,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       ]) {
         await t.test(`${viewport.width}×${viewport.height}: all modules fit`, async () => {
           await page.setViewportSize(viewport);
-          for (const path of ['/', '/flow', '/train', '/ml-data', '/console', '/updates', '/analytics', '/analytics/usage', '/analytics/server', '/adoption']) {
+          for (const path of ['/', '/flow', '/train', '/ml-data', '/console', '/updates', '/analytics', '/analytics/usage', '/analytics/server', '/adoption', '/flash']) {
             await page.unrouteAll({ behavior: 'wait' });
             if (path === '/train') await trainingFixtures(page);
             if (path === '/ml-data') await mlDataFixtures(page);
@@ -372,6 +377,12 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
             if (path === '/train') await page.locator('.cx-jobs').getByText('SUBMIT_FAILED').waitFor();
             if (path === '/updates') await page.getByText('Connected to edge', { exact: false }).waitFor();
             if (path === '/adoption') await page.getByText('No requests waiting.', { exact: false }).waitFor();
+            // Chromium has Web Serial and shows the flasher; WebKit shows why it cannot.
+            if (path === '/flash') {
+              await page.locator('.cx-flash .ad-panel').first().waitFor();
+              // Measured with the write plan on screen: it is the widest thing on the page.
+              if (await page.locator('#fl-firmware').count()) await page.locator('.fl-build table').waitFor();
+            }
             // The landing page's workspace arrives after the module list: measure it, not the gap it will fill.
             if (path === '/') { await page.locator('.ws[data-ready]').waitFor(); await page.locator('.ws-panel__body > *').first().waitFor(); }
             if (path.startsWith('/analytics')) await page.locator('.an-view .an-metrics, .an-view .an-notice').first().waitFor();
@@ -468,7 +479,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await home();
         assert.equal(await page.locator('.ws-places__label').textContent(), 'Suggested for you');
         assert.equal(await page.locator('.ws-place').first().textContent(), 'Adoption');
-        assert.equal(await page.locator('.ws-place').count(), 7, 'on a phone, where the header lists no modules, every module is still one tap away');
+        assert.equal(await page.locator('.ws-place').count(), 8, 'on a phone, where the header lists no modules, every module is still one tap away');
         await fits(page, 390);
         await page.setViewportSize({ width: 1440, height: 1000 });
         assert.equal(await page.locator('.ws-place:visible').count(), 4, 'beside a header that lists them all, only the most used are repeated');
@@ -785,19 +796,19 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           assert.ok(button.width >= 44 && button.height >= 44, 'navigation has a touch-sized target');
           await toggle.tap();
           assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
-          assert.equal(await menu.getByRole('link').count(), 8, 'Home and all seven module pages are available');
+          assert.equal(await menu.getByRole('link').count(), 9, 'Home and all eight module pages are available');
           assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0, 'non-admins have no Accounts link');
           const bounds = await menu.boundingBox();
           assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1 && bounds.y + bounds.height <= viewport.height, 'open navigation fits even in landscape');
           await fits(page, viewport.width);
-          await menu.getByRole('link', { name: 'Adoption', exact: true }).scrollIntoViewIfNeeded();
+          await menu.getByRole('link', { name: 'TMflash', exact: true }).scrollIntoViewIfNeeded();
           await shot(page, engine, `navigation-${scheme}-${viewport.width}`);
           await toggle.tap();
         }
       }
 
       await page.setViewportSize({ width: 390, height: 844 });
-      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Debug console', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['Home', '/']]) {
+      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Debug console', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['TMflash', '/flash'], ['Home', '/']]) {
         await toggle.tap();
         await menu.getByRole('link', { name, exact: true }).tap();
         await page.waitForURL(`${base}${path}`);

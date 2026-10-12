@@ -24,6 +24,8 @@ import { buildRegistry } from '../src/edge/registry.js';
 import { createEdgeRuntime } from '../src/edge/composition-root.js';
 import { DeviceKeys } from '../src/edge/secure.js';
 import { KEY, identity, report, nodesJson, siteJson } from './fixtures.js';
+import { GitHubReleaseSource } from '../src/infrastructure/firmware-release/github-release-source.js';
+import { FakeGitHub, tmsenseRelease } from './fake-github.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'tmedge-algoconsole-'));
 
@@ -146,6 +148,61 @@ test('password changes and account removal invalidate native sessions and pendin
   assert.equal((await post('/api/tmflash/exchange', nextPending)).status, 401);
 });
 
+test('the web flasher queues a board with the signed-in account, and a queued board is a question, not an admission', async () => {
+  const { rt, algoBase, cookie, usersPath } = await boot();
+  const uid = '30:ed:a0:11:22:55';
+  const post = (path: string, body: unknown, headers: Record<string, string>) => fetch(algoBase + path, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  const admin = { cookie, 'x-tm-algo': '1' };
+  const board = { uid, label: 'Node 11', firmware: 'tmsense-1.6' };
+  assert.equal((await post('/api/adoption/requests', board, { 'x-tm-algo': '1' })).status, 401, 'no session, no question');
+  // The firmware it writes is read through the console, by members only, and cannot be put there.
+  assert.equal((await fetch(algoBase + '/api/flash/firmware', { redirect: 'manual' })).status, 401);
+  assert.equal((await fetch(algoBase + '/api/flash/firmware/v1.6/firmware.bin', { redirect: 'manual' })).status, 401);
+  const offered = await fetch(algoBase + '/api/flash/firmware', { headers: { cookie } });
+  assert.deepEqual([offered.status, offered.headers.get('cache-control')], [200, 'no-store']);
+  const release = await offered.json() as { repository: string; version: string };
+  assert.deepEqual([release.repository, release.version], ['Mysteringz/TMsense', 'tmsense-1.6']);
+  assert.equal((await fetch(algoBase + '/api/flash/firmware/v1.6/firmware.bin', { headers: { cookie } })).status, 200);
+  assert.notEqual((await post('/api/flash/firmware', { version: 'tmsense-9.9' }, admin)).status, 200);
+  assert.equal((await post('/api/adoption/requests', board, { cookie })).status, 403, 'a cross-site form cannot ask');
+  assert.equal((await post('/api/adoption/requests', { ...board, uid: 'not-a-mac' }, admin)).status, 400);
+  // Operators may run the console but not commission devices -- the same line TMflash's sign-in draws.
+  await new AlgoUsers(usersPath).add('olive', 'an operator account password', 'operator');
+  const operator = await post('/auth/login', { username: 'olive', password: 'an operator account password' }, {});
+  const operatorCookie = (operator.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+  assert.equal((await post('/api/adoption/requests', board, { cookie: operatorCookie, 'x-tm-algo': '1' })).status, 403);
+
+  const queued = await post('/api/adoption/requests', board, admin);
+  assert.equal(queued.status, 202);
+  assert.equal(queued.headers.get('cache-control'), 'no-store');
+  const pending = await queued.json() as { status: string; id: string; uid: string; pairingCode: string };
+  assert.deepEqual([pending.status, pending.uid], ['pending', uid]);
+  assert.match(pending.pairingCode, /^[0-9A-F]{8}$/);
+  assert.equal(rt.reg.nodes.has(uid), false, 'asking admits nothing');
+  assert.ok(!readFileSync(rt.cfg.nodesPath, 'utf8').includes(uid));
+  // Asking twice is the same question, and it shows in Adoption like any other.
+  assert.equal((await (await post('/api/adoption/requests', board, admin)).json() as { id: string }).id, pending.id);
+  const view = await (await fetch(algoBase + '/api/adoption', { headers: { cookie } })).json() as { requests: { uid: string; from: string; label: string }[] };
+  assert.deepEqual(view.requests.map((request) => [request.uid, request.from, request.label]), [[uid, 'algo:alice', 'Node 11']]);
+
+  // The answer still needs this board's identity and this request's code.
+  const approve = `/api/adoption/requests/${pending.id}/approve`;
+  assert.equal((await post(approve, { uid, pairingCode: 'WRONG000' }, admin)).status, 400);
+  assert.equal((await post(approve, { uid: pending.uid, pairingCode: pending.pairingCode }, { cookie: operatorCookie, 'x-tm-algo': '1' })).status, 403);
+  assert.equal(rt.reg.nodes.has(uid), false);
+  assert.equal((await post(approve, { uid: pending.uid, pairingCode: pending.pairingCode }, admin)).status, 200);
+  assert.equal(rt.reg.nodes.get(uid)?.floorId, null, 'admitted as an identity, never as a placement');
+  assert.deepEqual(await (await post('/api/adoption/requests', board, admin)).json(), { status: 'registered', uid });
+
+  // Storage that could not keep a registration refuses the question up front.
+  writeFileSync(rt.cfg.nodesPath, '{}');
+  const refused = await post('/api/adoption/requests', { ...board, uid: '30:ed:a0:11:22:56' }, admin);
+  assert.equal(refused.status, 503);
+  assert.ok(!(await refused.text()).includes(rt.cfg.dataDir), 'storage paths never reach the page');
+});
+
 test('both adoption consoles require an enrolled telemetry key before admitting a secure-policy device', async () => {
   const { rt, algoBase, cookie } = await boot();
   rt.cfg.devices = new DeviceKeys({ version: 2, nodes: {} });
@@ -165,6 +222,9 @@ test('both adoption consoles require an enrolled telemetry key before admitting 
 });
 
 const running: (() => Promise<void>)[] = [];
+// The TMsense release module 07 would flash. No test here reaches the real GitHub.
+const github = new FakeGitHub();
+github.latest = tmsenseRelease('tmsense-1.6');
 after(async () => { for (const stop of running) await stop(); });
 
 const listening = (s: import('node:http').Server) =>
@@ -181,7 +241,8 @@ async function boot() {
   const core = createConsole(rt);
   const consoleServer = startConsole(rt, core, { uiMovedTo: consoleMovedTo(8091) });
   const handle = startAlgo(rt, 0, '127.0.0.1',
-    loadAlgoAuthConfig({ SESSION_SECRET: 'x'.repeat(40), ALGO_USERS_FILE: usersPath }, 'admin-pass'), core);
+    loadAlgoAuthConfig({ SESSION_SECRET: 'x'.repeat(40), ALGO_USERS_FILE: usersPath }, 'admin-pass'), core,
+    { firmwareRelease: new GitHubReleaseSource(undefined, github.fetch) });
   const { server } = handle;
   const [consoleBase, algoBase] = await Promise.all([listening(consoleServer), listening(server)]);
   running.push(async () => {

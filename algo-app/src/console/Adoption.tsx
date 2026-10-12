@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCapability } from '../entities/admin-session/index.tsx';
+import { navigate } from './router.ts';
 import './adoption.css';
 
 interface JoinRequest { id: string; uid: string; label: string; firmware: string | null; from: string; at: number; expiresAt: number; pairingCode: string }
@@ -60,7 +61,7 @@ export function Adoption() {
     <p className="cx-eyebrow">Module 06 · Device commissioning</p>
     <h1>Adoption</h1>
     {!canCommission && <p className="ad-hint" role="status">Read-only adoption access. Engineer or Admin access is required to commission devices and authorize TMflash.</p>}
-    <p className="ad-lead">Bring a physical sensor online, verify its reports, then place it in the floor plan.</p>
+    <p className="ad-lead">Bring a physical sensor online, verify its reports, then place it in the floor plan. No Mac to hand? <a href="/flash" onClick={(event) => { event.preventDefault(); navigate('/flash'); }}>Flash from this browser</a>.</p>
     <ol className="ad-steps"><li>Sign in on TMflash</li><li>Flash the device</li><li>Match and approve</li><li>Verify reports</li></ol>
     {statusError && <p className="ad-error" role="alert">{statusError} Approval is unavailable until the connection recovers.</p>}
     {actionError && <p className="ad-error" role="alert">{actionError}</p>}

@@ -12,6 +12,13 @@ code in **Adoption**. Type both to approve. The board stays unplaced; its first
 fresh authenticated report changes verification to **Verified reports**.
 Direct WSS setup also requires a fresh report ACK from the rebooted board.
 
+The same flow runs from a browser, with no app, at `/flash` (module 07,
+`docs/WEB_FLASHER.md`). There the board is on the signed-in person's own USB
+port, so the page queues the request and that person presses **Admit this
+board** on the UID the page has just read from it; there is no second machine
+to copy a UID and code from. The request appears in **Adoption** as any other,
+and can be approved or denied there instead.
+
 A 24-hour account session authorizes only preflight, pending requests and
 status. It cannot approve, access imagery, place devices or operate the
 console. The one-use login code lasts sixty seconds and is bound to the Mac's

@@ -12,7 +12,7 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
-    "types": []
+    "types": ["w3c-web-serial"]
   },
   "include": ["src"]
 }
