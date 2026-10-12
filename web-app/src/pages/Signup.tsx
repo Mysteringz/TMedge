@@ -18,7 +18,7 @@ import { Link } from 'react-router-dom';
 import { GoogleButton } from '../GoogleButton.tsx';
 import { Turnstile, turnstileOn, type TurnstileHandle } from '../Turnstile.tsx';
 import { safeNext } from './Login.tsx';
-import { STUDENT_EMAIL_DOMAIN } from '../../../src/shared/student-email.js';
+import { STUDENT_EMAIL_DOMAIN, isStudentUid } from '../../../src/shared/student-email.js';
 import { PASSWORD_MAX_LENGTH, PASSWORD_REQUIREMENTS, unmetPasswordRequirements } from '../../../src/shared/password-rules.js';
 
 export default function Signup() {
@@ -32,7 +32,7 @@ export default function Signup() {
 
   // The browser cannot be trusted to have assembled the address, so the page
   // checks the UID itself and the server checks it again from the same box.
-  const uidOk = /^u\d{7}$/.test(uid.trim().toLowerCase());
+  const uidOk = isStudentUid(uid);
   const unmet = useMemo(() => unmetPasswordRequirements(password), [password]);
 
   useEffect(() => {
@@ -107,7 +107,7 @@ export default function Signup() {
             </div>
             <div className="field">
               <label className="field-label" htmlFor="uid">HKU UID</label>
-              <div className="input-split" data-uid={uid === '' ? 'empty' : uidOk ? 'ok' : 'bad'}>
+              <div className="input-split">
                 <input
                   className="input-split-field"
                   id="uid"
@@ -121,7 +121,6 @@ export default function Signup() {
                   maxLength={8}
                   value={uid}
                   onChange={(e) => setUid(e.target.value.replace(/\s/g, ''))}
-                  aria-describedby="uid-hint"
                   required
                 />
                 <span className="input-suffix">@{STUDENT_EMAIL_DOMAIN}</span>

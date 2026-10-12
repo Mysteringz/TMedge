@@ -128,7 +128,7 @@ test('unreachable parameter reverts remain pending and survive process restart',
     } },
   } as unknown as EdgeRuntime;
   const broker = new ParamBroker(rt);
-  await broker.apply({ uid: UID, nodeId: 'bg-1', param: 'min_contrast', binding: { kind: 'device', param: 'min_contrast' }, value: 90, by: 'test' });
+  await broker.apply({ uid: UID, nodeId: 'bg-1', binding: { kind: 'device', param: 'min_contrast' }, value: 90, by: 'test' });
   offline = true;
   await assert.rejects(broker.revert(UID, 'min_contrast', 'test'), /offline/);
   assert.equal(broker.changes().length, 1);
@@ -170,7 +170,7 @@ test('saving parameters cannot absorb a simultaneous temporary write and revert 
     } },
   } as unknown as EdgeRuntime;
   const broker = new ParamBroker(rt);
-  const change = (value: number) => broker.apply({ uid: UID, nodeId: 'bg-1', param: 'min_contrast',
+  const change = (value: number) => broker.apply({ uid: UID, nodeId: 'bg-1',
     binding: { kind: 'device', param: 'min_contrast' }, value, by: 'test' });
   await change(90);
   const saving = broker.persist(UID, 'test');
