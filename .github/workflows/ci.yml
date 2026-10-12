@@ -195,6 +195,7 @@ jobs:
           python3 deploy/test-receiver.py
           python3 deploy/training/test-offline.py
           python3 deploy/training/test-schemaspy.py
+          python3 deploy/training/test-remote-exports.py
 
       - name: Real PostgreSQL schema migration and ingest regressions
         working-directory: TMedge
