@@ -51,10 +51,6 @@ import { runtimeAnalyticsSource } from '../infrastructure/analytics/runtime-anal
 import { AskAssistant } from '../modules/assistant/application/ask-assistant.js';
 import { loadAssistantConfig } from '../modules/assistant/domain/assistant.js';
 import { createAssistantRouter } from '../modules/assistant/routes/assistant-router.js';
-import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
-import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
-import { AlgoWebSocketAdapter } from './websocket-adapter.js';
-import { createAlgoRouter } from './routes.js';
 import { defaultPipeline } from './nodes.js';
 import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
@@ -742,14 +738,6 @@ function loadPipeline(dir: string, name: string): Pipeline | null {
     return validate(pipeline).length === 0 ? pipeline : null;
   } catch {
     return null;  }
-}
-
-function sendDashboard(res: Response): void {
-  if (!existsSync(join(PUBLIC, 'index.html'))) {
-    res.status(503).send('the algo dashboard is not built (npm run build)');
-    return;
-  }
-  res.sendFile(join(PUBLIC, 'index.html'));
 }
 
 function safeEqual(actual: string, expected: string): boolean {

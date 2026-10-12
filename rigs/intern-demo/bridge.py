@@ -19,7 +19,7 @@ It needs the serial port and the camera exclusively, so the lab's recorder
 (dualcam-recorder.service) must be stopped while this runs. It never touches
 that software's files. Settings: bridge.env next to this file.
 """
-import ctypes, hashlib, hmac, os, socket, struct, sys, threading, time, urllib.request
+import ctypes, hashlib, hmac, os, socket, struct, threading, time, urllib.request
 import numpy as np
 import serial
 

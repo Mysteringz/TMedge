@@ -7,7 +7,7 @@ import type { RolloutRecord, RolloutRepository } from '../src/modules/rollouts/r
 const node = { uid: 'aa', label: 'A', floorId: 'f1', address: '10.0.0.2', transport: 'direct' as const, online: true };
 const image = { bytes: Buffer.from('image'), sha256: 'a'.repeat(64), size: 5, version: '1.0.0' };
 
-function core(events: string[], shouldFail = false) {
+function core(events: string[]) {
   return new Rollouts({
     image: () => image,
     nodes: () => [node],
@@ -47,7 +47,7 @@ test('rollout snapshot commits before OTA dispatch', async () => {
 
 test('failed rollout persistence restores idle state and prevents dispatch', async () => {
   const events: string[] = [];
-  const rollouts = core(events, true);
+  const rollouts = core(events);
   const service = new DurableRolloutService(rollouts, repository(events, true));
   await service.initialize();
   await assert.rejects(service.start('a'.repeat(16), { kind: 'all' }, 'console'), /persistence is unavailable/);

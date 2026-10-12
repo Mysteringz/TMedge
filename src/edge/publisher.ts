@@ -24,7 +24,7 @@ export class Publisher {
   readonly status: PublishTarget[];
   private inFlight = new Set<string>();
 
-  constructor(private readonly urls: string[], private readonly token: string) {
+  constructor(urls: string[], private readonly token: string) {
     this.status = urls.map((u) => ({ target: u, ok: false, lastOkAt: null, lastError: null }));
   }
 

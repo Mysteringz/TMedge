@@ -87,11 +87,6 @@ export function thin(values: (number | null)[] | undefined, points = 40): (numbe
   return out;
 }
 
-export function latest(values: (number | null)[] | undefined): number | null {
-  if (!values) return null;
-  for (let i = values.length - 1; i >= 0; i--) { const v = values[i]; if (v !== null && v !== undefined) return v; }
-  return null;
-}
 
 const GROUP_NAMES: Record<string, string> = {
   pages: 'Pages', 'sign-in': 'Sign-in and sign-up', occupancy: 'Occupancy reads', search: 'Seat search', activity: 'Usage reports', assets: 'Scripts, styles and images', other: 'Anything else',

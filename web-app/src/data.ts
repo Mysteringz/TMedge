@@ -9,12 +9,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { disconnectedView } from './live.ts';
-import { allocate, floorIsDark, knownFree, largestTableFree, walkOrder, type Allocation } from '../../src/shared/allocate.js';
+import { allocate, floorIsDark, knownFree, walkOrder } from '../../src/shared/allocate.js';
 import { spaceInfo, VENUES, type Venue } from '../../src/shared/venues.js';
 import type { CampusFloor, CampusView, TableState } from '../../src/shared/types.js';
 
-export type { CampusFloor, CampusView, TableState, Allocation, Venue };
-export { allocate, knownFree, largestTableFree, spaceInfo, walkOrder, VENUES };
+export type { CampusFloor, CampusView, TableState, Venue };
+export { allocate, knownFree, spaceInfo, walkOrder, VENUES };
 
 export interface Me {
   email: string;
@@ -176,18 +176,6 @@ export function unknownTables(floor: CampusFloor): TableState[] {
 
 export function capacityOf(floor: CampusFloor): number {
   return Math.max(0, ...floor.tables.map((t) => t.capacity));
-}
-
-/**
- * Tables a group of `seats` could take at all, in walking order.
- *
- * No screen calls this yet — Spaces marks the same tables from the live
- * snapshot — but it is the table-level form of the question the seat search
- * asks, so the rule has one home when the next view needs it.
- */
-export function freeTables(floor: CampusFloor, seats: number): TableState[] {
-  if (isDark(floor)) return [];
-  return walkOrder(floor.tables).filter((t) => t.status !== 'unknown' && (t.free ?? 0) >= Math.min(seats, t.capacity));
 }
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

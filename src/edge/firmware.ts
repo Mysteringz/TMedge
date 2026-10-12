@@ -55,9 +55,6 @@ const DEFAULTS: FirmwareLimits = {
 
 export class FirmwareError extends Error {}
 
-// Uploaded PlatformIO configuration can run Python hooks or fetch arbitrary
-// build tools. The console builds our supported board with this trusted recipe.
-const RELEASE_INI = `[platformio]\nsrc_dir = src\ninclude_dir = include\n[env:tmflash]\nplatform = espressif32@6.9.0\nboard = heltec_wifi_lora_32_V3\nframework = arduino\nbuild_flags = -Wall -DTM_NO_NODE_CONFIG\n`;
 const MAX_UPLOADS = 8;
 
 /**
@@ -333,8 +330,6 @@ export class FirmwareStore implements FirmwareArtifactFiles {
     return true;
   }
 }
-
-export const pathSeparator = sep;
 
 function isInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate);

@@ -150,7 +150,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   const secret = randomBytes(32);
   const feeds = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
   const clients = new Map<WebSocket, { binding: string; valid(): boolean; subscriptions: Set<string> }>();
-  ui.get('/api/ws-token', (req, res) => {
+  ui.get('/api/ws-token', (_req, res) => {
     const binding = String(res.locals.wsBinding ?? 'console');
     const expiresAt = Date.now() + 60_000;
     res.json({ token: `${expiresAt}.${createHmac('sha256', secret).update(`${expiresAt}:${binding}`).digest('hex')}` });

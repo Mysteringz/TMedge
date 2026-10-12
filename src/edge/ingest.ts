@@ -47,8 +47,6 @@ export type Route =
   | { kind: 'gateway'; address: string }
   | { kind: 'direct'; address: string; session: DirectSession };
 
-export type Transport = Route['kind'];
-
 /** A node's own authenticated WebSocket session (nodelink.ts). */
 export interface DirectSession {
   uid: string;
