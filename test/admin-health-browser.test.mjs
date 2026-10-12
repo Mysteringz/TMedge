@@ -43,14 +43,16 @@ try {
     await page.locator('.cx-source-summaries dd').first().waitFor();
     assert.equal(await page.locator('.cx-source-summaries dt').count(), 4);
     const order = await page.locator('.cx-identity-actions').evaluate((cluster) => [...cluster.children].map((child) => child.className));
-    assert.ok(order[0].includes('cx-who') && order[1].includes('cx-notification-toggle'));
-    assert.equal(await page.locator('#notification-toggle').evaluate((bell) => bell.nextElementSibling?.getAttribute('aria-label')), 'Sign out');
+    assert.ok(order[0].includes('cx-notification-toggle') && order[1].includes('cx-account'));
+    assert.equal(await page.locator('#notification-toggle').evaluate((bell) => bell.nextElementSibling?.querySelector('button')?.getAttribute('aria-label')), 'Account');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.keyboard.press('Escape'); assert.equal(await page.locator('#notification-toggle').evaluate((bell) => bell === document.activeElement), true);
     await page.getByRole('button', { name: /Notifications/ }).click();
     await page.getByRole('button', { name: 'Close notifications' }).focus(); await page.keyboard.press('Tab');
     assert.notEqual(await page.evaluate(() => document.activeElement?.textContent), 'Close notifications');
-    await page.locator('.cx-who').click(); assert.equal(await page.locator('#notification-center').count(), 0);
+    // The account menu is outside the notification panel: opening it closes the panel, and the two are never open together.
+    await page.getByRole('button', { name: 'Account', exact: true }).click(); assert.equal(await page.locator('#notification-center').count(), 0);
+    await page.keyboard.press('Escape'); assert.equal(await page.locator('.cx-account-panel').count(), 0);
     assert.equal(healthReads, 0, 'Home does not mount or poll old dashboard');
     await page.goto(`${base}/console`);
     const frame = page.frameLocator('iframe');

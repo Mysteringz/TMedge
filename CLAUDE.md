@@ -23,10 +23,11 @@ src/web/                 student web tier (auth, snapshot store, API, WS)
 web-app/                 student UI: React + Vite, builds into public-web/app/
 src/algo/                algo console: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
+src/modules/algo-admin/  accounts (admins, /api/admin/accounts) and each person's own account (/api/account: address, password, sessions; docs/algo-admin-roles.md)
 src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports (docs/ML_DATA.md)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, 04 /updates, 05 /analytics, 06 /adoption, 07 /flash
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, Devices dropdown (04 /updates, 06 /adoption, 07 /flash), 05 /analytics; account icon -> /account
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
 src/modules/workspace/   the landing page's team side: mailbox, feature requests, tasks (docs/WORKSPACE.md); /api/workspace
@@ -154,6 +155,19 @@ has hidden Linux failures before.
   asking, and mail older than an account is never shown to it (usernames are
   reused). The workspace's store is never replaced by a write that could not
   first read it. docs/WORKSPACE.md.
+- **An account's email address is its owner's, and nobody else's.**
+  `/api/account` acts on whoever the session belongs to and takes no username.
+  The address lives in `account-settings.json` beside the account file,
+  private, bound to the account's creation time so a reused username never
+  inherits it, and dropped once the account is gone. No admin route, team
+  list, page or Ask AI prompt may carry it. Changing a password needs the
+  current one, ends every other session, and renews only the one it was
+  made from. The console cannot send email yet (`emailDelivery` is false and
+  the page says so): do not word anything as though mail goes out.
+- **No class name an ad blocker hides.** `ad-…`, `ads-…`, `…-ad`, `advert…`,
+  `sponsor…` are removed from the page by EasyList's generic rules, with no
+  error -- it emptied Adoption and TMflash for anyone running one. Those two
+  pages use `dv-`. `test/console-classes.test.ts`.
 - **Team roles are labels, never authority.** ML, front-end, back-end and the
   rest say what somebody works on. No permission check may read them; access
   is the access role and only that.

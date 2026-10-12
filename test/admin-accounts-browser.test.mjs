@@ -84,9 +84,13 @@ try {
   await page.getByRole('button', { name: 'Manage viewer' }).click();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   assert.ok(await page.locator('caption').evaluate((element) => element.getBoundingClientRect().width > 200));
-  assert.equal(await page.getByRole('link', { name: 'Accounts', exact: true }).last().isVisible(), true);
-  const shortcut = await page.getByRole('link', { name: 'Accounts', exact: true }).last().boundingBox(), signOut = await page.getByRole('button', { name: 'Sign out' }).boundingBox();
-  assert.ok(shortcut.x + shortcut.width <= signOut.x, 'mobile Accounts link and sign out do not overlap');
+  // On a phone, Accounts is in the navigation menu beside the logo, and that menu is clear of the account icon.
+  const menu = page.getByRole('button', { name: 'Navigation menu', exact: true });
+  await menu.click();
+  assert.equal(await page.getByRole('navigation', { name: 'Mobile navigation', exact: true }).getByRole('link', { name: 'Accounts', exact: true }).isVisible(), true);
+  await menu.click();
+  const shortcut = await menu.boundingBox(), signOut = await page.getByRole('button', { name: 'Account', exact: true }).boundingBox();
+  assert.ok(shortcut.x + shortcut.width <= signOut.x, 'the navigation menu and the account menu do not overlap');
   await page.screenshot({ path: join(artifacts, 'accounts-mobile.png'), fullPage: true });
   await page.getByLabel('New password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Cancel editor' }).click();
   await page.getByRole('button', { name: 'Manage viewer' }).click(); assert.equal(await page.getByLabel('New password', { exact: true }).inputValue(), '');

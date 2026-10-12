@@ -6,22 +6,28 @@ import { useCallback, useEffect, useRef, useState, useId, type ReactNode } from 
 
 import { navigate, screenOf, usePath } from './router.ts';
 
-import { Menu, SignOut, XMark } from './icons.tsx';
+import { Gear, Menu, SignOut, UserCircle, XMark } from './icons.tsx';
 
 
 
+// `group`: modules that belong together share one dropdown in the header,
+// under that name. Each keeps its own number, page and card on the landing
+// page; only the header is shorter for it.
 export const MODULES = [
 
   { n: '01', title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
 
-  { n: '02', title: 'ML job', path: '/train', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
-  { n: '02', title: 'ML data', path: '/ml-data', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
+  { n: '02', title: 'ML job', path: '/train', group: 'ML', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
+  { n: '02', title: 'ML data', path: '/ml-data', group: 'ML', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
   { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
-  { n: '04', title: 'Updates', path: '/updates', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
+  { n: '04', title: 'Updates', path: '/updates', group: 'Devices', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
   { n: '05', title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
-  { n: '06', title: 'Adoption', path: '/adoption', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
-  { n: '07', title: 'TMflash', path: '/flash', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
+  { n: '06', title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
+  { n: '07', title: 'TMflash', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
 ] as const;
+
+type ConsoleModule = typeof MODULES[number];
+const groupOf = (module: ConsoleModule): string | null => 'group' in module ? module.group : null;
 
 
 
@@ -72,23 +78,22 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
       <nav className="cx-header-nav" aria-label="Modules">
 
-        {MODULES.filter(m => m.path !== '/ml-data').map((m) => m.path === '/train' ? <MlMenu key={m.path} screen={screen} /> : (
-
-          <a key={m.path} className="cx-header-item" href={m.path} aria-current={here === m ? 'page' : undefined}
-
-            onClick={(e) => { e.preventDefault(); navigate(m.path); }}>{m.title}</a>
-
-        ))}
+        {MODULES.map((m, index) => {
+          const group = groupOf(m);
+          // A group's dropdown stands where its first module would.
+          if (group) return MODULES.findIndex((other) => groupOf(other) === group) === index ? <GroupMenu key={group} label={group} screen={screen} /> : null;
+          return <a key={m.path} className="cx-header-item" href={m.path} aria-current={here === m ? 'page' : undefined}
+            onClick={(e) => { e.preventDefault(); navigate(m.path); }}>{m.title}</a>;
+        })}
 
         {canManageAccounts && <a className="cx-header-item" href="/accounts" aria-current={screen === 'accounts' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/accounts'); }}>Accounts</a>}
       </nav>
 
-      {(here || screen === 'accounts') && <span className="cx-crumb">{here?.title ?? 'Accounts'}</span>}
+      {(here || screen === 'accounts' || screen === 'account') && <span className="cx-crumb">{here?.title ?? (screen === 'account' ? 'Account settings' : 'Accounts')}</span>}
 
       <div className="cx-identity-actions">
-        <span className="cx-who"><span className="cx-online" />{user}@team <span className="tag tag-neutral">{session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator'}</span></span>
         {notificationToggle}
-        <button className="cx-header-action cx-out" onClick={onSignOut} aria-label="Sign out" title="Sign out"><SignOut /></button>
+        <AccountMenu user={user} path={path} onSignOut={onSignOut} />
         {notificationPanel}
       </div>
 
@@ -96,6 +101,40 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
   );
 
+}
+
+/** Who is signed in, their settings and the way out, behind one icon. */
+function AccountMenu({ user, path, onSignOut }: { user: string; path: string; onSignOut(): void }) {
+  const session = useAdminSession();
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const id = useId();
+  useEffect(() => { setOpen(false); }, [path]);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false); };
+    // The debug console is a document of its own: a click in it never reaches this one.
+    const blur = () => { if (document.activeElement instanceof HTMLIFrameElement) setOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    window.addEventListener('blur', blur);
+    return () => { document.removeEventListener('pointerdown', outside); window.removeEventListener('blur', blur); };
+  }, [open]);
+  const role = session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator';
+  return <div className="cx-account" ref={root}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+    onKeyDown={event => { if (event.key === 'Escape' && open) { event.preventDefault(); setOpen(false); toggle.current?.focus(); } }}>
+    <button ref={toggle} className="cx-header-action cx-account-toggle" aria-label="Account" title={`${user}@team`}
+      aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}>
+      <UserCircle /><span className="cx-online" aria-hidden="true" />
+    </button>
+    {open && <div id={id} className="cx-account-panel" role="group" aria-label="Account">
+      <p className="cx-account-who"><b>{user}@team</b><span className="tag tag-neutral">{role}</span></p>
+      <a href="/account" aria-current={screenOf(path) === 'account' ? 'page' : undefined}
+        onClick={event => { event.preventDefault(); setOpen(false); navigate('/account'); }}><Gear />Account settings</a>
+      <button onClick={() => { setOpen(false); onSignOut(); }}><SignOut />Sign out</button>
+    </div>}
+  </div>;
 }
 
 function MobileNavigation({ path, canManageAccounts }: { path: string; canManageAccounts: boolean }) {
@@ -173,7 +212,9 @@ export function Toast({ text }: { text: string }) {
 
 }
 
-function MlMenu({ screen }: { screen: string }) {
+/** One header item for a group of modules. There are two: ML (job, data) and Devices (Updates, Adoption, TMflash). */
+function GroupMenu({ label, screen }: { label: string; screen: string }) {
+  const members = MODULES.filter((m) => groupOf(m) === label);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -183,13 +224,13 @@ function MlMenu({ screen }: { screen: string }) {
   }, []);
   const toggle = useRef<HTMLButtonElement>(null);
   const id = useId();
-  const active = screen === 'train' || screen === 'ml-data';
-  return <div className="cx-ml-menu" ref={root} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+  const active = members.some((m) => screenOf(m.path) === screen);
+  return <div className="cx-group-menu" ref={root} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
     onKeyDown={event => { if (event.key === 'Escape') { setOpen(false); toggle.current?.focus(); } }}>
     <button ref={toggle} className="cx-header-item" aria-expanded={open} aria-controls={id} aria-current={active ? 'page' : undefined}
-      onClick={() => setOpen(!open)}>ML <span aria-hidden="true">▾</span></button>
-    {open && <div id={id} className="cx-ml-dropdown">
-      {MODULES.filter(m => m.n === '02').map(m => <a key={m.path} href={m.path} aria-current={screenOf(m.path) === screen ? 'page' : undefined}
+      onClick={() => setOpen(!open)}>{label} <span aria-hidden="true">▾</span></button>
+    {open && <div id={id} className="cx-group-dropdown">
+      {members.map(m => <a key={m.path} href={m.path} aria-current={screenOf(m.path) === screen ? 'page' : undefined}
         onClick={event => { event.preventDefault(); setOpen(false); navigate(m.path); }}>{m.title}</a>)}
     </div>}
   </div>;

@@ -329,20 +329,20 @@ export function Flash() {
   if (!supported) {
     return <main className="cx-adoption cx-flash">
       <Heading />
-      <section className="ad-panel">
+      <section className="dv-panel">
         <h2>This browser cannot reach USB devices</h2>
         <p>Flashing from the web uses Web Serial, which Chrome and Edge have on a computer. Safari, Firefox and phone browsers do not.</p>
-        <p className="ad-hint">Open this page in Chrome or Edge on the computer the board is plugged into, or use the TMflash app on a Mac.</p>
+        <p className="dv-hint">Open this page in Chrome or Edge on the computer the board is plugged into, or use the TMflash app on a Mac.</p>
       </section>
     </main>;
   }
 
   return <main className="cx-adoption cx-flash">
     <Heading />
-    {!canCommission && <p className="ad-hint" role="status">Read-only access. Engineer or Admin access is required to flash and commission devices.</p>}
-    <p className="ad-lead">Plug a TMsense board into this computer, choose it, and set it up. The firmware is the latest TMsense release from GitHub. The Wi-Fi password and the signing key go from this page to the board’s USB port, and are never sent to the server.</p>
+    {!canCommission && <p className="dv-hint" role="status">Read-only access. Engineer or Admin access is required to flash and commission devices.</p>}
+    <p className="dv-lead">Plug a TMsense board into this computer, choose it, and set it up. The firmware is the latest TMsense release from GitHub. The Wi-Fi password and the signing key go from this page to the board’s USB port, and are never sent to the server.</p>
 
-    <section className="ad-panel" aria-labelledby="fl-board">
+    <section className="dv-panel" aria-labelledby="fl-board">
       <h2 id="fl-board">1 · Board</h2>
       {board.kind === 'none' && <p>Your browser will ask which USB device this page may use. Only the one you pick becomes reachable, and only until you disconnect it or close the tab.</p>}
       {board.kind === 'identifying' && <p role="status">Asking the board what it runs… this restarts it.</p>}
@@ -354,32 +354,32 @@ export function Flash() {
           <div><dt>Signing key</dt><dd>{board.info.keySet ? 'Set' : 'Not set'}</dd></div>
           <div><dt>Frame rate</dt><dd>{board.info.frameRate ? `${board.info.frameRate} fps` : 'Not reported'}</dd></div>
         </dl>
-        <p className="ad-hint">{describePort(port)}</p>
+        <p className="dv-hint">{describePort(port)}</p>
       </div>}
       {port && board.kind === 'silent' && <div className="fl-board" role="status">
         <p><b>No TMsense firmware answered.</b> A new board, or one running something else: it will be flashed.</p>
-        <p className="ad-hint">{describePort(port)}</p>
+        <p className="dv-hint">{describePort(port)}</p>
       </div>}
-      {boardError && <p className="ad-error" role="alert">{boardError}</p>}
-      <div className="ad-match">
+      {boardError && <p className="dv-error" role="alert">{boardError}</p>}
+      <div className="dv-match">
         {!port
-          ? <button className="ad-primary" disabled={locked || board.kind === 'identifying'} onClick={() => void connect()}>Connect a board</button>
+          ? <button className="dv-primary" disabled={locked || board.kind === 'identifying'} onClick={() => void connect()}>Connect a board</button>
           : <>
             <button disabled={locked || board.kind === 'identifying'} onClick={() => void identify(port)}>Read it again</button>
             <button disabled={running || board.kind === 'identifying'} onClick={() => void disconnect()}>Disconnect</button>
           </>}
       </div>
-      <p className="ad-hint">Opening a board’s serial port restarts it. A node that is installed and reporting will stop for a few seconds.</p>
+      <p className="dv-hint">Opening a board’s serial port restarts it. A node that is installed and reporting will stop for a few seconds.</p>
     </section>
 
-    <section className="ad-panel" aria-labelledby="fl-firmware">
+    <section className="dv-panel" aria-labelledby="fl-firmware">
       <h2 id="fl-firmware">2 · Firmware</h2>
       <label className="fl-check"><input type="checkbox" checked={writeImage} disabled={locked} onChange={(event) => setWriteImage(event.target.checked)} />
         <span>Write firmware <small>Off: only the settings change, on a board that already runs TMsense.</small></span></label>
       {writeImage && <>
         <p>The latest release of the TMsense repository on GitHub. This console downloads it and checks every file against the release’s own SHA-256 list; no other image can be written from this page.</p>
-        {fetching && !build && <p className="ad-hint" role="status">Getting the latest release from GitHub…</p>}
-        {buildError && <p className="ad-error" role="alert">{buildError}</p>}
+        {fetching && !build && <p className="dv-hint" role="status">Getting the latest release from GitHub…</p>}
+        {buildError && <p className="dv-error" role="alert">{buildError}</p>}
         {build && <div className="fl-build" role="status">
           <p><b>{build.plan.version}</b> · release <a href={releasePage(build.release)} target="_blank" rel="noreferrer">{build.release.tag}</a> · commit <code>{build.release.commit.slice(0, 7)}</code> · checked with GitHub {new Date(build.release.checkedAt).toLocaleTimeString()}</p>
           <table>
@@ -388,15 +388,15 @@ export function Flash() {
               <td><code>0x{segment.address.toString(16).padStart(5, '0')}</code></td><td>{sentence(segment.name)}</td><td>{segment.data.length.toLocaleString()}</td>
             </tr>)}</tbody>
           </table>
-          <p className="ad-hint">Left untouched: {build.plan.preserved.map((kept) => `${kept.label} (0x${kept.offset.toString(16)}–0x${(kept.offset + kept.size).toString(16)})`).join(', ')}, where the node keeps its settings and boot counter. Nothing is erased.</p>
+          <p className="dv-hint">Left untouched: {build.plan.preserved.map((kept) => `${kept.label} (0x${kept.offset.toString(16)}–0x${(kept.offset + kept.size).toString(16)})`).join(', ')}, where the node keeps its settings and boot counter. Nothing is erased.</p>
         </div>}
-        <div className="ad-match"><button disabled={running || fetching} onClick={() => void fetchRelease()}>{fetching ? 'Checking…' : build ? 'Check for a newer release' : 'Try again'}</button></div>
+        <div className="dv-match"><button disabled={running || fetching} onClick={() => void fetchRelease()}>{fetching ? 'Checking…' : build ? 'Check for a newer release' : 'Try again'}</button></div>
       </>}
     </section>
 
-    <section className="ad-panel" aria-labelledby="fl-settings">
+    <section className="dv-panel" aria-labelledby="fl-settings">
       <h2 id="fl-settings">3 · Settings</h2>
-      <p className="ad-hint">A field left blank keeps what the node already has.</p>
+      <p className="dv-hint">A field left blank keeps what the node already has.</p>
       <div className="fl-fields">
         <label>Node ID<input inputMode="numeric" value={nodeId} disabled={locked} onChange={(event) => setNodeId(event.target.value)} placeholder="1–65535" autoComplete="off" />
           <small>Write the same number on the enclosure.</small></label>
@@ -406,7 +406,7 @@ export function Flash() {
       </div>
       <Choice legend="Uplink" value={uplink} disabled={locked} onChange={(value) => setUplink(value as Uplink)}
         options={[['gateway', 'Wi-Fi · local gateway'], ['cloud', 'Wi-Fi · direct to cloud'], ['lora', 'LoRa']]} />
-      {uplink === 'lora' && <p className="ad-notice" role="status">This firmware has no LoRa uplink yet. The node stores the setting and sends nothing until it does.</p>}
+      {uplink === 'lora' && <p className="dv-notice" role="status">This firmware has no LoRa uplink yet. The node stores the setting and sends nothing until it does.</p>}
       <div className="fl-fields">
         {uplink !== 'lora' && <>
           <label>Wi-Fi network (2.4 GHz)<input value={ssid} disabled={locked} onChange={(event) => setSsid(event.target.value)} placeholder={keeps(known?.ssid)} autoComplete="off" spellCheck={false} />
@@ -427,14 +427,14 @@ export function Flash() {
         <span>Ask TMedge to admit this node <small>A node the edge has not admitted is refused when it connects. You approve it here, once its identity has been read from the board.</small></span></label>
     </section>
 
-    <section className="ad-panel" aria-labelledby="fl-run">
+    <section className="dv-panel" aria-labelledby="fl-run">
       <h2 id="fl-run">4 · {writeImage ? 'Flash' : 'Set up'}</h2>
       {!running && !outcome && problems.length > 0 && <ul className="fl-problems">{problems.map((problem) => <li key={problem}>{problem}</li>)}</ul>}
-      {!outcome && <div className="ad-match">
-        <button className="ad-primary" disabled={locked || problems.length > 0} onClick={() => void run()}>
+      {!outcome && <div className="dv-match">
+        <button className="dv-primary" disabled={locked || problems.length > 0} onClick={() => void run()}>
           {running ? 'Working…' : writeImage ? 'Flash and set up' : 'Write settings'}</button>
       </div>}
-      {running && <p className="ad-hint">Keep this tab open and the board plugged in until this finishes.</p>}
+      {running && <p className="dv-hint">Keep this tab open and the board plugged in until this finishes.</p>}
       {steps.length > 0 && <ol className="fl-steps">{steps.map((step) => <li key={step.id} className={`is-${step.state}`}>
         <span className="fl-mark" aria-hidden="true">{STATE_MARK[step.state]}</span>
         <span className="fl-step-label">{step.label}</span>
@@ -446,9 +446,9 @@ export function Flash() {
         <h3 id="fl-admit-title">Admit this board to TMedge?</h3>
         <p>Its settings are saved. It can connect once TMedge knows it. It will be registered as an identity only — unplaced, counting nothing — until someone places it on a floor.</p>
         <dl><div><dt>UID read from the board</dt><dd><code>{prompt.uid}</code></dd></div><div><dt>Request code</dt><dd><code>{prompt.code}</code></dd></div></dl>
-        {prompt.error && <p className="ad-error" role="alert">{prompt.error}</p>}
-        <div className="ad-match">
-          <button className="ad-primary" disabled={prompt.busy} onClick={() => void decide('approve')}>Admit this board</button>
+        {prompt.error && <p className="dv-error" role="alert">{prompt.error}</p>}
+        <div className="dv-match">
+          <button className="dv-primary" disabled={prompt.busy} onClick={() => void decide('approve')}>Admit this board</button>
           <button disabled={prompt.busy} onClick={() => void decide('deny')}>Deny</button>
           <button disabled={prompt.busy} onClick={() => settle({ state: 'pending' })}>Decide later in Adoption</button>
         </div>
@@ -457,7 +457,7 @@ export function Flash() {
       {outcome && <div className={`fl-outcome is-${outcome.kind}`} role={outcome.kind === 'failed' ? 'alert' : 'status'}>
         <h3><span aria-hidden="true">{outcome.kind === 'failed' ? '✕' : outcome.kind === 'check' ? '!' : '✓'}</span> {outcome.kind === 'failed' ? 'Failed' : outcome.kind === 'check' ? 'Set up, with something to check' : 'Done'}</h3>
         {outcome.error && <p>{sentence(outcome.error)}</p>}
-        {outcome.kind === 'failed' && outcome.wrote && <p className="ad-hint">{outcome.wrote} was written before this failed. The node’s saved settings were not erased.</p>}
+        {outcome.kind === 'failed' && outcome.wrote && <p className="dv-hint">{outcome.wrote} was written before this failed. The node’s saved settings were not erased.</p>}
         {outcome.result && <>
           <dl>
             <div><dt>Node</dt><dd>#{outcome.result.info.nodeId} · <code>{outcome.result.info.uid}</code></dd></div>
@@ -467,8 +467,8 @@ export function Flash() {
           </dl>
           {outcome.result.warnings.length > 0 && <ul className="fl-problems">{outcome.result.warnings.map((warning) => <li key={warning}>{sentence(warning)}</li>)}</ul>}
         </>}
-        <div className="ad-match">
-          <button className="ad-primary" onClick={another}>Set up another board</button>
+        <div className="dv-match">
+          <button className="dv-primary" onClick={another}>Set up another board</button>
           {outcome.kind === 'failed' && <button onClick={() => { setOutcome(null); setSteps([]); }}>Try this board again</button>}
         </div>
       </div>}

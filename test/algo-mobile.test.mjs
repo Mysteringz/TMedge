@@ -256,7 +256,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       });
       assert.equal(queued.status(), 202);
       const request = await queued.json();
-      const card = page.locator('.ad-request').filter({ hasText: uid });
+      const card = page.locator('.dv-request').filter({ hasText: uid });
       await card.waitFor();
       assert.equal(await card.getByRole('button', { name: 'Approve device' }).isDisabled(), true);
       for (const scheme of ['dark', 'light']) {
@@ -271,10 +271,10 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await card.getByLabel(`Code from TMflash for ${uid}`).fill(request.pairingCode);
       await card.getByRole('button', { name: 'Approve device' }).click();
       await page.getByRole('status').filter({ hasText: `${uid} approved` }).waitFor();
-      const device = page.locator('.ad-device').filter({ hasText: uid });
+      const device = page.locator('.dv-device').filter({ hasText: uid });
       await device.getByText('Waiting for reports', { exact: true }).waitFor();
       await device.getByText('Unplaced', { exact: true }).waitFor();
-      const tokenRow = page.locator('.ad-token-list li').filter({ hasText: 'TMflash on Mac' }).last();
+      const tokenRow = page.locator('.dv-token-list li').filter({ hasText: 'TMflash on Mac' }).last();
       await tokenRow.getByRole('button', { name: 'Revoke' }).click();
       await page.getByRole('status').filter({ hasText: 'TMflash session revoked.' }).waitFor();
       const refused = await context.request.get(`${base}/api/provision/preflight`, { headers: { authorization: `Bearer ${issued.token}` } });
@@ -379,7 +379,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
             if (path === '/adoption') await page.getByText('No requests waiting.', { exact: false }).waitFor();
             // Chromium has Web Serial and shows the flasher; WebKit shows why it cannot.
             if (path === '/flash') {
-              await page.locator('.cx-flash .ad-panel').first().waitFor();
+              await page.locator('.cx-flash .dv-panel').first().waitFor();
               // Measured with the write plan on screen: it is the widest thing on the page.
               if (await page.locator('#fl-firmware').count()) await page.locator('.fl-build table').waitFor();
             }
@@ -832,7 +832,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       await page.getByRole('button', { name: 'Close notifications', exact: true }).tap();
       await toggle.tap();
       await toggle.focus();
-      await page.getByRole('button', { name: 'Sign out', exact: true }).focus();
+      await page.getByRole('button', { name: 'Account', exact: true }).focus();
       assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'moving focus out closes navigation');
       await toggle.tap();
       await page.setViewportSize({ width: 1440, height: 900 });
