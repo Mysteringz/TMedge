@@ -38,7 +38,7 @@ export class PostgresStudentAccountRepository implements IStudentAccountReposito
 
   async create(raw: string, name: string, password: string): Promise<User> {
     const email = normalizeStudentEmail(raw);
-    validateStudentSignup(email, password, this.allowedDomains);
+    validateStudentSignup(email, name, password, this.allowedDomains);
     const user = await createStudentUser(email, name, password);
     await this.available(() => insertAccount(this.source.manager, user));
     return user;

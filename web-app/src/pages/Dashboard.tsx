@@ -26,6 +26,14 @@ export default function Dashboard() {
   const shown = venues.find((v) => v.venue.id === pickedId) ?? open[0] ?? venues[0] ?? null;
   const picked = venues.find((v) => v.venue.id === pickedId) ?? null;
 
+  /**
+   * Choosing a venue, or clearing the one already chosen: the box is a toggle,
+   * so the same click that selects it takes the selection away. Clearing puts
+   * the screen back to where it starts -- nothing pressed, the first open
+   * venue's photograph still in the panel, Search waiting for a choice.
+   */
+  const pickVenue = (id: string) => setPicked((current) => (current === id ? null : id));
+
   useEffect(() => {
     document.title = 'Find a seat · HKUMySeat';
   }, []);
@@ -48,7 +56,6 @@ export default function Dashboard() {
       <div className="screen">
         <div className="screen-head">
           <h1>Find a seat</h1>
-          <span className="note text-muted">Step 1 of 2 — choose where, and for how many</span>
         </div>
         <hr className="hr" />
 
@@ -62,7 +69,7 @@ export default function Dashboard() {
                     key={v.venue.id}
                     entry={v}
                     selected={v.venue.id === pickedId}
-                    onPick={() => setPicked(v.venue.id)}
+                    onPick={() => pickVenue(v.venue.id)}
                   />
                 ))}
               </div>
@@ -78,11 +85,6 @@ export default function Dashboard() {
                   Search
                 </button>
               </div>
-              <p className="text-muted small">
-                {picked
-                  ? `${plural(seats, 'seat')} · ${picked.venue.name}`
-                  : 'Choose a location to search.'}
-              </p>
             </div>
 
             <figure className="detail">
@@ -142,9 +144,13 @@ function VenueRow({ entry, selected, onPick }: { entry: VenueSpaces; selected: b
       disabled={!open}
       onClick={onPick}
     >
-      <span className="kicker">{venue.kicker}</span>
-      <span className="vname">{venue.name}</span>
-      <span className={selected ? 'meta' : 'meta text-muted'}>{selected ? `Selected · ${meta}` : meta}</span>
+      {/* One face carries the whole box. The button itself is left to the
+          browser, so a press and a focus ring behave the way they should. */}
+      <span className="venue-face">
+        <span className="kicker">{venue.kicker}</span>
+        <span className="vname">{venue.name}</span>
+        <span className="meta">{selected ? `Selected · ${meta}` : meta}</span>
+      </span>
     </button>
   );
 }

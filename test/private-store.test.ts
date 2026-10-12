@@ -17,30 +17,30 @@ const directory = () => mkdtempSync(join(tmpdir(), 'auth-commits-'));
 test('independent account writers preserve registrations and lock contention never replaces data', async () => {
   const path = join(directory(), 'users.json');
   const a = new UserStore(path, []), b = new UserStore(path, []);
-  await a.create('a@example.com', 'A', 'password-for-tests');
-  await b.create('b@example.com', 'B', 'password-for-tests');
+  await a.create('a@example.com', 'A', 'Password-For-Tests-1!');
+  await b.create('b@example.com', 'B', 'Password-For-Tests-1!');
   assert.equal(a.size, 2); assert.equal(b.size, 2);
   const prior = readFileSync(path);
   writeFileSync(`${path}.lock`, '{}', { mode: 0o600 });
-  await assert.rejects(a.create('c@example.com', 'C', 'password-for-tests'), AuthBusyError);
+  await assert.rejects(a.create('c@example.com', 'C', 'Password-For-Tests-1!'), AuthBusyError);
   assert.deepEqual(readFileSync(path), prior); unlinkSync(`${path}.lock`);
-  const outcomes = await Promise.allSettled([a.create('same@example.com', 'A', 'password-for-tests'), b.create('same@example.com', 'B', 'password-for-tests')]);
+  const outcomes = await Promise.allSettled([a.create('same@example.com', 'A', 'Password-For-Tests-1!'), b.create('same@example.com', 'B', 'Password-For-Tests-1!')]);
   assert.equal(outcomes.filter(r => r.status === 'fulfilled').length, 1);
 });
 
 test('separate Node processes serialize account commits without dropping another writer', async () => {
   const path = join(directory(), 'users.json');
   const module = pathToFileURL(resolve('dist/src/web/auth.js')).href;
-  const script = `const {UserStore,AuthBusyError}=await import(process.argv[1]); const s=new UserStore(process.argv[2],[]); for(let i=0;i<20;i++){try{await s.create(process.argv[3],"Test","password-for-tests");break;}catch(e){if(!(e instanceof AuthBusyError)||i===19)throw e;await new Promise(r=>setTimeout(r,10));}}`;
+  const script = `const {UserStore,AuthBusyError}=await import(process.argv[1]); const s=new UserStore(process.argv[2],[]); for(let i=0;i<20;i++){try{await s.create(process.argv[3],"Test","Password-For-Tests-1!");break;}catch(e){if(!(e instanceof AuthBusyError)||i===19)throw e;await new Promise(r=>setTimeout(r,10));}}`;
   await Promise.all(['one', 'two', 'three'].map(n => promisify(execFile)(process.execPath, ['--input-type=module', '-e', script, module, path, `${n}@example.com`])));
   assert.equal(new UserStore(path, []).size, 3);
 });
 
 test('Google-linked legacy passwords are unusable and account version changes revoke sessions', async () => {
   const path = join(directory(), 'users.json'), store = new UserStore(path, []);
-  const user = await store.create('owner@example.com', 'Owner', 'password-for-tests');
+  const user = await store.create('owner@example.com', 'Owner', 'Password-For-Tests-1!');
   writeFileSync(path, JSON.stringify([{ ...user, google: 'verified-subject' }]), { mode: 0o600 });
-  assert.equal(await store.verify(user.email, 'password-for-tests'), null);
+  assert.equal(await store.verify(user.email, 'Password-For-Tests-1!'), null);
   assert.equal(store.google({ sub: 'verified-subject', email: user.email, name: 'Owner' }, false).email, user.email);
   let version = 'one'; const sessions = new Sessions(Buffer.alloc(32, 1), undefined, undefined, () => version);
   const token = sessions.issue(user.email); assert.equal(sessions.read(token), user.email);

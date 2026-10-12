@@ -98,18 +98,18 @@ test('student PostgreSQL migration, accounts, transfer, activity and outages', {
 async function assertAccounts(source: DataSource): Promise<void> {
   const accounts = new PostgresStudentAccountRepository(source, ['example.edu']);
   const before = await accounts.count();
-  const user = await accounts.create(' NEW@Example.edu ', ' New ', 'strong password');
+  const user = await accounts.create(' NEW@Example.edu ', ' New ', 'Strong-Password-1');
   assert.equal(user.email, 'new@example.edu');
   assert.ok(user.id);
   assert.equal((await accounts.get('NEW@example.edu'))?.id, user.id);
   assert.equal(await accounts.count(), before + 1);
-  assert.equal((await accounts.verify(user.email, 'strong password'))?.id, user.id);
+  assert.equal((await accounts.verify(user.email, 'Strong-Password-1'))?.id, user.id);
   assert.equal(await accounts.verify(user.email, 'wrong password'), null);
-  assert.equal(await accounts.verify('unknown@example.edu', 'strong password'), null);
-  await assert.rejects(accounts.create(user.email, 'New', 'strong password'), AuthError);
+  assert.equal(await accounts.verify('unknown@example.edu', 'Strong-Password-1'), null);
+  await assert.rejects(accounts.create(user.email, 'New', 'Strong-Password-1'), AuthError);
   const concurrent = await Promise.allSettled([
-    accounts.create('concurrent@example.edu', 'Concurrent', 'strong password'),
-    accounts.create('concurrent@example.edu', 'Concurrent', 'strong password'),
+    accounts.create('concurrent@example.edu', 'Concurrent', 'Strong-Password-1'),
+    accounts.create('concurrent@example.edu', 'Concurrent', 'Strong-Password-1'),
   ]);
   assert.equal(concurrent.filter((result) => result.status === 'fulfilled').length, 1);
 }
@@ -142,7 +142,7 @@ async function assertTransfer(source: DataSource): Promise<void> {
   assert.equal(imported.createdAt, legacy.createdAt);
   assert.equal((await accounts.verify(legacy.email, 'legacy password'))?.id, imported.id);
   assert.equal((await transfer.import([legacy], { dryRun: false })).unchanged, 1);
-  const another = await createStudentUser('another@example.edu', 'Another', 'strong password');
+  const another = await createStudentUser('another@example.edu', 'Another', 'Strong-Password-1');
   await assert.rejects(transfer.import([another, { ...legacy, name: 'Conflicting' }], { dryRun: false }),
     (error: ApplicationError) => error.kind === 'conflict');
   assert.equal(await accounts.get(another.email), undefined);
@@ -206,7 +206,7 @@ async function assertCli(): Promise<void> {
   try {
     const input = join(directory, 'input.json');
     const output = join(directory, 'recovery.json');
-    const user = await createStudentUser('cli@example.edu', 'CLI', 'strong password');
+    const user = await createStudentUser('cli@example.edu', 'CLI', 'Strong-Password-1');
     await writeFile(input, JSON.stringify([user]), { mode: 0o600 });
     assert.equal(JSON.parse(await cli(['import', input])).dryRun, true);
     assert.equal(JSON.parse(await cli(['import', input, '--apply'])).inserted, 1);
@@ -263,7 +263,7 @@ async function assertHttp(source: DataSource): Promise<void> {
 }
 
 async function assertHttpRequests(base: string): Promise<void> {
-  const signup = await authRequest(base, '/signup', { email: 'http@example.edu', name: 'HTTP', password: 'strong password' });
+  const signup = await authRequest(base, '/signup', { email: 'http@example.edu', name: 'HTTP', password: 'Strong-Password-1' });
   assert.equal(signup.status, 200);
   const cookie = signup.headers.get('set-cookie')?.split(';')[0];
   assert.ok(cookie);
@@ -271,7 +271,7 @@ async function assertHttpRequests(base: string): Promise<void> {
   const me = await fetch(base + '/api/me', { headers: { cookie } });
   assert.deepEqual(await me.json(), { email: 'http@example.edu', name: 'HTTP' });
   assert.equal((await authRequest(base, '/login', { email: 'http@example.edu', password: 'incorrect password' })).status, 401);
-  assert.equal((await authRequest(base, '/login', { email: 'http@example.edu', password: 'strong password' })).status, 200);
+  assert.equal((await authRequest(base, '/login', { email: 'http@example.edu', password: 'Strong-Password-1' })).status, 200);
   const logout = await authRequest(base, '/logout', {}, cookie);
   assert.deepEqual(await logout.json(), { redirect: '/login/' });
   assert.equal((await fetch(base + '/api/me')).status, 401);

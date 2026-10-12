@@ -12,7 +12,9 @@ import { test } from 'node:test';
 import { allocate, floorIsDark, gridPosition, knownFree, label, largestTableFree, walkOrder } from '../src/shared/allocate.js';
 import { spaceInfo, VENUES } from '../src/shared/venues.js';
 import { Sessions } from '../src/web/auth.js';
-import { asEmail, createWebApp } from '../src/web/main.js';
+import { JsonStudentAccountRepository } from '../src/infrastructure/web/json-student-account-repository.js';
+import { studentSignupEmail, validateStudentSignup } from '../src/modules/student-auth/application/student-credentials.js';
+import { createWebApp, resolveStudentEmail } from '../src/web/main.js';
 import { disconnectedView } from '../web-app/src/live.js';
 import type { FloorState, TableState } from '../src/shared/types.js';
 
@@ -130,13 +132,31 @@ test('the pilot venue names the floors the edge actually publishes', () => {
 });
 
 test('sign-in takes an HKU Portal UID or a full address', () => {
-  const domains = ['hku.hk', 'connect.hku.hk'];
-  assert.equal(asEmail('u3587219', domains), 'u3587219@connect.hku.hk');
-  assert.equal(asEmail('U3587219', domains), 'u3587219@connect.hku.hk');
-  assert.equal(asEmail(' u3587219 ', domains), 'u3587219@connect.hku.hk');
-  assert.equal(asEmail('someone@connect.hku.hk', domains), 'someone@connect.hku.hk', 'an address is left alone');
-  assert.equal(asEmail('u35', domains), 'u35', 'not a UID: left for the normal error path');
-  assert.equal(asEmail('u312345678', domains), 'u312345678@connect.hku.hk', 'longer year groups too');
+  assert.equal(resolveStudentEmail('u3587219'), 'u3587219@connect.hku.hk');
+  assert.equal(resolveStudentEmail('U3587219'), 'u3587219@connect.hku.hk');
+  assert.equal(resolveStudentEmail(' u3587219 '), 'u3587219@connect.hku.hk');
+  assert.equal(resolveStudentEmail('someone@connect.hku.hk'), 'someone@connect.hku.hk', 'an address is left alone');
+  assert.equal(resolveStudentEmail('u35'), 'u35', 'not a UID: left for the normal error path');
+  assert.equal(resolveStudentEmail('u3123456'), 'u3123456@connect.hku.hk', 'a UID is any seven digits');
+  assert.equal(resolveStudentEmail('u0123456'), 'u0123456@connect.hku.hk', 'a leading zero is part of the UID');
+  assert.equal(resolveStudentEmail('u31234567'), 'u31234567', 'eight digits is not a UID any more');
+});
+
+test('the public sign-up form is the only place the UID shape is enforced', () => {
+  // What the form asks for, and what it posts.
+  assert.equal(studentSignupEmail('u3456789'), 'u3456789@connect.hku.hk');
+  assert.equal(studentSignupEmail(' U3456789 '), 'u3456789@connect.hku.hk');
+  assert.equal(studentSignupEmail('u3456789@connect.hku.hk'), 'u3456789@connect.hku.hk', 'the assembled form is accepted too');
+  for (const wrong of ['u345678', 'u34567890', 'u345678x', 'staff@connect.hku.hk', 'someone@gmail.com', '']) {
+    assert.throws(() => studentSignupEmail(wrong), /u" followed by 7 digits/, `${wrong || '(empty)'} is not a sign-up UID`);
+  }
+
+  // ...and the account store is not: it also holds Google accounts, imported
+  // ones and staff-made ones, so a name at an allowed domain is a valid
+  // account even though the public form would not create it.
+  validateStudentSignup('staff@connect.hku.hk', 'Staff Member', 'Strong-Password-1', ['connect.hku.hk']);
+  const accounts = new JsonStudentAccountRepository(join(mkdtempSync(join(tmpdir(), 'uid-shape-')), 'users.json'), ['connect.hku.hk']);
+  assert.ok(accounts.create('staff@connect.hku.hk', 'Staff Member', 'Strong-Password-1'));
 });
 
 test('the bare domain is a gateway, and every screen behind it needs a session', async () => {
@@ -164,7 +184,7 @@ test('the bare domain is a gateway, and every screen behind it needs a session',
       assert.match(await out.text(), /HKUMySeat/);
     }
 
-    await web.users.create('u3587219@connect.hku.hk', 'Chan Tai Man', 'a-long-enough-pin');
+    await web.users.create('u3587219@connect.hku.hk', 'Chan Tai Man', 'A-Long-Enough-Pin-1');
     const cookie = `tm_session=${web.sessions.issue('u3587219@connect.hku.hk', Date.now(), studentSessionVersion((await web.users.get('u3587219@connect.hku.hk'))!))}`;
     const warm = await fetch(`${base}/`, { headers: { cookie }, redirect: 'manual' });
     assert.equal(warm.headers.get('location'), '/dashboard/', 'a signed-in student goes straight to the dashboard');
@@ -208,7 +228,7 @@ test('sign-in answers the app in JSON, and will not forward you off-site', async
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), redirect: 'manual',
   });
   try {
-    const made = await post('/signup', { email: 'u3587219', name: 'Chan Tai Man', password: 'a-long-enough-pin', next: '/dashboard/spaces/' });
+    const made = await post('/signup', { email: 'u3587219', name: 'Chan Tai Man', password: 'A-Long-Enough-Pin-1', next: '/dashboard/spaces/' });
     assert.equal(made.status, 200);
     assert.deepEqual(await made.json(), { redirect: '/dashboard/spaces/' });
     assert.match(made.headers.get('set-cookie') ?? '', /tm_session=/);
@@ -219,7 +239,7 @@ test('sign-in answers the app in JSON, and will not forward you off-site', async
 
     // An open redirect on a sign-in page is a phishing kit; only paths here.
     for (const next of ['https://evil.example/', '//evil.example/', '/login/']) {
-      const out = await post('/login', { email: 'u3587219', password: 'a-long-enough-pin', next });
+      const out = await post('/login', { email: 'u3587219', password: 'A-Long-Enough-Pin-1', next });
       assert.deepEqual(await out.json(), { redirect: '/dashboard/' }, `${next} is not somewhere we send people`);
     }
   } finally {

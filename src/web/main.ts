@@ -27,7 +27,7 @@ import { createUsageReportRouter } from '../modules/analytics/routes/usage-repor
 import { DEFAULT_ANALYTICS_TIMEZONE, isTimeZone } from '../shared/analytics.js';
 export { safeNext } from './navigation.js';
 
-export { asEmail } from '../modules/student-auth/routes/student-auth-router.js';
+export { resolveStudentEmail } from '../shared/student-email.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-web');

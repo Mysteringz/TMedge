@@ -10,7 +10,7 @@ import { StudentActivityLog } from '../src/modules/student-auth/application/stud
 import type { StudentActivityEvent } from '../src/modules/student-auth/repositories/student-activity-repository.js';
 import { ApplicationError } from '../src/modules/shared/application/contracts.js';
 
-const CREDENTIALS = { email: 'u3587219@connect.hku.hk', name: 'Student', password: 'correct horse battery' };
+const CREDENTIALS = { email: 'u3587219@connect.hku.hk', name: 'Student', password: 'Correct-Horse-Battery-1' };
 
 interface TokenResponse { access_token: string; token_type: string; expires_in: number }
 

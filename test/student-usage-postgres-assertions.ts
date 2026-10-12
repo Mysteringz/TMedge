@@ -11,7 +11,7 @@ interface LegacySnapshot { userId: string; eventId: string; email: string; salt:
 /** Seeds the old schema before the forward migration, including a preserved credential identity. */
 export async function seedLegacyActivity(source: DataSource): Promise<LegacySnapshot> {
   // Seed the legacy shape before google_subject exists; the current adapter requires the expanded schema.
-  const user = await createStudentUser('preserved@example.edu', 'Preserved', 'strong password');
+  const user = await createStudentUser('preserved@example.edu', 'Preserved', 'Strong-Password-1');
   assert.ok(user.id);
   await source.query(`INSERT INTO public.student_users (id, email, name, salt, hash, created_at, updated_at)
     VALUES ($1, $2, $3, $4, $5, $6, $6)`,
@@ -58,8 +58,8 @@ export async function assertUsageConstraints(source: DataSource): Promise<void> 
 /** Runtime-role access, per-user filters, zero-event rows, and retained-history aggregation. */
 export async function assertUsageActivity(source: DataSource): Promise<void> {
   const accounts = new PostgresStudentAccountRepository(source);
-  const user = await accounts.create('usage@example.edu', 'Usage', 'strong password');
-  const zero = await accounts.create('zero@example.edu', 'Zero', 'strong password');
+  const user = await accounts.create('usage@example.edu', 'Usage', 'Strong-Password-1');
+  const zero = await accounts.create('zero@example.edu', 'Zero', 'Strong-Password-1');
   assert.ok(user.id && zero.id);
   const activity = new PostgresStudentActivityRepository(source);
   const start = new Date('2039-01-01T00:00:00Z').getTime();
