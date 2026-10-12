@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { permissionChanged, useCapability } from '../entities/admin-session/index.tsx';
+import { TabList } from './motion.tsx';
 import './ml-data.css';
 
 type Tab = 'query' | 'schema' | 'export';
@@ -93,10 +94,10 @@ export function MlData() {
     </div>
     {(schemaError || schema?.error) && <div className="cx-data-notice" role="alert">{schemaError || schema?.error}<button className="btn btn-ghost" onClick={() => setRefresh(n => n + 1)}>Retry connection</button></div>}
     <div className="cx-data-layout"><div className="cx-data-workspace">
-    <div className="cx-data-tabs" role="tablist" aria-label="ML data tools">
+    <TabList className="cx-data-tabs" aria-label="ML data tools">
       {(['query','schema','export'] as const).map(t => <button key={t} id={`data-tab-${t}`} role="tab" aria-selected={tab === t} aria-controls={`data-panel-${t}`} onClick={() => setTab(t)}>
         {{ query: 'SQL console', schema: 'Database schema', export: 'Download data' }[t]}</button>)}
-    </div>
+    </TabList>
     <section id={`data-panel-${tab}`} role="tabpanel" aria-labelledby={`data-tab-${tab}`}>
       {tab === 'query' && <div className="cx-data-query">
         <div className="cx-data-panel">

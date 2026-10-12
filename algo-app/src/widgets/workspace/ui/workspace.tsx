@@ -14,6 +14,7 @@ import {
   buildIndex, useWorkspace,
   type FeatureRequest, type MessageDraft, type SearchEntry, type SensorSource, type Task,
 } from '../../../entities/workspace/index.ts';
+import { Presence, TabList } from '../../../console/motion.tsx';
 import { MODULES } from '../../../console/parts.tsx';
 import { navigate } from '../../../console/router.ts';
 import { AskBar } from './ask-bar.tsx';
@@ -190,14 +191,14 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
             <h2 id="ws-board-title" className="ws-head__title">Requests and tasks</h2>
           </div>
           <div className="ws-panel">
-            <div className="ws-tabs" role="tablist" aria-label="Requests and tasks">
+            <TabList className="ws-tabs" aria-label="Requests and tasks">
               {TABS.map((item, index) => (
                 <button key={item.id} id={`ws-tab-${item.id}`} type="button" role="tab" className="ws-tab" aria-selected={tab === item.id} aria-controls="ws-tabpanel"
                   tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={(event) => onTabKey(event, index)}>
                   {item.label}{counts[item.id].n > 0 && <span className="ws-count">{counts[item.id].n}<span className="ws-sr"> {counts[item.id].word}</span></span>}
                 </button>
               ))}
-            </div>
+            </TabList>
             <div id="ws-tabpanel" role="tabpanel" aria-labelledby={`ws-tab-${tab}`} className="ws-panel__body">
               {!snapshot ? loadingBody : tab === 'requests' ? (
                 <RequestsPanel ws={ws} snapshot={snapshot} openId={requestId} now={now} onOpen={setRequestId} flash={flash}
@@ -212,6 +213,7 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
         </section>
       </div>
 
+      <Presence>
       {snapshot && dialog?.kind === 'compose' && (
         <ComposeDialog ws={ws} snapshot={snapshot} initial={dialog.draft}
           onClose={(draft) => { if (!draft.replyTo) kept.current = draft.subject.trim() || draft.body.trim() ? draft : null; setDialog(null); }}
@@ -231,6 +233,7 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
           }}
           onRemoved={(task) => { setDialog(null); flash(`Task ${task.id} deleted.`); }} />
       )}
+      </Presence>
     </div>
   );
 }

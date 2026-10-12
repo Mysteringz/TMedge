@@ -66,6 +66,13 @@ after(async () => {
   else process.env.ML_SCHEMA_DIR = originalSchemaDir;
 });
 
+// What closes leaves before it goes (algo-app/src/console/motion.tsx): it is
+// inert at once and off the page an exit later, so "closed" is waited for.
+const gone = (locator) => locator.waitFor({ state: 'detached' });
+// A dialog is measured once it has arrived, not while it is still coming down.
+const arrived = (locator) => locator.evaluate((element) => Promise.all(element.getAnimations({ subtree: true })
+  .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime)).map((animation) => animation.finished.catch(() => undefined))));
+
 async function fits(target, width) {
   const layout = await target.evaluate(() => ({
     viewport: innerWidth, page: document.documentElement.scrollWidth,
@@ -527,7 +534,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         await fits(page, 390);
         await dialog.getByRole('button', { name: 'Send message' }).tap();
         await toast(page, 'Message sent to viewertest.');
-        assert.equal(await dialog.count(), 0);
+        await gone(dialog);
 
         // A request, and from it a task for somebody else.
         await page.getByRole('tab', { name: /Feature requests/ }).tap();
@@ -741,6 +748,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         const dialog = page.getByRole('dialog');
         await dialog.waitFor();
         await fits(page, 320);
+        await arrived(dialog);
         assert.ok((await dialog.boundingBox()).height <= 536);
         await dialog.getByRole('button', { name: 'Sign in', exact: true }).scrollIntoViewIfNeeded();
         await shot(page, engine, 'hku-sign-in');
@@ -753,9 +761,10 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         const confirmation = page.getByRole('dialog');
         await confirmation.waitFor();
         await fits(page, 320);
+        await arrived(confirmation);
         assert.ok((await confirmation.boundingBox()).height <= 536);
         await confirmation.getByRole('button', { name: 'Back', exact: true }).tap();
-        assert.equal(await confirmation.isVisible(), false);
+        await confirmation.waitFor({ state: 'hidden' });
       });
       assert.deepEqual(errors, [], 'no browser runtime errors');
     } finally { await browser.close(); }

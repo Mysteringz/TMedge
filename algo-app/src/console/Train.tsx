@@ -15,6 +15,7 @@
 import { useCapability } from '../entities/admin-session/index.tsx';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { FilePy, FloppyDisk, PaperPlaneRight, Plus, UploadSimple, XMark } from './icons.tsx';
+import { Switcher } from './motion.tsx';
 import { Toast, useToast } from './parts.tsx';
 import { CodeEditor } from './train/CodeEditor.tsx';
 import { train, TrainError, type HpcState, type Job, type JobSpec, type JobSummary, type OpEvent, type Problem, type SignInAction, type TrainConfig } from './train/api.ts';
@@ -517,11 +518,11 @@ export function Train() {
                 <FilePy /><span className="cx-file-name">{shownFile}</span>
                 <span className="cx-dim">· {lines} lines{source.kind === 'zip' ? ' · read-only' : ''}{dirty || (source.kind === 'script' && !source.saved && job) ? ' · unsaved' : ''}</span>
               </span>
-              <div className="seg cx-tabs" role="tablist" aria-label="Show">
+              <Switcher className="cx-tabs" role="tablist" aria-label="Show">
                 <label className="seg-opt"><input type="radio" name="tab" checked={tab === 'code'} onChange={() => setTab('code')} />code</label>
                 <label className="seg-opt"><input type="radio" name="tab" checked={tab === 'sbatch'} onChange={() => setTab('sbatch')} />job.sbatch</label>
                 {logText !== null && <label className="seg-opt"><input type="radio" name="tab" checked={tab === 'log'} onChange={() => setTab('log')} />log</label>}
-              </div>
+              </Switcher>
               <input ref={fileInput} type="file" accept=".py,.zip" hidden onChange={pickFile} />
               <button className="btn btn-secondary cx-btn-px" onClick={() => fileInput.current?.click()} disabled={!canWrite || !!busy}
                 title={`a .py (≤ ${cfg.limits.maxPyMb} MB) or a .zip of your project (≤ ${cfg.limits.maxUploadMb} MB)`}>
@@ -561,12 +562,12 @@ export function Train() {
           <div className={`card elev-sm cx-panel cx-console ${consoleMode === 'ssh' ? 'is-ssh' : ''}`}>
             <div className="cx-bar">
               <span className="cx-label">Console</span>
-              <div className="seg cx-tabs" role="tablist" aria-label="Console">
+              <Switcher className="cx-tabs" role="tablist" aria-label="Console">
                 <label className="seg-opt"><input type="radio" name="console" checked={consoleMode === 'log'} onChange={() => setConsoleMode('log')} />log</label>
                 <label className="seg-opt" title={`A shell on ${target}, through your own HKU session`}>
                   <input type="radio" name="console" checked={consoleMode === 'ssh'} disabled={!canWrite} onChange={() => void openShell()} />ssh {target}
                 </label>
-              </div>
+              </Switcher>
               <span style={{ marginLeft: 'auto' }} />
               {consoleMode === 'log' && <>
                 <div className="cx-progress" aria-hidden="true">
@@ -705,7 +706,7 @@ export function Train() {
             <div className="field">
               <label id="f-part">Partition</label>
               <div className="cx-seg-row">
-                <div className="seg" role="radiogroup" aria-labelledby="f-part">
+                <Switcher role="radiogroup" aria-labelledby="f-part">
                   {cfg.partitions.map((p) => (
                     <label key={p.name} className="seg-opt">
                       <input disabled={!canWrite} type="radio" name="partition" checked={form.partition === p.name}
@@ -713,7 +714,7 @@ export function Train() {
                       {p.name}{p.gpu && !/gpu/i.test(p.name) ? ' · gpu' : ''}
                     </label>
                   ))}
-                </div>
+                </Switcher>
                 {partition && <span className="cx-hint">max {partition.maxTime}{partition.gpu ? ` · ≤ ${partition.maxGpus} gpu` : ''}</span>}
               </div>
             </div>

@@ -8,6 +8,8 @@ import { navigate, screenOf, usePath } from './router.ts';
 
 import { Gear, Menu, SignOut, UserCircle, XMark } from './icons.tsx';
 
+import { usePresence } from './motion.tsx';
+
 
 
 // `group`: modules that belong together share one dropdown in the header,
@@ -121,6 +123,7 @@ function AccountMenu({ user, path, onSignOut }: { user: string; path: string; on
     return () => { document.removeEventListener('pointerdown', outside); window.removeEventListener('blur', blur); };
   }, [open]);
   const role = session?.namedAccount ? session.role.charAt(0).toUpperCase() + session.role.slice(1) : 'Local operator';
+  const panel = usePresence(open);
   return <div className="cx-account" ref={root}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
     onKeyDown={event => { if (event.key === 'Escape' && open) { event.preventDefault(); setOpen(false); toggle.current?.focus(); } }}>
@@ -128,7 +131,7 @@ function AccountMenu({ user, path, onSignOut }: { user: string; path: string; on
       aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}>
       <UserCircle /><span className="cx-online" aria-hidden="true" />
     </button>
-    {open && <div id={id} className="cx-account-panel" role="group" aria-label="Account">
+    {panel && <div id={id} className="cx-account-panel" role="group" aria-label="Account" data-state={panel} inert={panel === 'leaving'}>
       <p className="cx-account-who"><b>{user}@team</b><span className="tag tag-neutral">{role}</span></p>
       <a href="/account" aria-current={screenOf(path) === 'account' ? 'page' : undefined}
         onClick={event => { event.preventDefault(); setOpen(false); navigate('/account'); }}><Gear />Account settings</a>
@@ -162,6 +165,7 @@ function MobileNavigation({ path, canManageAccounts }: { path: string; canManage
     ...MODULES,
     ...(canManageAccounts ? [{ title: 'Accounts', path: '/accounts', n: '' }] : []),
   ];
+  const menu = usePresence(open);
   return <div className="cx-mobile-nav" ref={root}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setOpen(false); toggle.current?.focus(); } }}>
@@ -169,7 +173,7 @@ function MobileNavigation({ path, canManageAccounts }: { path: string; canManage
       aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}>
       {open ? <XMark /> : <Menu />}
     </button>
-    {open && <nav id={id} className="cx-mobile-dropdown" aria-label="Mobile navigation">
+    {menu && <nav id={id} className="cx-mobile-dropdown" aria-label="Mobile navigation" data-state={menu} inert={menu === 'leaving'}>
       {links.map(link => <a key={link.path} href={link.path} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
         onClick={event => { event.preventDefault(); setOpen(false); navigate(link.path); }}>
         <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span>{link.title}
@@ -206,9 +210,16 @@ export function useToast(): [string, (msg: string) => void] {
 
 export function Toast({ text }: { text: string }) {
 
-  if (!text) return null;
+  const state = usePresence(!!text);
 
-  return <div className="cx-toast" role="status"><span className="cx-sq" />{text}</div>;
+  // What it said is gone by the time it leaves; it leaves saying it.
+  const said = useRef(text);
+
+  if (text) said.current = text;
+
+  if (!state) return null;
+
+  return <div className="cx-toast" role="status" data-state={state}><span className="cx-sq" />{said.current}</div>;
 
 }
 
@@ -225,11 +236,12 @@ function GroupMenu({ label, screen }: { label: string; screen: string }) {
   const toggle = useRef<HTMLButtonElement>(null);
   const id = useId();
   const active = members.some((m) => screenOf(m.path) === screen);
+  const menu = usePresence(open);
   return <div className="cx-group-menu" ref={root} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
     onKeyDown={event => { if (event.key === 'Escape') { setOpen(false); toggle.current?.focus(); } }}>
     <button ref={toggle} className="cx-header-item" aria-expanded={open} aria-controls={id} aria-current={active ? 'page' : undefined}
-      onClick={() => setOpen(!open)}>{label} <span aria-hidden="true">▾</span></button>
-    {open && <div id={id} className="cx-group-dropdown">
+      onClick={() => setOpen(!open)}>{label} <span className="cx-chevron" aria-hidden="true">▾</span></button>
+    {menu && <div id={id} className="cx-group-dropdown" data-state={menu} inert={menu === 'leaving'}>
       {members.map(m => <a key={m.path} href={m.path} aria-current={screenOf(m.path) === screen ? 'page' : undefined}
         onClick={event => { event.preventDefault(); setOpen(false); navigate(m.path); }}>{m.title}</a>)}
     </div>}

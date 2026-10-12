@@ -43,7 +43,6 @@
   min-height: 40px; padding: 0 15px; cursor: pointer; text-align: left;
   font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; color: var(--text-primary);
   background: transparent; border: 1px solid transparent; border-radius: 0;
-  transition: background 70ms var(--ease-productive), color 70ms var(--ease-productive);
 }
 .cx .btn svg { display: block; flex: none; order: 2; font-size: 16px; }
 .cx .btn:disabled { cursor: not-allowed; }
@@ -67,7 +66,6 @@
   width: 100%; min-height: 40px; padding: 0 16px; font: 400 14px var(--font-sans); letter-spacing: .16px;
   color: var(--text-primary); caret-color: var(--interactive); background: var(--field-01);
   border: 0; border-bottom: 1px solid var(--border-strong-01); border-radius: 0;
-  transition: background 70ms var(--ease-productive);
 }
 .cx .input::placeholder { color: var(--text-placeholder); }
 .cx .input:hover:not(:disabled) { background: var(--field-hover-01); }
@@ -105,7 +103,6 @@
 .cx-header-item {
   position: relative; display: flex; align-items: center; padding: 0 16px; white-space: nowrap;
   color: var(--text-secondary); font-size: 14px; letter-spacing: .16px; text-decoration: none;
-  transition: background 70ms var(--ease-productive), color 70ms var(--ease-productive);
 }
 .cx-header-item:hover { background: var(--background-hover); color: var(--text-primary); }
 .cx-header-item[aria-current="page"] { color: var(--text-primary); }
@@ -231,7 +228,6 @@
 .cx .seg-opt {
   position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 16px;
   font: 400 14px var(--font-sans); letter-spacing: .16px; color: var(--text-secondary); cursor: pointer; white-space: nowrap;
-  transition: background 70ms var(--ease-productive);
 }
 .cx .seg-opt + .seg-opt::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 1px; background: var(--border-subtle-01); }
 .cx .seg-opt input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }

@@ -1,0 +1,219 @@
+/* Motion for the whole console, in one place, so that a control added later
+   moves like the rest without anyone remembering to make it. Durations and
+   curves are Bluegrid's (tokens on :root in styles.css): a state change takes
+   70ms, a menu 150ms in and 110ms out, a dialog 240ms in and 150ms out; things
+   arrive on an entrance curve and leave, faster, on an exit curve.
+
+   Imported last (main.tsx), after the shell's and module 01's own rules. A
+   page's stylesheet arrives later still, with the page, so a rule here that
+   must beat one there carries the specificity to do it.
+
+   What this file cannot do is in motion.tsx: keeping something on the page
+   while it leaves, and telling a moving mark where to go. */
+
+/* — state: every control eases from one state to the next — */
+/* :where() keeps this at the weight of one class, so any control with a
+   reason to move differently only has to say so. */
+.cx :where(button, a, input, select, textarea, summary, label, option, tr, td, th, [role="option"]),
+.app :where(button, a, input, select, textarea, summary, label, option, td, .stage, .lib-item, .notice) {
+  transition-property: background-color, color, border-color, box-shadow, opacity, fill, stroke;
+  transition-duration: var(--duration-fast-01);
+  transition-timing-function: var(--ease-productive);
+}
+/* A button's icon leans the way the button goes. */
+.cx .btn > svg, .cx .ws-link > svg { transition: transform var(--duration-fast-02) var(--ease-productive); }
+.cx .btn:hover:not(:disabled, .cx-icon) > svg, .cx .ws-link:hover > svg { transform: translateX(2px); }
+.cx .btn.ws-back:hover:not(:disabled) > svg { transform: translateX(-2px); }
+/* While a range reloads, the last render dims rather than blinks. */
+.cx .an-chart__plot { transition: opacity var(--duration-moderate-01) var(--ease-productive); }
+
+/* — the mark that travels: a switcher's fill, a tab's line — */
+/* One mark for the row, placed by useGlide, instead of one on each option:
+   choosing Sent moves the fill from Inbox to Sent. Until the row has been
+   measured ([data-glide] is absent) each option keeps its own static mark. */
+.cx .seg, .cx .ws-tabs, .cx .an-tabs, .cx-data-tabs, .mobile-panes { position: relative; }
+.cx .seg { isolation: isolate; }
+/* The label changes colour over the time the fill takes to arrive under it. */
+.cx .seg-opt { transition: background-color var(--duration-fast-01) var(--ease-productive), color var(--duration-moderate-01) var(--ease-productive); }
+.cx .seg[data-glide]::after {
+  content: ''; position: absolute; z-index: -1; left: 0; top: 0; width: var(--glide-w); height: var(--glide-h);
+  transform: translate(var(--glide-x), var(--glide-y)); background: var(--interactive); pointer-events: none;
+}
+.cx .seg[data-glide] .seg-opt:has(input:checked) { background: transparent; }
+.cx .ws-tabs[data-glide]::after, .cx .an-tabs[data-glide]::after, .cx-data-tabs[data-glide]::after, .mobile-panes[data-glide]::after {
+  content: ''; position: absolute; left: 0; bottom: 0; width: var(--glide-w); height: 2px;
+  transform: translateX(var(--glide-x)); background: var(--interactive); pointer-events: none;
+}
+/* Contained tabs carry their line on top, where the tab joins its panel. */
+.cx .ws-tabs[data-glide]::after { top: 0; bottom: auto; }
+.cx-data-tabs[data-glide]::after, .mobile-panes[data-glide]::after { height: 3px; }
+/* The travelling line replaces the chosen tab's own. */
+.cx .ws-tabs[data-glide] .ws-tab[aria-selected="true"] { border-top-color: transparent; }
+.cx .an-tabs[data-glide] .an-tab[aria-selected="true"] { border-bottom-color: var(--border-subtle-01); }
+.cx-data-tabs[data-glide] button[aria-selected="true"] { border-bottom-color: transparent; }
+@media (max-width: 900px) { .mobile-panes[data-glide] button[aria-selected="true"] { box-shadow: inset 0 -2px 0 var(--border-subtle-01); } }
+.cx .seg[data-glide="live"]::after, .cx .ws-tabs[data-glide="live"]::after, .cx .an-tabs[data-glide="live"]::after,
+.cx-data-tabs[data-glide="live"]::after, .mobile-panes[data-glide="live"]::after {
+  transition: transform var(--duration-moderate-02) var(--ease-productive), width var(--duration-moderate-02) var(--ease-productive), height var(--duration-moderate-02) var(--ease-productive);
+}
+/* Where you are, in the header: the line grows under the place you went to. */
+.cx-header-item::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; border-bottom: 3px solid var(--interactive);
+  transform: scaleX(0); transition: transform var(--duration-moderate-01) var(--ease-productive);
+}
+.cx-header-item[aria-current="page"]::after { transform: none; }
+
+/* — what a choice shows: the new content arrives, it does not swap — */
+@keyframes cx-enter { from { opacity: 0; transform: translateY(4px); } }
+@keyframes cx-page-in { from { opacity: 0; transform: translateY(8px); } }
+.cx [role="tabpanel"] > *, .cx .ws-panel__body > *, .cx-editor-pane, .cx-log, .cx-term, .cx-term-gate, .cx .ws-answer, .cx .ws-answer__turn, .cx .ws-ask__note {
+  animation: cx-enter var(--duration-moderate-01) var(--ease-entrance);
+}
+/* A page, not the line that stands in for it while it loads. */
+.cx-page > main:not([aria-busy="true"], .cx-hint) { animation: cx-page-in var(--duration-moderate-02) var(--ease-entrance-expressive); }
+
+/* — menus: drop from what opened them, and go back faster — */
+@keyframes cx-menu-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes cx-menu-out { to { opacity: 0; transform: translateY(-4px); } }
+.cx-group-dropdown, .cx-account-panel, .cx-notifications, .cx-mobile-dropdown, .cx .ws-ask__results, .cx .an-chart__tip {
+  animation: cx-menu-in var(--duration-moderate-01) var(--ease-entrance);
+}
+.cx-group-dropdown[data-state="leaving"], .cx-account-panel[data-state="leaving"], .cx-notifications[data-state="leaving"],
+.cx-mobile-dropdown[data-state="leaving"], .cx .ws-ask__results[data-state="leaving"] {
+  animation: cx-menu-out var(--duration-fast-02) var(--ease-exit) forwards; pointer-events: none;
+}
+.cx-chevron { display: inline-block; transition: transform var(--duration-fast-02) var(--ease-productive); }
+[aria-expanded="true"] > .cx-chevron { transform: rotate(180deg); }
+/* The menu icon turns into the cross it becomes. */
+@keyframes cx-turn-in { from { opacity: 0; transform: rotate(-90deg); } }
+.cx-nav-toggle[aria-expanded="true"] > svg { animation: cx-turn-in var(--duration-moderate-01) var(--ease-entrance); }
+
+/* — dialogs and the toast — */
+/* A dialog comes down onto its scrim: one of the few expressive moments. */
+.cx-presence { display: contents; }
+@keyframes cx-fade-in { from { opacity: 0; } }
+@keyframes cx-fade-out { to { opacity: 0; } }
+@keyframes cx-modal-in { from { transform: translateY(-24px); } }
+@keyframes cx-modal-out { to { transform: translateY(-12px); } }
+.cx-modal-back { animation: cx-fade-in var(--duration-moderate-02) var(--ease-entrance-expressive); }
+.cx-modal-back > .cx-modal { animation: cx-modal-in var(--duration-moderate-02) var(--ease-entrance-expressive); }
+.cx-presence[data-state="leaving"] > .cx-modal-back { animation: cx-fade-out var(--duration-moderate-01) var(--ease-exit) forwards; }
+.cx-presence[data-state="leaving"] > .cx-modal-back > .cx-modal { animation: cx-modal-out var(--duration-moderate-01) var(--ease-exit) forwards; }
+@keyframes cx-toast-in { from { opacity: 0; transform: translateY(16px); } }
+@keyframes cx-toast-out { to { opacity: 0; transform: translateY(8px); } }
+.cx-toast { animation: cx-toast-in var(--duration-moderate-02) var(--ease-entrance-expressive); }
+.cx-toast[data-state="leaving"] { animation: cx-toast-out var(--duration-moderate-01) var(--ease-exit) forwards; }
+/* The browser's own dialog (module 04's confirmation) opens and closes in the
+   top layer, where only a transition can follow it. Without the two discrete
+   properties it still opens and closes, at once. */
+.cx .cx-up-confirm, .cx .cx-up-confirm::backdrop {
+  opacity: 0;
+  transition: opacity var(--duration-moderate-01) var(--ease-exit), transform var(--duration-moderate-01) var(--ease-exit),
+    overlay var(--duration-moderate-01) allow-discrete, display var(--duration-moderate-01) allow-discrete;
+}
+.cx .cx-up-confirm { transform: translateY(-12px); }
+.cx .cx-up-confirm[open], .cx .cx-up-confirm[open]::backdrop {
+  opacity: 1; transition-duration: var(--duration-moderate-02); transition-timing-function: var(--ease-entrance-expressive);
+}
+.cx .cx-up-confirm[open] { transform: none; }
+@starting-style {
+  .cx .cx-up-confirm[open], .cx .cx-up-confirm[open]::backdrop { opacity: 0; }
+  .cx .cx-up-confirm[open] { transform: translateY(-24px); }
+}
+
+/* — checkboxes: drawn, so the tick can be drawn in — */
+/* The size is any page's to set, so it is given at no weight. The rest has
+   to beat the text-field look two pages give every input they contain. The
+   switcher's and the chips' own inputs are not boxes and stay hidden. */
+.cx :where(input[type="checkbox"]:not(.seg-opt > *)) { width: 16px; height: 16px; }
+.cx input[type="checkbox"]:not(.seg-opt > *) {
+  appearance: none; -webkit-appearance: none; display: inline-grid; place-content: center; flex: none; margin: 0; padding: 0;
+  border: 1px solid var(--text-secondary); border-radius: 2px; background: transparent; cursor: pointer;
+}
+.cx input[type="checkbox"]:not(.seg-opt > *)::after {
+  content: ''; width: 10px; height: 10px; background: var(--on-interactive);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0, 43% 62%);
+  transform: scale(0); transform-origin: 20% 80%; transition: transform var(--duration-fast-02) var(--ease-entrance);
+}
+.cx input[type="checkbox"]:not(.seg-opt > *):checked { background: var(--interactive); border-color: var(--interactive); }
+.cx input[type="checkbox"]:not(.seg-opt > *):checked::after { transform: none; }
+.cx input[type="checkbox"]:not(.seg-opt > *):hover:not(:disabled, :checked) { border-color: var(--text-primary); }
+.cx input[type="checkbox"]:not(.seg-opt > *):focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.cx input[type="checkbox"]:not(.seg-opt > *):disabled { border-color: var(--icon-disabled); cursor: not-allowed; }
+.cx input[type="checkbox"]:not(.seg-opt > *):disabled:checked { background: var(--button-disabled); border-color: transparent; }
+
+/* — disclosures: the log under a flash, the detail of an export — */
+/* Animating to a height nobody set needs interpolate-size; elsewhere a
+   disclosure opens as it always did. */
+@supports (interpolate-size: allow-keywords) {
+  .cx details { interpolate-size: allow-keywords; }
+  .cx details::details-content {
+    block-size: 0; opacity: 0; overflow: clip;
+    transition: block-size var(--duration-moderate-01) var(--ease-productive), opacity var(--duration-moderate-01) var(--ease-productive),
+      content-visibility var(--duration-moderate-01) allow-discrete;
+  }
+  .cx details[open]::details-content { block-size: auto; opacity: 1; }
+}
+
+/* — dropdown lists — */
+/* The list of a <select> belongs to the operating system: a page can neither
+   style it nor move it. Where the browser lets a page draw it instead
+   (appearance: base-select; Chromium, and WebKit as it arrives) it becomes Bluegrid's dropdown,
+   the same menu as the header's, and opens like one. Elsewhere it stays the
+   system's list, with nothing lost but the movement. The field keeps the
+   room its drawn chevron had; the chevron is now a mark that can turn. */
+@supports (appearance: base-select) {
+  :is(.cx, .app) select:not([multiple]) {
+    appearance: base-select; position: relative; align-items: center; border-radius: 0; background-image: none; white-space: nowrap; overflow: hidden;
+  }
+  /* Over the room the field keeps for it, in the field's own colour: a long
+     value runs under it and is cut there, as it was by the native control. */
+  :is(.cx, .app) select:not([multiple])::picker-icon {
+    content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 40px; background-color: inherit;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23c6c6c6' d='M8 11 3 6l.7-.7L8 9.6l4.3-4.3.7.7z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: center; background-size: 16px;
+    transition: transform var(--duration-fast-02) var(--ease-productive);
+  }
+  .cx select.ws-task__status::picker-icon { width: 32px; }
+  :is(.cx, .app) select:not([multiple]):open::picker-icon { transform: rotate(180deg); }
+  :is(.cx, .app) select:not([multiple]):disabled::picker-icon { opacity: .4; }
+  :is(.cx, .app) select:not([multiple])::picker(select) {
+    /* Below the field whenever it fits there, as a dropdown does (the browser's
+       default is whichever side has more room), and short enough that it does:
+       a long list scrolls. On a phone it is never wider than the screen. */
+    position-try-order: normal; max-block-size: min(400px, 60dvh); max-inline-size: calc(100vw - 16px); overflow: hidden auto;
+    appearance: base-select; margin: 0; padding: 0; border: 1px solid var(--border-subtle-01); border-radius: 0;
+    background: var(--layer-02); color: var(--text-primary); box-shadow: var(--shadow-overlay);
+    font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; scrollbar-width: thin; scrollbar-color: var(--border-strong-01) transparent;
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity var(--duration-fast-02) var(--ease-exit), transform var(--duration-fast-02) var(--ease-exit),
+      overlay var(--duration-fast-02) allow-discrete, display var(--duration-fast-02) allow-discrete;
+  }
+  :is(.cx, .app) select:not([multiple]):open::picker(select) {
+    opacity: 1; transform: none; transition-duration: var(--duration-moderate-01); transition-timing-function: var(--ease-entrance);
+  }
+  @starting-style { :is(.cx, .app) select:not([multiple]):open::picker(select) { opacity: 0; transform: translateY(-4px); } }
+  :is(.cx, .app) select:not([multiple]) option {
+    display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 8px 16px; border-radius: 0;
+    background: transparent; color: var(--text-secondary); white-space: normal; overflow-wrap: anywhere; cursor: pointer; outline-offset: -2px;
+  }
+  :is(.cx, .app) select:not([multiple]) option:is(:hover, :focus-visible) { background: var(--layer-hover-02); color: var(--text-primary); }
+  /* Chosen is the layer step and the tick, never colour alone. */
+  :is(.cx, .app) select:not([multiple]) option:checked { background: var(--layer-03); color: var(--text-primary); }
+  :is(.cx, .app) select:not([multiple]) option:disabled { color: var(--text-disabled); cursor: not-allowed; }
+  :is(.cx, .app) select:not([multiple]) option::checkmark {
+    content: ''; order: 1; flex: none; width: 16px; height: 16px; margin-left: auto; background: var(--interactive);
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6.5 12.4 2 7.9l.7-.7 3.8 3.8L13.3 4.2l.7.7z'/%3E%3C/svg%3E") center / 16px no-repeat;
+  }
+  @media (max-width: 900px) { :is(.cx, .app) select:not([multiple]) option { min-height: 44px; font-size: 16px; } }
+}
+
+/* — less motion — */
+/* Asked for, it is all of it, and without exception: nothing moves, fades or
+   slides, here or in a page's own stylesheet. Things still open, close and
+   change; they do it at once (motion.tsx skips the exit as well). */
+@media (prefers-reduced-motion: reduce) {
+  .cx, .cx *, .cx *::before, .cx *::after, .cx *::backdrop, .cx-flow, .cx-flow *, .cx-flow *::before, .cx-flow *::after {
+    transition: none !important; animation: none !important;
+  }
+}

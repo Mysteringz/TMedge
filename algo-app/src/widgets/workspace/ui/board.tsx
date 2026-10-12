@@ -11,6 +11,7 @@ import {
 } from '../../../entities/workspace/index.ts';
 import { ArrowLeft, CaretUp, FloppyDisk, PencilSimple, Plus, Trash } from '../../../console/icons.tsx';
 import { Icons } from '../../charts/index.ts';
+import { Switcher } from '../../../console/motion.tsx';
 import { dayLabel, Dialog, Field, reason, today, when } from './parts.tsx';
 
 const ACTIVE: ReadonlySet<RequestStatus> = new Set(['open', 'planned', 'in-progress']);
@@ -198,12 +199,12 @@ export function TasksPanel({ ws, snapshot, filter, now, onFilter, onNew, onOpen,
   return (
     <>
       <div className="ws-bar">
-        <div className="seg" role="radiogroup" aria-label="Which tasks">
+        <Switcher role="radiogroup" aria-label="Which tasks">
           {TASK_FILTERS.map((option) => (
             <label key={option.id} className="seg-opt"><input type="radio" name="ws-task-filter" checked={filter === option.id} onChange={() => onFilter(option.id)} />{option.label}
               {option.id === 'mine' && mine > 0 && <span className="ws-count">{mine}<span className="ws-sr"> open</span></span>}</label>
           ))}
-        </div>
+        </Switcher>
         {me.canTriage && <button type="button" className="btn btn-primary cx-btn-px" onClick={onNew}>New task<Plus /></button>}
       </div>
       {error && <p className="cx-hint is-err ws-foot" role="alert">{error}</p>}

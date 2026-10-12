@@ -43,7 +43,6 @@
 .cx .ws-ask__ai {
   display: inline-flex; align-items: center; gap: 8px; flex: none; height: 48px; padding: 0 18px 0 14px; border: 0; border-radius: 24px;
   background: var(--interactive); color: var(--on-interactive); font: 600 14px var(--font-sans); letter-spacing: .16px; white-space: nowrap; cursor: pointer;
-  transition: background 70ms var(--ease-productive);
 }
 .cx .ws-ask__ai svg { font-size: 18px; }
 .cx .ws-ask__ai:hover:not(:disabled) { background: var(--interactive-hover); }
@@ -78,7 +77,6 @@
   display: inline-flex; align-items: center; min-height: 32px; padding: 0 14px; border-radius: 16px; white-space: nowrap;
   background: color-mix(in srgb, var(--layer-01) 88%, transparent); box-shadow: inset 0 0 0 1px var(--border-subtle-01);
   color: var(--text-secondary); font-size: 14px; letter-spacing: .16px; text-decoration: none;
-  transition: background 70ms var(--ease-productive), color 70ms var(--ease-productive);
 }
 .cx .ws-place:hover { background: var(--layer-hover-01); color: var(--text-primary); }
 /* Where the header already lists every module, only the most used are repeated here. */
@@ -142,7 +140,6 @@
   flex: 1 1 0; display: inline-flex; align-items: center; gap: 8px; min-width: 0; min-height: 48px; padding: 0 16px;
   border: 0; border-top: 2px solid transparent; background: transparent; color: var(--text-secondary);
   font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; text-align: left; white-space: nowrap; cursor: pointer;
-  transition: background 70ms var(--ease-productive), color 70ms var(--ease-productive);
 }
 .cx .ws-tab:hover { background: var(--layer-hover-02); color: var(--text-primary); }
 .cx .ws-tab[aria-selected="true"] { background: var(--layer-01); color: var(--text-primary); font-weight: 600; border-top-color: var(--interactive); }
@@ -162,7 +159,6 @@
 .cx .ws-row {
   display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; min-height: 56px; padding: 10px 16px;
   border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
-  transition: background 70ms var(--ease-productive);
 }
 .cx .ws-row:hover { background: var(--layer-hover-01); }
 .cx .ws-row__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -183,7 +179,7 @@
 /* requests: the count of each status is also the way to see only those */
 /* Wrapping cells grow to fill their row, so five across or three and two both end flush. */
 .cx .ws-stats { display: flex; flex-wrap: wrap; gap: 1px; background: var(--border-subtle-01); border-bottom: 1px solid var(--border-subtle-01); }
-.cx .ws-stat { flex: 1 1 calc(20% - 1px); display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; min-height: 60px; padding: 8px 12px; border: 0; background: var(--layer-01); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background 70ms var(--ease-productive); }
+.cx .ws-stat { flex: 1 1 calc(20% - 1px); display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; min-height: 60px; padding: 8px 12px; border: 0; background: var(--layer-01); color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .cx .ws-stat:hover { background: var(--layer-hover-01); }
 .cx .ws-stat__value { font: 300 24px/1.17 var(--font-sans); font-variant-numeric: tabular-nums; }
 .cx .ws-stat__label { font-size: 12px; line-height: 1.33; letter-spacing: .32px; color: var(--text-secondary); }
@@ -194,7 +190,7 @@
 .cx .ws-vote {
   flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 48px; min-height: 48px; padding: 0;
   border: 0; border-right: 1px solid var(--border-subtle-01); background: transparent; color: var(--text-secondary);
-  font: 400 12px/1.2 var(--font-mono); cursor: pointer; transition: background 70ms var(--ease-productive);
+  font: 400 12px/1.2 var(--font-mono); cursor: pointer;
 }
 .cx .ws-vote svg { font-size: 16px; }
 .cx .ws-vote:hover:not(:disabled) { background: var(--layer-hover-01); color: var(--text-primary); }
@@ -269,4 +265,3 @@
   .cx .ws-task__status { margin: 8px 16px 0; width: calc(100% - 32px); }
   .cx .ws-task .ws-row { padding-left: 16px; }
 }
-@media (prefers-reduced-motion: reduce) { .cx .ws-tab, .cx .ws-row, .cx .ws-stat, .cx .ws-vote, .cx .ws-place, .cx .ws-ask__bar, .cx .ws-ask__ai { transition: none; } .cx .ws-answer__cursor { animation: none; } }

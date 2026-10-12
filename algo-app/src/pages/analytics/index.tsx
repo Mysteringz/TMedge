@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { RANGES, useAnalytics, type RangeId } from '../../entities/analytics/index.ts';
+import { Switcher, TabList } from '../../console/motion.tsx';
 import { navigate, usePath } from '../../console/router.ts';
 import { Icons } from '../../widgets/charts/index.ts';
 import { ago, dateTime, RANGE_LABEL } from './lib/format.ts';
@@ -71,19 +72,19 @@ export function Analytics() {
       </header>
 
       <div className="an-filters">
-        <div className="an-tabs" role="tablist" aria-label="Analytics views">
+        <TabList className="an-tabs" aria-label="Analytics views">
           {VIEWS.map((item, index) => (
             <button key={item.id} id={`an-tab-${item.id}`} type="button" role="tab" className="an-tab" aria-selected={view === item.id} aria-controls="an-view"
               tabIndex={view === item.id ? 0 : -1} onClick={() => go(item)} onKeyDown={(event) => onTabKey(event, index)}>{item.label}</button>
           ))}
-        </div>
-        <div className="seg an-range" role="radiogroup" aria-label="Time range">
+        </TabList>
+        <Switcher className="an-range" role="radiogroup" aria-label="Time range">
           {RANGES.map((id) => (
             <label key={id} className="seg-opt">
               <input type="radio" name="analytics-range" value={id} checked={range === id} onChange={() => setRange(id)} />{RANGE_LABEL[id]}
             </label>
           ))}
-        </div>
+        </Switcher>
       </div>
 
       {error && <Notice kind="warning" title="Not up to date">{error}</Notice>}
