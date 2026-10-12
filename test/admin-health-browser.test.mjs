@@ -51,8 +51,9 @@ try {
     await page.getByRole('button', { name: 'Close notifications' }).focus(); await page.keyboard.press('Tab');
     assert.notEqual(await page.evaluate(() => document.activeElement?.textContent), 'Close notifications');
     // The account menu is outside the notification panel: opening it closes the panel, and the two are never open together.
-    await page.getByRole('button', { name: 'Account', exact: true }).click(); assert.equal(await page.locator('#notification-center').count(), 0);
-    await page.keyboard.press('Escape'); assert.equal(await page.locator('.cx-account-panel').count(), 0);
+    // Each leaves over an exit (console/motion.tsx), so each is waited off the page.
+    await page.getByRole('button', { name: 'Account', exact: true }).click(); await page.locator('#notification-center').waitFor({ state: 'detached' });
+    await page.keyboard.press('Escape'); await page.locator('.cx-account-panel').waitFor({ state: 'detached' });
     assert.equal(healthReads, 0, 'Home does not mount or poll old dashboard');
     await page.goto(`${base}/console`);
     const frame = page.frameLocator('iframe');
@@ -63,8 +64,9 @@ try {
     await page.getByRole('button', { name: /Notifications/ }).click();
     await page.screenshot({ path: join(artifacts, `${role}-bell-mobile.png`), fullPage: true });
     await page.setViewportSize({ width: 1280, height: 900 });
-    await frame.locator('body').click({ position: { x: 20, y: 500 } }); await page.waitForTimeout(100);
-    assert.equal(await page.locator('#notification-center').count(), 0, 'observable iframe click closes center');
+    await frame.locator('body').click({ position: { x: 20, y: 500 } });
+    // An iframe click that closes the center takes it off the page.
+    await page.locator('#notification-center').waitFor({ state: 'detached' });
     assert.deepEqual(errors, []);
     evidence.push({ role, noHomeHealthPolling:true, fourCompactSources:true, mobileDomOrder:true, focusEscapeOutsideTab:true, consoleGutters:gutters, pageErrors:errors });
     await context.close();

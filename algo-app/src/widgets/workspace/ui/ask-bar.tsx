@@ -7,6 +7,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { looksLikeQuestion, QUESTION_LIMIT, type AssistantStatus } from '../../../entities/assistant/index.ts';
 import { KIND_LABEL, search, type SearchEntry } from '../../../entities/workspace/index.ts';
 import { MagnifyingGlass, Sparkle } from '../../../console/icons.tsx';
+import { usePresence } from '../../../console/motion.tsx';
 
 type Row = { kind: 'entry'; entry: SearchEntry } | { kind: 'ask' };
 
@@ -40,6 +41,11 @@ export function AskBar({ entries, assistant, answering, onChoose, onAsk, onFocus
   }, [entries, query, text, canAsk]);
   const current = rows[Math.min(active, rows.length - 1)];
   const open = focused && rows.length > 0;
+  // The list leaves showing what it last offered: by then the query that made it may be gone.
+  const list = usePresence(open);
+  const offered = useRef(rows);
+  if (open) offered.current = rows;
+  const listed = open ? rows : offered.current;
 
   // "/" is the search key, and Ctrl/Cmd+K for those whose hands expect it.
   useEffect(() => {
@@ -100,8 +106,8 @@ export function AskBar({ entries, assistant, answering, onChoose, onAsk, onFocus
           <Sparkle /><span>Ask AI</span>
         </button>
       </div>
-      <ul id={listId} role="listbox" aria-label="Results" className="ws-ask__results" hidden={!open}>
-        {rows.map((row, index) => (
+      <ul id={listId} role="listbox" aria-label="Results" className="ws-ask__results" hidden={!list} data-state={list ?? undefined} inert={list === 'leaving'} aria-hidden={list === 'leaving' ? true : undefined}>
+        {(list ? listed : []).map((row, index) => (
           <li key={row.kind === 'ask' ? 'ask' : row.entry.id} id={`${listId}-${index}`} role="option" aria-selected={row === current}
             className={`ws-ask__row ${row === current ? 'is-on' : ''} ${row.kind === 'ask' ? 'ws-ask__row--ai' : ''}`}
             onMouseEnter={() => setActive(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => take(row)}>

@@ -22,6 +22,7 @@ import {
   api, unpack,
   type Envelope, type NodeSpec, type PendingChange, type Pipeline, type RecordMode, type RunResult, type SourceNode,
 } from './api.ts';
+import { TabList } from './console/motion.tsx';
 import { Divider, useCompactLayout, usePaneSize } from './panes.tsx';
 import { GridView, Histogram, Json, Plane, PlanView, Table, type HeatJson } from './viewers.tsx';
 
@@ -393,7 +394,7 @@ export default function App() {
       {notice && <div className="notice" onClick={() => setNotice(null)}>{notice} <span className="x">dismiss</span></div>}
       {run?.previewUnavailable && <div className="notice">{run.previewUnavailable}</div>}
 
-      {compact && <div className="mobile-panes" role="tablist" aria-label="Debugger panels">
+      {compact && <TabList className="mobile-panes" aria-label="Debugger panels">
         {MOBILE_PANES.map((pane, index) => (
           <button key={pane.id} id={`tab-${pane.id}`} role="tab" aria-controls={`pane-${pane.id}`}
             aria-selected={mobilePane === pane.id} tabIndex={mobilePane === pane.id ? 0 : -1}
@@ -410,7 +411,7 @@ export default function App() {
               document.getElementById(`tab-${target.id}`)?.focus();
             }}>{pane.label}</button>
         ))}
-      </div>}
+      </TabList>}
       <div className="mobile-stage" hidden={!compact || (mobilePane !== 'inspector' && mobilePane !== 'output')}>
         <label htmlFor="mobile-selected-stage">Stage</label>
         <select id="mobile-selected-stage" value={selected} onChange={(event) => setSelected(event.target.value)}>

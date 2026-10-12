@@ -93,4 +93,3 @@
   .cx .an-chart__key { min-height: 44px; padding-inline: 8px; }
   .cx .an-chart__legend { gap: 0 8px; margin-bottom: 0; }
 }
-@media (prefers-reduced-motion: reduce) { .cx .an-chart .bar { transition: none; } }

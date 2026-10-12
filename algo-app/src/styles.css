@@ -46,6 +46,11 @@
   --font-mono: "IBM Plex Mono", Menlo, "DejaVu Sans Mono", monospace;
   --ease-productive: cubic-bezier(.2, 0, .38, .9);
   --ease-expressive: cubic-bezier(.4, .14, .3, 1);
+  /* Bluegrid's motion (console/motion.css uses them): something that arrives
+     decelerates, something that leaves accelerates, and leaves faster. */
+  --ease-entrance: cubic-bezier(0, 0, .38, .9); --ease-exit: cubic-bezier(.2, 0, 1, .9);
+  --ease-entrance-expressive: cubic-bezier(0, 0, .3, 1);
+  --duration-fast-01: 70ms; --duration-fast-02: 110ms; --duration-moderate-01: 150ms; --duration-moderate-02: 240ms;
 }
 * { box-sizing: border-box; }
 body, html, #root { margin: 0; height: 100%; background: var(--background); color: var(--text-primary);
@@ -78,8 +83,7 @@ button, input, select { font: inherit; color: inherit; letter-spacing: inherit; 
 .modes { display: flex; flex-wrap: wrap; gap: 1px; }
 /* Small Carbon buttons: square, label left, the hover is a colour step. */
 .btn { display: inline-flex; align-items: center; min-height: 32px; background: var(--layer-02); border: 0; padding: 0 15px;
-  border-radius: 0; cursor: pointer; color: var(--text-primary); font-size: 14px;
-  transition: background 70ms var(--ease-productive); }
+  border-radius: 0; cursor: pointer; color: var(--text-primary); font-size: 14px; }
 .btn:hover { background: var(--layer-hover-02); }
 .btn:disabled { background: var(--button-disabled); color: var(--text-disabled); cursor: not-allowed; }
 .btn.on, .btn-apply { background: var(--interactive); color: var(--on-interactive); font-weight: 600; }

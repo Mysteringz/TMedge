@@ -75,6 +75,10 @@ async function open(browser, user, path, viewport = { width: 1280, height: 900 }
   return { context, page, errors };
 }
 
+// What closes leaves before it goes (algo-app/src/console/motion.tsx): it is
+// inert at once and off the page an exit later, so "closed" is waited for.
+const gone = (locator) => locator.waitFor({ state: 'detached' });
+
 async function shot(page, name) {
   const output = process.env.ALGO_UI_SCREENSHOTS;
   if (!output) return;
@@ -123,11 +127,12 @@ test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is st
       await modules.getByRole('link', { name, exact: true }).click();
       await page.waitForURL(`${base}${path}`);
       await page.getByRole('heading', { name: heading, exact: true, level: 1 }).waitFor();
-      assert.equal(await modules.locator('.cx-group-dropdown').count(), 0, 'choosing a page closes the menu');
+      await gone(modules.locator('.cx-group-dropdown'));
       assert.equal(await devices.getAttribute('aria-current'), 'page', `Devices is the current place on ${path}`);
       await devices.click();
       assert.equal(await modules.getByRole('link', { name, exact: true }).getAttribute('aria-current'), 'page');
       await devices.click();
+      await gone(modules.locator('.cx-group-dropdown'));
     }
     assert.equal(await modules.getByRole('button', { name: 'ML', exact: true }).getAttribute('aria-current'), null);
 
@@ -135,6 +140,7 @@ test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is st
     assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['ML job', 'ML data'], 'ML keeps its own two, and nothing of Devices');
     // One menu at a time: opening another closes it.
     await devices.click();
+    await gone(modules.locator('.cx-group-dropdown[data-state="leaving"]'));
     assert.equal(await modules.locator('.cx-group-dropdown').count(), 1);
     assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['Updates', 'Adoption', 'TMflash']);
     assert.deepEqual(errors, []);
@@ -147,6 +153,71 @@ const block = (page, rules) => page.evaluate((css) => {
   sheet.replaceSync(css);
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
 }, rules);
+
+test('chromium: a switch moves its fill to what was chosen, a menu leaves before it goes, and neither moves for someone who asked for less motion', { timeout: 60_000 }, async () => {
+  const browser = await chromium.launch({ headless: true });
+  const { context, page, errors } = await open(browser, 'engineer', '/');
+  try {
+    // --- Inbox / Sent: one fill for the row, and it goes where the choice went ---
+    const mailbox = page.getByRole('radiogroup', { name: 'Mailbox', exact: true });
+    await mailbox.and(page.locator('[data-glide="live"]')).waitFor();
+    // The option hands its own fill over to the row's (an ease, so it is waited for): there is one fill, not one each.
+    await mailbox.locator('.seg-opt:has(input:checked)').evaluate((chosen) => new Promise((resolve) => {
+      const check = () => (getComputedStyle(chosen).backgroundColor === 'rgba(0, 0, 0, 0)' ? resolve() : requestAnimationFrame(check));
+      check();
+    }));
+    const fill = () => mailbox.evaluate((row) => {
+      const chosen = row.querySelector('.seg-opt:has(input:checked)');
+      const mark = getComputedStyle(row, '::after');
+      return {
+        chosen: chosen.textContent.trim(), at: row.style.getPropertyValue('--glide-x'), option: `${chosen.offsetLeft}px`,
+        wide: mark.width === `${chosen.offsetWidth}px`, moves: mark.transitionDuration,
+      };
+    });
+    const inbox = await fill();
+    assert.equal(inbox.chosen, 'Inbox');
+    assert.equal(inbox.at, inbox.option, 'the fill sits on the chosen option');
+    assert.equal(inbox.wide, true, 'and is as wide as it');
+    assert.match(inbox.moves, /0\.24s/, 'and it travels rather than jumps');
+    await mailbox.getByText('Sent', { exact: true }).click();
+    const sent = await fill();
+    assert.equal(sent.chosen, 'Sent');
+    assert.equal(sent.at, sent.option, 'choosing Sent sends the fill to Sent');
+    assert.notEqual(sent.at, inbox.at);
+
+    // --- a menu that closes is inert at once, and gone an exit later -------------
+    const modules = page.locator('.cx-header').getByRole('navigation', { name: 'Modules', exact: true });
+    const devices = modules.getByRole('button', { name: 'Devices', exact: true });
+    const menu = modules.locator('.cx-group-dropdown');
+    await devices.click();
+    assert.equal(await menu.getAttribute('data-state'), 'open');
+    // Watched from inside the page: how long the exit lasts is not this test's to race.
+    await page.evaluate(() => {
+      const element = document.querySelector('.cx-group-dropdown');
+      window.leaving = [];
+      new MutationObserver(() => window.leaving.push({ state: element.dataset.state, inert: element.inert, onPage: element.isConnected }))
+        .observe(document.querySelector('.cx-header'), { attributes: true, childList: true, subtree: true });
+    });
+    await page.keyboard.press('Escape');
+    assert.equal(await devices.getAttribute('aria-expanded'), 'false');
+    await gone(menu);
+    const seen = await page.evaluate(() => window.leaving);
+    assert.ok(seen.some((moment) => moment.state === 'leaving' && moment.inert && moment.onPage), `it leaves, inert, before it is removed: ${JSON.stringify(seen)}`);
+
+    // --- less motion: everything still happens, at once --------------------------
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await devices.click();
+    assert.equal(await menu.evaluate((element) => getComputedStyle(element).animationName), 'none', 'the menu does not slide in');
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.count(), 0, 'and closed is gone, with no exit to wait for');
+    await mailbox.getByText('Inbox', { exact: true }).click();
+    const quiet = await fill();
+    assert.equal(quiet.at, quiet.option, 'the fill is still on what was chosen');
+    assert.equal(quiet.moves, '0s', 'having jumped there');
+    assert.equal(await page.getByRole('button', { name: 'Compose' }).evaluate((button) => getComputedStyle(button).transitionDuration), '0s', 'and no control eases');
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); await browser.close(); }
+});
 
 test('chromium: with an ad blocker’s hiding rules on, Adoption and TMflash still show every panel and their buttons', { timeout: 60_000 }, async () => {
   const browser = await chromium.launch({ headless: true });
@@ -196,11 +267,12 @@ test('chromium: the account icon holds who is signed in, their settings and the 
     assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 1281, 'the menu opens inside the window');
     await shot(page, 'account-menu-1280');
     await page.keyboard.press('Escape');
-    assert.equal(await panel.count(), 0);
     assert.equal(await account.evaluate((button) => button === document.activeElement), true, 'Escape returns focus to the icon');
+    await gone(panel);
     await account.click();
     await page.getByRole('button', { name: /^Notifications/ }).click();
-    assert.equal(await panel.count(), 0, 'opening the notifications closes the account menu');
+    assert.equal(await account.getAttribute('aria-expanded'), 'false', 'opening the notifications closes the account menu');
+    await gone(panel);
     await page.keyboard.press('Escape');
 
     await account.click();
@@ -295,7 +367,8 @@ for (const [engine, launcher] of [['chromium', chromium], ['webkit', webkit]]) {
         await page.locator('.cx-account-panel').getByText('Viewer', { exact: true }).waitFor();
         // Somewhere the menu does not cover.
         await page.getByRole('heading', { name: 'Sessions', exact: true }).click();
-        assert.equal(await page.locator('.cx-account-panel').count(), 0, 'a tap outside closes it');
+        assert.equal(await page.getByRole('button', { name: 'Account', exact: true }).getAttribute('aria-expanded'), 'false', 'a tap outside closes it');
+        await gone(page.locator('.cx-account-panel'));
       }
       await page.getByRole('button', { name: 'Account', exact: true }).click();
       await page.locator('.cx-account-panel').getByRole('button', { name: 'Sign out', exact: true }).click();
