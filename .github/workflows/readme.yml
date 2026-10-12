@@ -1,0 +1,31 @@
+name: Update README structure
+
+on:
+  schedule:
+    # 09:17 Hong Kong time; avoid the busy start of the UTC hour.
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: readme-structure
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refresh only the generated tree and merge through required checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/update_readme.sh

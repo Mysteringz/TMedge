@@ -212,6 +212,13 @@ can move its status (to do, in progress, done) whatever their role.
 - Deployment is only through the pipeline: a pull request with passing
   checks, an artifact built by CI, an approval by the owner, then an
   automatic health check with rollback. Nobody copies files onto the server.
+- A change only to the root README runs brief documentation checks and does
+  not build or deploy the runtime. A daily GitHub task refreshes its generated
+  directory tree only when tracked project paths change, using a pull request
+  and the required checks. Written descriptions are maintained by people.
+  Code and runtime configuration changes still run the full pipeline.
+  Later changes only to the root README do not invalidate an already checked
+  release; every other Git tree entry must still match before deployment.
 - Firmware and the edge share a wire format. A change to it must be made in
   both repositories and proved by "npm run crosscheck".
 - Training data (thermal and camera frame pairs from the calibration rig) is
