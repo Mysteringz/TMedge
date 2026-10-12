@@ -24,6 +24,7 @@ web-app/                 student UI: React + Vite, builds into public-web/app/
 src/algo/                algo console: node-graph over the real pipeline (docs/ALGO_DASHBOARD.md)
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
 src/modules/algo-admin/  accounts (admins, /api/admin/accounts) and each person's own account (/api/account: address, password, sessions; docs/algo-admin-roles.md)
+src/infrastructure/email/  Amazon SES sender: SigV4 by hand, the EC2 instance role's keys, EMAIL_* config (docs/EMAIL.md)
 src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports (docs/ML_DATA.md)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
@@ -162,8 +163,19 @@ has hidden Linux failures before.
   inherits it, and dropped once the account is gone. No admin route, team
   list, page or Ask AI prompt may carry it. Changing a password needs the
   current one, ends every other session, and renews only the one it was
-  made from. The console cannot send email yet (`emailDelivery` is false and
-  the page says so): do not word anything as though mail goes out.
+  made from.
+- **Email goes only to an address its owner confirmed, and says only what
+  they could see signed in.** A code typed back into Account settings is the
+  one thing an unconfirmed address is sent; a changed address is unconfirmed
+  again. Notifications are read under the recipient's own role, mailbox and
+  tasks (`runtime-account-news.ts`), never as an admin. No address reaches a
+  log, an error, an API response to anyone else, or the delivery file
+  (`email-delivery.json` holds hashes). What is news and how often is
+  decided in `domain/email-delivery.ts` and nowhere else: nothing that was
+  already true when email was turned on, a clearable fault only after ten
+  minutes, one message per 15 minutes, 12 a day. Without `EMAIL_FROM` and
+  `EMAIL_SES_REGION` there is no mailer, `emailDelivery` is false and the
+  page says so: do not word anything as though mail goes out. docs/EMAIL.md.
 - **No class name an ad blocker hides.** `ad-…`, `ads-…`, `…-ad`, `advert…`,
   `sponsor…` are removed from the page by EasyList's generic rules, with no
   error -- it emptied Adoption and TMflash for anyone running one. Those two

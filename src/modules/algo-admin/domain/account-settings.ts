@@ -14,10 +14,31 @@ export const EMAIL_TOPICS = [...NOTIFICATION_KINDS, 'mail', 'task'] as const;
 export type EmailTopic = typeof EMAIL_TOPICS[number];
 export const MAX_EMAIL = 254;
 
-export interface AccountSettings { email: string | null; notify: EmailTopic[] }
-export const NO_SETTINGS: AccountSettings = { email: null, notify: [] };
+export interface AccountSettings {
+  email: string | null; notify: EmailTopic[];
+  /**
+   * The address has been shown to be this person's: a code sent to it was
+   * typed back. Until then nothing but that code is ever sent to it -- a
+   * mistyped address must not start receiving a stranger's sensor alerts.
+   */
+  confirmed: boolean;
+}
+export const NO_SETTINGS: AccountSettings = { email: null, notify: [], confirmed: false };
 
-export interface StoredSettings extends AccountSettings { name: string; accountCreatedAt: number; updatedAt: number }
+/** A code that was emailed and not yet typed back. Only its hash is kept. */
+export interface PendingCode { hash: string; expiresAt: number; triesLeft: number }
+export const CODE_LIFETIME_MS = 30 * 60_000;
+export const CODE_TRIES = 5;
+
+export interface StoredSettings {
+  name: string; accountCreatedAt: number; updatedAt: number;
+  email: string | null; notify: EmailTopic[];
+  /** When the address on file was confirmed; null until it is, and again whenever it changes. */
+  confirmedAt: number | null;
+  code: PendingCode | null;
+}
+/** Somebody to write to: a confirmed address and at least one thing to hear about. For the sender only. */
+export interface Subscriber { name: string; createdAt: number; email: string; notify: EmailTopic[] }
 export interface SettingsDocument { version: 1; accounts: StoredSettings[] }
 export const emptySettings = (): SettingsDocument => ({ version: 1, accounts: [] });
 
@@ -57,12 +78,23 @@ export function parseSettings(value: unknown): SettingsDocument {
   const seen = new Set<string>();
   return { version: 1, accounts: accounts.map((entry: unknown): StoredSettings => {
     if (typeof entry !== 'object' || entry === null) return bad();
-    const { name, accountCreatedAt, updatedAt, email, notify } = entry as Record<string, unknown>;
+    const { name, accountCreatedAt, updatedAt, email, notify, confirmedAt, code } = entry as Record<string, unknown>;
     const topics = emailTopics(notify);
+    // Written before confirmation existed: an address nobody has confirmed.
+    const confirmed = confirmedAt === undefined ? null : confirmedAt, pending = code === undefined || code === null ? null : pendingCode(code);
+    if (!(confirmed === null || (typeof confirmed === 'number' && Number.isFinite(confirmed))) || pending === undefined) return bad();
     if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9_.-]{1,31}$/.test(name) || seen.has(name)) return bad();
     if (typeof accountCreatedAt !== 'number' || !Number.isFinite(accountCreatedAt) || typeof updatedAt !== 'number' || !Number.isFinite(updatedAt)) return bad();
     if (topics === null || (email !== null && emailAddress(email) !== email)) return bad();
     seen.add(name);
-    return { name, accountCreatedAt, updatedAt, email: email as string | null, notify: topics };
+    return { name, accountCreatedAt, updatedAt, email: email as string | null, notify: topics, confirmedAt: email === null ? null : confirmed, code: pending };
   }) };
+}
+
+function pendingCode(value: unknown): PendingCode | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { hash, expiresAt, triesLeft } = value as Record<string, unknown>;
+  if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash) || typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)
+    || typeof triesLeft !== 'number' || !Number.isInteger(triesLeft) || triesLeft < 0 || triesLeft > CODE_TRIES) return undefined;
+  return { hash, expiresAt, triesLeft };
 }
