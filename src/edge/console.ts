@@ -76,6 +76,8 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     nodesPath: rt.cfg.nodesPath,
     sitePath: rt.cfg.sitePath,
     mutationCoordinator: options.registryMutationCoordinator,
+    registryProvider: () => rt.captureGeneration().reg,
+    prepareRegistryAddition: (node) => rt.prepareNodeRegistration(node),
     auditPath: join(rt.cfg.dataDir, 'provisioning.jsonl'),
   }));
   const credentials = new AdoptionCredentials(join(rt.cfg.dataDir, 'flasher-credentials.json'));
@@ -106,7 +108,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   const lastRgbTs = new Map<string, number>();
   machine.post('/api/demo/rgb/:uid', express.raw({ type: 'image/jpeg', limit: '600kb' }), (req, res) => {
     const uid = (req.params.uid ?? '').toLowerCase();
-    const node = rt.reg.nodes.get(uid);
+    const node = rt.captureGeneration().reg.nodes.get(uid);
     if (!node?.rgb) return res.status(403).json({ error: 'not an RGB-enabled node' });
     const ts = Number(req.get('x-tm-ts'));
     const now = Date.now();
@@ -217,6 +219,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   ui.get('/api/layout', (_req, res) => res.json(rt.layout()));
   ui.get('/healthz', (_req, res) => res.status(200).json({ live: true }));
   ui.get('/readyz', asyncHandler(async (_req, res) => {
+    const generation = rt.captureGeneration();
     const persistenceAvailable = rt.persistenceAvailable ? await rt.persistenceAvailable().catch(() => false) : null;
     const buildStatus = firmwareBuildJobs.operationalStatus
       ? await firmwareBuildJobs.operationalStatus().catch(() => ({ unavailable: true }))
@@ -228,9 +231,9 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
         ingestion: { ready: rt.isStarted, packetsPerSec: rt.ingest.rates().packetsPerSec },
         snapshotPublishing: {
           targets: rt.publisher.status,
-          lastSnapshotAt: rt.latest.generatedAt,
-          ageMs: Math.max(0, Date.now() - rt.latest.generatedAt),
-          freshness: Date.now() - rt.latest.generatedAt <= 2 * rt.cfg.publishMs ? 'current' : 'stale',
+          lastSnapshotAt: generation.latest.generatedAt,
+          ageMs: Math.max(0, Date.now() - generation.latest.generatedAt),
+          freshness: Date.now() - generation.latest.generatedAt <= 2 * rt.cfg.publishMs ? 'current' : 'stale',
         },
         persistence: {
           mode: rt.cfg.persistenceMode,
@@ -425,11 +428,12 @@ export function stopConsole(server: Server): Promise<void> {
 
 function state(rt: EdgeRuntime) {
   const now = Date.now();
+  const generation = rt.captureGeneration();
   return {
     health: rt.health(now),
-    nodes: rt.nodes(now),
-    snapshot: rt.latest,
-    authorities: rt.engine.authorities(),
-    dwell: Object.fromEntries([...rt.dwell].map(([id, d]) => [id, d.toJSON()])),
+    nodes: rt.nodes(now, generation),
+    snapshot: generation.latest,
+    authorities: generation.engine.authorities(),
+    dwell: Object.fromEntries([...generation.dwell].map(([id, d]) => [id, d.toJSON()])),
   };
 }

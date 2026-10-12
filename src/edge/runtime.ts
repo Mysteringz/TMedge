@@ -16,7 +16,7 @@ import type { OccupancyEngine } from './occupancy.js';
 import { REPORT_BACKGROUND_READY, REPORT_GLOBAL_SHIFT, type Raw, type Report, type Status } from './protocol.js';
 import type { Recorder } from './recorder.js';
 import type { FirmwareStore } from './firmware.js';
-import type { Registry } from './registry.js';
+import type { NodeDef, Registry } from './registry.js';
 import type { Rollouts } from './rollout.js';
 import type { GatewayServer } from './gwlink.js';
 import type { NodeServer } from './nodelink.js';
@@ -26,6 +26,22 @@ import type { DurableCommandOutcomes } from '../modules/nodes/application/durabl
 import { LiveCommandReceipts } from '../modules/nodes/application/live-command-receipts.js';
 import type { RolloutService } from '../modules/rollouts/application/rollout-service.js';
 import { StaticBackground } from './staticbg.js';
+import { RegistryMutationQuarantinedError } from '../modules/location-config/domain/location-records.js';
+
+export interface RuntimeGeneration {
+  readonly id: number;
+  readonly reg: Registry;
+  readonly engine: OccupancyEngine;
+  readonly dwell: Map<string, DwellMap>;
+  latest: OccupancySnapshot;
+}
+
+export interface PreparedRuntimeGeneration {
+  readonly generation: RuntimeGeneration;
+  readonly snapshot: OccupancySnapshot;
+  readonly publicSnapshot: OccupancySnapshot;
+  readonly serializedPublicSnapshot: string;
+}
 
 export const EDGE_VERSION = '1.0.0';
 
@@ -69,11 +85,9 @@ export interface EdgeRuntimeServices {
 
 export class EdgeRuntime extends EventEmitter {
   readonly ingest: Ingest;
-  readonly engine: OccupancyEngine;
   readonly recorder: Recorder;
   readonly publisher: Publisher;
   readonly host = new HostMonitor();
-  readonly dwell = new Map<string, DwellMap>();
   readonly gateways: GatewayServer | null;
   /** Nodes that reach this edge directly over WSS (NODE_PORT); null when off. */
   readonly direct: NodeServer | null;
@@ -92,15 +106,23 @@ export class EdgeRuntime extends EventEmitter {
   readonly rolloutService: RolloutService;
   readonly persistenceAvailable: (() => Promise<boolean>) | null;
   private lastRecordedMinute = -1;
-  latest: OccupancySnapshot;
+  private activeGeneration: RuntimeGeneration;
+  private nextGenerationId = 1;
+  private quarantined = false;
+
+  get reg(): Registry { return this.captureGeneration().reg; }
+  get engine(): OccupancyEngine { return this.captureGeneration().engine; }
+  get dwell(): Map<string, DwellMap> { return this.captureGeneration().dwell; }
+  get latest(): OccupancySnapshot { return this.captureGeneration().latest; }
+  set latest(snapshot: OccupancySnapshot) { this.activeGeneration.latest = snapshot; }
 
   get isStarted(): boolean {
     return this.started;
   }
 
-  constructor(readonly cfg: EdgeConfig, readonly reg: Registry, services: EdgeRuntimeServices = {} as EdgeRuntimeServices) {
+  constructor(readonly cfg: EdgeConfig, initialRegistry: Registry, services: EdgeRuntimeServices = {} as EdgeRuntimeServices) {
     super();
-    this.engine = services.engine;
+    const engine = services.engine;
     this.recorder = services.recorder;
     this.publisher = services.publisher;
     this.ingest = services.ingest;
@@ -119,12 +141,74 @@ export class EdgeRuntime extends EventEmitter {
     });
     this.rolloutService = services.rolloutService ?? services.rollouts;
     this.persistenceAvailable = services.persistenceAvailable ?? null;
-    for (const f of reg.floors) this.dwell.set(f.id, new DwellMap(f.width, f.height));
+    const dwell = new Map(initialRegistry.floors.map((floor) => [floor.id, new DwellMap(floor.width, floor.height)]));
     this.ingest.on('report', (p, _a, at) => this.onReport(p, at));
     this.ingest.on('raw', (p, _a, at) => this.onRaw(p, at));
     this.ingest.on('status', (p, _a, at) => this.onStatus(p, at));
     this.ingest.on('ota', (p) => setImmediate(() => this.rollouts.onOtaStatus(p.uid, p)));
-    this.latest = this.engine.snapshot(Date.now());
+    this.activeGeneration = { id: 1, reg: initialRegistry, engine, dwell, latest: engine.snapshot(Date.now()) };
+    this.nextGenerationId = 2;
+  }
+
+  /** Capture one coherent runtime generation for a complete synchronous or async operation. */
+  captureGeneration(): RuntimeGeneration {
+    if (this.quarantined) throw new RegistryMutationQuarantinedError();
+    return this.activeGeneration;
+  }
+
+  prepareGeneration(registry: Registry, now = Date.now()): PreparedRuntimeGeneration {
+    const active = this.captureGeneration();
+    const engine = active.engine.prepareForRegistry(registry);
+    const dwell = new Map<string, DwellMap>();
+    for (const floor of registry.floors) {
+      const existing = active.dwell.get(floor.id);
+      dwell.set(floor.id, existing && existing.width === floor.width && existing.height === floor.height
+        ? existing : new DwellMap(floor.width, floor.height));
+    }
+    const generation: RuntimeGeneration = { id: this.nextGenerationId++, reg: registry, engine, dwell, latest: engine.snapshot(now, false) };
+    return this.materialize(generation, generation.latest);
+  }
+
+  /** Prepare an approved, still-unplaced sensor without mutating the active registry. */
+  prepareNodeRegistration(node: NodeDef): () => void {
+    const active = this.captureGeneration();
+    const existing = active.reg.nodes.get(node.uid);
+    if (existing) {
+      if (existing.label !== node.label || existing.floorId !== null || existing.pose !== null || existing.owns.length !== 0) {
+        throw new Error(`cannot register ${node.uid}: the active identity is already in use`);
+      }
+      return () => undefined;
+    }
+    const nodes = new Map(active.reg.nodes);
+    nodes.set(node.uid, structuredClone(node));
+    const prepared = this.prepareGeneration({ ...active.reg, nodes });
+    return () => this.activatePreparedGeneration(prepared);
+  }
+
+  /** Refresh the detached candidate snapshot before commit to include reports received during async preparation. */
+  refreshPreparedGeneration(prepared: PreparedRuntimeGeneration, now = Date.now()): PreparedRuntimeGeneration {
+    const snapshot = prepared.generation.engine.snapshot(now, false);
+    prepared.generation.latest = snapshot;
+    return this.materialize(prepared.generation, snapshot);
+  }
+
+  /** Commit point: only a pointer swap and best-effort enqueue of prebuilt bytes occur here. */
+  activatePreparedGeneration(prepared: PreparedRuntimeGeneration): void {
+    this.activeGeneration = prepared.generation;
+    this.quarantined = false;
+    try { this.publisher.publishSerialized(prepared.serializedPublicSnapshot); } catch { /* publication is retried by the next tick */ }
+    try { this.emit('snapshot', prepared.publicSnapshot); } catch { /* listener failures cannot reverse a committed registry */ }
+  }
+
+  quarantine(_reason: unknown): void { this.quarantined = true; }
+
+  isQuarantined(): boolean { return this.quarantined; }
+
+  private materialize(generation: RuntimeGeneration, snapshot: OccupancySnapshot): PreparedRuntimeGeneration {
+    const publicSnapshot = this.publicSnapshot(snapshot, generation);
+    const serializedPublicSnapshot = JSON.stringify(publicSnapshot);
+    if (typeof serializedPublicSnapshot !== 'string') throw new TypeError('Public occupancy snapshot could not be serialized.');
+    return { generation, snapshot, publicSnapshot, serializedPublicSnapshot };
   }
 
   /**
@@ -176,24 +260,28 @@ export class EdgeRuntime extends EventEmitter {
   }
 
   tick(now: number): OccupancySnapshot {
-    this.latest = this.engine.snapshot(now);
-    this.publisher.publish(this.publicSnapshot(this.latest));
+    if (this.quarantined) return this.activeGeneration.latest;
+    const generation = this.captureGeneration();
+    const snapshot = generation.engine.snapshot(now);
+    generation.latest = snapshot;
+    const publicSnapshot = this.publicSnapshot(snapshot, generation);
+    this.publisher.publish(publicSnapshot);
     const minute = Math.floor(now / 60_000);
     if (minute !== this.lastRecordedMinute) {
       this.lastRecordedMinute = minute;
-      this.recorder.snapshot(this.latest);
-      this.occupancyHistory?.enqueue(this.latest);
+      this.recorder.snapshot(snapshot);
+      this.occupancyHistory?.enqueue(snapshot);
     }
-    this.emit('snapshot', this.latest);
-    return this.latest;
+    this.emit('snapshot', publicSnapshot);
+    return snapshot;
   }
 
   /**
    * What the web tier gets: public floors only. Console-only floors (demo
    * rigs, test spaces) stay on the edge -- students never see them.
    */
-  publicSnapshot(s: OccupancySnapshot): OccupancySnapshot {
-    const pub = new Set(this.reg.floors.filter((f) => f.visibility === 'public').map((f) => f.id));
+  publicSnapshot(s: OccupancySnapshot, generation = this.captureGeneration()): OccupancySnapshot {
+    const pub = new Set(generation.reg.floors.filter((f) => f.visibility === 'public').map((f) => f.id));
     return { ...s, floors: s.floors.filter((f) => pub.has(f.id)) };
   }
 
@@ -215,8 +303,8 @@ export class EdgeRuntime extends EventEmitter {
   }
 
   /** True when this edge, not the node, finds the node's people. */
-  private detectsHere(uid: string): boolean {
-    return this.reg.nodes.get(uid)?.detector === 'edge';
+  private detectsHere(uid: string, generation: RuntimeGeneration): boolean {
+    return generation.reg.nodes.get(uid)?.detector === 'edge';
   }
 
   private edgeDetector(uid: string): EdgeDetector {
@@ -230,24 +318,26 @@ export class EdgeRuntime extends EventEmitter {
   }
 
   private onReport(p: Report, at: number): void {
-    if (this.detectsHere(p.uid)) {
+    if (this.quarantined) return;
+    const generation = this.captureGeneration();
+    if (this.detectsHere(p.uid, generation)) {
       // The node's verdict comes from the background that forgets people who
       // sit still; its RAW frame is what gets counted (onRaw). The REPORT
       // still arrives -- it keeps the frame rate and liveness honest.
       this.infoFor(p.uid).nodeReport = p;
       return;
     }
-    this.acceptReport(p, at);
+    this.acceptReport(p, at, generation);
   }
 
-  private acceptReport(p: Report, at: number): void {
+  private acceptReport(p: Report, at: number, generation: RuntimeGeneration): void {
     const i = this.infoFor(p.uid);
     i.lastReport = p;
     i.lastReportAt = at;
-    const dets = this.engine.ingest(p, at);
+    const dets = generation.engine.ingest(p, at);
     this.recorder.report(p, at);
-    const node = this.reg.nodes.get(p.uid);
-    const dwell = node?.floorId ? this.dwell.get(node.floorId) : undefined;
+    const node = generation.reg.nodes.get(p.uid);
+    const dwell = node?.floorId ? generation.dwell.get(node.floorId) : undefined;
     if (dwell) {
       const dt = Math.max(0.2, Math.min(5, 1 / Math.max(this.ingest.frameRate(p.uid), 0.2)));
       for (const d of dets) if (d.counted) dwell.add(d.floorX, d.floorY, d.persons * dt, at);
@@ -260,10 +350,12 @@ export class EdgeRuntime extends EventEmitter {
     const i = this.infoFor(p.uid);
     i.lastRaw = msg;
     this.recorder.rawFrame(p, at);
+    if (this.quarantined) return;
     this.emit('raw', msg);
-    if (this.detectsHere(p.uid)) {
+    const generation = this.captureGeneration();
+    if (this.detectsHere(p.uid, generation)) {
       const ta = i.nodeReport?.ta ?? i.status?.ta ?? 0;
-      this.acceptReport(this.edgeDetector(p.uid).step(p, at, ta), at);
+      this.acceptReport(this.edgeDetector(p.uid).step(p, at, ta), at, generation);
     }
   }
 
@@ -289,10 +381,10 @@ export class EdgeRuntime extends EventEmitter {
     return this.info.get(uid)?.lastReport ?? null;
   }
 
-  nodes(now = Date.now()): NodeHealth[] {
-    const uids = new Set([...this.reg.nodes.keys(), ...this.ingest.links.keys()]);
+  nodes(now = Date.now(), generation = this.captureGeneration()): NodeHealth[] {
+    const uids = new Set([...generation.reg.nodes.keys(), ...this.ingest.links.keys()]);
     return [...uids].sort().map((uid) => {
-      const def = this.reg.nodes.get(uid);
+      const def = generation.reg.nodes.get(uid);
       const link = this.ingest.links.get(uid);
       const i = this.info.get(uid);
       const r = i?.lastReport ?? null;
@@ -335,7 +427,7 @@ export class EdgeRuntime extends EventEmitter {
             generation: i.statusGeneration ?? 0,
           }
           : null,
-        refHeat: this.engine.refHeat(uid),
+        refHeat: generation.engine.refHeat(uid),
       };
     });
   }
@@ -387,14 +479,15 @@ export class EdgeRuntime extends EventEmitter {
 
   /** Static layout for the console: plan, tables, seats, node poses and footprints. */
   layout() {
+    const generation = this.captureGeneration();
     return {
-      site: this.reg.site,
-      floors: this.reg.floors.map((f) => ({
+      site: generation.reg.site,
+      floors: generation.reg.floors.map((f) => ({
         id: f.id, visibility: f.visibility, building: f.building, name: f.name, width: f.width, height: f.height, outline: f.outline,
         zones: f.zones,
-        tables: f.tables.map((t) => ({ id: t.id, name: t.name, rect: t.rect, capacity: t.capacity, seats: t.seats, owner: t.owner, coveredBy: t.coveredBy })),
+        tables: f.tables.map((t) => ({ id: t.id, name: t.name, rect: t.rect, shape: t.shape, capacity: t.capacity, seats: t.seats, owner: t.owner, coveredBy: t.coveredBy })),
       })),
-      nodes: [...this.reg.nodes.values()].map((n) => ({
+      nodes: [...generation.reg.nodes.values()].map((n) => ({
         uid: n.uid, label: n.label, floorId: n.floorId, pose: n.pose, owns: n.owns, simulated: n.simulated, rgb: n.rgb,
         // An unplaced node has no pose, so it draws no footprint on any
         // plan; the console lists it separately instead.

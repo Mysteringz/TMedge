@@ -16,6 +16,12 @@ export interface Rect {
   height: number;
 }
 
+/** Canonical plan geometry in centimetres from the top-left floor origin. */
+export type TableShape =
+  | { type: 'rect'; x: number; y: number; width: number; height: number }
+  | { type: 'circle'; cx: number; cy: number; radius: number }
+  | { type: 'polygon'; points: Point[] };
+
 export type SeatSide = 'L' | 'R' | 'T' | 'B';
 
 export interface SeatState {
@@ -44,6 +50,8 @@ export interface TableState {
   name: string;
   zoneId: string;
   rect: Rect;
+  /** Present on version-2 snapshots. `rect` remains the derived legacy bounds. */
+  shape?: TableShape;
   capacity: number;
   /** Seats taken; never more than capacity. null when unknown. */
   occupied: number | null;
@@ -78,11 +86,22 @@ export interface FloorState {
   outline: Point[];
   zones: ZoneState[];
   tables: TableState[];
+  /** Present only when this floor has a published GLB. */
+  model?: PublishedFloorModel;
   totals: FloorTotals;
 }
 
+export interface PublishedFloorModel {
+  assetId: string;
+  transform: {
+    scale: { x: number; y: number; z: number };
+    rotationDeg: { x: number; y: number; z: number };
+    positionM: { x: number; y: number; z: number };
+  };
+}
+
 export interface OccupancySnapshot {
-  version: 1;
+  version: 1 | 2;
   edgeId: string;
   site: { id: string; name: string };
   /** Edge clock, ms since epoch. */

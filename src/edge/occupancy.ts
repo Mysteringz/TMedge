@@ -110,19 +110,39 @@ const HEAT_MIN_SAMPLES = 30;
 const ZONE_WINDOW = 7;
 
 export class OccupancyEngine {
-  private readonly nodes = new Map<string, NodeState>();
-  private readonly seats = new Map<string, SeatTrack>();
-  private readonly tables = new Map<string, TableTrack>();
+  private readonly nodes: Map<string, NodeState>;
+  private readonly seats: Map<string, SeatTrack>;
+  private readonly tables: Map<string, TableTrack>;
+  private readonly sharedOptions: { value: OccupancyOptions };
+
+  private get opts(): OccupancyOptions { return this.sharedOptions.value; }
+  private set opts(value: OccupancyOptions) { this.sharedOptions.value = value; }
 
   constructor(
     private readonly reg: Registry,
     private readonly edgeId: string,
-    private opts: OccupancyOptions = DEFAULT_OCCUPANCY,
+    opts: OccupancyOptions = DEFAULT_OCCUPANCY,
+    previous?: OccupancyEngine,
   ) {
+    // Share the maps, not just the records currently inside them. A new node
+    // may report after this generation has been prepared but before it is
+    // activated; sharing only existing NodeState objects would lose that
+    // first report in the detached candidate.
+    this.nodes = previous?.nodes ?? new Map<string, NodeState>();
+    this.seats = previous?.seats ?? new Map<string, SeatTrack>();
+    this.tables = previous?.tables ?? new Map<string, TableTrack>();
+    this.sharedOptions = previous?.sharedOptions ?? { value: { ...opts } };
     for (const t of reg.tables.values()) {
-      this.tables.set(t.id, { authority: null, peopleHistory: [], unknownSince: null });
-      for (const s of t.seats) this.seats.set(s.id, { window: [], occupied: false, lastSeenAt: 0, framesSeen: 0 });
+      if (!this.tables.has(t.id)) this.tables.set(t.id, { authority: null, peopleHistory: [], unknownSince: null });
+      for (const s of t.seats) {
+        if (!this.seats.has(s.id)) this.seats.set(s.id, { window: [], occupied: false, lastSeenAt: 0, framesSeen: 0 });
+      }
     }
+  }
+
+  /** Prepare a candidate engine while sharing live track objects for stable IDs. */
+  prepareForRegistry(registry: Registry): OccupancyEngine {
+    return new OccupancyEngine(registry, this.edgeId, this.opts, this);
   }
 
   /** What the engine is running on right now. */
@@ -156,6 +176,7 @@ export class OccupancyEngine {
 
   /** Floor-normalised heat (C*m^2) of a typical single person in this node's view, once learned. */
   refHeat(uid: string): number | null {
+    if (!this.reg.nodes.has(uid)) return null;
     const st = this.nodes.get(uid);
     if (!st || st.heats.length < HEAT_MIN_SAMPLES) return null;
     const sorted = [...st.heats].sort((a, b) => a - b);
@@ -163,7 +184,7 @@ export class OccupancyEngine {
   }
 
   lastDetections(uid: string): ConsoleDetection[] {
-    return this.nodes.get(uid)?.lastDetections ?? [];
+    return this.reg.nodes.has(uid) ? this.nodes.get(uid)?.lastDetections ?? [] : [];
   }
 
   /** Current authority per table, for the console. */
@@ -270,9 +291,9 @@ export class OccupancyEngine {
     return dets;
   }
 
-  snapshot(now: number): OccupancySnapshot {
+  snapshot(now: number, mutateTracks = true): OccupancySnapshot {
     const floors: FloorState[] = this.reg.floors.map((floor) => {
-      const tables: TableState[] = floor.tables.map((t) => this.tableState(t, now));
+      const tables: TableState[] = floor.tables.map((t) => this.tableState(t, now, mutateTracks));
       const zones: ZoneState[] = floor.zones.map((z) => {
         const zt = tables.filter((t) => t.zoneId === z.id);
         const anyUnknown = zt.some((t) => t.status === 'unknown');
@@ -280,6 +301,7 @@ export class OccupancyEngine {
         for (const t of zt) people += median(this.tables.get(t.id)?.peopleHistory ?? []);
         let covered = zt.length > 0 && !anyUnknown;
         for (const [uid, st] of this.nodes) {
+          if (!this.reg.nodes.has(uid)) continue;
           if (!this.isHealthy(uid, now)) continue;
           const h = st.zoneHistory.get(z.id);
           if (!h || h.length === 0) continue;
@@ -298,6 +320,7 @@ export class OccupancyEngine {
         outline: floor.outline,
         zones,
         tables,
+        ...(this.reg.snapshotVersion === 2 && floor.model ? { model: floor.model } : {}),
         totals: {
           seats: tables.reduce((a, t) => a + t.capacity, 0),
           free: known.reduce((a, t) => a + (t.free ?? 0), 0),
@@ -307,7 +330,7 @@ export class OccupancyEngine {
         },
       };
     });
-    return { version: 1, edgeId: this.edgeId, site: this.reg.site, generatedAt: now, floors };
+    return { version: this.reg.snapshotVersion ?? 1, edgeId: this.edgeId, site: this.reg.site, generatedAt: now, floors };
   }
 
   // --- internals -------------------------------------------------------------
@@ -446,20 +469,21 @@ export class OccupancyEngine {
     }
   }
 
-  private tableState(t: TableDef, now: number): TableState {
+  private tableState(t: TableDef, now: number, mutateTracks: boolean): TableState {
     const authority = this.authorityFor(t, now);
     const status = this.statusFor(t, authority);
     const track = this.tables.get(t.id);
     if (track) {
       if (status === 'unknown') {
-        track.unknownSince ??= now;
+        const unknownSince = track.unknownSince ?? now;
+        if (mutateTracks) track.unknownSince ??= now;
         // Blind for longer than a seat is held: what we knew is stale. Start
         // over when coverage returns rather than resurrecting old seats.
-        if (now - track.unknownSince > this.opts.releaseMs) {
+        if (mutateTracks && now - unknownSince > this.opts.releaseMs) {
           for (const s of t.seats) this.seats.set(s.id, { window: [], occupied: false, lastSeenAt: 0, framesSeen: 0 });
           track.peopleHistory = [];
         }
-      } else {
+      } else if (mutateTracks) {
         track.unknownSince = null;
       }
     }
@@ -481,6 +505,7 @@ export class OccupancyEngine {
       name: t.name,
       zoneId: t.zoneId,
       rect: t.rect,
+      ...(this.reg.snapshotVersion === 2 && t.shapeAuthored ? { shape: t.shape } : {}),
       capacity: t.capacity,
       occupied,
       free: occupied === null ? null : t.capacity - occupied,

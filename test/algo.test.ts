@@ -127,8 +127,11 @@ test('a dual-cam node offers its camera beside the foreground mask, and a therma
   if (unavailable) return t.skip('no host detector here');
   for (const rgb of [true, false]) {
     // Only what run() reads: the node's flags, and no floor or health yet.
+    const reg = { nodes: new Map([[UID, { uid: UID, rgb, floorId: null, pose: null }]]), floors: [] };
+    const generation = { reg, engine: { authorities: () => ({}) }, dwell: new Map(), latest: { floors: [] } };
     const rt = {
-      reg: { nodes: new Map([[UID, { uid: UID, rgb, floorId: null, pose: null }]]), floors: [] },
+      reg,
+      captureGeneration: () => generation,
       nodes: () => [],
     } as unknown as EdgeRuntime;
     const broker = { deviceParams: () => ({}), requested: () => ({}) } as unknown as ParamBroker;

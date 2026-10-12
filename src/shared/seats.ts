@@ -10,7 +10,8 @@
  * Shared by the web server (the search API) and the dashboard, so the list a
  * student sees and the seats highlighted on the plan cannot disagree.
  */
-import type { FloorState, Rect, SeatSide, SeatState, SeatSuggestion, TableState } from './types.js';
+import type { FloorState, Rect, SeatSide, SeatState, SeatSuggestion, TableShape, TableState } from './types.js';
+import { tableBounds, tableSurfaceDistance } from './table-geometry.js';
 
 /** How far a seat's centre sits from the table edge, cm. */
 export const SEAT_OFFSET_CM = 35;
@@ -29,7 +30,11 @@ export interface SeatSpec {
  * capacity allows. The makerspace benches (105 x 167 cm, 6 seats) come out
  * as three a side, which is what the drawing shows.
  */
-export function generateSeats(tableId: string, rect: Rect, capacity: number): SeatSpec[] {
+export function generateSeats(tableId: string, geometry: Rect | TableShape, capacity: number): SeatSpec[] {
+  const shape: TableShape = 'type' in geometry ? geometry : { type: 'rect', ...geometry };
+  if (shape.type === 'circle') return generatePerimeterSeats(tableId, shape, capacity);
+  if (shape.type === 'polygon') return generatePerimeterSeats(tableId, shape, capacity);
+  const rect = tableBounds(shape);
   const vertical = rect.height >= rect.width;
   const sides: [SeatSide, SeatSide] = vertical ? ['L', 'R'] : ['T', 'B'];
   const counts = [Math.ceil(capacity / 2), Math.floor(capacity / 2)];
@@ -55,6 +60,74 @@ export function generateSeats(tableId: string, rect: Rect, capacity: number): Se
     }
   }
   return seats;
+}
+
+function generatePerimeterSeats(tableId: string, shape: Extract<TableShape, { type: 'circle' | 'polygon' }>, capacity: number): SeatSpec[] {
+  const perimeter = shape.type === 'circle'
+    ? shape.radius * 2 * Math.PI
+    : shape.points.reduce((sum, point, index) => {
+      const next = shape.points[(index + 1) % shape.points.length]!;
+      return sum + Math.hypot(next[0] - point[0], next[1] - point[1]);
+    }, 0);
+  if (!Number.isFinite(perimeter) || perimeter <= 0) throw new Error('table perimeter must be positive');
+  const points = shape.type === 'polygon' ? shape.points : [];
+  const area = shape.type === 'polygon' ? signedArea(points) : 0;
+  const seats: SeatSpec[] = [];
+  const sideCounts = new Map<SeatSide, number>();
+  for (let index = 0; index < capacity; index++) {
+    const distance = ((index + 0.5) / capacity) * perimeter;
+    let x: number, y: number, nx: number, ny: number;
+    if (shape.type === 'circle') {
+      const angle = -Math.PI / 2 + (index / capacity) * Math.PI * 2;
+      nx = Math.cos(angle); ny = Math.sin(angle);
+      x = shape.cx + nx * (shape.radius + SEAT_OFFSET_CM);
+      y = shape.cy + ny * (shape.radius + SEAT_OFFSET_CM);
+    } else {
+      let remaining = distance;
+      let found = false;
+      for (let edge = 0; edge < points.length; edge++) {
+        const a = points[edge]!, b = points[(edge + 1) % points.length]!;
+        const dx = b[0] - a[0], dy = b[1] - a[1], length = Math.hypot(dx, dy);
+        if (remaining <= length || edge === points.length - 1) {
+          const t = length === 0 ? 0 : Math.min(1, remaining / length);
+          // Positive shoelace area means the interior is left of each edge.
+          nx = area >= 0 ? dy / (length || 1) : -dy / (length || 1);
+          ny = area >= 0 ? -dx / (length || 1) : dx / (length || 1);
+          x = a[0] + dx * t + nx * SEAT_OFFSET_CM;
+          y = a[1] + dy * t + ny * SEAT_OFFSET_CM;
+          found = true;
+          break;
+        }
+        remaining -= length;
+      }
+      if (!found) throw new Error('table polygon has no usable perimeter');
+    }
+    const side = sideForNormal(nx!, ny!);
+    const sideIndex = sideCounts.get(side) ?? 0;
+    sideCounts.set(side, sideIndex + 1);
+    seats.push({ id: `${tableId}-${shape.type === 'circle' ? 'C' : 'P'}${index + 1}`, x: Math.round(x!), y: Math.round(y!), side, index: sideIndex, neighbors: [] });
+  }
+  for (let i = 0; i < seats.length; i++) {
+    const seat = seats[i]!;
+    if (capacity > 1) {
+      seat.neighbors.push(seats[(i + capacity - 1) % capacity]!.id);
+      const next = seats[(i + 1) % capacity]!.id;
+      if (!seat.neighbors.includes(next)) seat.neighbors.push(next);
+    }
+  }
+  return seats;
+}
+
+function sideForNormal(x: number, y: number): SeatSide {
+  if (Math.abs(x) >= Math.abs(y)) return x < 0 ? 'L' : 'R';
+  return y < 0 ? 'T' : 'B';
+}
+
+function signedArea(points: [number, number][]): number {
+  return points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length]!;
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0) / 2;
 }
 
 /**
@@ -154,9 +227,9 @@ function neighbouringTables(tables: TableState[]): [TableState, TableState][] {
       const a = tables[i];
       const b = tables[j];
       if (!a || !b || a.zoneId !== b.zoneId) continue;
-      const gapX = Math.max(0, Math.max(a.rect.x, b.rect.x) - Math.min(a.rect.x + a.rect.width, b.rect.x + b.rect.width));
-      const gapY = Math.max(0, Math.max(a.rect.y, b.rect.y) - Math.min(a.rect.y + a.rect.height, b.rect.y + b.rect.height));
-      if (Math.hypot(gapX, gapY) <= 300) pairs.push([a, b]);
+      const aShape = a.shape ?? { type: 'rect' as const, ...a.rect };
+      const bShape = b.shape ?? { type: 'rect' as const, ...b.rect };
+      if (tableSurfaceDistance(aShape, bShape) <= 300) pairs.push([a, b]);
     }
   }
   return pairs;

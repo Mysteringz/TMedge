@@ -5,9 +5,10 @@ import type {
   ProvisioningRepository,
   ProvisioningRequestRecord,
   ProvisioningResolution,
+  ApprovalCommitResolution,
   ProvisioningTransaction,
 } from '../../modules/provisioning/repositories/provisioning-repository.js';
-import { incrementLocationRegistryRevision } from './location-registry-revision.js';
+import { incrementLocationRegistryRevision, readLocationRegistryRevision } from './location-registry-revision.js';
 
 const PENDING_QUEUE_LOCK_ID = 1_414_412_097;
 
@@ -29,6 +30,9 @@ interface RequestRow {
 interface NodeRow {
   uid: string;
   label: string;
+  simulated: boolean;
+  rgb: boolean;
+  detector: 'node' | 'edge';
 }
 
 const REQUEST_COLUMNS = `
@@ -38,7 +42,10 @@ const REQUEST_COLUMNS = `
 
 /** TypeORM adapter for the provisioning repository; no ORM entity escapes this module. */
 export class PostgresProvisioningRepository implements ProvisioningRepository {
-  constructor(private readonly source: DataSource) {}
+  constructor(
+    private readonly source: DataSource,
+    private readonly runTransaction: <T>(work: (manager: EntityManager) => Promise<T>) => Promise<T> = (work) => source.transaction(work),
+  ) {}
 
   async findRequest(requestId: string): Promise<ProvisioningRequestRecord | null> {
     const rows = await this.source.query<RequestRow[]>(
@@ -65,9 +72,63 @@ export class PostgresProvisioningRepository implements ProvisioningRepository {
 
   async findNode(uid: string): Promise<NodeRegistration | null> {
     const rows = await this.source.query<NodeRow[]>(
-      'SELECT uid, label FROM public.registered_nodes WHERE uid = $1', [uid],
+      'SELECT uid, label, simulated, rgb, detector FROM public.registered_nodes WHERE uid = $1', [uid],
     );
     return rows[0] ? mapNode(rows[0]) : null;
+  }
+
+  async registryRevision(): Promise<number> {
+    return readLocationRegistryRevision(this.source.manager);
+  }
+
+  async reconcileApproval(
+    expectedRequest: ProvisioningRequestRecord,
+    expectedResolution: { resolvedAt: number; resolvedBy: Actor },
+    expectedNode: NodeRegistration,
+    expectedBaseRevision: number,
+  ): Promise<ApprovalCommitResolution> {
+    const registryRevision = await this.registryRevision();
+    const request = await this.findRequest(expectedRequest.id);
+    const nodeRows = await this.source.query<NodeRow[]>(
+      'SELECT uid, label, simulated, rgb, detector FROM public.registered_nodes WHERE uid = $1', [expectedNode.uid],
+    );
+    const placements = await this.source.query<Array<{ uid: string }>>(
+      'SELECT uid FROM public.node_placements WHERE uid = $1', [expectedNode.uid],
+    );
+    const ownership = await this.source.query<Array<{ uid: string }>>(
+      'SELECT uid FROM public.node_table_owners WHERE uid = $1', [expectedNode.uid],
+    );
+    const audits = await this.source.query<Array<{ actor_id: string; actor_kind: Actor['kind']; occurred_at: Date | string }>>(
+      `SELECT actor_id, actor_kind, occurred_at FROM public.provisioning_audit_events
+       WHERE action = 'request.approved' AND subject_id = $1`, [expectedRequest.id],
+    );
+    const audit = audits[0];
+    const row = nodeRows[0];
+    const exactNode = !!row && row.uid === expectedNode.uid && row.label === expectedNode.label
+      && row.simulated === expectedNode.simulated && row.rgb === expectedNode.rgb && row.detector === expectedNode.detector
+      && placements.length === 0 && ownership.length === 0;
+    const exactRequestIdentity = !!request && request.id === expectedRequest.id && request.uid === expectedRequest.uid
+      && request.label === expectedRequest.label && request.firmware === expectedRequest.firmware
+      && request.requestedBy === expectedRequest.requestedBy && request.requestedAt === expectedRequest.requestedAt
+      && request.expiresAt === expectedRequest.expiresAt;
+    const exactResolution = request?.resolvedAt === expectedResolution.resolvedAt
+      && request.resolvedBy?.id === expectedResolution.resolvedBy.id
+      && request.resolvedBy?.kind === expectedResolution.resolvedBy.kind;
+    const exactAudit = audits.length === 1 && !!audit
+      && audit.actor_id === expectedResolution.resolvedBy.id
+      && audit.actor_kind === expectedResolution.resolvedBy.kind
+      && toEpochMs(audit.occurred_at) === expectedResolution.resolvedAt;
+
+    if (registryRevision === expectedBaseRevision + 1 && exactRequestIdentity && request?.status === 'approved'
+      && exactResolution && request.registeredUid === expectedNode.uid && exactNode && exactAudit) {
+      return { kind: 'committed', request, node: mapNode(row!), registryRevision };
+    }
+    if (registryRevision === expectedBaseRevision && exactRequestIdentity && request?.status === 'pending'
+      && request.resolvedAt === null && request.resolvedBy === null && request.registeredUid === null
+      && !row && placements.length === 0 && ownership.length === 0 && audits.length === 0) {
+      return { kind: 'not-committed', registryRevision };
+    }
+    return { kind: 'unknown' };
   }
 
   async reconcile(requestId: string, uid: string): Promise<ProvisioningResolution | null> {
@@ -80,7 +141,7 @@ export class PostgresProvisioningRepository implements ProvisioningRepository {
   }
 
   async transaction<T>(work: (transaction: ProvisioningTransaction) => Promise<T>): Promise<T> {
-    return this.source.transaction(async (manager) => work(transactionFor(manager)));
+    return this.runTransaction(async (manager) => work(transactionFor(manager)));
   }
 }
 
@@ -117,7 +178,7 @@ function transactionFor(manager: EntityManager): ProvisioningTransaction {
     },
     async findNode(uid) {
       const rows = await manager.query(
-        'SELECT uid, label FROM public.registered_nodes WHERE uid = $1', [uid],
+        'SELECT uid, label, simulated, rgb, detector FROM public.registered_nodes WHERE uid = $1', [uid],
       ) as NodeRow[];
       return rows[0] ? mapNode(rows[0]) : null;
     },
@@ -141,8 +202,8 @@ function transactionFor(manager: EntityManager): ProvisioningTransaction {
     },
     async registerNode(node) {
       await manager.query(
-        `INSERT INTO public.registered_nodes (uid, label, simulated, rgb) VALUES ($1, $2, false, false)`,
-        [node.uid, node.label],
+        `INSERT INTO public.registered_nodes (uid, label, simulated, rgb, detector) VALUES ($1, $2, $3, $4, $5)`,
+        [node.uid, node.label, node.simulated, node.rgb, node.detector],
       );
       await incrementLocationRegistryRevision(manager);
     },
@@ -174,7 +235,10 @@ function mapRequest(row: RequestRow): ProvisioningRequestRecord {
 }
 
 function mapNode(row: NodeRow): NodeRegistration {
-  return { uid: row.uid, label: row.label, floorId: null, pose: null, owns: [] };
+  return {
+    uid: row.uid, label: row.label, floorId: null, pose: null, owns: [],
+    simulated: row.simulated, rgb: row.rgb, detector: row.detector,
+  };
 }
 
 function toEpochMs(value: Date | string): number {

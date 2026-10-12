@@ -89,11 +89,12 @@ export function createAlgoRouter(dependencies: AlgoRouterDependencies): Router {
 }
 
 function getSources(res: express.Response, deps: AlgoRouterDependencies): void {
-  const health = deps.runtime.nodes();
+  const generation = deps.runtime.captureGeneration();
+  const health = deps.runtime.nodes(Date.now(), generation);
   res.json({
-    nodes: [...deps.runtime.reg.nodes.values()].map((node) => {
+    nodes: [...generation.reg.nodes.values()].map((node) => {
       const status = health.find((item) => item.uid === node.uid);
-      const floor = deps.runtime.reg.floors.find((item) => item.id === node.floorId);
+      const floor = generation.reg.floors.find((item) => item.id === node.floorId);
       return {
         uid: node.uid, label: node.label, floorId: node.floorId, simulated: node.simulated, rgb: node.rgb,
         online: status?.online ?? false, rawEvery: status?.status?.params?.raw_every ?? null,
@@ -181,19 +182,19 @@ function registerRecorderRoutes(router: Router, deps: AlgoRouterDependencies): v
   });
   router.get('/api/nodes/:uid/rgb.jpg', (req, res) => {
     const uid = (req.params.uid ?? '').toLowerCase();
-    if (!deps.runtime.reg.nodes.get(uid)?.rgb) return res.status(404).end();
+    if (!deps.runtime.captureGeneration().reg.nodes.get(uid)?.rgb) return res.status(404).end();
     const frame = deps.runtime.rgb.get(uid);
     if (!frame) return res.status(404).end();
     return res.set({ 'content-type': 'image/jpeg', 'cache-control': 'no-store' })
       .set('x-tm-rgb-at', String(frame.at)).send(frame.jpeg);
   });
   router.get('/api/pairs', (_req, res) => res.json({
-    ...deps.pairs.stats(), rgbNodes: [...deps.runtime.reg.nodes.values()].filter((node) => node.rgb).map((node) => node.uid),
+    ...deps.pairs.stats(), rgbNodes: [...deps.runtime.captureGeneration().reg.nodes.values()].filter((node) => node.rgb).map((node) => node.uid),
   }));
   router.post('/api/pairs/record', deps.mutating, (req, res) => {
     const mode = recordModeOf(req.body);
     if (!mode) return res.status(400).json({ error: 'mode must be off, auto or on' });
-    const rgbNodes = [...deps.runtime.reg.nodes.values()].filter((node) => node.rgb);
+    const rgbNodes = [...deps.runtime.captureGeneration().reg.nodes.values()].filter((node) => node.rgb);
     if (mode !== 'off' && rgbNodes.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
     deps.pairs.setMode(mode);
     return res.json({ ok: true, ...deps.pairs.stats() });

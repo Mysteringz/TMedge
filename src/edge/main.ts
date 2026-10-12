@@ -3,16 +3,18 @@ import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadEdgeConfig, EnvError } from './config.js';
 import { createEdgeApplication } from './composition-root.js';
-import { ConfigError, loadRegistry } from './registry.js';
-import { RegistrationImportExport } from '../modules/registration/application/registration-import-export.js';
-import { DatabaseProvisioningService } from '../modules/provisioning/application/database-provisioning-service.js';
+import { buildRegistry, buildRegistryFromLocationDocuments, ConfigError, type Registry } from './registry.js';
+import { parseLocationDocument } from '../modules/location-config/domain/location-document.js';
+import type { ProvisioningRepository } from '../modules/provisioning/repositories/provisioning-repository.js';
 import { PostgresRegistryRepository } from '../infrastructure/postgres/registry-repository.js';
 import { PostgresProvisioningRepository } from '../infrastructure/postgres/provisioning-repository.js';
 import { closePostgres, openPostgres } from '../infrastructure/postgres/data-source.js';
 import { initializeFileLocationPersistence } from '../infrastructure/location-config/file-location-storage.js';
 import { PostgresRegistryMutationCoordinator } from '../infrastructure/location-config/postgres-registry-mutation-coordinator.js';
 import { bootstrapPostgresLegacyLocations } from '../infrastructure/postgres/location-storage-bootstrap.js';
-import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
+import { PostgresLocationDraftRepository, PostgresPublishedLocationRepository } from '../infrastructure/postgres/location-configuration-repositories.js';
+import { PostgresLocationRegistrySnapshotRepository } from '../infrastructure/postgres/location-registry-snapshot-repository.js';
+import type { LocationRegistrySnapshot, RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import type { DataSource } from 'typeorm';
 
 function checkNodesWritable(nodesPath: string): void {
@@ -30,10 +32,12 @@ function checkNodesWritable(nodesPath: string): void {
 async function main(): Promise<void> {
   const loaded = await loadConfiguration();
   if (!loaded) return;
-  const { cfg, registry, source, provisioningService } = loaded;
+  const { cfg, registry, source, provisioningRepository, locationPublication } = loaded;
   const edge = createEdgeApplication(cfg, registry, {
-    provisioningService,
+    provisioningRepository,
+    provisioningToken: cfg.flashToken,
     registryMutationCoordinator: loaded.registryMutationCoordinator,
+    locationPublication,
     postgres: source ?? undefined,
     closePersistence: loaded.closePersistence,
   });
@@ -69,9 +73,10 @@ async function main(): Promise<void> {
 
 async function loadConfiguration(): Promise<{
   cfg: ReturnType<typeof loadEdgeConfig>;
-  registry: ReturnType<typeof loadRegistry>;
+  registry: Registry;
   source: DataSource | null;
-  provisioningService: DatabaseProvisioningService | undefined;
+  provisioningRepository: ProvisioningRepository | undefined;
+  locationPublication: NonNullable<NonNullable<Parameters<typeof createEdgeApplication>[2]>['locationPublication']>;
   registryMutationCoordinator: RegistryMutationCoordinator;
   closePersistence: () => Promise<void>;
 } | null> {
@@ -83,8 +88,13 @@ async function loadConfiguration(): Promise<{
       filePersistence = initializeFileLocationPersistence(cfg.sitePath, cfg.nodesPath, cfg.dataDir);
       const registry = filePersistence.registry;
       if (cfg.flashToken) checkNodesWritable(cfg.nodesPath);
-      return { cfg, registry, source: null, provisioningService: undefined,
-        registryMutationCoordinator: filePersistence.coordinator, closePersistence: async () => filePersistence?.close() };
+      return { cfg, registry, source: null, provisioningRepository: undefined,
+        registryMutationCoordinator: filePersistence.coordinator,
+        locationPublication: {
+          siteSeed: filePersistence.siteSeed, drafts: filePersistence.drafts,
+          published: filePersistence.published, snapshots: filePersistence.snapshots,
+        },
+        closePersistence: async () => filePersistence?.close() };
     }
     if (!cfg.postgres) throw new EnvError('PostgreSQL runtime configuration is missing');
     source = await openPostgres(cfg.postgres);
@@ -94,17 +104,21 @@ async function loadConfiguration(): Promise<{
     } catch (error) {
       throw new ConfigError(`${cfg.sitePath}: ${(error as Error).message}`);
     }
+    const seedRegistry = buildRegistry(site, { nodes: [] });
     const mutationCoordinator = new PostgresRegistryMutationCoordinator(source);
     const registryRepository = new PostgresRegistryRepository(source, mutationCoordinator);
-    const registration = new RegistrationImportExport(registryRepository, mutationCoordinator);
-    const registry = await bootstrapPostgresLegacyLocations(source, () => registration.loadRegistry(site), mutationCoordinator);
-    const provisioningService = new DatabaseProvisioningService(
-      new PostgresProvisioningRepository(source),
-      registry,
-      { token: cfg.flashToken, mutationCoordinator },
-    );
-    return { cfg, registry, source, provisioningService,
-      registryMutationCoordinator: mutationCoordinator, closePersistence: () => closePostgres(source!) };
+    await bootstrapPostgresLegacyLocations(source, seedRegistry, mutationCoordinator);
+    const published = new PostgresPublishedLocationRepository(source, new Set(seedRegistry.floors.map((floor) => floor.id)), mutationCoordinator);
+    const snapshots = new PostgresLocationRegistrySnapshotRepository(site, registryRepository, published);
+    const drafts = new PostgresLocationDraftRepository(source);
+    const initialSnapshot = await mutationCoordinator.withMutationLock(() => snapshots.readSnapshot());
+    const active = activeDocuments(initialSnapshot);
+    const registry = buildRegistryFromLocationDocuments(site, nodesConfigFor(initialSnapshot), active.documents, active.legacySpatialByLocation);
+    const provisioningRepository = new PostgresProvisioningRepository(source);
+    return { cfg, registry, source, provisioningRepository,
+      registryMutationCoordinator: mutationCoordinator,
+      locationPublication: { siteSeed: site, drafts, published, snapshots },
+      closePersistence: () => closePostgres(source!) };
   } catch (error) {
     if (filePersistence) filePersistence.close();
     if (source) await closePostgres(source).catch(() => undefined);
@@ -125,6 +139,26 @@ async function loadConfiguration(): Promise<{
   }
 }
 
+function nodesConfigFor(snapshot: LocationRegistrySnapshot): unknown {
+  return { nodes: snapshot.nodes.map((node) => ({
+    uid: node.uid, label: node.label, ...(node.floorId && node.pose ? { floor: node.floorId, pose: node.pose } : {}),
+    owns: node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector,
+  })) };
+}
+
+function activeDocuments(snapshot: LocationRegistrySnapshot) {
+  const legacySpatialByLocation = new Map(snapshot.locations.flatMap((state) => {
+    const active = state.history.find((revision) => revision.revision === state.activeRevision);
+    return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
+  }));
+  const documents = snapshot.locations.flatMap((state) => {
+    if (state.activeRevision === 0) return [];
+    const active = state.history.find((revision) => revision.revision === state.activeRevision);
+    return active ? [parseLocationDocument(active.document)] : [];
+  });
+  return { documents, legacySpatialByLocation };
+}
+
 function loadEdgePersistenceMode(): boolean {
   return process.env.PERSISTENCE_MODE === 'postgres';
 }
@@ -141,7 +175,7 @@ function installRuntimeLogs(runtime: ReturnType<typeof createEdgeApplication>['r
   return timer;
 }
 
-function logStartup(runtime: ReturnType<typeof createEdgeApplication>['runtime'], cfg: ReturnType<typeof loadEdgeConfig>, registry: ReturnType<typeof loadRegistry>): void {
+function logStartup(runtime: ReturnType<typeof createEdgeApplication>['runtime'], cfg: ReturnType<typeof loadEdgeConfig>, registry: Registry): void {
   const tables = [...registry.tables.values()];
   console.log(`[edge] debug console http://${cfg.consoleHost}:${cfg.consolePort}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);
   if (cfg.algoPort > 0) console.log(`[edge] algo debugger http://${cfg.consoleHost}:${cfg.algoPort}${cfg.adminPassword ? ' (password protected)' : ' (localhost only: no ADMIN_PASSWORD)'}`);

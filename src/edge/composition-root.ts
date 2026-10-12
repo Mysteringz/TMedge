@@ -18,6 +18,8 @@ import type { Registry } from './registry.js';
 import { EdgeRuntime } from './runtime.js';
 import { consoleMovedTo, createConsole, startConsole, stopConsole } from './console.js';
 import type { ProvisioningService } from '../modules/provisioning/application/provisioning-service.js';
+import type { ProvisioningRepository } from '../modules/provisioning/repositories/provisioning-repository.js';
+import { DatabaseProvisioningService } from '../modules/provisioning/application/database-provisioning-service.js';
 import type { DataSource } from 'typeorm';
 import type { FirmwareBuildJobService } from '../modules/firmware/application/firmware-build-job-service.js';
 import { DurableFirmwareBuildJobService } from '../modules/firmware/application/durable-firmware-build-job-service.js';
@@ -31,6 +33,10 @@ import { DurableRolloutService } from '../modules/rollouts/application/durable-r
 import type { RolloutRepository } from '../modules/rollouts/repositories/rollout-repository.js';
 import { postgresAvailability } from '../infrastructure/postgres/data-source.js';
 import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
+import type { LocationDraftRepository, LocationRegistrySnapshotRepository, PublishedLocationRepository, PublishedModelDistributor } from '../modules/location-config/repositories/location-storage.js';
+import { PublishLocationUseCase } from '../modules/location-config/use-cases/publish-location.js';
+import { EdgeLocationPublicationRuntime } from './location-publication-runtime.js';
+import type { PreparedRuntimeGeneration } from './runtime.js';
 
 /** Persistence adapters are optional in legacy file mode. */
 export interface EdgeRuntimePersistenceOptions {
@@ -92,7 +98,10 @@ export function createEdgeRuntime(
   if (cfg.nodePort > 0) {
     direct = new NodeServer({
       host: cfg.nodeHost, port: cfg.nodePort, limits: cfg.nodeLimits, keys: cfg.keys, devices: cfg.devices,
-      isRegistered: (uid) => reg.nodes.has(uid),
+      isRegistered: (uid) => {
+        try { return (runtime?.captureGeneration().reg ?? reg).nodes.has(uid); }
+        catch { return false; }
+      },
       ingest: (datagram, route) => ingest.handleDurable(datagram, route),
       dropRoute: (uid, sessionId) => void ingest.dropDirectRoute(uid, sessionId),
       image: (buildId) => firmware.bytes(buildId),
@@ -119,10 +128,19 @@ export function createEdgeRuntime(
 export interface EdgeApplicationOptions {
   firmwareBuildJobs?: FirmwareBuildJobService;
   provisioningService?: ProvisioningService;
+  provisioningRepository?: ProvisioningRepository;
+  provisioningToken?: string | null;
   registryMutationCoordinator?: RegistryMutationCoordinator;
   postgres?: DataSource;
   closePersistence?: () => Promise<void>;
   occupancyHistory?: BoundedOccupancyHistorySink;
+  locationPublication?: {
+    siteSeed: unknown;
+    drafts: LocationDraftRepository;
+    published: PublishedLocationRepository;
+    snapshots: LocationRegistrySnapshotRepository;
+    modelDistributor?: PublishedModelDistributor;
+  };
 }
 
 export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: EdgeApplicationOptions = {}): EdgeApplication {
@@ -132,10 +150,29 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
     rolloutRepository: options.postgres ? new PostgresRolloutRepository(options.postgres) : undefined,
     persistenceAvailable: options.postgres ? async () => (await postgresAvailability(options.postgres!)).available : undefined,
   });
+  const locationPublication = options.locationPublication && options.registryMutationCoordinator
+    ? new PublishLocationUseCase<PreparedRuntimeGeneration>({
+      drafts: options.locationPublication.drafts,
+      published: options.locationPublication.published,
+      snapshots: options.locationPublication.snapshots,
+      mutationCoordinator: options.registryMutationCoordinator,
+      runtime: new EdgeLocationPublicationRuntime(runtime, options.locationPublication.siteSeed),
+      modelDistributor: options.locationPublication.modelDistributor,
+    })
+    : null;
+  const provisioningService = options.provisioningService ?? (options.provisioningRepository
+    ? new DatabaseProvisioningService(options.provisioningRepository, reg, {
+      token: options.provisioningToken ?? null,
+      mutationCoordinator: options.registryMutationCoordinator,
+      registryProvider: () => runtime.captureGeneration().reg,
+      prepareRegistryAddition: (node) => runtime.prepareNodeRegistration(node),
+      quarantineRegistry: (reason) => runtime.quarantine(reason),
+    })
+    : undefined);
   const builds = options.firmwareBuildJobs ?? (options.postgres ? createDurableFirmwareBuildJobs(runtime, options.postgres) : createFirmwareBuildJobs(runtime));
   // Both listeners share the injected services and the same live feed.
   const consoleCore = createConsole(runtime, {
-    firmwareBuildJobs: builds, provisioningService: options.provisioningService,
+    firmwareBuildJobs: builds, provisioningService,
     registryMutationCoordinator: options.registryMutationCoordinator,
   });
   const consoleServer = startConsole(runtime, consoleCore, {
@@ -144,7 +181,7 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
   const debuggerServer = cfg.algoPort > 0
     ? startAlgo(runtime, cfg.algoPort, cfg.consoleHost, { listen: false, dataDir: cfg.dataDir }, consoleCore)
     : null;
-  return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg, options.closePersistence,
+  return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg, locationPublication, options.closePersistence,
     async () => {
       if (builds instanceof DurableFirmwareBuildJobService) await builds.initialize();
       await runtime.commandOutcomes?.initialize();
@@ -178,6 +215,7 @@ export class EdgeApplication {
     readonly consoleServer: Server,
     readonly debuggerServer: AlgoServerHandle | null,
     private readonly config: EdgeConfig,
+    readonly locationPublication: PublishLocationUseCase<PreparedRuntimeGeneration> | null = null,
     private readonly closePersistence?: () => Promise<void>,
     private readonly initializePersistence?: () => Promise<void>,
   ) {}

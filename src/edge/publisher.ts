@@ -29,7 +29,11 @@ export class Publisher {
   }
 
   publish(snapshot: OccupancySnapshot): void {
-    const body = JSON.stringify(snapshot);
+    this.publishSerialized(JSON.stringify(snapshot));
+  }
+
+  /** Enqueue a snapshot whose JSON was built before a registry commit point. */
+  publishSerialized(body: string): void {
     for (const st of this.status) {
       // Never queue behind a slow target: skip this round, the next snapshot supersedes it.
       if (this.inFlight.has(st.target)) continue;

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DataSource, EntityManager } from 'typeorm';
 import { InvalidLocationDocumentError, isLocationId, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../../modules/location-config/domain/location-document.js';
+import { parseLegacySpatialProvenance, revalidateLocationCandidate, type ValidatedLocationCandidate } from '../../modules/location-config/domain/location-candidate.js';
 import {
   LocationConflictError, LocationDraftNotFoundError, LocationStorageUnavailableError, UnknownRegistryCommitOutcomeError,
   type LocationAssetMetadata, type LocationDraft, type PublishedLocationRevision, type PublishedLocationState,
@@ -12,12 +13,14 @@ import type {
 import { DEFAULT_IMAGE_LIMIT, DEFAULT_MODEL_LIMIT, FileLocationAssetStore, validateAsset } from '../location-config/file-location-asset-store.js';
 import { incrementLocationRegistryRevision, readLocationRegistryRevision } from './location-registry-revision.js';
 import { queryRows } from './query-rows.js';
+import { parseTrustedLegacyBaseline } from '../location-config/legacy-location-mapper.js';
+import { persistLocationNodeAssignments } from './location-node-assignment-writer.js';
 
 interface DraftRow {
   draft_id: string; creator_id: string; location_id: string; draft_revision: number; base_published_revision: number | null;
-  created_at: number | string; updated_at: number | string; document: unknown;
+  created_at: number | string; updated_at: number | string; document: unknown; legacy_spatial?: unknown;
 }
-interface PublishedRow { location_id: string; revision: number | string; created_by: string; created_at: number | string; document: unknown; }
+interface PublishedRow { location_id: string; revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial?: unknown; }
 interface ActivePublishedRow extends PublishedRow { active_revision: number | string; }
 interface AssetRow { asset_id: string; creator_id: string; purpose: 'floor-plan' | 'model'; media_type: LocationAssetMetadata['mediaType']; sha256: string; byte_length: number | string; created_at: number | string; }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -31,11 +34,11 @@ export class PostgresLocationDraftRepository implements LocationDraftRepository 
     try {
       const result: unknown = await this.source.query(
         `INSERT INTO public.location_drafts
-          (draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+          (draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document, legacy_spatial)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
          ON CONFLICT (draft_id) DO NOTHING
-         RETURNING draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document`,
-        [draft.draftId, draft.creatorId, draft.locationId, draft.draftRevision, draft.basePublishedRevision, draft.createdAt, draft.updatedAt, JSON.stringify(draft.document)],
+         RETURNING draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document, legacy_spatial`,
+        [draft.draftId, draft.creatorId, draft.locationId, draft.draftRevision, draft.basePublishedRevision, draft.createdAt, draft.updatedAt, JSON.stringify(draft.document), JSON.stringify(draft.legacySpatial ?? null)],
       );
       const rows = queryRows<DraftRow>(result);
       if (!rows[0]) throw new LocationConflictError('The draft ID already exists.');
@@ -48,7 +51,7 @@ export class PostgresLocationDraftRepository implements LocationDraftRepository 
     if (!UUID_RE.test(draftId)) return null;
     try {
       const rows = await this.source.query(
-        `SELECT draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document
+        `SELECT draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document, legacy_spatial
          FROM public.location_drafts WHERE creator_id = $1 AND draft_id = $2`, [creatorId, draftId],
       ) as DraftRow[];
       return rows[0] ? mapDraft(rows[0]) : null;
@@ -59,22 +62,23 @@ export class PostgresLocationDraftRepository implements LocationDraftRepository 
     validateCreatorId(creatorId);
     try {
       const rows = await this.source.query(
-        `SELECT draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document
+        `SELECT draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document, legacy_spatial
          FROM public.location_drafts WHERE creator_id = $1 ORDER BY updated_at DESC, draft_id`, [creatorId],
       ) as DraftRow[];
       return rows.map(mapDraft);
     } catch (error) { throw storageError(error); }
   }
 
-  async saveDraft(creatorId: string, draftId: string, expectedRevision: number, documentInput: LocationDocument, updatedAt: number): Promise<DraftWriteOutcome> {
+  async saveDraft(creatorId: string, draftId: string, expectedRevision: number, candidateInput: ValidatedLocationCandidate, updatedAt: number): Promise<DraftWriteOutcome> {
     validateCreatorId(creatorId);
     if (!UUID_RE.test(draftId)) throw new LocationDraftNotFoundError();
-    const document = parseLocationDocument(documentInput);
+    const candidate = validateCandidate(candidateInput);
+    const { document } = candidate;
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !Number.isSafeInteger(updatedAt) || updatedAt < 0) throw new TypeError('Draft save metadata is invalid.');
     try {
       return await this.source.transaction(async (manager) => {
         const rows = await manager.query(
-          `SELECT draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document
+          `SELECT draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document, legacy_spatial
            FROM public.location_drafts WHERE creator_id = $1 AND draft_id = $2 FOR UPDATE`, [creatorId, draftId],
         ) as DraftRow[];
         if (!rows[0]) throw new LocationDraftNotFoundError();
@@ -84,10 +88,10 @@ export class PostgresLocationDraftRepository implements LocationDraftRepository 
         if (document.visibility !== current.document.visibility) throw new TypeError('A draft cannot change server-managed location visibility.');
         if (updatedAt < current.updatedAt) throw new TypeError('Draft update time cannot move backwards.');
         const savedResult: unknown = await manager.query(
-          `UPDATE public.location_drafts SET draft_revision = draft_revision + 1, updated_at = $4, document = $5::jsonb
+          `UPDATE public.location_drafts SET draft_revision = draft_revision + 1, updated_at = $4, document = $5::jsonb, legacy_spatial = $6::jsonb
            WHERE creator_id = $1 AND draft_id = $2 AND draft_revision = $3
-           RETURNING draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document`,
-          [creatorId, draftId, expectedRevision, updatedAt, JSON.stringify(document)],
+           RETURNING draft_id, creator_id, location_id, draft_revision, base_published_revision, created_at, updated_at, document, legacy_spatial`,
+          [creatorId, draftId, expectedRevision, updatedAt, JSON.stringify(document), JSON.stringify(candidate.legacySpatial)],
         );
         const savedRows = queryRows<DraftRow>(savedResult);
         if (!savedRows[0]) throw new LocationConflictError();
@@ -176,7 +180,7 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
     this.coordinator.assertHealthy();
     try {
       const rows = await this.source.query(
-        `SELECT a.revision AS active_revision, r.location_id, r.revision, r.created_by, r.created_at, r.document
+        `SELECT a.revision AS active_revision, r.location_id, r.revision, r.created_by, r.created_at, r.document, r.legacy_spatial
          FROM public.location_active_revisions a
          JOIN public.location_published_revisions r ON r.location_id = a.location_id
          WHERE a.location_id = $1 ORDER BY r.revision`, [locationId],
@@ -185,6 +189,7 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
       const activeRevision = toSafeInteger(rows[0].active_revision, 'active revision');
       const history = rows.map(mapPublished);
       if (!history.some((item) => item.revision === activeRevision)) throw new LocationStorageUnavailableError();
+      validatePublishedHistory(history);
       return { locationId, activeRevision, history };
     } catch (error) { throw storageError(error); }
   }
@@ -193,7 +198,7 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
     this.coordinator.assertHealthy();
     try {
       const rows = await this.source.query(
-        `SELECT a.revision AS active_revision, r.location_id, r.revision, r.created_by, r.created_at, r.document
+        `SELECT a.revision AS active_revision, r.location_id, r.revision, r.created_by, r.created_at, r.document, r.legacy_spatial
          FROM public.location_active_revisions a
          JOIN public.location_published_revisions r ON r.location_id = a.location_id
          ORDER BY r.location_id, r.revision`,
@@ -208,6 +213,7 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
       }
       return [...grouped].map(([locationId, { activeRevision, history }]) => {
         if (!history.some((item) => item.revision === activeRevision)) throw new LocationStorageUnavailableError();
+        validatePublishedHistory(history);
         return { locationId, activeRevision, history };
       });
     } catch (error) { throw storageError(error); }
@@ -217,10 +223,12 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
     this.coordinator.assertHealthy();
     try {
       const rows = await this.source.query(
-        `SELECT location_id, revision, created_by, created_at, document
+        `SELECT location_id, revision, created_by, created_at, document, legacy_spatial
          FROM public.location_published_revisions WHERE location_id = $1 ORDER BY revision`, [locationId],
       ) as PublishedRow[];
-      return rows.map(mapPublished);
+      const history = rows.map(mapPublished);
+      validatePublishedHistory(history);
+      return history;
     } catch (error) { throw storageError(error); }
   }
 
@@ -230,29 +238,39 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
     revision: PublishedLocationRevision;
     assignments: readonly LocationSensorAssignment[];
   }): Promise<RegistryCommitOutcome> {
-    const candidateDocument = parseLocationDocument(input.revision.document);
+    const candidate = validateCandidate({ document: input.revision.document as LocationDocument, legacySpatial: input.revision.legacySpatial ?? null });
+    const candidateDocument = candidate.document;
     const candidateLocationRevision = (input.expectedPublishedRevision ?? 0) + 1;
     const candidateRegistryRevision = input.expectedRegistryRevision + 1;
     try {
       const result = await this.runTransaction(async (manager) => {
         const registryRevision = await lockRegistryRevision(manager);
         if (registryRevision !== input.expectedRegistryRevision) throw new LocationConflictError('The registry changed; reload before publishing.');
-        const document = parseLocationDocument(input.revision.document);
+        const document = candidate.document;
         if (document.locationId !== input.revision.locationId || !Number.isSafeInteger(input.revision.createdAt) || input.revision.createdAt < 0
           || input.revision.createdBy.trim() === '' || !sameAssignments(document.sensorAssignments, input.assignments)) {
           throw new TypeError('Published revision metadata or assignments are invalid.');
         }
         const activeRows = await manager.query(
-          `SELECT a.revision, r.document FROM public.location_active_revisions a
+          `SELECT a.revision, r.created_by, r.created_at, r.document, r.legacy_spatial FROM public.location_active_revisions a
            JOIN public.location_published_revisions r ON r.location_id = a.location_id AND r.revision = a.revision
            WHERE a.location_id = $1 FOR UPDATE OF a`, [input.revision.locationId],
-        ) as Array<{ revision: number | string; document: unknown }>;
+        ) as Array<{ revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial: unknown }>;
         const active = activeRows[0] ? toSafeInteger(activeRows[0].revision, 'active revision') : null;
         if (active !== input.expectedPublishedRevision) throw new LocationConflictError('The published location changed; reload before publishing.');
         if (active === null && this.seedLocationIds.has(input.revision.locationId)) {
           throw new LocationConflictError('The location ID belongs to a legacy seed and cannot be created as new.');
         }
-        const activeDocument = activeRows[0] ? parseLocationDocument(parseJson(activeRows[0].document)) : null;
+        const baseRevision: PublishedLocationRevision | null = activeRows[0] ? {
+          locationId: input.revision.locationId,
+          revision: active!,
+          createdBy: activeRows[0].created_by,
+          createdAt: toSafeInteger(activeRows[0].created_at, 'published creation time'),
+          document: active === 0 ? parseTrustedLegacyBaseline(parseJson(activeRows[0].document)) : parseLocationDocument(parseJson(activeRows[0].document)),
+          legacySpatial: parseLegacySpatialProvenance(activeRows[0].legacy_spatial),
+        } : null;
+        const checkedCandidate = revalidateLocationCandidate(document, candidate.legacySpatial, baseRevision, active);
+        const activeDocument = baseRevision?.document ?? null;
         if (activeDocument && activeDocument.visibility !== document.visibility) {
           throw new LocationConflictError('Location visibility is inherited and cannot be changed by a draft.');
         }
@@ -266,11 +284,11 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
         const nextRevision = (active ?? 0) + 1;
         if (input.revision.revision !== nextRevision) throw new TypeError(`Published revision must be ${nextRevision}.`);
         await validateGlobalTableIds(manager, input.revision.locationId, document);
-        await persistNodeAssignments(manager, input.revision.locationId, document);
+        await persistLocationNodeAssignments(manager, input.revision.locationId, document);
         await manager.query(
-          `INSERT INTO public.location_published_revisions (location_id, revision, created_by, created_at, document)
-           VALUES ($1, $2, $3, $4, $5::jsonb)`,
-          [input.revision.locationId, nextRevision, input.revision.createdBy, input.revision.createdAt, JSON.stringify(document)],
+          `INSERT INTO public.location_published_revisions (location_id, revision, created_by, created_at, document, legacy_spatial)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+          [input.revision.locationId, nextRevision, input.revision.createdBy, input.revision.createdAt, JSON.stringify(checkedCandidate.document), JSON.stringify(checkedCandidate.legacySpatial)],
         );
         await manager.query(
           `INSERT INTO public.location_active_revisions (location_id, revision) VALUES ($1, $2)
@@ -330,11 +348,11 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
   ): Promise<'committed' | 'notCommitted' | 'unknown'> {
     const actualRegistryRevision = await readLocationRegistryRevision(this.source.manager);
     const activeRows = await this.source.query(
-      `SELECT a.revision AS active_revision, r.revision, r.created_by, r.created_at, r.document
+      `SELECT a.revision AS active_revision, r.revision, r.created_by, r.created_at, r.document, r.legacy_spatial
        FROM public.location_active_revisions a
        JOIN public.location_published_revisions r ON r.location_id = a.location_id AND r.revision = a.revision
        WHERE a.location_id = $1`, [inputRevision.locationId],
-    ) as Array<{ active_revision: number | string; revision: number | string; created_by: string; created_at: number | string; document: unknown }>;
+    ) as Array<{ active_revision: number | string; revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial: unknown }>;
     const candidateRows = await this.source.query(
       `SELECT revision FROM public.location_published_revisions WHERE location_id = $1 AND revision = $2`,
       [inputRevision.locationId, candidateLocationRevision],
@@ -345,7 +363,8 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
       && toSafeInteger(activeRows[0].revision, 'published revision') === candidateLocationRevision
       && activeRows[0].created_by === inputRevision.createdBy
       && toSafeInteger(activeRows[0].created_at, 'published timestamp') === inputRevision.createdAt
-      && sameLocationDocument(parseLocationDocument(parseJson(activeRows[0].document)), candidateDocument)) {
+      && sameLocationDocument(parseLocationDocument(parseJson(activeRows[0].document)), candidateDocument)
+      && sameJson(parseLegacySpatialProvenance(activeRows[0].legacy_spatial), inputRevision.legacySpatial ?? null)) {
       return 'committed';
     }
 
@@ -360,46 +379,19 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
   }
 }
 
-async function persistNodeAssignments(manager: EntityManager, locationId: string, document: LocationDocument): Promise<void> {
-  const desired = new Map(document.sensorAssignments.map((item) => [item.uid.toLowerCase(), item]));
-  if (desired.size !== document.sensorAssignments.length) throw new TypeError('Sensor assignments contain duplicate UIDs.');
-  const currentRows = await manager.query(
-    'SELECT uid FROM public.node_placements WHERE floor_id = $1 FOR UPDATE', [locationId],
-  ) as Array<{ uid: string }>;
-  for (const row of currentRows) {
-    if (desired.has(row.uid.toLowerCase())) continue;
-    await manager.query('DELETE FROM public.node_table_owners WHERE uid = $1', [row.uid]);
-    await manager.query('DELETE FROM public.node_placements WHERE uid = $1 AND floor_id = $2', [row.uid, locationId]);
-  }
-  for (const [uid, assignment] of desired) {
-    const nodes = await manager.query('SELECT uid, rgb FROM public.registered_nodes WHERE uid = $1 FOR UPDATE', [uid]) as Array<{ uid: string; rgb: boolean }>;
-    if (!nodes[0]) throw new LocationConflictError(`Sensor ${uid} is not registered on this edge.`);
-    if (nodes[0].rgb === true && document.visibility !== 'console') throw new LocationConflictError(`RGB sensor ${uid} cannot be assigned to a public location.`);
-    const placements = await manager.query('SELECT floor_id FROM public.node_placements WHERE uid = $1 FOR UPDATE', [uid]) as Array<{ floor_id: string }>;
-    if (placements[0] && placements[0].floor_id !== locationId) throw new LocationConflictError(`Sensor ${uid} already belongs to another location.`);
-    await manager.query('DELETE FROM public.node_table_owners WHERE uid = $1', [uid]);
-    await manager.query(
-      `INSERT INTO public.node_placements (uid, floor_id, x, y, height_cm, yaw_deg, mirror)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (uid) DO UPDATE SET floor_id = EXCLUDED.floor_id, x = EXCLUDED.x, y = EXCLUDED.y,
-         height_cm = EXCLUDED.height_cm, yaw_deg = EXCLUDED.yaw_deg, mirror = EXCLUDED.mirror`,
-      [uid, locationId, assignment.pose.x, assignment.pose.y, assignment.pose.heightCm, assignment.pose.yawDeg, assignment.pose.mirror],
-    );
-    for (const tableId of assignment.owns) await manager.query('INSERT INTO public.node_table_owners (table_id, uid) VALUES ($1, $2)', [tableId, uid]);
-  }
-}
-
 async function validateGlobalTableIds(manager: EntityManager, locationId: string, document: LocationDocument): Promise<void> {
   const rows = await manager.query(
-    `SELECT r.location_id, r.document
+    `SELECT r.location_id, r.revision, r.document
      FROM public.location_active_revisions a
      JOIN public.location_published_revisions r USING (location_id, revision)
      WHERE a.location_id <> $1`, [locationId],
-  ) as Array<{ location_id: string; document: unknown }>;
+  ) as Array<{ location_id: string; revision: number | string; document: unknown }>;
   const used = new Set<string>();
   const usedSeats = new Set<string>();
   for (const row of rows) {
-    const active = parseLocationDocument(row.document);
+    const active = toSafeInteger(row.revision, 'published revision') === 0
+      ? parseTrustedLegacyBaseline(row.document)
+      : parseLocationDocument(row.document);
     for (const table of active.tables) {
       used.add(table.id);
       for (const seat of table.seats) usedSeats.add(seat.id);
@@ -421,12 +413,13 @@ async function lockRegistryRevision(manager: EntityManager): Promise<number> {
 
 function mapDraft(row: DraftRow): LocationDraft {
   const document = parseLocationDocument(parseJson(row.document));
+  const legacySpatial = parseLegacySpatialProvenance(parseJson(row.legacy_spatial));
   const draft: LocationDraft = {
     draftId: row.draft_id.toLowerCase(), creatorId: row.creator_id, locationId: row.location_id,
     draftRevision: toSafeInteger(row.draft_revision, 'draft revision'),
     basePublishedRevision: row.base_published_revision === null ? null : toSafeInteger(row.base_published_revision, 'base published revision'),
     createdAt: toSafeInteger(row.created_at, 'draft creation time'),
-    updatedAt: toSafeInteger(row.updated_at, 'draft update time'), document,
+    updatedAt: toSafeInteger(row.updated_at, 'draft update time'), document, legacySpatial,
   };
   return validateDraft(draft);
 }
@@ -439,10 +432,13 @@ function committedDraftOutcome(draft: LocationDraft): DraftWriteOutcome {
 }
 
 function mapPublished(row: PublishedRow): PublishedLocationRevision {
+  const revisionNumber = toSafeInteger(row.revision, 'published revision');
+  const storedDocument = parseJson(row.document);
   const revision = {
-    locationId: row.location_id, revision: toSafeInteger(row.revision, 'published revision'),
+    locationId: row.location_id, revision: revisionNumber,
     createdBy: row.created_by, createdAt: toSafeInteger(row.created_at, 'published creation time'),
-    document: parseLocationDocument(parseJson(row.document)),
+    document: revisionNumber === 0 ? parseTrustedLegacyBaseline(storedDocument) : parseLocationDocument(storedDocument),
+    legacySpatial: revisionNumber === 0 ? null : parseLegacySpatialProvenance(parseJson(row.legacy_spatial)),
   };
   if (revision.document.locationId !== revision.locationId) throw new LocationStorageUnavailableError();
   return revision;
@@ -466,12 +462,37 @@ function validateDraft(value: LocationDraft): LocationDraft {
     || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0 || !Number.isSafeInteger(value.updatedAt) || value.updatedAt < value.createdAt) {
     throw new TypeError('Draft record is invalid.');
   }
-  if (Object.keys(value).some((key) => !['draftId', 'creatorId', 'locationId', 'draftRevision', 'basePublishedRevision', 'createdAt', 'updatedAt', 'document'].includes(key))) {
+  if (Object.keys(value).some((key) => !['draftId', 'creatorId', 'locationId', 'draftRevision', 'basePublishedRevision', 'createdAt', 'updatedAt', 'document', 'legacySpatial'].includes(key))) {
     throw new TypeError('Draft record contains an unknown field.');
   }
   const document = parseLocationDocument(value.document);
   if (document.locationId !== value.locationId) throw new TypeError('Draft location ID must match its document.');
-  return { ...value, draftId: value.draftId.toLowerCase(), document };
+  const legacySpatial = parseLegacySpatialProvenance(value.legacySpatial);
+  if (legacySpatial && legacySpatial.basePublishedRevision !== value.basePublishedRevision) throw new TypeError('Draft provenance must match its pinned published revision.');
+  return { ...value, draftId: value.draftId.toLowerCase(), document, legacySpatial };
+}
+
+function validateCandidate(value: ValidatedLocationCandidate): ValidatedLocationCandidate {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some((key) => !['document', 'legacySpatial'].includes(key))) throw new TypeError('Location candidate is invalid.');
+  return { document: parseLocationDocument(value.document), legacySpatial: parseLegacySpatialProvenance(value.legacySpatial) };
+}
+
+function validatePublishedHistory(history: readonly PublishedLocationRevision[]): void {
+  const byRevision = new Map(history.map((revision) => [revision.revision, revision]));
+  for (const revision of history) {
+    if (!revision.legacySpatial) continue;
+    const base = byRevision.get(revision.legacySpatial.basePublishedRevision);
+    if (!base || base.revision !== revision.revision - 1) throw new LocationStorageUnavailableError();
+    try {
+      revalidateLocationCandidate(
+        revision.document as LocationDocument,
+        revision.legacySpatial,
+        { revision: base.revision, document: base.document, legacySpatial: base.legacySpatial },
+        base.revision,
+      );
+    } catch { throw new LocationStorageUnavailableError(); }
+  }
 }
 
 function validateAssetMetadata(metadata: LocationAssetMetadata): void {
@@ -505,6 +526,7 @@ function sameAssignments(a: readonly LocationSensorAssignment[], b: readonly Loc
 function sameLocationDocument(a: LocationDocument, b: LocationDocument): boolean {
   return JSON.stringify(parseLocationDocument(a)) === JSON.stringify(parseLocationDocument(b));
 }
+function sameJson(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 function isDeterministicLocationFailure(error: unknown): boolean {
   return error instanceof LocationConflictError || error instanceof LocationDraftNotFoundError
     || error instanceof LocationStorageUnavailableError || error instanceof TypeError

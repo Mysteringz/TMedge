@@ -10,6 +10,14 @@ import { FileLocationDraftRepository } from '../src/infrastructure/location-conf
 import { FileRegistryMutationCoordinator } from '../src/infrastructure/location-config/file-registry-mutation-coordinator.js';
 import { atomicWriteNodesConfig, readNodesConfig, recoverNodesConfig } from '../src/infrastructure/location-config/file-nodes-config.js';
 import { initializeFileLocationPersistence } from '../src/infrastructure/location-config/file-location-storage.js';
+import { parseTrustedLegacyBaseline } from '../src/infrastructure/location-config/legacy-location-mapper.js';
+import { exposeLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
+import { StartLocationEditDraftUseCase } from '../src/modules/location-config/use-cases/start-location-edit-draft.js';
+import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
+import { PublishLocationUseCase } from '../src/modules/location-config/use-cases/publish-location.js';
+import { buildRegistry, buildRegistryFromLocationDocuments } from '../src/edge/registry.js';
+import { OccupancyEngine } from '../src/edge/occupancy.js';
+import { isSnapshot } from '../src/web/store.js';
 import { Provisioning } from '../src/edge/provisioning.js';
 import { InvalidLocationDocumentError, MAX_LOCATION_DOCUMENT_BYTES, MAX_POLYGON_POINTS, createLocationId, parseLocationDocument, type LocationDocument } from '../src/modules/location-config/domain/location-document.js';
 import { LocationConflictError, LocationDraftNotFoundError, LocationStorageUnavailableError, type LocationDraft } from '../src/modules/location-config/domain/location-records.js';
@@ -70,6 +78,171 @@ test('NODES_CONFIG writes preserve pre-rename state and report post-rename durab
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('revision-zero legacy baseline preserves the registry spatial envelope without authored shape provenance', async () => {
+  const directory = tempDirectory();
+  try {
+    const { sitePath, nodesPath } = writeConfigFiles(directory, { nodes: [] });
+    const site = seedSite() as { floors: Array<Record<string, unknown>> };
+    site.floors[0]!.zones = [{ id: 'seed-zone', name: 'Seed zone', polygon: [[-10, -10], [410, -10], [400, 300]] }];
+    site.floors[0]!.tables = [{ id: 'SEED-TABLE', name: 'Seed table', zone: 'seed-zone', x: 0, y: 100, width: 40, height: 60, capacity: 1 }];
+    writeFileSync(sitePath, `${JSON.stringify(site)}\n`);
+    const persistence = initializeFileLocationPersistence(sitePath, nodesPath, join(directory, 'data'));
+    try {
+      const snapshot = await persistence.snapshots.readSnapshot();
+      const baseline = snapshot.locations.find((location) => location.locationId === 'seed-floor')?.history[0]?.document;
+      assert.ok(baseline);
+      const restored = parseTrustedLegacyBaseline(JSON.parse(JSON.stringify(baseline)));
+      assert.deepEqual(restored.zones[0]?.polygon, [[-10, -10], [410, -10], [400, 300]]);
+      assert.equal(restored.tables[0]?.shape, undefined, 'legacy rectangles remain untagged');
+      assert.deepEqual(restored.tables[0]?.rect, { x: 0, y: 100, width: 40, height: 60 });
+      assert.equal(restored.tables[0]?.seats[0]?.x, -35, 'generated perimeter seats retain their legacy off-floor coordinate');
+      assert.deepEqual(restored, baseline, 'file snapshot reconstruction preserves the same revision-zero values');
+    } finally { persistence.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('file legacy edits preserve exact-base geometry through a second publish and restart', async () => {
+  const directory = tempDirectory();
+  let persistence: ReturnType<typeof initializeFileLocationPersistence> | null = null;
+  try {
+    const site = legacyBridgeSite();
+    const legacyNodes = { nodes: [{
+      uid: 'aa:bb:cc:dd:ee:09', label: 'Legacy owner', floor: 'seed-floor',
+      pose: { x: 200, y: 180, heightCm: 350, yawDeg: 0, mirror: false }, owns: ['SEED-TABLE'],
+    }] };
+    const originalRegistry = buildRegistry(site, legacyNodes);
+    const originalTable = originalRegistry.tables.get('SEED-TABLE')!;
+    const { sitePath, nodesPath } = writeConfigFiles(directory, legacyNodes);
+    writeFileSync(sitePath, `${JSON.stringify(site)}\n`);
+    const dataDir = join(directory, 'legacy-data');
+    persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDir);
+    const start = new StartLocationEditDraftUseCase({
+      drafts: persistence.drafts, snapshots: persistence.snapshots, mutationCoordinator: persistence.coordinator, now: () => 10,
+      createDraftId: () => '00000000-0000-4000-8000-000000000061',
+    });
+    let draftUpdateTime = 20;
+    const save = new SaveLocationDraftUseCase({ drafts: persistence.drafts, published: persistence.published, now: () => draftUpdateTime });
+    const first = await start.execute({ creatorId: 'legacy-editor', locationId: 'seed-floor', expectedPublishedRevision: 0 });
+    assert.equal(first.draft.document.sensorAssignments[0]?.owns[0], 'SEED-TABLE', 'revision-zero edit retains the existing sensor/table assignment');
+    assert.equal(first.draft.legacySpatial?.basePublishedRevision, 0);
+    assert.deepEqual(first.draft.legacySpatial?.outline, legacyBridgeOutline());
+    assert.equal(first.draft.legacySpatial?.zones[0]?.polygon[0]?.[0], -10);
+    assert.equal(first.draft.legacySpatial?.tables[0]?.seats[0]?.x, -35);
+
+    const edit = exposeLocationCandidate(first.draft.document, first.draft.legacySpatial);
+    assert.equal('legacySpatial' in edit, false, 'server-derived provenance is absent from the edit payload');
+    const forged = structuredClone(edit) as Record<string, unknown>;
+    forged.legacySpatial = first.draft.legacySpatial;
+    await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: forged }), /server-managed/i);
+
+    const changedOutline = structuredClone(edit) as { outline: number[][] };
+    changedOutline.outline[0]![0] = -11;
+    await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: changedOutline }), /outline|finite number/i);
+    const changedZone = structuredClone(edit) as { zones: Array<{ polygon: number[][] }> };
+    changedZone.zones[0]!.polygon[0]![0] = -11;
+    await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: changedZone }), /polygon|finite number/i);
+    const resized = structuredClone(edit) as { widthCm: number; heightCm: number };
+    resized.widthCm = 401;
+    await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: resized }), /outline|polygon|finite number/i,
+      'changing floor dimensions disables exact-base geometry grandfathering');
+    const resizedHeight = structuredClone(edit) as { widthCm: number; heightCm: number };
+    resizedHeight.heightCm = 299;
+    await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: resizedHeight }), /outline|polygon|finite number/i,
+      'changing either base dimension requires strict validation of inherited spatial fields');
+    const changedSeat = structuredClone(edit) as { tables: Array<{ seats: Array<{ x: number }> }> };
+    changedSeat.tables[0]!.seats[0]!.x = -34;
+    await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: changedSeat }), /seat|finite number/i);
+    const newlyShaped = structuredClone(edit) as { tables: Array<Record<string, unknown>> };
+    delete newlyShaped.tables[0]!.rect;
+    newlyShaped.tables[0]!.shape = { type: 'rect', x: 20, y: 20, width: 40, height: 60 };
+    await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: newlyShaped }), /seat|finite number/i,
+      'off-floor inherited seats cannot be grandfathered once an authored shape is supplied');
+
+    const acceptedFirst = structuredClone(edit) as { name: string };
+    acceptedFirst.name = 'Legacy floor edited';
+    const savedFirst = await save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: acceptedFirst });
+    assert.equal(savedFirst.draft.draftRevision, 2);
+    const runtime = {
+      prepare: () => 'prepared', refresh: (prepared: string) => prepared, activate: () => undefined, quarantine: () => undefined,
+    };
+    const publish = new PublishLocationUseCase({
+      drafts: persistence.drafts, published: persistence.published, snapshots: persistence.snapshots,
+      mutationCoordinator: persistence.coordinator, runtime, now: () => 30,
+    });
+    await publish.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 2, expectedPublishedRevision: 0 });
+
+    const second = await new StartLocationEditDraftUseCase({
+      drafts: persistence.drafts, snapshots: persistence.snapshots, mutationCoordinator: persistence.coordinator, now: () => 40,
+      createDraftId: () => '00000000-0000-4000-8000-000000000062',
+    }).execute({ creatorId: 'legacy-editor', locationId: 'seed-floor', expectedPublishedRevision: 1 });
+    assert.equal(second.draft.legacySpatial?.basePublishedRevision, 1,
+      'the second edit pins provenance to its immediate immutable base revision');
+    assert.deepEqual({ ...second.draft.legacySpatial!, basePublishedRevision: 0 }, first.draft.legacySpatial,
+      'the second edit retains only the same inherited spatial values');
+    const acceptedSecond = exposeLocationCandidate(second.draft.document, second.draft.legacySpatial) as { name: string };
+    acceptedSecond.name = 'Legacy floor edited twice';
+    draftUpdateTime = 50;
+    const savedSecond = await save.execute({ creatorId: 'legacy-editor', draftId: second.draft.draftId, expectedDraftRevision: 1, document: acceptedSecond });
+    assert.deepEqual({ ...savedSecond.draft.legacySpatial!, basePublishedRevision: 0 }, first.draft.legacySpatial);
+    await publish.execute({ creatorId: 'legacy-editor', draftId: second.draft.draftId, expectedDraftRevision: 2, expectedPublishedRevision: 1 });
+
+    const history = await persistence.published.listHistory('seed-floor');
+    assert.deepEqual(history.map((item) => item.revision), [0, 1, 2], 'the immutable revision-zero baseline remains available for exact-base validation');
+    assert.deepEqual({ ...history[2]?.legacySpatial!, basePublishedRevision: 0 }, history[1]?.legacySpatial,
+      'the second immutable revision retains geometry while pinning provenance to its own base');
+    assert.equal(history[2]?.document.name, 'Legacy floor edited twice');
+    const snapshot = await persistence.snapshots.readSnapshot();
+    const active = snapshot.locations.find((item) => item.locationId === 'seed-floor')?.history.at(-1);
+    assert.deepEqual(active?.legacySpatial?.outline, legacyBridgeOutline());
+    assert.deepEqual(active?.legacySpatial?.zones[0]?.polygon, [[-10, -10], [410, -10], [400, 300]]);
+
+    const runtimeNodes = JSON.parse(readFileSync(nodesPath, 'utf8')) as unknown;
+    const registry = buildRegistryFromLocationDocuments(site, runtimeNodes, [parseLocationDocument(active!.document)], new Map([['seed-floor', active!.legacySpatial!]]));
+    const preparedTable = registry.tables.get('SEED-TABLE')!;
+    assert.deepEqual(preparedTable.seats, originalTable.seats, 'seat coordinates, identities, sides, indices and neighbor graph match the legacy registry');
+    assert.equal(preparedTable.owner, originalTable.owner);
+    assert.deepEqual(preparedTable.coveredBy, originalTable.coveredBy, 'coverage uses the original legacy seat positions');
+    for (const seat of preparedTable.seats) assert.equal(registry.seatIndex.get(seat.id)?.seat, seat);
+    assert.deepEqual(site, legacyBridgeSite(), 'candidate preparation leaves the active site seed untouched');
+    const emitted = new OccupancyEngine(registry, 'edge-legacy-bridge').snapshot(100);
+    assert.equal(emitted.version, 2);
+    assert.equal(emitted.floors[0]?.outline.length, 257);
+    assert.deepEqual(emitted.floors[0]?.zones[0]?.polygon, [[-10, -10], [410, -10], [400, 300]]);
+    assert.equal(emitted.floors[0]?.tables[0]?.shape, undefined, 'normalized legacy rectangles remain untagged in v2');
+    assert.equal(emitted.floors[0]?.tables[0]?.seats[0]?.x, -35);
+    assert.equal(isSnapshot(emitted), true, 'the actual edge-generated v2 legacy snapshot keeps the v1 envelope');
+
+    persistence.close();
+    persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDir);
+    const reopened = await persistence.snapshots.readSnapshot();
+    const reopenedActive = reopened.locations.find((item) => item.locationId === 'seed-floor')?.history.at(-1);
+    assert.deepEqual(reopenedActive?.legacySpatial, active?.legacySpatial);
+    assert.equal(reopenedActive?.document.name, 'Legacy floor edited twice');
+    assert.deepEqual(reopenedActive?.legacySpatial?.outline, legacyBridgeOutline());
+  } finally {
+    persistence?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function legacyBridgeOutline(): number[][] {
+  const outline = Array.from({ length: 257 }, (_, index) => {
+    const angle = (index / 257) * Math.PI * 2;
+    return [200 + Math.cos(angle) * 100, 150 + Math.sin(angle) * 100];
+  });
+  outline[0] = [-10, -10];
+  return outline;
+}
+
+function legacyBridgeSite(): { floors: Array<Record<string, unknown>> } {
+  const site = seedSite() as { floors: Array<Record<string, unknown>> };
+  const floor = site.floors[0]!;
+  floor.outline = legacyBridgeOutline();
+  floor.zones = [{ id: 'seed-zone', name: 'Seed zone', polygon: [[-10, -10], [410, -10], [400, 300]] }];
+  floor.tables = [{ id: 'SEED-TABLE', name: 'Seed table', zone: 'seed-zone', x: 0, y: 100, width: 40, height: 60, capacity: 3 }];
+  return site;
+}
+
 function seedSite(): unknown {
   return {
     site: { id: 'test-site', name: 'Test site' },
@@ -97,7 +270,7 @@ function locationDocument(locationId = createLocationId('edge-test', '00000000-0
 }
 
 function publishedRevision(document: LocationDocument, revision = 1) {
-  return { locationId: document.locationId, revision, createdBy: 'operator-1', createdAt: 100, document };
+  return { locationId: document.locationId, revision, createdBy: 'operator-1', createdAt: 100, document, legacySpatial: null };
 }
 
 function writeConfigFiles(directory: string, nodes: unknown = { nodes: [{ uid: 'aa:bb:cc:dd:ee:01', label: 'Existing sensor' }] }) {
@@ -319,12 +492,17 @@ test('file publication applies the same RGB sensor visibility rule as PostgreSQL
 
       const baseline = await persistence.published.getActive('seed-floor');
       assert.equal(baseline?.history[0]?.document.visibility, 'console');
-      const consoleDocument = parseLocationDocument({ ...baseline!.history[0]!.document, name: 'Console floor rename' });
+      const consoleDocument = parseLocationDocument({ ...locationDocument('seed-floor'), name: 'Console floor rename', visibility: 'console' });
+      const baseRevision = baseline!.history[0]!;
+      const consoleCandidate = parseLocationCandidate(consoleDocument, {
+        revision: 0, document: baseRevision.document, legacySpatial: baseRevision.legacySpatial,
+      }, 0);
       const newDocument = locationDocument();
       assert.equal(newDocument.visibility, 'public', 'new documents default to public');
       await persistence.coordinator.withMutationLock(() => persistence.published.commitWithinMutation({
         expectedRegistryRevision: 0, expectedPublishedRevision: 0,
-        revision: publishedRevision(consoleDocument), assignments: consoleDocument.sensorAssignments,
+        revision: { ...publishedRevision(consoleCandidate.document), legacySpatial: consoleCandidate.legacySpatial },
+        assignments: consoleCandidate.document.sensorAssignments,
       }));
       assert.equal((await persistence.published.getActive(consoleDocument.locationId))?.history[0]?.document.visibility, 'console');
     } finally { persistence.close(); }
@@ -342,11 +520,16 @@ test('legacy console-only visibility survives bootstrap and cannot be edited int
     try {
       const baseline = await persistence.published.getActive('seed-floor');
       assert.equal(baseline?.history[0]?.document.visibility, 'console');
-      const attemptedPublicEdit = parseLocationDocument({ ...baseline!.history[0]!.document, name: 'Renamed', visibility: 'public' });
+      const attemptedPublicEdit = parseLocationDocument({ ...locationDocument('seed-floor'), name: 'Renamed', visibility: 'public' });
+      const baseRevision = baseline!.history[0]!;
+      const publicCandidate = parseLocationCandidate(attemptedPublicEdit, {
+        revision: 0, document: baseRevision.document, legacySpatial: baseRevision.legacySpatial,
+      }, 0);
       const before = readFileSync(nodesPath);
       await assert.rejects(persistence.coordinator.withMutationLock(() => persistence.published.commitWithinMutation({
         expectedRegistryRevision: 0, expectedPublishedRevision: 0,
-        revision: publishedRevision(attemptedPublicEdit), assignments: attemptedPublicEdit.sensorAssignments,
+        revision: { ...publishedRevision(publicCandidate.document), legacySpatial: publicCandidate.legacySpatial },
+        assignments: publicCandidate.document.sensorAssignments,
       })), LocationConflictError);
       assert.deepEqual(readFileSync(nodesPath), before);
 
@@ -412,7 +595,7 @@ test('file drafts, published history, registry and immutable asset bytes survive
     };
     await persistence.drafts.createDraft(draft);
     const savedDraft = await persistence.drafts.saveDraft(
-      draft.creatorId, draftId, 1, parseLocationDocument({ ...document, name: 'Saved before restart' }), 20,
+      draft.creatorId, draftId, 1, { document: parseLocationDocument({ ...document, name: 'Saved before restart' }), legacySpatial: null }, 20,
     );
     assert.equal(savedDraft.draft.draftRevision, 2);
     const asset = await persistence.assets.put('operator-restart', 'floor-plan', 'image/png', assetBytes, 30);
@@ -514,31 +697,31 @@ test('file draft storage is creator-private and uses compare-and-swap revisions'
     };
     await repository.createDraft(draft);
     assert.equal(await repository.getDraft('operator-2', draft.draftId), null);
-    await assert.rejects(repository.saveDraft('operator-2', draft.draftId, 1, document, 20), LocationDraftNotFoundError);
-    await assert.rejects(repository.saveDraft('operator-1', draft.draftId, 0, document, 20), LocationConflictError);
+    await assert.rejects(repository.saveDraft('operator-2', draft.draftId, 1, { document, legacySpatial: null }, 20), LocationDraftNotFoundError);
+    await assert.rejects(repository.saveDraft('operator-1', draft.draftId, 0, { document, legacySpatial: null }, 20), LocationConflictError);
 
     const updated = parseLocationDocument({ ...document, name: 'Renamed room' });
     const saves = await Promise.allSettled([
-      repository.saveDraft('operator-1', draft.draftId, 1, updated, 20),
-      repository.saveDraft('operator-1', draft.draftId, 1, updated, 20),
+      repository.saveDraft('operator-1', draft.draftId, 1, { document: updated, legacySpatial: null }, 20),
+      repository.saveDraft('operator-1', draft.draftId, 1, { document: updated, legacySpatial: null }, 20),
     ]);
     assert.equal(saves.filter((item) => item.status === 'fulfilled').length, 1);
     assert.equal(saves.filter((item) => item.status === 'rejected' && item.reason instanceof LocationConflictError).length, 1);
     assert.equal((await repository.getDraft('operator-1', draft.draftId))?.draftRevision, 2);
 
     failDirectorySync = true;
-    const applied = await repository.saveDraft('operator-1', draft.draftId, 2, parseLocationDocument({ ...updated, name: 'Applied with uncertain durability' }), 30);
+    const applied = await repository.saveDraft('operator-1', draft.draftId, 2, { document: parseLocationDocument({ ...updated, name: 'Applied with uncertain durability' }), legacySpatial: null }, 30);
     assert.equal(applied.kind, 'committed');
     assert.equal(applied.durability, 'unconfirmed');
     assert.equal(applied.draft.draftRevision, 3);
     assert.equal((await repository.getDraft('operator-1', draft.draftId))?.draftRevision, 3,
       'reads report the visible revision even when parent-directory flush failed');
 
-    await assert.rejects(repository.saveDraft('operator-1', draft.draftId, 3, updated, 40), LocationStorageUnavailableError,
+    await assert.rejects(repository.saveDraft('operator-1', draft.draftId, 3, { document: updated, legacySpatial: null }, 40), LocationStorageUnavailableError,
       'the same draft writer remains latched while exact revision recovery fails');
     assert.equal((await repository.getDraft('operator-1', draft.draftId))?.draftRevision, 3);
     failDirectorySync = false;
-    const recovered = await repository.saveDraft('operator-1', draft.draftId, 3, updated, 40);
+    const recovered = await repository.saveDraft('operator-1', draft.draftId, 3, { document: updated, legacySpatial: null }, 40);
     assert.equal(recovered.durability, 'confirmed');
     assert.equal(recovered.draft.draftRevision, 4);
   } finally { rmSync(directory, { recursive: true, force: true }); }

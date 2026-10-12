@@ -119,6 +119,9 @@ export class AlgoRuntime {
   }
 
   async run(p: Pipeline, opts: RunOptions = {}): Promise<RunResult> {
+    // A debugger run may spend time awaiting the firmware detector. Keep one
+    // generation for every placement, occupancy and authority read below.
+    const generation = this.rt.captureGeneration();
     const uid = p.uid;
     const pair = opts.frame !== undefined ? this.frames.get(uid, opts.frame) : this.frames.latest(uid);
     const now = Date.now();
@@ -152,8 +155,8 @@ export class AlgoRuntime {
       detectorMs = Date.now() - t0;
     }
 
-    const node = this.rt.reg.nodes.get(uid) ?? null;
-    const floor = node ? this.rt.reg.floors.find((f) => f.id === node.floorId) ?? null : null;
+    const node = generation.reg.nodes.get(uid) ?? null;
+    const floor = node ? generation.reg.floors.find((f) => f.id === node.floorId) ?? null : null;
     const envelopes: NodeEnvelope[] = [];
     const push = (
       id: string, type: string, started: number,
@@ -181,7 +184,7 @@ export class AlgoRuntime {
         switch (n.type) {
           case 'thermal_input': {
             const f = encodeFrame(pair);
-            const health = this.rt.nodes().find((h) => h.uid === uid) ?? null;
+            const health = this.rt.nodes(undefined, generation).find((h) => h.uid === uid) ?? null;
             push(n.id, n.type, started, { frame: f }, {
               sensorOk: health?.status ? true : null,
               backgroundReady: health?.backgroundReady ?? null,
@@ -338,7 +341,7 @@ export class AlgoRuntime {
           }
 
           case 'heatmap': {
-            const dwell = floor ? this.rt.dwell.get(floor.id) : undefined;
+            const dwell = floor ? generation.dwell.get(floor.id) : undefined;
             const json = dwell?.toJSON() ?? null;
             push(n.id, n.type, started, { heat: json }, {
               floorId: floor?.id ?? null,
@@ -350,7 +353,7 @@ export class AlgoRuntime {
           }
 
           case 'desk_estimator': {
-            const dwell = floor ? this.rt.dwell.get(floor.id) : undefined;
+            const dwell = floor ? generation.dwell.get(floor.id) : undefined;
             const json = dwell?.toJSON();
             const dp: DeskParams = { ...DEFAULT_DESK, ...(n.params as Partial<DeskParams>) };
             if (!json) {
@@ -374,11 +377,11 @@ export class AlgoRuntime {
           }
 
           case 'occupancy': {
-            const snap = this.rt.latest;
+            const snap = generation.latest;
             const state = snap?.floors.find((f) => f.id === floor?.id) ?? null;
             const live = this.broker.edgeParams();
             push(n.id, n.type, started, { occupancy: state }, {
-              authorities: this.rt.engine.authorities(),
+              authorities: generation.engine.authorities(),
               why: state?.tables.map((t) => ({
                 id: t.id, status: t.status, occupied: t.occupied, free: t.free,
                 seats: t.seats.map((s) => ({ id: s.id, occupied: s.occupied })),
@@ -415,7 +418,7 @@ export class AlgoRuntime {
           }
 
           case 'final_map': {
-            const state = this.rt.latest?.floors.find((f) => f.id === floor?.id) ?? null;
+            const state = generation.latest?.floors.find((f) => f.id === floor?.id) ?? null;
             push(n.id, n.type, started, {}, {
               floor: floor ? { id: floor.id, name: floor.name, width: floor.width, height: floor.height, outline: floor.outline } : null,
               tables: state?.tables ?? [],

@@ -22,12 +22,13 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { buildRegistry, loadRegistry, type NodeDef, type Registry } from './registry.js';
+import type { NodeDef, Registry } from './registry.js';
 import { ApplicationError } from '../modules/shared/application/contracts.js';
 import { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
 import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import { parseNodesConfig } from '../modules/location-config/domain/nodes-config.js';
 import { atomicWriteNodesConfig, recoverNodesConfig } from '../infrastructure/location-config/file-nodes-config.js';
+import { buildFileRegistry, loadFileRegistry } from '../infrastructure/location-config/file-location-storage.js';
 import type { AtomicFileOperations } from '../infrastructure/location-config/atomic-file-write.js';
 export { MAX_PENDING, REQUEST_TTL_MS } from '../modules/provisioning/domain/provisioning-policy.js';
 
@@ -56,6 +57,10 @@ export interface ProvisioningOptions {
   nodesPath: string;
   sitePath?: string;
   mutationCoordinator?: RegistryMutationCoordinator;
+  /** Resolve the registry that is active now, not the startup object. */
+  registryProvider?: () => Registry;
+  /** Prepare the matching runtime generation before registry storage commits. */
+  prepareRegistryAddition?: (node: NodeDef) => () => void;
   /** Narrow I/O seam for commit-boundary fault tests; production uses native fsync/rename. */
   nodesConfigWriteOperations?: AtomicFileOperations;
   /** Appended to, never rewritten: the record of who admitted what. */
@@ -74,7 +79,7 @@ export class Provisioning {
   private readonly now: () => number;
   private durabilityRecovery: (() => void) | null = null;
 
-  constructor(private readonly reg: Registry, private readonly opts: ProvisioningOptions) {
+  constructor(private readonly initialRegistry: Registry, private readonly opts: ProvisioningOptions) {
     this.now = opts.now ?? Date.now;
     // Keep the same request and matching code across a restart or deploy.
     // An absent in-memory row used to look like a human rejection to TMflash.
@@ -93,10 +98,12 @@ export class Provisioning {
             typeof row.expiresAt !== 'number' || !Number.isSafeInteger(row.expiresAt) || row.expiresAt - row.at !== REQUEST_TTL_MS) {
           throw new Error('invalid pending adoption request');
         }
-        if (row.expiresAt > this.now() && !reg.nodes.has(row.uid)) this.pending.set(row.id, row as JoinRequest);
+        if (row.expiresAt > this.now() && !this.reg.nodes.has(row.uid)) this.pending.set(row.id, row as JoinRequest);
       }
     }
   }
+
+  private get reg(): Registry { return this.opts.registryProvider?.() ?? this.initialRegistry; }
 
   get enabled(): boolean {
     return this.opts.token !== null;
@@ -122,7 +129,7 @@ export class Provisioning {
     }
     const doc: unknown = JSON.parse(readFileSync(real, 'utf8'));
     parseNodesConfig(doc);
-    if (this.opts.sitePath) loadRegistry(this.opts.sitePath, real);
+    if (this.opts.sitePath) loadFileRegistry(this.opts.sitePath, real);
   }
 
   requests(): JoinRequest[] {
@@ -210,8 +217,10 @@ export class Provisioning {
 
     // File first. If it cannot be written the node is not admitted at all,
     // rather than admitted until the next restart forgets it.
+    const activate = this.opts.prepareRegistryAddition?.(node);
     this.appendToNodesFile(node);
-    this.reg.nodes.set(node.uid, node);
+    if (activate) activate();
+    else this.reg.nodes.set(node.uid, node);
     this.pending.delete(id);
     // Registration has committed. A stale pending file is harmless: loading
     // filters registered identities, and status still reports registered.
@@ -255,9 +264,8 @@ export class Provisioning {
     doc.revision += 1;
     if (this.opts.sitePath) {
       const site = JSON.parse(readFileSync(this.opts.sitePath, 'utf8')) as unknown;
-      loadRegistry(this.opts.sitePath, path);
       // Validate the candidate before replacing the last known-good file.
-      buildRegistry(site, doc);
+      buildFileRegistry(site, doc);
     }
     const outcome = atomicWriteNodesConfig(path, doc, this.opts.nodesConfigWriteOperations);
     if (outcome.durability === 'unconfirmed') {

@@ -1,10 +1,11 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { isLocationId, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../../modules/location-config/domain/location-document.js';
-import { legacyFloorToLocationDocument } from './legacy-location-mapper.js';
+import { revalidateLocationCandidate, type LegacySpatialProvenance } from '../../modules/location-config/domain/location-candidate.js';
+import { legacyFloorToBaseline } from './legacy-location-mapper.js';
 import { parseNodesConfig, type NodesConfigV2 } from '../../modules/location-config/domain/nodes-config.js';
 import { LocationConflictError, type PublishedLocationRevision, type PublishedLocationState } from '../../modules/location-config/domain/location-records.js';
-import type { LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, PublishedLocationRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
-import { loadRegistry, type FloorDef, type Registry } from '../../edge/registry.js';
+import type { LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, LocationRegistrySnapshot, LocationRegistrySnapshotRepository, PublishedLocationRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
+import { buildRegistry, buildRegistryFromLocationDocuments, type FloorDef, type Registry } from '../../edge/registry.js';
 import { FileLocationAssetStore } from './file-location-asset-store.js';
 import { FileLocationDraftRepository } from './file-location-draft-repository.js';
 import { FileRegistryMutationCoordinator } from './file-registry-mutation-coordinator.js';
@@ -12,10 +13,12 @@ import { atomicWriteNodesConfig, readNodesConfig, recoverNodesConfig } from './f
 import { fileSha256, type AtomicFileOperations } from './atomic-file-write.js';
 
 export interface FileLocationPersistence {
+  siteSeed: unknown;
   registry: Registry;
   coordinator: FileRegistryMutationCoordinator;
   drafts: LocationDraftRepository;
   published: PublishedLocationRepository;
+  snapshots: LocationRegistrySnapshotRepository;
   assets: LocationAssetStore;
   assetMetadata: LocationAssetMetadataRepository;
   close(): void;
@@ -23,10 +26,11 @@ export interface FileLocationPersistence {
 
 /** Validates both legacy inputs before upgrading NODES_CONFIG and opening durable stores. */
 export function initializeFileLocationPersistence(sitePath: string, nodesPath: string, dataDir: string, writeOperations: AtomicFileOperations = {}): FileLocationPersistence {
-  const registry = loadRegistry(sitePath, nodesPath);
+  const siteJson: unknown = JSON.parse(readFileSync(sitePath, 'utf8'));
+  const seedRegistry = buildRegistry(siteJson, { nodes: [] });
   const rawNodes: unknown = JSON.parse(readFileSync(nodesPath, 'utf8'));
   const parsed = parseNodesConfig(rawNodes);
-  if (parsed.kind === 'v2') validatePublishedAgainstSeed(registry, parsed.document);
+  if (parsed.kind === 'v2') validatePublishedAgainstSeed(seedRegistry, parsed.document);
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const coordinator = new FileRegistryMutationCoordinator(nodesPath);
   coordinator.acquireProcessOwnership();
@@ -51,11 +55,36 @@ export function initializeFileLocationPersistence(sitePath: string, nodesPath: s
   }
   const drafts = new FileLocationDraftRepository(dataDir, coordinator);
   const assetStore = new FileLocationAssetStore(dataDir);
-  const published = new FilePublishedLocationRepository(registry, nodesPath, coordinator, writeOperations);
+  const published = new FilePublishedLocationRepository(seedRegistry, nodesPath, coordinator, writeOperations);
+  const snapshots = new FileLocationRegistrySnapshotRepository(siteJson, nodesPath, seedRegistry, published);
+  const initial = snapshots.readSnapshotSync();
+  const active = activeDocuments(initial);
+  const registry = buildRegistryFromLocationDocuments(siteJson, nodesConfigFor(initial), active.documents, active.legacySpatialByLocation);
   return {
-    registry, coordinator, drafts, published, assets: assetStore, assetMetadata: assetStore,
+    siteSeed: siteJson, registry, coordinator, drafts, published, snapshots, assets: assetStore, assetMetadata: assetStore,
     close: () => coordinator.close(),
   };
+}
+
+/** Loads the full file-mode registry, including published location overrides. */
+export function loadFileRegistry(sitePath: string, nodesPath: string): Registry {
+  const siteJson: unknown = JSON.parse(readFileSync(sitePath, 'utf8'));
+  const nodesJson: unknown = JSON.parse(readFileSync(nodesPath, 'utf8'));
+  return buildFileRegistry(siteJson, nodesJson);
+}
+
+/** Validates a candidate NODES_CONFIG without dropping its published floors. */
+export function buildFileRegistry(siteJson: unknown, nodesJson: unknown): Registry {
+  const parsed = parseNodesConfig(nodesJson);
+  if (parsed.kind === 'legacy') return buildRegistry(siteJson, { nodes: parsed.nodes });
+  const seed = buildRegistry(siteJson, { nodes: [] });
+  validatePublishedAgainstSeed(seed, parsed.document);
+  const active = parsed.document.publishedLocations.flatMap((location) => {
+    const active = location.revisions.find((revision) => revision.revision === location.activeRevision);
+    if (!active) throw new LocationConflictError(`Published location ${location.locationId} has no active document.`);
+    return [active];
+  });
+  return buildRegistryFromLocationDocuments(siteJson, parsed.document, active.map((revision) => revision.document), new Map(active.flatMap((revision) => revision.legacySpatial ? [[revision.locationId, revision.legacySpatial] as const] : [])));
 }
 
 export class FilePublishedLocationRepository implements PublishedLocationRepository {
@@ -80,7 +109,10 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
   }
 
   async listActive(): Promise<PublishedLocationState[]> {
-    const config = this.readNodes();
+    return this.activeStatesFromConfig(this.readNodes());
+  }
+
+  activeStatesFromConfig(config: NodesConfigV2): PublishedLocationState[] {
     const ids = new Set([...this.seedRegistry.floors.map((floor) => floor.id), ...config.publishedLocations.map((item) => item.locationId)]);
     const states: PublishedLocationState[] = [];
     for (const id of [...ids].sort()) {
@@ -128,8 +160,22 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
     const existing = config.publishedLocations.find((item) => item.locationId === input.revision.locationId);
     const activeRevision = existing?.activeRevision ?? (seedFloor ? 0 : null);
     if (activeRevision !== input.expectedPublishedRevision) throw new LocationConflictError('The published location changed; reload before publishing.');
-    const activeDocument = existing?.revisions.find((row) => row.revision === activeRevision)?.document
-      ?? (seedFloor ? legacyFloorToLocationDocument(seedFloor, this.seedRegistry.nodes.values()) : null);
+    const activeRow = existing?.revisions.find((row) => row.revision === activeRevision) ?? null;
+    const activeDocument = activeRow?.document
+      ?? (seedFloor ? legacyFloorToBaseline(seedFloor, this.seedRegistry.nodes.values()) : null);
+    const baseRevision: PublishedLocationRevision | null = activeDocument ? {
+      locationId: input.revision.locationId,
+      revision: activeRevision!,
+      createdBy: activeRow?.createdBy ?? 'system-bootstrap',
+      createdAt: activeRow?.createdAt ?? 0,
+      document: activeDocument,
+      legacySpatial: activeRow?.legacySpatial ?? null,
+    } : null;
+    const validatedCandidate = revalidateLocationCandidate(
+      document, input.revision.legacySpatial, baseRevision ? {
+        revision: baseRevision.revision, document: baseRevision.document, legacySpatial: baseRevision.legacySpatial,
+      } : null, activeRevision,
+    );
     if (activeDocument && document.visibility !== activeDocument.visibility) {
       throw new LocationConflictError('Location visibility is inherited and cannot be changed by a draft.');
     }
@@ -147,7 +193,7 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
       ...config,
       revision: config.revision + 1,
       nodes,
-      publishedLocations: upsertPublished(config.publishedLocations, input.revision),
+      publishedLocations: upsertPublished(config.publishedLocations, { ...input.revision, document: validatedCandidate.document, legacySpatial: validatedCandidate.legacySpatial }),
     };
     const reparsed = parseNodesConfig(candidate);
     if (reparsed.kind !== 'v2') throw new Error('Internal registry schema conversion failed.');
@@ -164,7 +210,11 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
 
   async registryRevision(): Promise<number> { return this.readNodes().revision; }
 
-  private readNodes(): NodesConfigV2 { return readNodesConfig(this.nodesPath); }
+  private readNodes(): NodesConfigV2 {
+    const config = readNodesConfig(this.nodesPath);
+    validatePublishedAgainstSeed(this.seedRegistry, config);
+    return config;
+  }
 
   private async assertNoGlobalGeometryCollision(config: NodesConfigV2, document: LocationDocument): Promise<void> {
     const newTableIds = new Set(document.tables.map((table) => table.id));
@@ -173,7 +223,7 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
     const used = new Set<string>();
     const usedSeats = new Set<string>();
     for (const floor of this.seedRegistry.floors) {
-      const active = floor.id === document.locationId ? document : activeOverrides.get(floor.id) ?? legacyFloorToLocationDocument(floor, this.seedRegistry.nodes.values());
+      const active = floor.id === document.locationId ? document : activeOverrides.get(floor.id) ?? legacyFloorToBaseline(floor, this.seedRegistry.nodes.values());
       if (floor.id !== document.locationId) for (const table of active.tables) {
         used.add(table.id);
         for (const seat of table.seats) usedSeats.add(seat.id);
@@ -191,13 +241,72 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
   }
 }
 
+/** Reads file-backed nodes and active location records as one shared-writer-protected snapshot. */
+export class FileLocationRegistrySnapshotRepository implements LocationRegistrySnapshotRepository {
+  constructor(
+    private readonly siteSeed: unknown,
+    private readonly nodesPath: string,
+    private readonly seedRegistry: Registry,
+    private readonly published: FilePublishedLocationRepository,
+  ) {}
+
+  async readSnapshot(): Promise<LocationRegistrySnapshot> { return this.readSnapshotSync(); }
+
+  readSnapshotSync(): LocationRegistrySnapshot {
+    const config = readNodesConfig(this.nodesPath);
+    validatePublishedAgainstSeed(this.seedRegistry, config);
+    const states = this.published.activeStatesFromConfig(config);
+    const activeOverrides = states.flatMap((state) => {
+      if (state.activeRevision === 0) return [];
+      const active = state.history.find((revision) => revision.revision === state.activeRevision);
+      return active ? [parseLocationDocument(active.document)] : [];
+    });
+    const provenance = new Map(states.flatMap((state) => {
+      const active = state.history.find((revision) => revision.revision === state.activeRevision);
+      return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
+    }));
+    const current = buildRegistryFromLocationDocuments(this.siteSeed, config, activeOverrides, provenance);
+    const locations = states.map((state) => {
+      if (state.activeRevision !== 0) return state;
+      const floor = current.floors.find((item) => item.id === state.locationId);
+      if (!floor) return state;
+      const legacyDocument = legacyFloorToBaseline(floor, current.nodes.values());
+      const history = state.history.map((revision) => revision.revision === 0 ? { ...revision, document: legacyDocument } : revision);
+      return { ...state, history };
+    });
+    return {
+      registryRevision: config.revision,
+      nodes: [...current.nodes.values()].map((node) => ({ ...node, owns: [...node.owns], pose: node.pose ? { ...node.pose } : null, detector: node.detector ?? 'node' })),
+      locations,
+    };
+  }
+}
+
+function nodesConfigFor(snapshot: LocationRegistrySnapshot): unknown {
+  return { nodes: snapshot.nodes.map((node) => ({
+    uid: node.uid, label: node.label, ...(node.floorId && node.pose ? { floor: node.floorId, pose: node.pose } : {}),
+    owns: node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector,
+  })) };
+}
+
+function activeDocuments(snapshot: LocationRegistrySnapshot): { documents: LocationDocument[]; legacySpatialByLocation: Map<string, LegacySpatialProvenance> } {
+  const legacySpatialByLocation = new Map<string, LegacySpatialProvenance>();
+  const documents = snapshot.locations.flatMap((state) => {
+    if (state.activeRevision === 0) return [];
+    const active = state.history.find((revision) => revision.revision === state.activeRevision);
+    if (active?.legacySpatial) legacySpatialByLocation.set(active.locationId, active.legacySpatial);
+    return active ? [parseLocationDocument(active.document)] : [];
+  });
+  return { documents, legacySpatialByLocation };
+}
+
 function legacyRevision(floor: FloorDef, registry: Registry): PublishedLocationRevision {
   return {
     locationId: floor.id,
     revision: 0,
     createdBy: 'system-bootstrap',
     createdAt: 0,
-    document: legacyFloorToLocationDocument(floor, registry.nodes.values()),
+    document: legacyFloorToBaseline(floor, registry.nodes.values()),
   };
 }
 
@@ -213,6 +322,7 @@ function upsertPublished(
     createdBy: revision.createdBy,
     createdAt: revision.createdAt,
     document: parseLocationDocument(revision.document),
+    legacySpatial: revision.legacySpatial ?? null,
   };
   if (existing) {
     existing.revisions.push(serialized);
@@ -259,6 +369,24 @@ function sameAssignments(a: readonly LocationSensorAssignment[], b: readonly Loc
 
 function validatePublishedAgainstSeed(registry: Registry, document: NodesConfigV2): void {
   const floorIds = new Set(registry.floors.map((floor) => floor.id));
+  const seedById = new Map(registry.floors.map((floor) => [floor.id, legacyRevision(floor, registry)]));
+  for (const override of document.publishedLocations) {
+    let base = seedById.get(override.locationId) ?? null;
+    for (const revision of override.revisions) {
+      if (revision.legacySpatial) {
+        if (!base) throw new LocationConflictError('Legacy spatial provenance has no matching immutable base revision.');
+        try {
+          revalidateLocationCandidate(
+            revision.document,
+            revision.legacySpatial,
+            { revision: base.revision, document: base.document, legacySpatial: base.legacySpatial },
+            base.revision,
+          );
+        } catch { throw new LocationConflictError('Legacy spatial provenance does not match its immutable base revision.'); }
+      }
+      base = revision;
+    }
+  }
   const tableIds = new Set<string>();
   const seatIds = new Set<string>();
   for (const floor of registry.floors) {

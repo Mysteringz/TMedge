@@ -93,6 +93,7 @@ test('database provisioning outages return safe 503 errors for tool and admin op
   const repository: ProvisioningRepository = {
     transaction: outage, findRequest: outage, findRequestByNodeUid: outage,
     findNode: outage, listPendingRequests: outage, reconcile: outage,
+    registryRevision: outage, reconcileApproval: outage,
   };
   const service = new DatabaseProvisioningService(repository, buildRegistry(siteJson(), nodesJson()), { token: TOKEN });
   await withRoutes(service, async (base, events) => {

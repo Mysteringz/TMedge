@@ -135,8 +135,9 @@ export function startAlgo(
    * screen and looks like the tool is broken.
    */
   const pickUid = (): string => {
-    const all = [...rt.reg.nodes.values()];
-    const health = rt.nodes();
+    const generation = rt.captureGeneration();
+    const all = [...generation.reg.nodes.values()];
+    const health = rt.nodes(Date.now(), generation);
     const online = (uid: string) => health.find((h) => h.uid === uid)?.online ?? false;
     const withFrames = all.find((n) => algo.frames.list(n.uid).length > 0);
     return (withFrames ?? all.find((n) => !n.simulated && online(n.uid)) ?? all.find((n) => online(n.uid)) ?? all[0])?.uid ?? '';
@@ -158,9 +159,10 @@ export function startAlgo(
   // Frames arrive whether or not anyone is looking; the ring is what makes
   // stepping backwards possible at all.
   const onRaw = (msg: RawFrameMessage) => {
-    if (!rt.reg.nodes.has(msg.uid)) return;
+    const generation = rt.captureGeneration();
+    const node = generation.reg.nodes.get(msg.uid);
+    if (!node) return;
     algo.frames.addRaw(msg);
-    const node = rt.reg.nodes.get(msg.uid);
     if (node && !node.simulated) spool?.raw(msg, { floorId: node.floorId, pose: node.pose, detector: node.detector });
     scheduleRun('frame');
   };
@@ -168,7 +170,7 @@ export function startAlgo(
   // Every RGB frame is offered to the recorder, which keeps it only when a
   // thermal frame of the same moment exists to pair it with.
   const onRgb = (uid: string, jpeg: Buffer, at: number) => {
-    const node = rt.reg.nodes.get(uid);
+    const node = rt.captureGeneration().reg.nodes.get(uid);
     // No pose means no orientation to record the pair against.
     if (!node?.pose) return;
     pairs.offer(uid, jpeg, at, algo.frames, node.pose.mirror);
@@ -176,14 +178,16 @@ export function startAlgo(
   rt.on('rgb', onRgb);
 
   const onReport = (uid: string, dets: ConsoleDetection[]) => {
-    if (!rt.reg.nodes.has(uid)) return;
+    const generation = rt.captureGeneration();
+    const node = generation.reg.nodes.get(uid);
+    if (!node) return;
     // The report's own frame number, not the last RAW's: they are only the
     // same when a RAW happened to arrive for that frame, and the whole point
     // of the pairing is to know when it did.
     const report = rt.lastReport(uid);
     if (report) algo.frames.addReport(uid, report.frame, dets, report.flags, report.boot);
     // Simulated people are not training data (onRaw keeps their frames out too).
-    if (!rt.reg.nodes.get(uid)?.simulated) pairs.presence(uid, dets.reduce((n, d) => n + d.persons, 0));
+    if (!node.simulated) pairs.presence(uid, dets.reduce((n, d) => n + d.persons, 0));
   };
   rt.on('report', onReport);
 
@@ -390,11 +394,12 @@ export function startAlgo(
   }));
 
   app.get('/api/sources', (_req, res) => {
-    const health = rt.nodes();
+    const generation = rt.captureGeneration();
+    const health = rt.nodes(Date.now(), generation);
     res.json({
-      nodes: [...rt.reg.nodes.values()].map((n) => {
+      nodes: [...generation.reg.nodes.values()].map((n) => {
         const h = health.find((x) => x.uid === n.uid);
-        const floor = rt.reg.floors.find((f) => f.id === n.floorId);
+        const floor = generation.reg.floors.find((f) => f.id === n.floorId);
         return {
           uid: n.uid, label: n.label, floorId: n.floorId, simulated: n.simulated,
           /** A dual-cam rig: there is a live picture to show beside the thermal. */
@@ -557,7 +562,7 @@ export function startAlgo(
    */
   app.get('/api/nodes/:uid/rgb.jpg', (req, res) => {
     const uid = (req.params.uid ?? '').toLowerCase();
-    if (!rt.reg.nodes.get(uid)?.rgb) return res.status(404).end();
+    if (!rt.captureGeneration().reg.nodes.get(uid)?.rgb) return res.status(404).end();
     const f = rt.rgb.get(uid);
     if (!f) return res.status(404).end();
     return res.set({ 'content-type': 'image/jpeg', 'cache-control': 'no-store' })
@@ -569,13 +574,13 @@ export function startAlgo(
 
   app.get('/api/pairs', (_req, res) => res.json({
     ...pairs.stats(),
-    rgbNodes: [...rt.reg.nodes.values()].filter((n) => n.rgb).map((n) => n.uid),
+    rgbNodes: [...rt.captureGeneration().reg.nodes.values()].filter((n) => n.rgb).map((n) => n.uid),
   }));
 
   app.post('/api/pairs/record', mutating, (req, res) => {
     const mode = recordModeOf(req.body);
     if (!mode) return res.status(400).json({ error: 'mode must be off, auto or on' });
-    const rgb = [...rt.reg.nodes.values()].filter((n) => n.rgb);
+    const rgb = [...rt.captureGeneration().reg.nodes.values()].filter((n) => n.rgb);
     if (mode !== 'off' && rgb.length === 0) return res.status(400).json({ error: 'no node on this site has an RGB camera' });
     pairs.setMode(mode);
     return res.json({ ok: true, ...pairs.stats() });

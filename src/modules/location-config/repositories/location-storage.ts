@@ -1,5 +1,8 @@
 import type { LocationAssetMetadata, LocationDraft, PublishedLocationRevision, PublishedLocationState } from '../domain/location-records.js';
 import type { LocationDocument, LocationSensorAssignment } from '../domain/location-document.js';
+import type { ValidatedLocationCandidate } from '../domain/location-candidate.js';
+import type { LegacySpatialProvenance } from '../domain/location-candidate.js';
+import type { NodePose } from '../../../shared/types.js';
 
 export type CommitDurability = 'confirmed' | 'unconfirmed';
 
@@ -23,7 +26,7 @@ export interface LocationDraftRepository {
   createDraft(draft: LocationDraft): Promise<DraftWriteOutcome>;
   getDraft(creatorId: string, draftId: string): Promise<LocationDraft | null>;
   listDrafts(creatorId: string): Promise<LocationDraft[]>;
-  saveDraft(creatorId: string, draftId: string, expectedRevision: number, document: LocationDocument, updatedAt: number): Promise<DraftWriteOutcome>;
+  saveDraft(creatorId: string, draftId: string, expectedRevision: number, candidate: ValidatedLocationCandidate, updatedAt: number): Promise<DraftWriteOutcome>;
 }
 
 export interface PublishedLocationRepository {
@@ -39,6 +42,48 @@ export interface PublishedLocationRepository {
     assignments: readonly LocationSensorAssignment[];
   }): Promise<RegistryCommitOutcome>;
   registryRevision(): Promise<number>;
+}
+
+export interface LocationRegistryNodeSnapshot {
+  uid: string;
+  label: string;
+  floorId: string | null;
+  pose: NodePose | null;
+  owns: string[];
+  simulated: boolean;
+  rgb: boolean;
+  detector: 'node' | 'edge';
+}
+
+/** One consistent view read while RegistryMutationCoordinator is held. */
+export interface LocationRegistrySnapshot {
+  registryRevision: number;
+  nodes: readonly LocationRegistryNodeSnapshot[];
+  locations: readonly PublishedLocationState[];
+}
+
+export interface LocationRegistrySnapshotRepository {
+  readSnapshot(): Promise<LocationRegistrySnapshot>;
+}
+
+/** Runtime adapter builds everything before durable commit, then only swaps an already prepared generation. */
+export interface PreparedLocationRuntime<Prepared> {
+  prepare(snapshot: LocationRegistrySnapshot, candidate: LocationDocument, legacySpatial?: LegacySpatialProvenance | null): Prepared;
+  refresh(prepared: Prepared): Prepared;
+  activate(prepared: Prepared): void;
+  quarantine(reason: unknown): void;
+}
+
+export interface PublishedModelDistributionRequest {
+  draft: LocationDraft;
+  candidate: PublishedLocationRevision;
+  /** Exact immutable revision from which inherited model bytes may be resolved. */
+  basePublishedRevision: PublishedLocationRevision | null;
+}
+
+export interface PublishedModelDistributor {
+  /** Resolves authorized immutable bytes and waits for durable acknowledgement from every student target. */
+  acknowledge(request: PublishedModelDistributionRequest): Promise<void>;
 }
 
 export interface LocationAssetMetadataRepository {

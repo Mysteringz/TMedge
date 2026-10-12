@@ -5,7 +5,9 @@
  * unknown after STALE_MS -- a dead edge must never leave the last good numbers
  * on screen, or students are sent to a floor that filled up an hour ago.
  */
-import type { CampusView, FloorState, OccupancySnapshot, TableState } from '../shared/types.js';
+import type { CampusView, FloorState, OccupancySnapshot, Rect, TableShape, TableState } from '../shared/types.js';
+import { LOCATION_GEOMETRY_EPSILON, LOCATION_MODEL_TRANSFORM_LIMITS, isValidSimpleBoundedPolygon } from '../shared/location-validation.js';
+import { tableBounds } from '../shared/table-geometry.js';
 
 export class SnapshotStore {
   private readonly latest = new Map<string, { snap: OccupancySnapshot; receivedAt: number }>();
@@ -65,14 +67,17 @@ function blank(f: FloorState): FloorState {
  */
 export function isSnapshot(v: unknown): v is OccupancySnapshot {
   if (!record(v, ['version', 'edgeId', 'site', 'generatedAt', 'floors'])) return false;
-  return v.version === 1 && text(v.edgeId, 99) && record(v.site, ['id', 'name']) &&
+  const version = v.version;
+  return (version === 1 || version === 2) && text(v.edgeId, 99) && record(v.site, ['id', 'name']) &&
     text(v.site.id) && text(v.site.name) && nonnegative(v.generatedAt) &&
-    list(v.floors, 200) && unique(v.floors) && v.floors.every(validFloor);
+    list(v.floors, 200) && unique(v.floors) && v.floors.every((floor) => validFloor(floor, version));
 }
 
-function record(v: unknown, keys: string[]): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v) &&
-    Object.keys(v).length === keys.length && keys.every((key) => Object.hasOwn(v, key));
+function record(v: unknown, keys: string[], optionalKeys: string[] = []): v is Record<string, unknown> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const actualKeys = Object.keys(v);
+  const allowedKeys = new Set([...keys, ...optionalKeys]);
+  return keys.every((key) => Object.hasOwn(v, key)) && actualKeys.every((key) => allowedKeys.has(key));
 }
 function text(v: unknown, max = 255): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -91,18 +96,29 @@ function polygon(v: unknown): boolean {
   return list(v, 1000) && v.length >= 3 &&
     v.every((p) => Array.isArray(p) && p.length === 2 && p.every(finite));
 }
-function validSeat(v: unknown): boolean {
+function validSeat(v: unknown, enforceBounds: boolean, floorWidth: number, floorHeight: number): boolean {
   return record(v, ['id', 'x', 'y', 'side', 'index', 'occupied', 'neighbors']) && text(v.id) &&
-    finite(v.x) && finite(v.y) && ['L', 'R', 'T', 'B'].includes(String(v.side)) && count(v.index, 100) &&
+    finite(v.x) && finite(v.y) && (!enforceBounds || (v.x >= 0 && v.x <= floorWidth && v.y >= 0 && v.y <= floorHeight)) &&
+    ['L', 'R', 'T', 'B'].includes(String(v.side)) && count(v.index, 100) &&
     (v.occupied === null || typeof v.occupied === 'boolean') &&
     list(v.neighbors, 100) && v.neighbors.every((n) => text(n)) && new Set(v.neighbors).size === v.neighbors.length;
 }
-function validTable(v: unknown): v is unknown & TableState {
-  if (!record(v, ['id', 'name', 'zoneId', 'rect', 'capacity', 'occupied', 'free', 'status', 'seats']) ||
+function validTable(v: unknown, version: 1 | 2, floorWidth: number, floorHeight: number): v is unknown & TableState {
+  const hasShape = !!v && typeof v === 'object' && !Array.isArray(v) && Object.hasOwn(v, 'shape');
+  if (!record(v, ['id', 'name', 'zoneId', 'rect', 'capacity', 'occupied', 'free', 'status', 'seats'], version === 2 ? ['shape'] : []) ||
       !text(v.id) || !text(v.name) || !text(v.zoneId) || !count(v.capacity, 100) || v.capacity < 1 ||
       !record(v.rect, ['x', 'y', 'width', 'height']) || !finite(v.rect.x) || !finite(v.rect.y) ||
       !finite(v.rect.width) || v.rect.width <= 0 || !finite(v.rect.height) || v.rect.height <= 0 ||
-      !list(v.seats, 100) || v.seats.length !== v.capacity || !unique(v.seats) || !v.seats.every(validSeat)) return false;
+      !list(v.seats, 100) || v.seats.length !== v.capacity || !unique(v.seats) ||
+      !v.seats.every((seat) => validSeat(seat, version === 2 && hasShape, floorWidth, floorHeight))) return false;
+  const rect = v.rect as unknown as Rect;
+  if (version === 2 && hasShape) {
+    if (rect.width < LOCATION_GEOMETRY_EPSILON || rect.height < LOCATION_GEOMETRY_EPSILON ||
+        rect.x < 0 || rect.y < 0 || rect.x + rect.width > floorWidth || rect.y + rect.height > floorHeight) return false;
+    const shape = Object.hasOwn(v, 'shape') ? validShape(v.shape, floorWidth, floorHeight) : undefined;
+    if (Object.hasOwn(v, 'shape') && !shape) return false;
+    if (shape && !sameRect(rect, tableBounds(shape))) return false;
+  }
   const t = v as unknown as TableState;
   const ids = new Set(t.seats.map((s) => s.id));
   if (t.seats.some((s) => s.neighbors.some((id) => id === s.id || !ids.has(id)))) return false;
@@ -111,16 +127,17 @@ function validTable(v: unknown): v is unknown & TableState {
     t.occupied + t.free === t.capacity && t.seats.every((s) => typeof s.occupied === 'boolean') &&
     t.seats.filter((s) => s.occupied).length === t.occupied;
 }
-function validFloor(v: unknown): boolean {
-  if (!record(v, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'totals']) ||
-      !text(v.id) || !text(v.building) || !text(v.name) || !finite(v.width) || v.width <= 0 ||
-      !finite(v.height) || v.height <= 0 || !polygon(v.outline) ||
-      !list(v.zones, 1000) || !unique(v.zones) || !v.zones.every((z) =>
-        record(z, ['id', 'name', 'polygon', 'people']) && text(z.id) && text(z.name) && polygon(z.polygon) &&
-        (z.people === null || count(z.people))) ||
-      !list(v.tables, 1000) || !unique(v.tables) || !v.tables.every(validTable) ||
+function validFloor(v: unknown, version: 1 | 2): boolean {
+  if (!record(v, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'totals'], version === 2 ? ['model'] : []) ||
+      !text(v.id) || !text(v.building) || !text(v.name) || !finite(v.width) || v.width <= 0 || !finite(v.height) || v.height <= 0 ||
+      !polygon(v.outline) || (Object.hasOwn(v, 'model') && !validPublishedModel(v.model)) ||
+      !list(v.zones, 1000) || !unique(v.zones) || !list(v.tables, 1000) || !unique(v.tables) ||
       !record(v.totals, ['seats', 'free', 'occupied', 'unknownSeats', 'tablesFullyFree']) ||
       !Object.values(v.totals).every((n) => count(n))) return false;
+  const width = v.width, height = v.height;
+  if (!v.zones.every((z) => record(z, ['id', 'name', 'polygon', 'people']) && text(z.id) && text(z.name) && polygon(z.polygon) &&
+        (z.people === null || count(z.people))) ||
+      !v.tables.every((table) => validTable(table, version, width, height))) return false;
   const tables = v.tables as TableState[];
   const zones = new Set((v.zones as { id: string }[]).map((z) => z.id));
   if (tables.some((t) => !zones.has(t.zoneId))) return false;
@@ -132,4 +149,46 @@ function validFloor(v: unknown): boolean {
     v.totals.occupied === known.reduce((n, t) => n + (t.occupied ?? 0), 0) &&
     v.totals.unknownSeats === tables.filter((t) => t.status === 'unknown').reduce((n, t) => n + t.capacity, 0) &&
     v.totals.tablesFullyFree === known.filter((t) => t.occupied === 0).length;
+}
+
+function validShape(v: unknown, floorWidth: number, floorHeight: number): TableShape | null {
+  if (!record(v, ['type'], ['x', 'y', 'width', 'height', 'cx', 'cy', 'radius', 'points'])) return null;
+  const shape = v;
+  if (shape.type === 'rect') {
+    if (!record(shape, ['type', 'x', 'y', 'width', 'height']) || !finite(shape.x) || !finite(shape.y) ||
+        !finite(shape.width) || shape.width < LOCATION_GEOMETRY_EPSILON || !finite(shape.height) || shape.height < LOCATION_GEOMETRY_EPSILON ||
+        shape.x < 0 || shape.y < 0 || shape.x + shape.width > floorWidth || shape.y + shape.height > floorHeight) return null;
+    return { type: 'rect', x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+  }
+  if (shape.type === 'circle') {
+    if (!record(shape, ['type', 'cx', 'cy', 'radius']) || !finite(shape.cx) || !finite(shape.cy) ||
+        !finite(shape.radius) || shape.radius < LOCATION_GEOMETRY_EPSILON ||
+        shape.cx - shape.radius < 0 || shape.cy - shape.radius < 0 ||
+        shape.cx + shape.radius > floorWidth || shape.cy + shape.radius > floorHeight) return null;
+    return { type: 'circle', cx: shape.cx, cy: shape.cy, radius: shape.radius };
+  }
+  if (shape.type === 'polygon') {
+    if (!record(shape, ['type', 'points']) || !isValidSimpleBoundedPolygon(shape.points, floorWidth, floorHeight)) return null;
+    return { type: 'polygon', points: shape.points };
+  }
+  return null;
+}
+
+function sameRect(actual: Rect, expected: Rect): boolean {
+  return actual.x === expected.x && actual.y === expected.y && actual.width === expected.width && actual.height === expected.height;
+}
+
+function validPublishedModel(v: unknown): boolean {
+  if (!record(v, ['assetId', 'transform']) || typeof v.assetId !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v.assetId)) return false;
+  const transform = v.transform;
+  return record(transform, ['scale', 'rotationDeg', 'positionM'])
+    && boundedVector3(transform.scale, LOCATION_MODEL_TRANSFORM_LIMITS.scale.min, LOCATION_MODEL_TRANSFORM_LIMITS.scale.max)
+    && boundedVector3(transform.rotationDeg, LOCATION_MODEL_TRANSFORM_LIMITS.rotationDeg.min, LOCATION_MODEL_TRANSFORM_LIMITS.rotationDeg.max)
+    && boundedVector3(transform.positionM, LOCATION_MODEL_TRANSFORM_LIMITS.positionM.min, LOCATION_MODEL_TRANSFORM_LIMITS.positionM.max);
+}
+
+function boundedVector3(v: unknown, min: number, max: number): boolean {
+  return record(v, ['x', 'y', 'z']) && finite(v.x) && v.x >= min && v.x <= max &&
+    finite(v.y) && v.y >= min && v.y <= max && finite(v.z) && v.z >= min && v.z <= max;
 }

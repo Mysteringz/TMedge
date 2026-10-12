@@ -12,14 +12,21 @@
 import { readFileSync } from 'node:fs';
 import { floorToPixel, GRID_H, GRID_W } from '../shared/geometry.js';
 import { generateSeats, type SeatSpec } from '../shared/seats.js';
-import type { NodePose, Point, Rect } from '../shared/types.js';
+import type { NodePose, Point, Rect, TableShape, PublishedFloorModel } from '../shared/types.js';
+import { tableBounds } from '../shared/table-geometry.js';
+import { LOCATION_MODEL_TRANSFORM_LIMITS } from '../shared/location-validation.js';
 import { nodesArrayForRegistry } from '../modules/location-config/domain/nodes-config.js';
+import { parseLocationDocument, type LocationDocument } from '../modules/location-config/domain/location-document.js';
+import type { LegacySpatialProvenance } from '../modules/location-config/domain/location-candidate.js';
 
 export interface TableDef {
   id: string;
   name: string;
   floorId: string;
   zoneId: string;
+  shape: TableShape;
+  /** True only when the source floor supplied an authored tagged shape. */
+  shapeAuthored: boolean;
   rect: Rect;
   capacity: number;
   seats: SeatSpec[];
@@ -57,6 +64,7 @@ export interface FloorDef {
   outline: Point[];
   zones: ZoneDef[];
   tables: TableDef[];
+  model?: PublishedFloorModel;
 }
 
 export interface NodeDef {
@@ -102,6 +110,8 @@ export interface Registry {
   tables: Map<string, TableDef>;
   nodes: Map<string, NodeDef>;
   seatIndex: Map<string, { seat: SeatSpec; table: TableDef }>;
+  /** Location-backed registries emit the version-2 public snapshot contract. */
+  snapshotVersion?: 1 | 2;
 }
 
 export class ConfigError extends Error {}
@@ -157,6 +167,19 @@ export function loadRegistry(sitePath: string, nodesPath: string): Registry {
 }
 
 export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
+  return buildRegistryCore(siteJson, nodesJson);
+}
+
+/**
+ * The registry's normal entry point remains strict. Location assembly may
+ * additionally permit only explicitly listed legacy seats whose coordinates
+ * came from server-validated immutable revision provenance.
+ */
+function buildRegistryCore(
+  siteJson: unknown,
+  nodesJson: unknown,
+  trustedLegacySeats: ReadonlyMap<string, { x: number; y: number }> = new Map(),
+): Registry {
   const root = obj(siteJson, 'site.json');
   only(root, 'site.json', ['site', 'floors']);
   const siteObj = obj(root.site, 'site.json.site');
@@ -171,7 +194,7 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   root.floors.forEach((fv, fi) => {
     const w = `floors[${fi}]`;
     const f = obj(fv, w);
-    only(f, w, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'visibility']);
+    only(f, w, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'visibility', 'model']);
     if (f.visibility !== undefined && f.visibility !== 'public' && f.visibility !== 'console') {
       throw new ConfigError(`${w}.visibility: expected "public" or "console"`);
     }
@@ -186,6 +209,7 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
       zones: [],
       tables: [],
     };
+    if (f.model !== undefined) floor.model = parseFloorModel(f.model, `${w}.model`);
     if (floors.some((x) => x.id === floor.id)) throw new ConfigError(`${w}: duplicate floor id "${floor.id}"`);
 
     if (!Array.isArray(f.zones) || f.zones.length === 0) throw new ConfigError(`${w}.zones: expected a non-empty array`);
@@ -202,17 +226,15 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
     f.tables.forEach((tv, ti) => {
       const tw = `${w}.tables[${ti}]`;
       const t = obj(tv, tw);
-      only(t, tw, ['id', 'name', 'zone', 'x', 'y', 'width', 'height', 'capacity', 'seats', 'seatRadiusCm']);
+      only(t, tw, ['id', 'name', 'zone', 'x', 'y', 'width', 'height', 'shape', 'capacity', 'seats', 'seatRadiusCm']);
       const id = str(t, 'id', tw);
       if (tables.has(id)) throw new ConfigError(`${tw}: duplicate table id "${id}" (table ids are unique site-wide)`);
       const zoneId = str(t, 'zone', tw);
       if (!floor.zones.some((z) => z.id === zoneId)) throw new ConfigError(`${tw}.zone: no zone "${zoneId}" on floor ${floor.id}`);
-      const rect: Rect = {
-        x: num(t, 'x', tw, 0, floor.width),
-        y: num(t, 'y', tw, 0, floor.height),
-        width: num(t, 'width', tw, 20, 2000),
-        height: num(t, 'height', tw, 20, 2000),
-      };
+      const shape = t.shape === undefined
+        ? parseLegacyRectangle(t, tw, floor)
+        : parseTableShape(t.shape, `${tw}.shape`, floor);
+      const rect = tableBounds(shape);
       if (rect.x + rect.width > floor.width || rect.y + rect.height > floor.height) {
         throw new ConfigError(`${tw}: table extends past the floor (${floor.width} x ${floor.height} cm)`);
       }
@@ -223,9 +245,11 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
         name: str(t, 'name', tw),
         floorId: floor.id,
         zoneId,
+        shape,
+        shapeAuthored: t.shape !== undefined,
         rect,
         capacity,
-        seats: t.seats === undefined ? generateSeats(id, rect, capacity) : explicitSeats(t.seats, id, capacity, floor, tw),
+        seats: t.seats === undefined ? generateSeats(id, shape, capacity) : explicitSeats(t.seats, id, capacity, floor, tw, trustedLegacySeats),
         seatRadiusCm: t.seatRadiusCm === undefined ? null : num(t, 'seatRadiusCm', tw, 20, 150),
         coveredBy: [],
         owner: null,
@@ -358,36 +382,211 @@ export function buildRegistry(siteJson: unknown, nodesJson: unknown): Registry {
   return { site, floors, tables, nodes, seatIndex };
 }
 
+/** Assemble a complete runtime registry from the immutable site seed and all active published location documents. */
+export function buildRegistryFromLocationDocuments(
+  siteJson: unknown,
+  nodesJson: unknown,
+  documents: readonly LocationDocument[],
+  legacySpatialByLocation: ReadonlyMap<string, LegacySpatialProvenance> = new Map(),
+): Registry {
+  const root = obj(siteJson, 'site.json');
+  if (!Array.isArray(root.floors)) throw new ConfigError('site.json.floors: expected a non-empty array');
+  const replacements = new Map<string, LocationDocument>();
+  for (const input of documents) {
+    const document = parseLocationDocument(input);
+    if (replacements.has(document.locationId)) throw new ConfigError(`duplicate published location "${document.locationId}"`);
+    replacements.set(document.locationId, document);
+  }
+  const seedIds = new Set(root.floors.map((floor, index) => str(obj(floor, `floors[${index}]`), 'id', `floors[${index}]`)));
+  const floors = (root.floors as unknown[]).map((floor, index) => {
+    const raw = obj(floor, `floors[${index}]`);
+    const replacement = replacements.get(str(raw, 'id', `floors[${index}]`));
+    if (!replacement) return structuredClone(raw);
+    replacements.delete(replacement.locationId);
+    return locationDocumentFloor(replacement, legacySpatialByLocation.get(replacement.locationId));
+  });
+  for (const document of replacements.values()) floors.push(locationDocumentFloor(document, legacySpatialByLocation.get(document.locationId)));
+  const trustedLegacySeats = new Map<string, { x: number; y: number }>();
+  for (const legacy of legacySpatialByLocation.values()) {
+    for (const inherited of legacy.tables) {
+      for (const position of inherited.seats) trustedLegacySeats.set(legacySeatKey(inherited.id, position.id), { x: position.x, y: position.y });
+    }
+  }
+  // This is the only assembly path that can admit legacy out-of-floor seat
+  // coordinates, and its allow-list comes from exact-base validated storage
+  // provenance. The registry computes ownership and coverage from the real
+  // inherited positions rather than temporary placeholders.
+  const registry = buildRegistryCore({ ...root, floors }, nodesJson, trustedLegacySeats);
+  registry.snapshotVersion = 2;
+  return registry;
+}
+
+function locationDocumentFloor(document: LocationDocument, legacySpatial?: LegacySpatialProvenance): Obj {
+  const outline = legacySpatial?.outline ?? document.outline;
+  const zones = document.zones.map((zone) => ({
+    ...zone,
+    polygon: legacySpatial?.zones.find((inherited) => inherited.id === zone.id)?.polygon ?? zone.polygon,
+  }));
+  const tables = document.tables.map((table) => {
+    const inherited = legacySpatial?.tables.find((item) => item.id === table.id);
+    const seatPositions = new Map((inherited?.seats ?? []).map((seat) => [seat.id, seat]));
+    const seats = table.seats.map((seat, index) => {
+      const position = seatPositions.get(seat.id);
+      const x = position?.x ?? seat.x;
+      const y = position?.y ?? seat.y;
+      return {
+        id: seat.id,
+        x,
+        y,
+        neighbors: seat.neighbors, side: seat.side ?? 'L', index: seat.index ?? index,
+      };
+    });
+    if (inherited?.rect) {
+      return {
+        id: table.id, name: table.name, zone: table.zoneId, capacity: table.capacity,
+        x: inherited.rect.x, y: inherited.rect.y, width: inherited.rect.width, height: inherited.rect.height,
+        seatRadiusCm: table.seatRadiusCm, seats,
+      };
+    }
+    return {
+      id: table.id, name: table.name, zone: table.zoneId, shape: table.shape, capacity: table.capacity,
+      seatRadiusCm: table.seatRadiusCm, seats,
+    };
+  });
+  const floor: Obj = {
+    id: document.locationId,
+    visibility: document.visibility,
+    building: document.building,
+    name: document.name,
+    width: document.widthCm,
+    height: document.heightCm,
+    outline,
+    zones,
+    tables,
+  };
+  if (document.modelAssetId && document.modelTransform) floor.model = { assetId: document.modelAssetId, transform: document.modelTransform };
+  return floor;
+}
+
+function parseLegacyRectangle(table: Obj, where: string, floor: FloorDef): TableShape {
+  const shape: TableShape = {
+    type: 'rect', x: num(table, 'x', where, 0, floor.width), y: num(table, 'y', where, 0, floor.height),
+    width: num(table, 'width', where, 20, 2000), height: num(table, 'height', where, 20, 2000),
+  };
+  const bounds = tableBounds(shape);
+  if (bounds.x + bounds.width > floor.width || bounds.y + bounds.height > floor.height) {
+    throw new ConfigError(`${where}: table extends past the floor (${floor.width} x ${floor.height} cm)`);
+  }
+  return shape;
+}
+
+function parseTableShape(value: unknown, where: string, floor: FloorDef): TableShape {
+  const input = obj(value, where);
+  if (input.type === 'rect') {
+    only(input, where, ['type', 'x', 'y', 'width', 'height']);
+    const shape: TableShape = {
+      type: 'rect', x: num(input, 'x', where, 0, floor.width), y: num(input, 'y', where, 0, floor.height),
+      width: num(input, 'width', where, Number.EPSILON, floor.width), height: num(input, 'height', where, Number.EPSILON, floor.height),
+    };
+    const bounds = tableBounds(shape);
+    if (bounds.x + bounds.width > floor.width || bounds.y + bounds.height > floor.height) throw new ConfigError(`${where}: table extends past the floor`);
+    return shape;
+  }
+  if (input.type === 'circle') {
+    only(input, where, ['type', 'cx', 'cy', 'radius']);
+    const shape: TableShape = {
+      type: 'circle', cx: num(input, 'cx', where, 0, floor.width), cy: num(input, 'cy', where, 0, floor.height),
+      radius: num(input, 'radius', where, Number.EPSILON, Math.min(floor.width, floor.height)),
+    };
+    const bounds = tableBounds(shape);
+    if (bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > floor.width || bounds.y + bounds.height > floor.height) throw new ConfigError(`${where}: circle extends past the floor`);
+    return shape;
+  }
+  if (input.type === 'polygon') {
+    only(input, where, ['type', 'points']);
+    const vertices = points(input.points, `${where}.points`);
+    if (vertices.some(([x, y]) => x < 0 || y < 0 || x > floor.width || y > floor.height)) throw new ConfigError(`${where}: polygon extends past the floor`);
+    return { type: 'polygon', points: vertices };
+  }
+  throw new ConfigError(`${where}.type: expected rect, circle or polygon`);
+}
+
+function parseFloorModel(value: unknown, where: string): PublishedFloorModel {
+  const model = obj(value, where);
+  only(model, where, ['assetId', 'transform']);
+  const assetId = str(model, 'assetId', where);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(assetId)) throw new ConfigError(`${where}.assetId: expected an opaque UUID`);
+  const transform = obj(model.transform, `${where}.transform`);
+  only(transform, `${where}.transform`, ['scale', 'rotationDeg', 'positionM']);
+  const vector = (value: unknown, path: string, min: number, max: number) => {
+    const v = obj(value, path); only(v, path, ['x', 'y', 'z']);
+    return { x: num(v, 'x', path, min, max), y: num(v, 'y', path, min, max), z: num(v, 'z', path, min, max) };
+  };
+  return { assetId: assetId.toLowerCase(), transform: {
+    scale: vector(transform.scale, `${where}.transform.scale`, LOCATION_MODEL_TRANSFORM_LIMITS.scale.min, LOCATION_MODEL_TRANSFORM_LIMITS.scale.max),
+    rotationDeg: vector(transform.rotationDeg, `${where}.transform.rotationDeg`, LOCATION_MODEL_TRANSFORM_LIMITS.rotationDeg.min, LOCATION_MODEL_TRANSFORM_LIMITS.rotationDeg.max),
+    positionM: vector(transform.positionM, `${where}.transform.positionM`, LOCATION_MODEL_TRANSFORM_LIMITS.positionM.min, LOCATION_MODEL_TRANSFORM_LIMITS.positionM.max),
+  } };
+}
+
 /**
  * Seats placed by hand (or, later, learned) rather than generated: for tables
  * whose chairs do not follow the "along both long sides" pattern -- e.g. a
  * desk against a wall with every chair on one side. Seats within a metre of
  * each other count as neighbours for the "sit together" search.
  */
-function explicitSeats(v: unknown, tableId: string, capacity: number, floor: FloorDef, where: string): SeatSpec[] {
+function explicitSeats(
+  v: unknown,
+  tableId: string,
+  capacity: number,
+  floor: FloorDef,
+  where: string,
+  trustedLegacySeats: ReadonlyMap<string, { x: number; y: number }> = new Map(),
+): SeatSpec[] {
   if (!Array.isArray(v) || v.length !== capacity) {
     throw new ConfigError(`${where}.seats: expected exactly ${capacity} seats (the table's capacity)`);
   }
   const seats: SeatSpec[] = v.map((sv, i) => {
     const sw = `${where}.seats[${i}]`;
     const o = obj(sv, sw);
-    only(o, sw, ['id', 'x', 'y', 'side']);
+    only(o, sw, ['id', 'x', 'y', 'side', 'index', 'neighbors']);
     const side = o.side === undefined ? 'L' : o.side;
     if (side !== 'L' && side !== 'R' && side !== 'T' && side !== 'B') throw new ConfigError(`${sw}.side: expected L, R, T or B`);
+    const exactId = Array.isArray(o.neighbors);
+    if (exactId && !(o.neighbors as unknown[]).every((id) => typeof id === 'string')) throw new ConfigError(`${sw}.neighbors: expected seat IDs`);
+    const id = exactId ? str(o, 'id', sw) : `${tableId}-${str(o, 'id', sw)}`;
+    const trustedPosition = trustedLegacySeats.get(legacySeatKey(tableId, id));
+    const coordinate = (key: 'x' | 'y', max: number) => {
+      if (!trustedPosition) return num(o, key, sw, 0, max);
+      const value = o[key];
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new ConfigError(`${sw}.${key}: expected a finite legacy seat coordinate`);
+      if (value !== trustedPosition[key]) throw new ConfigError(`${sw}.${key}: does not match the exact inherited legacy coordinate`);
+      return trustedPosition[key];
+    };
     return {
-      id: `${tableId}-${str(o, 'id', sw)}`,
-      x: num(o, 'x', sw, 0, floor.width),
-      y: num(o, 'y', sw, 0, floor.height),
+      id,
+      x: coordinate('x', floor.width),
+      y: coordinate('y', floor.height),
       side,
-      index: i,
-      neighbors: [],
+      index: o.index === undefined ? i : num(o, 'index', sw, 0, 10000),
+      neighbors: exactId ? [...o.neighbors as string[]] : [],
     };
   });
   if (new Set(seats.map((s) => s.id)).size !== seats.length) throw new ConfigError(`${where}.seats: duplicate seat id`);
-  for (const a of seats) {
-    for (const b of seats) if (a !== b && Math.hypot(a.x - b.x, a.y - b.y) <= 100) a.neighbors.push(b.id);
+  if (seats.some((seat) => seat.neighbors.length > 0) || (Array.isArray(v) && v.some((item) => Array.isArray((item as Obj).neighbors)))) {
+    const ids = new Set(seats.map((seat) => seat.id));
+    for (const seat of seats) {
+      if (new Set(seat.neighbors).size !== seat.neighbors.length || seat.neighbors.some((id) => id === seat.id || !ids.has(id))) throw new ConfigError(`${where}.seats.${seat.id}.neighbors: invalid seat adjacency`);
+      if (seat.neighbors.some((id) => !seats.find((other) => other.id === id)?.neighbors.includes(seat.id))) throw new ConfigError(`${where}.seats.${seat.id}.neighbors: adjacency must be symmetric`);
+    }
+  } else {
+    for (const a of seats) for (const b of seats) if (a !== b && Math.hypot(a.x - b.x, a.y - b.y) <= 100) a.neighbors.push(b.id);
   }
   return seats;
+}
+
+function legacySeatKey(tableId: string, seatId: string): string {
+  return `${tableId}\u0000${seatId}`;
 }
 
 function seesWithMargin(pose: NodePose, x: number, y: number): boolean {

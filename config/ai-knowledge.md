@@ -11,10 +11,8 @@ students which tables have room. No picture of anybody is ever shown to a
 student or stored for them: that is the project's privacy claim.
 
 Three parts:
-- TMsense: the sensor node (ESP32-S3 with an MLX90640 thermal array, 32x24
-  pixels, 110 degree lens). It detects people on the device and sends signed
-  reports. A Raspberry Pi rig with a camera beside the thermal sensor is used
-  for calibration.
+- TMsense: an ESP32-S3/MLX90640 thermal node. It detects people locally and
+  sends signed reports; a Raspberry Pi camera rig supports calibration.
 - TMedge, "the edge": the server. It verifies every packet, turns detections
   into occupancy, and publishes an occupancy snapshot. It also hosts this
   console.
@@ -22,14 +20,14 @@ Three parts:
   receives occupancy snapshots (seat states and totals), never thermal pixels
   or detections.
 
-Sensors reach the edge by UDP, through a Wi-Fi site gateway (TMWAccess), or
-directly over a secure WebSocket. All three go through the same checks.
-TMflash flashes and provisions a sensor over USB. It exists twice: a Mac app,
-and module 07 of this console, which does the same from a browser.
-The Mac app preserves saved node settings and boot counters; damaged
-firmware is refused before USB writes.
+Sensors use UDP, a TMWAccess Wi-Fi gateway, or secure WebSocket; all paths
+share checks. TMflash provisions over USB in a Mac app or module 07; saved
+settings and boot counters survive.
 
-- Location storage: read docs/location-configuration-storage.md.
+- Location storage: see docs/location-configuration-storage.md. Stop edge
+  before `db:registry:import --apply`; restart afterward. The CLI cannot
+  check service state. Public v2 snapshots add table shapes and optional
+  model transforms; v1 remains supported. Sensor poses and 2D plans are private.
 
 ## How a count is made
 

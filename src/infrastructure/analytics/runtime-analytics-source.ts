@@ -7,8 +7,9 @@ export function runtimeAnalyticsSource(runtime: EdgeRuntime): EdgeAnalyticsSourc
     pipeline(now) {
       // Not runtime.health(): that also samples the host monitor, whose
       // event-loop figure resets on every read and belongs to the console.
-      const nodes = runtime.nodes(now).filter((node) => node.registered);
-      const real = nodes.filter((node) => !runtime.reg.nodes.get(node.uid)?.simulated);
+      const generation = runtime.captureGeneration();
+      const nodes = runtime.nodes(now, generation).filter((node) => node.registered);
+      const real = nodes.filter((node) => !generation.reg.nodes.get(node.uid)?.simulated);
       const recorder = runtime.recorder.health();
       return {
         ...runtime.ingest.rates(),
@@ -33,7 +34,8 @@ export function runtimeAnalyticsSource(runtime: EdgeRuntime): EdgeAnalyticsSourc
       };
     },
     floors() {
-      return runtime.publicSnapshot(runtime.latest).floors.map((floor) => {
+      const generation = runtime.captureGeneration();
+      return runtime.publicSnapshot(generation.latest, generation).floors.map((floor) => {
         // "Silence is never emptiness": with no covered seat there is no count to give.
         const known = floor.totals.seats - floor.totals.unknownSeats > 0;
         return {

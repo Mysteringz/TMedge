@@ -1,6 +1,6 @@
 # Location configuration storage
 
-This guide covers the durable storage foundation for location drafts, published revisions and source assets. The repository ports are in place; location HTTP routes and live runtime activation are delivered by later tasks.
+This guide covers durable location drafts, published revisions and source assets. Task 2.1 supplies persistence; Task 2.2 assembles and activates a complete live runtime generation on publish. Location HTTP routes and the authoring experience are delivered by later tasks.
 
 ## Storage ownership
 
@@ -19,7 +19,7 @@ Keep `SITE_CONFIG`, `NODES_CONFIG`, PostgreSQL data, and edge `DATA_DIR` outside
 
 For PostgreSQL mode, create separate migration and runtime roles. Apply reviewed schema changes explicitly with `npm run db:migrate` using the migration credentials before starting the new edge release. The runtime role needs schema usage and table/sequence data privileges, but no schema creation privilege. Automatic TypeORM migrations and schema synchronization remain disabled. The edge refuses to start if the required migration is absent or storage validation fails.
 
-The legacy `db:registry:import` command remains the explicit, idempotent path for importing node registrations into PostgreSQL. Existing registrations, placements and table ownership are preserved; location bootstrap adds revision-zero documents only when a seed floor has no active history.
+The legacy `db:registry:import` command remains the explicit, idempotent path for importing node registrations into PostgreSQL. Existing registrations, placements and table ownership are preserved; location bootstrap adds revision-zero documents only when a seed floor has no active history. `--apply` is offline maintenance: stop the edge before applying and restart it afterward so the process loads the imported registry. The command cannot verify that the edge is stopped; its advisory lock coordinates database writers but does not activate a running process's in-memory registry.
 
 ## Backup and restore
 

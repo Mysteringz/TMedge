@@ -1,6 +1,6 @@
 import type { DataSource } from 'typeorm';
 import type { Registry } from '../../edge/registry.js';
-import { legacyFloorToLocationDocument } from '../location-config/legacy-location-mapper.js';
+import { legacyFloorToBaseline } from '../location-config/legacy-location-mapper.js';
 import type { RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
 import { LocationStorageUnavailableError } from '../../modules/location-config/domain/location-records.js';
 import { readLocationRegistryRevision } from './location-registry-revision.js';
@@ -25,7 +25,7 @@ export async function bootstrapPostgresLegacyLocations(
         if (active[0]) continue;
         if (history.length > 0) throw new LocationStorageUnavailableError();
 
-        const document = legacyFloorToLocationDocument(floor, registry.nodes.values());
+        const document = legacyFloorToBaseline(floor, registry.nodes.values());
         await manager.query(
           `INSERT INTO public.location_published_revisions (location_id, revision, created_by, created_at, document)
            VALUES ($1, 0, 'system-bootstrap', 0, $2::jsonb)`, [floor.id, JSON.stringify(document)],

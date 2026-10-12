@@ -41,9 +41,19 @@ import {
 import { bootstrapPostgresLegacyLocations } from '../src/infrastructure/postgres/location-storage-bootstrap.js';
 import type { OccupancyHistoryRecord } from '../src/modules/occupancy-history/repositories/occupancy-history-repository.js';
 import { createLocationId, parseLocationDocument } from '../src/modules/location-config/domain/location-document.js';
-import { LocationConflictError, type LocationDraft } from '../src/modules/location-config/domain/location-records.js';
-import { createEdgeApplication } from '../src/edge/composition-root.js';
+import { LocationConflictError, LocationStorageUnavailableError, type LocationDraft } from '../src/modules/location-config/domain/location-records.js';
+import { createEdgeApplication, createEdgeRuntime } from '../src/edge/composition-root.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
+import { EdgeLocationPublicationRuntime } from '../src/edge/location-publication-runtime.js';
+import { buildRegistryFromLocationDocuments } from '../src/edge/registry.js';
+import { PostgresLocationRegistrySnapshotRepository } from '../src/infrastructure/postgres/location-registry-snapshot-repository.js';
+import { PublishLocationUseCase } from '../src/modules/location-config/use-cases/publish-location.js';
+import { StartLocationEditDraftUseCase } from '../src/modules/location-config/use-cases/start-location-edit-draft.js';
+import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
+import { exposeLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
+import type { LocationRegistrySnapshot } from '../src/modules/location-config/repositories/location-storage.js';
+import { OccupancyEngine } from '../src/edge/occupancy.js';
+import { isSnapshot } from '../src/web/store.js';
 import { assertPostgresBuildLogBoundary } from './postgres-build-log-regression.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +66,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791244800000-CreateOccupancyHistory.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791590400000-AddRegistrationDetector.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791676800000-CreateLocationConfigurationStorage.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791763200000-PersistLocationSpatialProvenance.js'),
 ];
 
 function postgresStorageTestDocument(locationId: string, tableId: string, seatId: string, sensorUid?: string) {
@@ -76,6 +87,73 @@ function postgresStorageTestDocument(locationId: string, tableId: string, seatId
   });
 }
 
+function postgresBatchAssignmentDocument(locationId: string, sensorUids: readonly string[]) {
+  const tableCount = sensorUids.length * 3;
+  const tables = Array.from({ length: tableCount }, (_, index) => {
+    const x = 10 + (index % 8) * 45;
+    const y = 10 + Math.floor(index / 8) * 45;
+    return {
+      id: `PG-BATCH-TABLE-${String(index).padStart(2, '0')}`,
+      name: `Batch table ${index}`,
+      zoneId: 'PG-BATCH-ZONE',
+      capacity: 1,
+      shape: { type: 'rect' as const, x, y, width: 20, height: 20 },
+      seats: [{ id: `PG-BATCH-SEAT-${String(index).padStart(2, '0')}`, x: x + 10, y: y + 30, neighbors: [] }],
+    };
+  });
+  return parseLocationDocument({
+    schemaVersion: 1, locationId, name: 'PostgreSQL assignment batch', building: 'Test building', widthCm: 400, heightCm: 300,
+    outline: [[0, 0], [400, 0], [400, 300], [0, 300]],
+    zones: [{ id: 'PG-BATCH-ZONE', name: 'Batch zone', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]] }],
+    tables,
+    sensorAssignments: sensorUids.map((uid, index) => ({
+      uid,
+      pose: { x: 100 + index, y: 100, heightCm: 350, yawDeg: 0, mirror: false },
+      owns: Array.from({ length: 3 }, (_, offset) => tables[index * 3 + offset]!.id),
+    })),
+  });
+}
+
+function postgresLegacyOutline(): number[][] {
+  const outline = Array.from({ length: 257 }, (_, index) => {
+    const angle = (index / 257) * Math.PI * 2;
+    return [200 + Math.cos(angle) * 100, 150 + Math.sin(angle) * 100];
+  });
+  outline[0] = [-10, -10];
+  return outline;
+}
+
+function emittedLocationSnapshot(site: unknown, snapshot: LocationRegistrySnapshot, edgeId: string) {
+  const documents = snapshot.locations.flatMap((state) => {
+    if (state.activeRevision === 0) return [];
+    const active = state.history.find((revision) => revision.revision === state.activeRevision);
+    return active ? [parseLocationDocument(active.document)] : [];
+  });
+  const legacySpatial = new Map(snapshot.locations.flatMap((state) => {
+    const active = state.history.find((revision) => revision.revision === state.activeRevision);
+    return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
+  }));
+  const nodeInput = { nodes: snapshot.nodes.map((node) => ({
+    uid: node.uid, label: node.label,
+    ...(node.floorId && node.pose ? { floor: node.floorId, pose: node.pose } : {}),
+    owns: node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector,
+  })) };
+  return new OccupancyEngine(
+    buildRegistryFromLocationDocuments(site, nodeInput, documents, legacySpatial), edgeId,
+  ).snapshot(100);
+}
+
+function postgresTestEdgeConfig(dataDir: string): EdgeConfig {
+  return {
+    edgeId: 'pg-location-integration', keys: [], allowUnsigned: true, udpPort: 0, udpHost: '127.0.0.1',
+    sitePath: '', nodesPath: '', persistenceMode: 'postgres', postgres: null,
+    dataDir, recordRaw: false, consolePort: 0, consoleHost: '127.0.0.1', algoPort: 0,
+    adminPassword: null, flashToken: null, pushUrls: [], pushToken: '', publishMs: 60_000,
+    gatewayPort: 0, gatewayToken: null, nodeHost: '127.0.0.1', nodePort: 0,
+    nodeLimits: DEFAULT_NODE_LIMITS, nodeTls: null,
+  };
+}
+
 async function approveTransaction(
   transaction: ProvisioningTransaction,
   requestId: string,
@@ -89,7 +167,9 @@ async function approveTransaction(
     return existing;
   }
   assert.equal(request.status, 'pending');
-  const node: NodeRegistration = { uid: request.uid, label: request.label, floorId: null, pose: null, owns: [] };
+  const node: NodeRegistration = {
+    uid: request.uid, label: request.label, floorId: null, pose: null, owns: [], simulated: false, rgb: false, detector: 'node',
+  };
   const now = 1_800_000_000_000;
   await transaction.registerNode(node);
   await transaction.saveRequest({
@@ -120,7 +200,7 @@ test('registration schema and provisioning repository enforce persistence invari
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 8, 'foundation, registration, build, rollout, command, occupancy, detector, and location-storage migrations all run');
+    assert.equal(appliedMigrations, 9, 'foundation, registration, build, rollout, command, occupancy, detector, location storage, and exact-base provenance migrations all run');
     assert.equal((await migrator.query("SELECT to_regclass('public.location_published_revisions') AS table_name"))[0].table_name, 'location_published_revisions');
     await assertPostgresBuildLogBoundary(runtime);
     assert.equal(
@@ -278,6 +358,10 @@ test('registration schema and provisioning repository enforce persistence invari
         approve(concurrent.id, 'operator-one'), approve(concurrent.id, 'operator-two'),
       ]);
       assert.deepEqual(approvalA, approvalB);
+      assert.deepEqual(approvalA, {
+        uid: concurrent.uid, label: 'Concurrent approval', floorId: null, pose: null, owns: [],
+        simulated: false, rgb: false, detector: 'node',
+      }, 'concurrent approval preserves the complete canonical node registration');
       assert.deepEqual(await repository.findNode(concurrent.uid), approvalA);
       assert.equal((await repository.reconcile(concurrent.id, concurrent.uid))?.status, 'approved');
       assert.equal((await runtime.query(
@@ -339,7 +423,9 @@ test('registration schema and provisioning repository enforce persistence invari
       await assert.rejects(repository.transaction(async (transaction) => {
         const request = await transaction.findRequestForUpdate(rollback.id);
         assert.ok(request);
-        await transaction.registerNode({ uid: request.uid, label: request.label, floorId: null, pose: null, owns: [] });
+        await transaction.registerNode({
+          uid: request.uid, label: request.label, floorId: null, pose: null, owns: [], simulated: false, rgb: false, detector: 'node',
+        });
         await transaction.saveRequest({
           ...request, status: 'approved', resolvedAt: 1_800_000_000_000,
           resolvedBy: { id: 'operator-one', kind: 'console' }, registeredUid: request.uid,
@@ -647,6 +733,11 @@ test('registration schema and provisioning repository enforce persistence invari
 
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
+    assert.equal((await migrator.query(
+      "SELECT count(*)::int AS count FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ('location_drafts', 'location_published_revisions') AND column_name = 'legacy_spatial'",
+    ))[0].count, 0, 'the exact-base provenance migration can be reverted independently');
+    await migrator.undoLastMigration({ transaction: 'all' });
+    appliedMigrations -= 1;
     assert.equal((await migrator.query("SELECT to_regclass('public.location_published_revisions') AS table_name"))[0].table_name, null,
       'the location-storage migration can be reverted independently');
     await migrator.undoLastMigration({ transaction: 'all' });
@@ -713,7 +804,8 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
   const runtime = await openPostgres(config.runtime);
   const dataDirectory = mkdtempSync(join(tmpdir(), 'tmedge-location-pg-'));
   let applied = 0;
-  const registeredUids = ['aa:bb:cc:dd:ff:11', 'aa:bb:cc:dd:ff:12', 'aa:bb:cc:dd:ff:13', 'aa:bb:cc:dd:ff:14'];
+  let approvalEdgeRuntime: ReturnType<typeof createEdgeRuntime> | null = null;
+  const registeredUids = Array.from({ length: 32 }, (_, index) => `aa:bb:cc:dd:ff:${(0x11 + index).toString(16).padStart(2, '0')}`);
   const locationIds = [
     createLocationId('pg-test', '00000000-0000-4000-8000-000000000031'),
     createLocationId('pg-test', '00000000-0000-4000-8000-000000000032'),
@@ -727,7 +819,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
   try {
     await migrator.initialize();
     applied = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(applied, 8);
+    assert.equal(applied, 9);
     const runtimePrivileges = (await migrator.query(`
       SELECT
         (SELECT tableowner FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'registered_nodes') AS registered_nodes_owner,
@@ -766,9 +858,18 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
       migration_ledger_select: false,
     }, 'migrator owns durable tables; runtime has required DML without schema creation or migration-ledger access');
 
-    const site = siteJson() as { floors: Array<{ id: string; visibility?: 'public' | 'console' }> };
+    const site = siteJson() as { floors: Array<Record<string, unknown> & { id: string; visibility?: 'public' | 'console' }> };
     assert.ok(site.floors[0]);
     site.floors[0].visibility = 'console';
+    const legacyBridgeFloor = site.floors[1];
+    assert.ok(legacyBridgeFloor, 'the seeded site has an independent legacy floor for bridge coverage');
+    legacyBridgeFloor.outline = postgresLegacyOutline();
+    const legacyBridgeZones = legacyBridgeFloor.zones as Array<Record<string, unknown>>;
+    legacyBridgeZones[0]!.polygon = [[-10, -10], [410, -10], [400, 300]];
+    const legacyBridgeTables = legacyBridgeFloor.tables as Array<Record<string, unknown>>;
+    Object.assign(legacyBridgeTables[0]!, { x: 0, y: 100, width: 40, height: 60, capacity: 1 });
+    delete legacyBridgeTables[0]!.shape;
+    delete legacyBridgeTables[0]!.seats;
     const seedNode = nodesJson().nodes.find((node) => typeof node.floor === 'string'
       && Array.isArray(node.owns) && node.owns.length > 0);
     assert.ok(seedNode, 'test configuration has a legacy placed sensor with table ownership');
@@ -777,7 +878,15 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const mutationCoordinator = new PostgresRegistryMutationCoordinator(runtime);
     const nodeRepository = new PostgresRegistryRepository(runtime, mutationCoordinator);
     const registration = new RegistrationImportExport(nodeRepository, mutationCoordinator);
-    assert.equal((await registration.import(site, { nodes: [seedRegistration] })).inserted, 1);
+    // A prior interrupted run in this disposable test database may have left
+    // these fixed integration identities behind before its finally cleanup.
+    await runtime.query('DELETE FROM public.node_table_owners WHERE uid = ANY($1::text[])', [registeredUids]);
+    await runtime.query('DELETE FROM public.node_placements WHERE uid = ANY($1::text[])', [registeredUids]);
+    await runtime.query('DELETE FROM public.registered_nodes WHERE uid = ANY($1::text[])', [registeredUids]);
+    const seedPreview = await registration.preview(site, { nodes: [seedRegistration] });
+    assert.equal(seedPreview.valid, true, JSON.stringify(seedPreview));
+    const seedImport = await registration.import(site, { nodes: [seedRegistration] });
+    assert.equal(seedImport.inserted, 1, JSON.stringify(seedImport));
 
     const placementsBefore = await runtime.query(
       'SELECT uid, floor_id, x, y, height_cm, yaw_deg, mirror FROM public.node_placements ORDER BY uid',
@@ -801,27 +910,116 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const consoleBaseline = await published.getActive(registry.floors[0]!.id);
     assert.equal(consoleBaseline?.history[0]?.document.visibility, 'console', 'revision zero preserves legacy console-only visibility');
     const beforeVisibilityEdit = await published.registryRevision();
-    const attemptedPublicEdit = parseLocationDocument({ ...consoleBaseline!.history[0]!.document, visibility: 'public' });
+    const attemptedPublicEdit = parseLocationDocument({
+      ...postgresStorageTestDocument(registry.floors[0]!.id, 'PG-BASELINE-TABLE', 'PG-BASELINE-SEAT'), visibility: 'public',
+    });
+    const visibilityBase = consoleBaseline!.history[0]!;
+    const visibilityCandidate = parseLocationCandidate(attemptedPublicEdit, {
+      revision: 0, document: visibilityBase.document, legacySpatial: visibilityBase.legacySpatial,
+    }, 0);
     await assert.rejects(mutationCoordinator.withMutationLock(() => published.commitWithinMutation({
       expectedRegistryRevision: beforeVisibilityEdit, expectedPublishedRevision: 0,
       revision: {
-        locationId: attemptedPublicEdit.locationId, revision: 1,
-        createdBy: 'pg-operator', createdAt: 2, document: attemptedPublicEdit,
+        locationId: visibilityCandidate.document.locationId, revision: 1,
+        createdBy: 'pg-operator', createdAt: 2, document: visibilityCandidate.document,
+        legacySpatial: visibilityCandidate.legacySpatial,
       },
-      assignments: attemptedPublicEdit.sensorAssignments,
+      assignments: visibilityCandidate.document.sensorAssignments,
     })), LocationConflictError);
     assert.equal(await published.registryRevision(), beforeVisibilityEdit, 'a rejected visibility edit leaves the global revision unchanged');
     assert.equal((await published.getActive(registry.floors[0]!.id))?.activeRevision, 0);
 
-    const draftDocument = postgresStorageTestDocument(locationIds[0]!, 'PG-DRAFT-TABLE', 'PG-DRAFT-SEAT');
+    const bridgeBaseline = await published.getActive(legacyBridgeFloor.id);
+    assert.equal(bridgeBaseline?.activeRevision, 0);
+    assert.deepEqual(bridgeBaseline?.history[0]?.document.outline, postgresLegacyOutline());
+    assert.deepEqual(bridgeBaseline?.history[0]?.document.zones[0]?.polygon, [[-10, -10], [410, -10], [400, 300]]);
+    assert.equal(bridgeBaseline?.history[0]?.document.tables[0]?.shape, undefined);
+    assert.equal(bridgeBaseline?.history[0]?.document.tables[0]?.seats[0]?.x, -35,
+      'PostgreSQL revision zero retains the legacy perimeter seat outside the floor');
+
     const drafts = new PostgresLocationDraftRepository(runtime);
+    const locationSnapshots = new PostgresLocationRegistrySnapshotRepository(site, nodeRepository, published);
+    const startLegacyEdit = new StartLocationEditDraftUseCase({
+      drafts, snapshots: locationSnapshots, mutationCoordinator, now: () => 20,
+      createDraftId: () => '00000000-0000-4000-8000-000000000071',
+    });
+    let legacyDraftUpdateTime = 21;
+    const saveLegacyEdit = new SaveLocationDraftUseCase({ drafts, published, now: () => legacyDraftUpdateTime });
+    const firstLegacyDraft = await startLegacyEdit.execute({
+      creatorId: 'pg-legacy-editor', locationId: legacyBridgeFloor.id, expectedPublishedRevision: 0,
+    });
+    const firstLegacyCandidate = exposeLocationCandidate(firstLegacyDraft.draft.document, firstLegacyDraft.draft.legacySpatial) as { name: string };
+    firstLegacyCandidate.name = 'PG legacy edit';
+    const savedLegacyDraft = await saveLegacyEdit.execute({
+      creatorId: 'pg-legacy-editor', draftId: firstLegacyDraft.draft.draftId,
+      expectedDraftRevision: 1, document: firstLegacyCandidate,
+    });
+    assert.equal(savedLegacyDraft.draft.legacySpatial?.basePublishedRevision, 0);
+    const bridgeRuntime = {
+      prepare: () => 'prepared', refresh: (prepared: string) => prepared, activate: () => undefined, quarantine: () => undefined,
+    };
+    const bridgePublisher = new PublishLocationUseCase({
+      drafts, published, snapshots: locationSnapshots, mutationCoordinator, runtime: bridgeRuntime, now: () => 22,
+    });
+    await bridgePublisher.execute({
+      creatorId: 'pg-legacy-editor', draftId: firstLegacyDraft.draft.draftId,
+      expectedDraftRevision: 2, expectedPublishedRevision: 0,
+    });
+
+    const secondLegacyDraft = await new StartLocationEditDraftUseCase({
+      drafts, snapshots: locationSnapshots, mutationCoordinator, now: () => 23,
+      createDraftId: () => '00000000-0000-4000-8000-000000000072',
+    }).execute({ creatorId: 'pg-legacy-editor', locationId: legacyBridgeFloor.id, expectedPublishedRevision: 1 });
+    assert.equal(secondLegacyDraft.draft.legacySpatial?.basePublishedRevision, 1);
+    assert.deepEqual({ ...secondLegacyDraft.draft.legacySpatial!, basePublishedRevision: 0 }, firstLegacyDraft.draft.legacySpatial,
+      'a later editor gets only the prior server-derived spatial values from the exact published base');
+    const secondLegacyCandidate = exposeLocationCandidate(secondLegacyDraft.draft.document, secondLegacyDraft.draft.legacySpatial) as { name: string };
+    secondLegacyCandidate.name = 'PG legacy edit twice';
+    legacyDraftUpdateTime = 24;
+    const savedSecondLegacyDraft = await saveLegacyEdit.execute({
+      creatorId: 'pg-legacy-editor', draftId: secondLegacyDraft.draft.draftId,
+      expectedDraftRevision: 1, document: secondLegacyCandidate,
+    });
+    assert.deepEqual({ ...savedSecondLegacyDraft.draft.legacySpatial!, basePublishedRevision: 0 }, firstLegacyDraft.draft.legacySpatial);
+    await bridgePublisher.execute({
+      creatorId: 'pg-legacy-editor', draftId: secondLegacyDraft.draft.draftId,
+      expectedDraftRevision: 2, expectedPublishedRevision: 1,
+    });
+
+    const bridgeHistory = await published.listHistory(legacyBridgeFloor.id);
+    assert.deepEqual(bridgeHistory.map((row) => row.revision), [0, 1, 2]);
+    assert.deepEqual({ ...bridgeHistory[2]?.legacySpatial!, basePublishedRevision: 0 }, bridgeHistory[1]?.legacySpatial,
+      'the second PostgreSQL edit keeps inherited geometry while advancing its base revision');
+    const bridgedSnapshot = await locationSnapshots.readSnapshot();
+    const emittedBridgeSnapshot = emittedLocationSnapshot(site, bridgedSnapshot, 'pg-legacy-bridge');
+    assert.equal(emittedBridgeSnapshot.version, 2);
+    assert.equal(emittedBridgeSnapshot.floors.find((floor) => floor.id === legacyBridgeFloor.id)?.outline.length, 257);
+    assert.deepEqual(emittedBridgeSnapshot.floors.find((floor) => floor.id === legacyBridgeFloor.id)?.zones[0]?.polygon, [[-10, -10], [410, -10], [400, 300]]);
+    assert.equal(emittedBridgeSnapshot.floors.find((floor) => floor.id === legacyBridgeFloor.id)?.tables[0]?.shape, undefined);
+    assert.equal(emittedBridgeSnapshot.floors.find((floor) => floor.id === legacyBridgeFloor.id)?.tables[0]?.seats[0]?.x, -35);
+    assert.equal(isSnapshot(emittedBridgeSnapshot), true, 'the PostgreSQL startup path restores the actual legacy v2 envelope');
+
+    const reopenedRuntime = await openPostgres(config.runtime);
+    try {
+      const reopenedCoordinator = new PostgresRegistryMutationCoordinator(reopenedRuntime);
+      const reopenedNodes = new PostgresRegistryRepository(reopenedRuntime, reopenedCoordinator);
+      const reopenedPublished = new PostgresPublishedLocationRepository(reopenedRuntime, seedIds, reopenedCoordinator);
+      const reopenedSnapshot = await new PostgresLocationRegistrySnapshotRepository(site, reopenedNodes, reopenedPublished).readSnapshot();
+      const reopenedBridge = reopenedSnapshot.locations.find((row) => row.locationId === legacyBridgeFloor.id);
+      assert.deepEqual(reopenedBridge?.history.at(-1)?.legacySpatial, bridgeHistory[2]?.legacySpatial);
+      assert.equal(reopenedBridge?.history.at(-1)?.document.name, 'PG legacy edit twice');
+      assert.equal(isSnapshot(emittedLocationSnapshot(site, reopenedSnapshot, 'pg-legacy-bridge-reopened')), true,
+        'a fresh PostgreSQL connection reconstructs the exact spatial baseline and provenance');
+    } finally { await closePostgres(reopenedRuntime); }
+
+    const draftDocument = postgresStorageTestDocument(locationIds[0]!, 'PG-DRAFT-TABLE', 'PG-DRAFT-SEAT');
     const draft: LocationDraft = {
       draftId: '00000000-0000-4000-8000-000000000041', creatorId: 'pg-operator', locationId: draftDocument.locationId,
       draftRevision: 1, basePublishedRevision: null, createdAt: 1, updatedAt: 1, document: draftDocument,
     };
     await drafts.createDraft(draft);
     assert.equal(await drafts.getDraft('another-operator', draft.draftId), null);
-    await assert.rejects(drafts.saveDraft('pg-operator', draft.draftId, 0, draftDocument, 2), LocationConflictError);
+    await assert.rejects(drafts.saveDraft('pg-operator', draft.draftId, 0, { document: draftDocument, legacySpatial: null }, 2), LocationConflictError);
     assert.equal((await drafts.getDraft('pg-operator', draft.draftId))?.draftRevision, 1);
 
     const assetStore = new PostgresLocationAssetStore(runtime, dataDirectory);
@@ -863,6 +1061,64 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
       'UPDATE public.location_published_revisions SET created_by = $3 WHERE location_id = $1 AND revision = $2',
       [document.locationId, 1, 'mutated'],
     ), (error: { driverError?: { code?: string } }) => error.driverError?.code === '55000');
+
+    // Leave index 4 reserved for the later lost-ack registration case.
+    const batchUids = registeredUids.slice(5, 17);
+    await mutationCoordinator.withMutationLock(() => nodeRepository.importNodes(batchUids.map((uid, index) => ({
+      uid, label: `Batch sensor ${index}`, floorId: null, pose: null, owns: [], simulated: false, rgb: false, detector: 'node',
+    }))));
+    const batchLocationId = createLocationId('pg-test', '00000000-0000-4000-8000-000000000040');
+    const batchDocument = postgresBatchAssignmentDocument(batchLocationId, batchUids);
+    const duplicateOwnerLocationId = createLocationId('pg-test', '00000000-0000-4000-8000-000000000041');
+    const duplicateTableId = batchDocument.tables[0]!.id;
+    const duplicateOwnerDocument = parseLocationDocument({
+      ...batchDocument,
+      locationId: duplicateOwnerLocationId,
+      sensorAssignments: batchDocument.sensorAssignments.slice(0, 2).map((assignment) => ({ ...assignment, owns: [duplicateTableId] })),
+    });
+    const batchBaseRevision = await published.registryRevision();
+    await assert.rejects(mutationCoordinator.withMutationLock(() => published.commitWithinMutation({
+      expectedRegistryRevision: batchBaseRevision, expectedPublishedRevision: null,
+      revision: { locationId: duplicateOwnerLocationId, revision: 1, createdBy: 'pg-operator', createdAt: 30, document: duplicateOwnerDocument },
+      assignments: duplicateOwnerDocument.sensorAssignments,
+    })), LocationStorageUnavailableError, 'duplicate table ownership remains a constraint failure that rolls the transaction back');
+    assert.equal(await published.registryRevision(), batchBaseRevision);
+    assert.equal(await published.getActive(duplicateOwnerLocationId), null);
+    assert.deepEqual(await runtime.query('SELECT uid FROM public.node_placements WHERE uid = ANY($1::text[])', [batchUids]), [],
+      'the batched placement upsert rolls back when the owner batch violates the unique table constraint');
+
+    const batchCommitted = await mutationCoordinator.withMutationLock(() => published.commitWithinMutation({
+      expectedRegistryRevision: batchBaseRevision, expectedPublishedRevision: null,
+      revision: { locationId: batchLocationId, revision: 1, createdBy: 'pg-operator', createdAt: 31, document: batchDocument },
+      assignments: batchDocument.sensorAssignments,
+    }));
+    assert.equal(batchCommitted.activeRevision, 1);
+    assert.deepEqual(await runtime.query(
+      'SELECT uid FROM public.node_placements WHERE floor_id = $1 ORDER BY uid', [batchLocationId],
+    ), batchUids.map((uid) => ({ uid })).sort((left, right) => left.uid.localeCompare(right.uid)),
+    'one publication places all assigned nodes in the same transaction');
+    assert.equal((await runtime.query(
+      'SELECT count(*)::int AS count FROM public.node_table_owners WHERE uid = ANY($1::text[])', [batchUids],
+    ))[0].count, 36, 'all owned table rows are written by the batched owner statement');
+
+    const retainedBatchUids = batchUids.slice(6);
+    const reducedBatchDocument = parseLocationDocument({
+      ...batchDocument,
+      sensorAssignments: batchDocument.sensorAssignments.slice(6),
+    });
+    const afterBatchRevision = await published.registryRevision();
+    await mutationCoordinator.withMutationLock(() => published.commitWithinMutation({
+      expectedRegistryRevision: afterBatchRevision, expectedPublishedRevision: 1,
+      revision: { locationId: batchLocationId, revision: 2, createdBy: 'pg-operator', createdAt: 32, document: reducedBatchDocument },
+      assignments: reducedBatchDocument.sensorAssignments,
+    }));
+    assert.deepEqual(await runtime.query(
+      'SELECT uid FROM public.node_placements WHERE floor_id = $1 ORDER BY uid', [batchLocationId],
+    ), retainedBatchUids.map((uid) => ({ uid })).sort((left, right) => left.uid.localeCompare(right.uid)),
+    'removed same-location assignments are cleared while retained assignments remain placed');
+    assert.equal((await runtime.query(
+      'SELECT count(*)::int AS count FROM public.node_table_owners WHERE uid = ANY($1::text[])', [batchUids],
+    ))[0].count, 18, 'owners of retained assignments are restored and removed assignments are cleared');
 
     const afterFirstPublication = await published.registryRevision();
     const missingSensorDocument = postgresStorageTestDocument(locationIds[2]!, 'PG-ROLLBACK-TABLE', 'PG-ROLLBACK-SEAT', 'aa:bb:cc:dd:ff:99');
@@ -959,27 +1215,59 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
 
     const approvalRequestId = '00000000-0000-4000-8000-000000000036';
     const approvedUid = registeredUids[3]!;
-    const approvalRegistry = registry;
-    const provisioning = new DatabaseProvisioningService(new PostgresProvisioningRepository(runtime), approvalRegistry, {
+    const approvalSnapshots = new PostgresLocationRegistrySnapshotRepository(site, nodeRepository, published);
+    const approvalSnapshot = await mutationCoordinator.withMutationLock(() => approvalSnapshots.readSnapshot());
+    const approvalNodes = { nodes: approvalSnapshot.nodes.map((node) => ({
+      uid: node.uid, label: node.label,
+      ...(node.floorId && node.pose ? { floor: node.floorId, pose: node.pose } : {}),
+      owns: node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector,
+    })) };
+    const approvalDocuments = approvalSnapshot.locations.flatMap((location) => {
+      if (location.activeRevision === 0) return [];
+      const active = location.history.find((revision) => revision.revision === location.activeRevision);
+      return active ? [parseLocationDocument(active.document)] : [];
+    });
+    const approvalRegistry = buildRegistryFromLocationDocuments(site, approvalNodes, approvalDocuments);
+    approvalEdgeRuntime = createEdgeRuntime(postgresTestEdgeConfig(join(dataDirectory, 'approval-runtime')), approvalRegistry);
+    let loseApprovalAcknowledgement = false;
+    const approvalRepository = new PostgresProvisioningRepository(runtime, async (work) => {
+      const result = await runtime.transaction(work);
+      if (loseApprovalAcknowledgement) {
+        loseApprovalAcknowledgement = false;
+        throw new Error('simulated lost approval COMMIT acknowledgement');
+      }
+      return result;
+    });
+    const provisioning = new DatabaseProvisioningService(approvalRepository, approvalRegistry, {
       token: 'integration-provisioning-token-32chars',
       requestId: () => approvalRequestId,
       mutationCoordinator,
+      registryProvider: () => approvalEdgeRuntime!.captureGeneration().reg,
+      prepareRegistryAddition: (node) => approvalEdgeRuntime!.prepareNodeRegistration(node),
+      quarantineRegistry: (reason) => approvalEdgeRuntime!.quarantine(reason),
     });
     const pending = await provisioning.request({ uid: approvedUid, label: 'Approved during publication' }, 'integration-test');
     assert.equal(pending.status, 'pending');
     if (pending.status !== 'pending') throw new Error('expected a pending provisioning request');
     const approvalAndPublicationStarted = await published.registryRevision();
     const approvalDocument = postgresStorageTestDocument(locationIds[4]!, 'PG-APPROVAL-TABLE', 'PG-APPROVAL-SEAT');
+    const approvalDraft: LocationDraft = {
+      draftId: randomUUID(), creatorId: 'pg-operator', locationId: approvalDocument.locationId,
+      draftRevision: 1, basePublishedRevision: null, createdAt: 7, updatedAt: 7, document: approvalDocument,
+    };
+    await drafts.createDraft(approvalDraft);
+    const publication = new PublishLocationUseCase({
+      drafts, published, snapshots: approvalSnapshots, mutationCoordinator,
+      runtime: new EdgeLocationPublicationRuntime(approvalEdgeRuntime, site),
+    });
+    loseApprovalAcknowledgement = true;
     const approvalPromise = provisioning.approve(pending.request.id, 'integration-operator');
-    const publicationPromise = mutationCoordinator.withMutationLock(async () => published.commitWithinMutation({
-      expectedRegistryRevision: await published.registryRevision(), expectedPublishedRevision: null,
-      revision: {
-        locationId: approvalDocument.locationId, revision: 1,
-        createdBy: 'pg-operator', createdAt: 7, document: approvalDocument,
-      },
-      assignments: approvalDocument.sensorAssignments,
-    }));
+    const publicationPromise = publication.execute({
+      creatorId: approvalDraft.creatorId, draftId: approvalDraft.draftId,
+      expectedDraftRevision: approvalDraft.draftRevision, expectedPublishedRevision: null,
+    });
     const [approvedNode, approvalPublication] = await Promise.all([approvalPromise, publicationPromise]);
+    assert.equal(loseApprovalAcknowledgement, false, 'the approval COMMIT acknowledgement was deliberately lost and reconciled');
     assert.equal(approvedNode.uid, approvedUid);
     assert.ok(approvalPublication.registryRevision === approvalAndPublicationStarted + 1
       || approvalPublication.registryRevision === approvalAndPublicationStarted + 2,
@@ -990,23 +1278,30 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     assert.deepEqual(await runtime.query('SELECT label FROM public.registered_nodes WHERE uid = $1', [approvedUid]), [
       { label: 'Approved during publication' },
     ], 'the approved identity survives concurrent location publication');
-    assert.equal(approvalRegistry.nodes.get(approvedUid)?.label, 'Approved during publication');
+    assert.equal(approvalEdgeRuntime.captureGeneration().reg.nodes.get(approvedUid)?.label, 'Approved during publication',
+      'the exact reconciled approval activates in the live generation');
+    assert.ok(approvalEdgeRuntime.captureGeneration().reg.floors.some((floor) => floor.id === locationIds[4]),
+      'the concurrently published location activates in the same runtime generation');
     assert.equal((await runtime.query('SELECT status, registered_uid FROM public.provisioning_requests WHERE id = $1', [approvalRequestId]))[0]?.status,
       'approved', 'provisioning approval commits with the registration');
 
     const assignedApprovedDocument = postgresStorageTestDocument(locationIds[4]!, 'PG-APPROVAL-TABLE-2', 'PG-APPROVAL-SEAT-2', approvedUid);
-    const assignedApproved = await mutationCoordinator.withMutationLock(async () => published.commitWithinMutation({
-      expectedRegistryRevision: await published.registryRevision(), expectedPublishedRevision: 1,
-      revision: {
-        locationId: assignedApprovedDocument.locationId, revision: 2,
-        createdBy: 'pg-operator', createdAt: 8, document: assignedApprovedDocument,
-      },
-      assignments: assignedApprovedDocument.sensorAssignments,
-    }));
-    assert.equal(assignedApproved.activeRevision, 2, 'a node approved during the race can be assigned by a later publication');
+    const assignedDraft: LocationDraft = {
+      draftId: randomUUID(), creatorId: 'pg-operator', locationId: assignedApprovedDocument.locationId,
+      draftRevision: 1, basePublishedRevision: 1, createdAt: 8, updatedAt: 8, document: assignedApprovedDocument,
+    };
+    await drafts.createDraft(assignedDraft);
+    const assignedApproved = await publication.execute({
+      creatorId: assignedDraft.creatorId, draftId: assignedDraft.draftId,
+      expectedDraftRevision: assignedDraft.draftRevision, expectedPublishedRevision: 1,
+    });
+    assert.equal(assignedApproved.publishedRevision, 2, 'a node approved during the race can be assigned by a later publication');
     assert.deepEqual(await runtime.query('SELECT floor_id FROM public.node_placements WHERE uid = $1', [approvedUid]), [
       { floor_id: locationIds[4] },
     ]);
+    assert.equal(approvalEdgeRuntime.captureGeneration().reg.nodes.get(approvedUid)?.floorId, locationIds[4],
+      'the subsequent sensor placement activates with the edited location');
+    assert.ok(approvalEdgeRuntime.captureGeneration().reg.tables.has('PG-APPROVAL-TABLE-2'));
 
     const restartedRuntime = await openPostgres(config.runtime);
     try {
@@ -1076,6 +1371,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     assert.throws(() => quarantinedCoordinator.assertHealthy(), (error: { name?: string }) => error.name === 'RegistryMutationQuarantinedError');
     await assert.rejects(quarantinedCoordinator.withMutationLock(async () => undefined), (error: { name?: string }) => error.name === 'RegistryMutationQuarantinedError');
   } finally {
+    if (approvalEdgeRuntime) await approvalEdgeRuntime.stop().catch(() => undefined);
     if (runtime.isInitialized) {
       await runtime.query('DELETE FROM public.node_table_owners WHERE uid = ANY($1::text[])', [registeredUids]).catch(() => undefined);
       await runtime.query('DELETE FROM public.node_placements WHERE uid = ANY($1::text[])', [registeredUids]).catch(() => undefined);

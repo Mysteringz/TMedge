@@ -22,7 +22,8 @@ export function createAdoptionRouter(rt: EdgeRuntime, service: ProvisioningServi
     let ready = true;
     try { await service.ready(); } catch { ready = false; }
     const requests = await service.requests();
-    const nodes = rt.nodes().filter(node => node.registered && !rt.reg.nodes.get(node.uid)?.simulated).map(node => ({
+    const generation = rt.captureGeneration();
+    const nodes = rt.nodes(Date.now(), generation).filter(node => node.registered && !generation.reg.nodes.get(node.uid)?.simulated).map(node => ({
       uid: node.uid, label: node.label, placed: node.floorId !== null && node.pose !== null,
       online: node.online, verified: node.online && node.signed && node.reports > 0 && rt.lastReport(node.uid)?.boot === node.boot,
       lastSeen: node.lastSeen, reports: node.reports, fps: node.fps, firmware: node.status?.fw ?? null,

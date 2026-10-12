@@ -17,6 +17,10 @@ export interface DatabaseProvisioningOptions {
   now?: () => number;
   requestId?: () => string;
   mutationCoordinator?: RegistryMutationCoordinator;
+  registryProvider?: () => Registry;
+  prepareRegistryAddition?: (node: NodeDef) => () => void;
+  /** Quiesce runtime registry reads if PostgreSQL cannot classify an approval COMMIT. */
+  quarantineRegistry?: (reason: unknown) => void;
 }
 
 /** PostgreSQL-authoritative provisioning; durable changes precede live activation. */
@@ -26,12 +30,14 @@ export class DatabaseProvisioningService implements ProvisioningService {
 
   constructor(
     private readonly repository: ProvisioningRepository,
-    private readonly registry: Registry,
+    private readonly initialRegistry: Registry,
     private readonly options: DatabaseProvisioningOptions,
   ) {
     this.now = options.now ?? Date.now;
     this.requestId = options.requestId ?? randomUUID;
   }
+
+  private get registry(): Registry { return this.options.registryProvider?.() ?? this.initialRegistry; }
 
   get enabled(): boolean { return this.options.token !== null; }
 
@@ -128,7 +134,32 @@ export class DatabaseProvisioningService implements ProvisioningService {
     const at = this.now();
     let node: NodeRegistration;
     let targetUid: string | null = null;
+    let preparedActivation: (() => void) | null = null;
+    let expectedRequest: ProvisioningRequestRecord | null = null;
+    let expectedResolution: { resolvedAt: number; resolvedBy: { id: string; kind: 'console' } } | null = null;
+    let expectedNode: NodeRegistration | null = null;
+    let baseRegistryRevision: number | null = null;
+    let transactionAttempted = false;
     try {
+      const pending = await this.repository.findRequest(id);
+      if (pending?.status === 'pending') {
+        expectedRequest = structuredClone(pending);
+        expectedResolution = { resolvedAt: at, resolvedBy: { id: actor, kind: 'console' } };
+        expectedNode = {
+          uid: pending.uid, label: pending.label, floorId: null, pose: null, owns: [],
+          simulated: false, rgb: false, detector: 'node',
+        };
+        targetUid = pending.uid;
+        baseRegistryRevision = await this.repository.registryRevision();
+        if (this.options.prepareRegistryAddition) {
+          const definition: NodeDef = {
+            uid: pending.uid, label: pending.label, floorId: null, pose: null, owns: [],
+            simulated: false, rgb: false, detector: 'node',
+          };
+          preparedActivation = this.options.prepareRegistryAddition(definition);
+        }
+      }
+      transactionAttempted = true;
       const outcome = await this.repository.transaction(async (tx) => {
         const request = await tx.findRequestForUpdate(id);
         if (!request) throw new ApplicationError('not-found', 'no such request (it may have expired)');
@@ -146,6 +177,7 @@ export class DatabaseProvisioningService implements ProvisioningService {
         if (await tx.findNode(request.uid)) throw new ApplicationError('conflict', `${request.uid} is already registered`);
         const registered: NodeRegistration = {
           uid: request.uid, label: request.label, floorId: null, pose: null, owns: [],
+          simulated: false, rgb: false, detector: 'node',
         };
         await tx.registerNode(registered);
         await tx.saveRequest({
@@ -159,25 +191,50 @@ export class DatabaseProvisioningService implements ProvisioningService {
       node = outcome.node;
     } catch (error) {
       if (error instanceof ApplicationError) throw error;
-      const reconciled = targetUid ? await this.repository.reconcile(id, targetUid).catch(() => null) : null;
-      if (!reconciled) {
-        this.options.mutationCoordinator?.quarantine(error);
+      if (!transactionAttempted || !targetUid || !expectedRequest || !expectedResolution || !expectedNode || baseRegistryRevision === null) {
         throw provisioningError(error);
       }
-      if (reconciled.status !== 'approved') throw provisioningError(error);
+      const reconciled = await this.repository.reconcileApproval(expectedRequest, expectedResolution, expectedNode, baseRegistryRevision)
+        .catch(() => ({ kind: 'unknown' as const }));
+      if (reconciled.kind === 'not-committed') throw provisioningError(error);
+      if (reconciled.kind !== 'committed') {
+        this.options.mutationCoordinator?.quarantine(error);
+        this.options.quarantineRegistry?.(error);
+        throw provisioningError(error);
+      }
       node = reconciled.node;
     }
     try {
-      this.activate(node);
-    } catch (error) {
-      const reconciled = await this.repository.reconcile(id, node.uid).catch(() => null);
-      if (!reconciled || reconciled.status !== 'approved' || reconciled.node.label !== node.label) throw provisioningError(error);
-      try {
-        this.activate(reconciled.node);
-      } catch {
-        throw new ApplicationError('unavailable', `approval ${id} committed but live registry activation requires reconciliation`);
+      if (preparedActivation) preparedActivation();
+      else if (!this.registry.nodes.has(node.uid)) {
+        if (this.options.prepareRegistryAddition) {
+          const error = new Error('Committed approval has no prepared active registry generation.');
+          this.options.mutationCoordinator?.quarantine(error);
+          this.options.quarantineRegistry?.(error);
+          throw error;
+        }
+        this.activate(node);
       }
-      node = reconciled.node;
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      if (preparedActivation && expectedRequest && expectedResolution && expectedNode && baseRegistryRevision !== null) {
+        const reconciled = await this.repository.reconcileApproval(expectedRequest, expectedResolution, expectedNode, baseRegistryRevision)
+          .catch(() => ({ kind: 'unknown' as const }));
+        if (reconciled.kind === 'committed') {
+          node = reconciled.node;
+          try {
+            preparedActivation();
+            return toProvisionedNode(node);
+          } catch (activationError) {
+            this.options.mutationCoordinator?.quarantine(activationError);
+            this.options.quarantineRegistry?.(activationError);
+            throw provisioningError(activationError);
+          }
+        }
+      }
+      this.options.mutationCoordinator?.quarantine(error);
+      this.options.quarantineRegistry?.(error);
+      throw provisioningError(error);
     }
     return toProvisionedNode(node);
   }

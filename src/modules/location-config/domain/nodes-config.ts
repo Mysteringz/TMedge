@@ -1,4 +1,5 @@
 import { parseLocationDocument, type LocationDocument } from './location-document.js';
+import { parseLegacySpatialProvenance, type LegacySpatialProvenance } from './location-candidate.js';
 
 export interface PublishedLocationRecord {
   locationId: string;
@@ -9,6 +10,7 @@ export interface PublishedLocationRecord {
     createdBy: string;
     createdAt: number;
     document: LocationDocument;
+    legacySpatial: LegacySpatialProvenance | null;
   }>;
 }
 
@@ -81,15 +83,17 @@ function parsePublishedLocation(value: unknown, index: number): PublishedLocatio
   const revisions = input.revisions.map((item, revisionIndex) => {
     const revisionWhere = `${where}.revisions[${revisionIndex}]`;
     const row = object(item, revisionWhere);
-    only(row, revisionWhere, ['locationId', 'revision', 'createdBy', 'createdAt', 'document']);
+    only(row, revisionWhere, ['locationId', 'revision', 'createdBy', 'createdAt', 'document', 'legacySpatial']);
     const revisionLocationId = safeId(row.locationId, `${revisionWhere}.locationId`);
     if (revisionLocationId !== locationId) invalid(`${revisionWhere}.locationId: must match its published location`);
     const revision = integer(row.revision, `${revisionWhere}.revision`, 1, Number.MAX_SAFE_INTEGER);
     const createdAt = integer(row.createdAt, `${revisionWhere}.createdAt`, 0, Number.MAX_SAFE_INTEGER);
     const createdBy = string(row.createdBy, `${revisionWhere}.createdBy`);
     const document = parseLocationDocument(row.document);
+    const legacySpatial = parseLegacySpatialProvenance(row.legacySpatial);
+    if (legacySpatial && legacySpatial.basePublishedRevision !== revision - 1) invalid(`${revisionWhere}.legacySpatial: must derive from the previous published revision`);
     if (document.locationId !== locationId) invalid(`${revisionWhere}.document.locationId: must match its published location`);
-    return { locationId, revision, createdBy, createdAt, document };
+    return { locationId, revision, createdBy, createdAt, document, legacySpatial };
   });
   unique(revisions.map((item) => String(item.revision)), `${where}.revisions`);
   const ordered = [...revisions].sort((a, b) => a.revision - b.revision);

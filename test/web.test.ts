@@ -10,12 +10,14 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { WebSocket } from 'ws';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
+import { buildRegistryFromLocationDocuments } from '../src/edge/registry.js';
 import { parseCookies, RateLimiter, Sessions, turnstileCheck, UserStore } from '../src/web/auth.js';
 import { createWebApp, loadWebConfig, missingAppAssets, safeNext } from '../src/web/main.js';
 import { isSnapshot, SnapshotStore } from '../src/web/store.js';
 import { SnapshotPublishers } from '../src/web/publishers.js';
 import { findGroup, searchSeats } from '../src/shared/seats.js';
-import type { OccupancySnapshot, TableState } from '../src/shared/types.js';
+import type { OccupancySnapshot, TableShape, TableState } from '../src/shared/types.js';
+import { tableBounds } from '../src/shared/table-geometry.js';
 import { makerspace } from './fixtures.js';
 
 const TOKEN = 'edge-token-for-tests-0123456789';
@@ -58,6 +60,27 @@ async function start() {
 function snapshot(edgeId = 'edge-a'): OccupancySnapshot {
   const s = new OccupancyEngine(makerspace(), edgeId).snapshot(Date.now());
   return { ...s, floors: s.floors.filter((f) => f.id === 'iw-maker-a') };
+}
+
+function version2Snapshot(shape?: TableShape): OccupancySnapshot {
+  const current = structuredClone(snapshot());
+  current.version = 2;
+  const floor = current.floors[0];
+  assert.ok(floor);
+  const table = floor.tables[0];
+  assert.ok(table);
+  const tableShape = shape ?? { type: 'rect', x: table.rect.x, y: table.rect.y, width: table.rect.width, height: table.rect.height };
+  table.shape = tableShape;
+  table.rect = tableBounds(tableShape);
+  floor.model = {
+    assetId: '00000000-0000-4000-8000-000000000001',
+    transform: {
+      scale: { x: 1, y: 1, z: 1 },
+      rotationDeg: { x: 0, y: 15, z: 0 },
+      positionM: { x: 0, y: 0.2, z: 0 },
+    },
+  };
+  return current;
 }
 
 async function signup(base: string, email: string): Promise<string> {
@@ -467,6 +490,142 @@ test('web: snapshot validation rejects missing fields, impossible counts and pri
     assert.equal(w.store.view().floors.length, 0);
     assert.equal((await fetch(`${w.base}/healthz`)).status, 200);
   } finally { await w.close(); }
+});
+
+test('web: v2 snapshot ingress preserves strict shape and model fields while keeping v1 compatible', async () => {
+  const legacy = snapshot();
+  const current = version2Snapshot();
+  assert.equal(isSnapshot(legacy), true, 'legacy publishers remain accepted');
+  assert.equal(isSnapshot(current), true, 'v2 geometry and model fields are accepted');
+  assert.equal(isSnapshot(version2Snapshot({ type: 'circle', cx: 300, cy: 300, radius: 40 })), true, 'bounded circle geometry is accepted');
+  assert.equal(isSnapshot(version2Snapshot({ type: 'polygon', points: [[200, 200], [300, 200], [300, 300], [200, 300]] })), true, 'simple polygon geometry is accepted');
+  const withoutShape = structuredClone(current);
+  delete withoutShape.floors[0]!.tables[0]!.shape;
+  assert.equal(isSnapshot(withoutShape), true, 'v2 shape remains optional for compatible senders');
+  const withoutModel = structuredClone(current);
+  delete withoutModel.floors[0]!.model;
+  assert.equal(isSnapshot(withoutModel), true, 'v2 model remains optional for compatible senders');
+
+  const legacyOutOfBounds = structuredClone(legacy);
+  legacyOutOfBounds.floors[0]!.tables[0]!.rect.x = 1_000_000;
+  assert.equal(isSnapshot(legacyOutOfBounds), true, 'v1 retains its prior geometry validation behavior');
+  const legacySeatOutsideFloor = structuredClone(legacy);
+  legacySeatOutsideFloor.floors[0]!.tables[0]!.seats[0]!.x = 1_000_000;
+  assert.equal(isSnapshot(legacySeatOutsideFloor), true, 'v1 retains its prior seat-coordinate validation behavior');
+  const legacyDegenerateFloorPolygon = structuredClone(legacy);
+  legacyDegenerateFloorPolygon.floors[0]!.outline = [[0, 0], [1, 1], [2, 2]];
+  assert.equal(isSnapshot(legacyDegenerateFloorPolygon), true, 'v1 retains its prior polygon validation behavior');
+  const legacyV2Envelope = structuredClone(legacy);
+  legacyV2Envelope.version = 2;
+  const legacyV2Floor = legacyV2Envelope.floors[0]!;
+  legacyV2Floor.outline = [[0, 0], [1, 1], [2, 2]];
+  legacyV2Floor.zones[0]!.polygon = [[-10, -10], [legacyV2Floor.width + 10, -10], [legacyV2Floor.width + 10, legacyV2Floor.height + 10]];
+  legacyV2Floor.tables[0]!.rect.x = 1_000_000;
+  legacyV2Floor.tables[0]!.seats[0]!.x = 1_000_000;
+  assert.equal(isSnapshot(legacyV2Envelope), true, 'shape-less v2 snapshots preserve the existing geometry envelope');
+
+  const legacyWithV2Fields = structuredClone(current);
+  legacyWithV2Fields.version = 1;
+  assert.equal(isSnapshot(legacyWithV2Fields), false, 'v1 cannot smuggle fields that belong to v2');
+
+  const invalidSnapshots: [string, OccupancySnapshot][] = [
+    ['zero-area polygon', version2Snapshot({ type: 'polygon', points: [[0, 0], [1, 1], [2, 2]] })],
+    ['self-intersecting polygon', version2Snapshot({ type: 'polygon', points: [[0, 0], [4, 0], [1, 4], [3, 0], [4, 4]] })],
+    ['polygon beyond the canonical point limit', version2Snapshot({ type: 'polygon', points: Array.from({ length: 257 }, (_, index): [number, number] => [200 + 100 * Math.cos(index * 2 * Math.PI / 257), 200 + 100 * Math.sin(index * 2 * Math.PI / 257)]) })],
+  ];
+  const outOfFloorRectangle = structuredClone(current);
+  outOfFloorRectangle.floors[0]!.tables[0]!.shape = { type: 'rect', x: -1, y: 200, width: 50, height: 50 };
+  invalidSnapshots.push(['out-of-floor rectangle shape', outOfFloorRectangle]);
+  const outOfFloorCircle = structuredClone(current);
+  outOfFloorCircle.floors[0]!.tables[0]!.shape = { type: 'circle', cx: 10, cy: 200, radius: 20 };
+  invalidSnapshots.push(['out-of-floor circle shape', outOfFloorCircle]);
+  const outOfFloorPolygon = structuredClone(current);
+  outOfFloorPolygon.floors[0]!.tables[0]!.shape = { type: 'polygon', points: [[-1, 0], [10, 0], [10, 10]] };
+  invalidSnapshots.push(['out-of-floor polygon shape', outOfFloorPolygon]);
+  const mismatchedBounds = structuredClone(current);
+  mismatchedBounds.floors[0]!.tables[0]!.rect.x += 1;
+  invalidSnapshots.push(['shape and compatibility rect mismatch', mismatchedBounds]);
+  const unknownShapeKey = structuredClone(current);
+  unknownShapeKey.floors[0]!.tables[0]!.shape = { type: 'rect', x: 200, y: 200, width: 50, height: 50, privateField: true } as unknown as TableShape;
+  invalidSnapshots.push(['unknown shape key', unknownShapeKey]);
+  const outOfFloorRectWithoutShape = structuredClone(current);
+  delete outOfFloorRectWithoutShape.floors[0]!.tables[0]!.shape;
+  outOfFloorRectWithoutShape.floors[0]!.tables[0]!.rect.x = 1_000_000;
+  assert.equal(isSnapshot(outOfFloorRectWithoutShape), true, 'shape-less v2 rects keep established envelope behavior');
+  const outOfFloorSeat = structuredClone(current);
+  outOfFloorSeat.floors[0]!.tables[0]!.seats[0]!.x = outOfFloorSeat.floors[0]!.width + 1;
+  invalidSnapshots.push(['out-of-floor seat coordinate', outOfFloorSeat]);
+
+  for (const [label, invalid] of invalidSnapshots) assert.equal(isSnapshot(invalid), false, `v2 rejects ${label}`);
+
+  const invalidModelValues: [string, (snapshot: OccupancySnapshot) => void][] = [
+    ['scale above maximum', (value) => { value.floors[0]!.model!.transform.scale.x = 10001; }],
+    ['scale below minimum', (value) => { value.floors[0]!.model!.transform.scale.x = 0.0000001; }],
+    ['rotation above maximum', (value) => { value.floors[0]!.model!.transform.rotationDeg.y = 3601; }],
+    ['rotation below minimum', (value) => { value.floors[0]!.model!.transform.rotationDeg.y = -3601; }],
+    ['position above maximum', (value) => { value.floors[0]!.model!.transform.positionM.z = 100001; }],
+    ['position below minimum', (value) => { value.floors[0]!.model!.transform.positionM.z = -100001; }],
+    ['non-finite model vector', (value) => { value.floors[0]!.model!.transform.positionM.x = Number.POSITIVE_INFINITY; }],
+  ];
+  for (const [label, mutate] of invalidModelValues) {
+    const invalid = structuredClone(current);
+    mutate(invalid);
+    assert.equal(isSnapshot(invalid), false, `v2 rejects ${label}`);
+  }
+
+  const w = await start();
+  try {
+    const accepted = await fetch(`${w.base}/api/edge/snapshot`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify(current),
+    });
+    assert.equal(accepted.status, 200, 'the existing edge ingress accepts a v2 publication');
+    const stored = w.store.view().floors.find((floor) => floor.id === current.floors[0]?.id);
+    assert.deepEqual(stored?.tables[0]?.shape, current.floors[0]?.tables[0]?.shape);
+    assert.deepEqual(stored?.model, current.floors[0]?.model);
+
+    for (const invalid of [invalidSnapshots[0]![1], (() => {
+      const invalid = structuredClone(current);
+      invalid.floors[0]!.model!.transform.scale.x = 10001;
+      return invalid;
+    })()]) {
+      const rejected = await fetch(`${w.base}/api/edge/snapshot`, {
+        method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify(invalid),
+      });
+      assert.equal(rejected.status, 400, 'malformed v2 geometry and model transforms are rejected by the live route');
+    }
+
+    const stale = w.store.view(Date.now() + 31_000).floors.find((floor) => floor.id === current.floors[0]?.id);
+    assert.deepEqual(stale?.tables[0]?.shape, current.floors[0]?.tables[0]?.shape);
+    assert.deepEqual(stale?.model, current.floors[0]?.model, 'stale-state blanking preserves public model metadata');
+  } finally { await w.close(); }
+});
+
+test('web: emitted v2 snapshots keep legacy zones and perimeter seats without synthesized shapes', () => {
+  const site = {
+    site: { id: 'legacy-site', name: 'Legacy site' },
+    floors: [{
+      id: 'legacy-floor', building: 'Legacy building', name: 'Legacy floor', width: 100, height: 100,
+      outline: [[0, 0], [100, 0], [100, 100]],
+      zones: [{ id: 'legacy-zone', name: 'Legacy zone', polygon: [[-10, -10], [110, -10], [100, 100]] }],
+      tables: [{ id: 'legacy-table', name: 'Legacy table', zone: 'legacy-zone', x: 0, y: 20, width: 30, height: 40, capacity: 2 }],
+    }],
+  };
+  const registry = buildRegistryFromLocationDocuments(site, { nodes: [] }, []);
+  const table = registry.floors[0]?.tables[0];
+  assert.ok(table);
+  assert.equal(table.shapeAuthored, false);
+  assert.ok(table.seats.some((seat) => seat.x === -35), 'the legacy table has its generated perimeter seat outside the floor');
+
+  const emitted = new OccupancyEngine(registry, 'legacy-edge').snapshot(1234);
+  const floor = emitted.floors[0];
+  assert.equal(emitted.version, 2);
+  assert.ok(floor);
+  assert.deepEqual(floor.zones[0]?.polygon, [[-10, -10], [110, -10], [100, 100]]);
+  assert.ok(floor.tables[0]?.seats.some((seat) => seat.x === -35));
+  assert.equal(Object.hasOwn(floor.tables[0]!, 'shape'), false, 'a synthesized legacy rectangle has no authored shape tag');
+  assert.equal(isSnapshot(emitted), true, 'the actual edge-emitted v2 snapshot remains within the legacy envelope');
 });
 
 test('web: a migrated floor is only counted once and edge identity storage is bounded', () => {

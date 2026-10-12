@@ -1,13 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { hasUniquePolygonVertices, LOCATION_GEOMETRY_EPSILON, LOCATION_MODEL_TRANSFORM_LIMITS, MAX_LOCATION_POLYGON_POINTS, polygonHasNonzeroArea, polygonHasSelfIntersection } from '../../../shared/location-validation.js';
+import type { Rect, TableShape as SharedTableShape } from '../../../shared/types.js';
 
 export type FloorPoint = [number, number];
 export type SeatSide = 'L' | 'R' | 'T' | 'B';
 
-export type TableShape =
-  | { type: 'rect'; x: number; y: number; width: number; height: number }
-  | { type: 'circle'; cx: number; cy: number; radius: number }
-  | { type: 'polygon'; points: FloorPoint[] };
+export type TableShape = SharedTableShape;
 
 export interface LocationZone {
   id: string;
@@ -65,6 +64,20 @@ export interface LocationDocument {
   modelTransform?: LocationModelTransform;
 }
 
+/**
+ * Trusted revision-0 seed data only. Never accept this shape at an authored
+ * draft/request boundary; parseLocationDocument remains strict.
+ */
+export interface TrustedLegacyLocationBaseline extends Omit<LocationDocument, 'tables'> {
+  tables: TrustedLegacyLocationTable[];
+}
+
+/** Shape is absent for synthesized legacy rectangles; rect preserves their bounds. */
+export interface TrustedLegacyLocationTable extends Omit<LocationTable, 'shape'> {
+  rect: Rect;
+  shape?: TableShape;
+}
+
 export class InvalidLocationDocumentError extends Error {
   constructor(message: string) {
     super(message);
@@ -76,9 +89,9 @@ const UID_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const EDGE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,79}$/;
-const EPSILON = 1e-7;
+const EPSILON = LOCATION_GEOMETRY_EPSILON;
 export const MAX_LOCATION_DOCUMENT_BYTES = 1024 * 1024;
-export const MAX_POLYGON_POINTS = 256;
+export const MAX_POLYGON_POINTS = MAX_LOCATION_POLYGON_POINTS;
 
 /** Parses and validates persisted location JSON, rejecting unknown fields. */
 export function parseLocationDocument(value: unknown): LocationDocument {
@@ -227,9 +240,9 @@ function addAssetFields(input: Record<string, unknown>, result: LocationDocument
 function parseModelTransform(value: unknown): LocationModelTransform {
   const root = record(value, 'location.modelTransform');
   only(root, 'location.modelTransform', ['scale', 'rotationDeg', 'positionM']);
-  const scale = vector(root.scale, 'location.modelTransform.scale', 0.000001, 10000);
-  const rotationDeg = vector(root.rotationDeg, 'location.modelTransform.rotationDeg', -3600, 3600);
-  const positionM = vector(root.positionM, 'location.modelTransform.positionM', -100000, 100000);
+  const scale = vector(root.scale, 'location.modelTransform.scale', LOCATION_MODEL_TRANSFORM_LIMITS.scale.min, LOCATION_MODEL_TRANSFORM_LIMITS.scale.max);
+  const rotationDeg = vector(root.rotationDeg, 'location.modelTransform.rotationDeg', LOCATION_MODEL_TRANSFORM_LIMITS.rotationDeg.min, LOCATION_MODEL_TRANSFORM_LIMITS.rotationDeg.max);
+  const positionM = vector(root.positionM, 'location.modelTransform.positionM', LOCATION_MODEL_TRANSFORM_LIMITS.positionM.min, LOCATION_MODEL_TRANSFORM_LIMITS.positionM.max);
   return { scale, rotationDeg, positionM };
 }
 
@@ -247,36 +260,11 @@ function polygon(value: unknown, where: string, width: number, height: number, m
     if (!Array.isArray(point) || point.length !== 2) fail(`${where}[${index}]: expected [x, y]`);
     return [number(point[0], `${where}[${index}].x`, 0, width), number(point[1], `${where}[${index}].y`, 0, height)] as FloorPoint;
   });
-  validateUnique(points.map(([x, y]) => `${x},${y}`), `${where} points`);
-  if (Math.abs(signedArea(points)) <= EPSILON) fail(`${where}: polygon area must be non-zero`);
-  if (mustBeSimple && hasSelfIntersection(points)) fail(`${where}: polygon must not self-intersect`);
+  if (!hasUniquePolygonVertices(points)) fail(`${where} points: duplicate value`);
+  if (!polygonHasNonzeroArea(points)) fail(`${where}: polygon area must be non-zero`);
+  if (mustBeSimple && polygonHasSelfIntersection(points)) fail(`${where}: polygon must not self-intersect`);
   return points;
 }
-
-function hasSelfIntersection(points: FloorPoint[]): boolean {
-  for (let first = 0; first < points.length; first++) {
-    const nextFirst = (first + 1) % points.length;
-    for (let second = first + 1; second < points.length; second++) {
-      const nextSecond = (second + 1) % points.length;
-      if (nextFirst === second || nextSecond === first) continue;
-      if (segmentsIntersect(points[first]!, points[nextFirst]!, points[second]!, points[nextSecond]!)) return true;
-    }
-  }
-  return false;
-}
-
-function segmentsIntersect(a: FloorPoint, b: FloorPoint, c: FloorPoint, d: FloorPoint): boolean {
-  const abC = orient(a, b, c), abD = orient(a, b, d), cdA = orient(c, d, a), cdB = orient(c, d, b);
-  if (Math.abs(abC) <= EPSILON && onSegment(a, b, c)) return true;
-  if (Math.abs(abD) <= EPSILON && onSegment(a, b, d)) return true;
-  if (Math.abs(cdA) <= EPSILON && onSegment(c, d, a)) return true;
-  if (Math.abs(cdB) <= EPSILON && onSegment(c, d, b)) return true;
-  return (abC > 0) !== (abD > 0) && (cdA > 0) !== (cdB > 0);
-}
-
-function orient(a: FloorPoint, b: FloorPoint, c: FloorPoint): number { return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]); }
-function onSegment(a: FloorPoint, b: FloorPoint, point: FloorPoint): boolean { return point[0] >= Math.min(a[0], b[0]) - EPSILON && point[0] <= Math.max(a[0], b[0]) + EPSILON && point[1] >= Math.min(a[1], b[1]) - EPSILON && point[1] <= Math.max(a[1], b[1]) + EPSILON; }
-function signedArea(points: FloorPoint[]): number { return points.reduce((sum, point, index) => { const next = points[(index + 1) % points.length]!; return sum + point[0] * next[1] - next[0] * point[1]; }, 0) / 2; }
 
 function record(value: unknown, where: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) fail(`${where}: expected an object`);

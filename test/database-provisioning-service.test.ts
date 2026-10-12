@@ -14,8 +14,10 @@ const UID = '30:ed:a0:11:22:33';
 class MemoryProvisioningRepository implements ProvisioningRepository {
   requestsById = new Map<string, ProvisioningRequestRecord>();
   nodes = new Map<string, NodeRegistration>();
-  audits: Array<{ action: string; subjectId: string }> = [];
+  audits: Array<{ action: string; subjectId: string; actorId: string; actorKind: string; at: number }> = [];
+  revision = 0;
   failAfterCommit = false;
+  failReconcile = false;
   unavailable = false;
 
   async findRequest(id: string) { return structuredClone(this.requestsById.get(id) ?? null); }
@@ -35,11 +37,44 @@ class MemoryProvisioningRepository implements ProvisioningRepository {
       ? { status: 'approved', request: structuredClone(request), node: structuredClone(node) }
       : null;
   }
+  async registryRevision() { return this.revision; }
+  async reconcileApproval(
+    expectedRequest: ProvisioningRequestRecord,
+    expectedResolution: { resolvedAt: number; resolvedBy: { id: string; kind: 'console' } },
+    expectedNode: NodeRegistration,
+    baseRevision: number,
+  ) {
+    if (this.failReconcile) throw new Error('readback unavailable');
+    const request = this.requestsById.get(expectedRequest.id);
+    const node = this.nodes.get(expectedNode.uid);
+    const approvalAudits = this.audits.filter((event) => event.action === 'request.approved' && event.subjectId === expectedRequest.id);
+    const exactNode = !!node && node.uid === expectedNode.uid && node.label === expectedNode.label
+      && node.floorId === null && node.pose === null && node.owns.length === 0
+      && node.simulated === false && node.rgb === false && node.detector === 'node';
+    const exactIdentity = !!request && request.id === expectedRequest.id && request.uid === expectedRequest.uid
+      && request.label === expectedRequest.label && request.firmware === expectedRequest.firmware
+      && request.requestedBy === expectedRequest.requestedBy && request.requestedAt === expectedRequest.requestedAt
+      && request.expiresAt === expectedRequest.expiresAt;
+    const exactResolution = request?.resolvedAt === expectedResolution.resolvedAt
+      && request.resolvedBy?.id === expectedResolution.resolvedBy.id && request.resolvedBy?.kind === 'console';
+    const exactAudit = approvalAudits.length === 1 && approvalAudits[0]?.actorId === expectedResolution.resolvedBy.id
+      && approvalAudits[0]?.actorKind === expectedResolution.resolvedBy.kind && approvalAudits[0]?.at === expectedResolution.resolvedAt;
+    if (this.revision === baseRevision + 1 && exactIdentity && request?.status === 'approved'
+      && exactResolution && request.registeredUid === expectedNode.uid && exactNode && exactAudit) {
+      return { kind: 'committed' as const, request: structuredClone(request), node: structuredClone(node!), registryRevision: this.revision };
+    }
+    if (this.revision === baseRevision && exactIdentity && request?.status === 'pending'
+      && request.resolvedAt === null && request.resolvedBy === null && request.registeredUid === null && !node && approvalAudits.length === 0) {
+      return { kind: 'not-committed' as const, registryRevision: this.revision };
+    }
+    return { kind: 'unknown' as const };
+  }
   async transaction<T>(work: (tx: ProvisioningTransaction) => Promise<T>): Promise<T> {
     if (this.unavailable) throw new Error('database unavailable');
     const requests = structuredClone(this.requestsById);
     const nodes = structuredClone(this.nodes);
     const audits = structuredClone(this.audits);
+    let revision = this.revision;
     const tx: ProvisioningTransaction = {
       findRequestForUpdate: async (id) => structuredClone(requests.get(id) ?? null),
       lockPendingQueue: async () => {},
@@ -50,13 +85,17 @@ class MemoryProvisioningRepository implements ProvisioningRepository {
         .find((r) => r.uid === uid && r.status === 'pending') ?? null,
       findNode: async (uid) => structuredClone(nodes.get(uid) ?? null),
       saveRequest: async (request) => { requests.set(request.id, structuredClone(request)); },
-      registerNode: async (node) => { if (nodes.has(node.uid)) throw new Error('duplicate node'); nodes.set(node.uid, structuredClone(node)); },
-      appendAudit: async (event) => { audits.push({ action: event.action, subjectId: event.subjectId }); },
+      registerNode: async (node) => { if (nodes.has(node.uid)) throw new Error('duplicate node'); nodes.set(node.uid, structuredClone(node)); revision += 1; },
+      appendAudit: async (event) => { audits.push({
+        action: event.action, subjectId: event.subjectId,
+        actorId: event.actor.id, actorKind: event.actor.kind, at: event.at,
+      }); },
     };
     const result = await work(tx);
     this.requestsById = requests;
     this.nodes = nodes;
     this.audits = audits;
+    this.revision = revision;
     if (this.failAfterCommit) {
       this.failAfterCommit = false;
       throw new Error('connection lost after commit');
@@ -130,6 +169,33 @@ test('an approval whose commit acknowledgement is lost is reconciled and activat
   assert.equal(node.uid, UID);
   assert.equal([...registry.nodes.keys()].filter((uid) => uid === UID).length, 1);
   assert.equal(repository.audits.filter((event) => event.action === 'request.approved').length, 1);
+});
+
+test('an approval with an unreadable commit outcome quarantines instead of serving the old registry', async () => {
+  let coordinatorQuarantined = false;
+  let runtimeQuarantined = false;
+  const repository = new MemoryProvisioningRepository();
+  const registry = buildRegistry(siteJson(), nodesJson());
+  const coordinator = {
+    async withMutationLock<T>(work: () => Promise<T> | T) { return work(); },
+    assertHealthy() { if (coordinatorQuarantined) throw new Error('quarantined'); },
+    quarantine() { coordinatorQuarantined = true; },
+  };
+  const service = new DatabaseProvisioningService(repository, registry, {
+    token: TOKEN, mutationCoordinator: coordinator,
+    quarantineRegistry() { runtimeQuarantined = true; },
+  });
+  const pending = await service.request({ uid: UID, label: 'Hall sensor' }, '127.0.0.1');
+  assert.equal(pending.status, 'pending');
+  repository.failAfterCommit = true;
+  repository.failReconcile = true;
+  await assert.rejects(service.approve(pending.request.id, 'console'), (error: unknown) => {
+    assert.ok(error instanceof ApplicationError);
+    assert.equal(error.kind, 'unavailable');
+    return true;
+  });
+  assert.equal(coordinatorQuarantined, true, 'later registry mutations are blocked');
+  assert.equal(runtimeQuarantined, true, 'the active runtime is quiesced when commit state is unknown');
 });
 
 test('a database outage rejects approval without activating the identity', async () => {
