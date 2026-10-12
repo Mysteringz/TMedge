@@ -45,6 +45,7 @@ import { JsonDocumentStore } from '../infrastructure/workspace/json-document-sto
 import { Board, emptyBoard, parseBoard } from '../modules/workspace/application/board.js';
 import { emptyMail, Mailbox, parseMail } from '../modules/workspace/application/mailbox.js';
 import { createWorkspaceRouter } from '../modules/workspace/routes/workspace-router.js';
+import { CodeIndexFile } from '../infrastructure/assistant/code-index-file.js';
 import { KnowledgeFile } from '../infrastructure/assistant/knowledge-file.js';
 import { OllamaChatModel } from '../infrastructure/assistant/ollama-chat-model.js';
 import { runtimeAnalyticsSource } from '../infrastructure/analytics/runtime-analytics-source.js';
@@ -282,7 +283,11 @@ export function startAlgo(
     return lines;
   };
   app.use('/api/assistant', createAssistantRouter(auth, {
-    assistant: assistantConfig ? new AskAssistant(new OllamaChatModel(assistantConfig), new KnowledgeFile(process.env.AI_KNOWLEDGE_FILE || join(ROOT, 'config', 'ai-knowledge.md')), liveFacts) : null,
+    assistant: assistantConfig ? new AskAssistant(new OllamaChatModel(assistantConfig), new KnowledgeFile(process.env.AI_KNOWLEDGE_FILE || join(ROOT, 'config', 'ai-knowledge.md')), liveFacts, {
+      // Built with the release, from the commit that is running (src/tools/code-index.ts).
+      code: new CodeIndexFile(process.env.AI_CODE_INDEX_FILE || join(ROOT, 'dist', 'src', 'code-index.json')),
+      contextTokens: assistantConfig.contextTokens,
+    }) : null,
     teamRolesOf: (name) => teamMembers().find((member) => member.name === name)?.teamRoles ?? [],
   }));
   app.use(auth.router);

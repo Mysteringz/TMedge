@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && npm run build:app && npm run build:algo",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && node dist/src/tools/code-index.js && npm run build:app && npm run build:algo",
     "db:migrate": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/postgres-migrate.js up",
     "db:revert": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/postgres-migrate.js down",
     "db:registry:export": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/registry-export.js",
