@@ -144,13 +144,16 @@
 
 /* — disclosures: the log under a flash, the detail of an export — */
 /* Animating to a height nobody set needs interpolate-size; elsewhere a
-   disclosure opens as it always did. */
+   disclosure opens as it always did. It opens with motion and closes at once:
+   following the close would mean a transition on content-visibility, and that
+   one also holds the content back for a frame on the way in, where it can be
+   seen but not yet read, found or selected. Readable the instant it opens
+   matters more than a 150ms exit (test/web-flasher.test.mjs). */
 @supports (interpolate-size: allow-keywords) {
   .cx details { interpolate-size: allow-keywords; }
   .cx details::details-content {
     block-size: 0; opacity: 0; overflow: clip;
-    transition: block-size var(--duration-moderate-01) var(--ease-productive), opacity var(--duration-moderate-01) var(--ease-productive),
-      content-visibility var(--duration-moderate-01) allow-discrete;
+    transition: block-size var(--duration-moderate-01) var(--ease-productive), opacity var(--duration-moderate-01) var(--ease-productive);
   }
   .cx details[open]::details-content { block-size: auto; opacity: 1; }
 }

@@ -261,6 +261,14 @@ test('chromium: a new board is flashed, set up, admitted by a deliberate click a
     await page.locator('.fl-log summary').click();
     const shown = await page.locator('body').innerText();
     assert.ok(shown.includes('set pass ••••••') && shown.includes('set key ••••••'));
+    // A log that opens with motion is readable from the instant it opens, not
+    // a frame later. Closed, left to settle, then opened and read in one task:
+    // the line above reads after a round trip, which a slow runner can lose.
+    await page.locator('.fl-log summary').click();
+    await page.locator('.fl-log:not([open])').waitFor();
+    await page.waitForTimeout(300);
+    const atOnce = await page.locator('.fl-log').evaluate((log) => { log.querySelector('summary').click(); return log.innerText; });
+    assert.ok(atOnce.includes('set pass ••••••'), 'an opened log can be read the moment it opens');
     assert.ok(board.node.received.includes(`set pass ${WIFI_PASSWORD}`) && board.node.received.includes(`set key ${SIGNING_KEY}`));
     for (const secret of [WIFI_PASSWORD, SIGNING_KEY]) {
       assert.ok(!shown.includes(secret), 'not on the page');
