@@ -44,7 +44,8 @@ export interface HeatModel {
   metrics?: Record<string, unknown>;
 }
 
-interface Tensor { c: number; h: number; w: number; d: Float32Array }
+/** Intermediate values are kept in float64, like the numpy reference, so the two agree to rounding. */
+interface Tensor { c: number; h: number; w: number; d: Float64Array }
 
 /** People in thermal pixels; confidence is the heatmap value at the peak. */
 export interface HeatDetection { x: number; y: number; confidence: number }
@@ -96,56 +97,67 @@ export function isHeatModel(v: unknown): v is HeatModel {
   return !!hm && !!off && hm.join() === '1,12,16' && off.join() === '2,12,16';
 }
 
+/**
+ * One convolution, weight by weight: for each (output, input, ky, kx) the
+ * rows and columns that tap stays inside the frame are worked out once, so
+ * the innermost loop is a plain multiply-add over a row with no bounds
+ * checks -- several times faster on V8 than testing every pixel, and the
+ * edge runs this for every sensor every second. Zero padding is the taps
+ * that are skipped.
+ */
 function conv(x: Tensor, L: ConvLayer): Tensor {
   const { k, stride: s } = L;
   const pad = (k - 1) / 2;
   const ho = Math.floor((x.h + 2 * pad - k) / s) + 1;
   const wo = Math.floor((x.w + 2 * pad - k) / s) + 1;
-  const out = new Float32Array(L.out * ho * wo);
+  const plane = ho * wo;
+  const out = new Float64Array(L.out * plane);
   const xd = x.d, w = L.w;
   for (let o = 0; o < L.out; o++) {
-    const bias = L.b[o] ?? 0;
-    for (let y = 0; y < ho; y++) {
-      for (let xx = 0; xx < wo; xx++) {
-        let acc = bias;
-        for (let c = 0; c < L.in; c++) {
-          const wBase = ((o * L.in + c) * k) * k;
-          const xBase = c * x.h * x.w;
-          for (let ky = 0; ky < k; ky++) {
-            const iy = y * s + ky - pad;
-            if (iy < 0 || iy >= x.h) continue;
-            for (let kx = 0; kx < k; kx++) {
-              const ix = xx * s + kx - pad;
-              if (ix < 0 || ix >= x.w) continue;
-              acc += (w[wBase + ky * k + kx] ?? 0) * (xd[xBase + iy * x.w + ix] ?? 0);
-            }
+    const oBase = o * plane;
+    out.fill(L.b[o] ?? 0, oBase, oBase + plane);
+    for (let c = 0; c < L.in; c++) {
+      const cBase = c * x.h * x.w;
+      for (let ky = 0; ky < k; ky++) {
+        const y0 = Math.max(0, Math.ceil((pad - ky) / s));
+        const y1 = Math.min(ho - 1, Math.floor((x.h - 1 + pad - ky) / s));
+        for (let kx = 0; kx < k; kx++) {
+          const wv = w[((o * L.in + c) * k + ky) * k + kx] ?? 0;
+          if (wv === 0) continue;
+          const x0 = Math.max(0, Math.ceil((pad - kx) / s));
+          const x1 = Math.min(wo - 1, Math.floor((x.w - 1 + pad - kx) / s));
+          for (let y = y0; y <= y1; y++) {
+            const inRow = cBase + (y * s + ky - pad) * x.w + kx - pad;
+            const outRow = oBase + y * wo;
+            // Indices are in range by construction of y0..y1 and x0..x1; `!` avoids a per-pixel check.
+            for (let xx = x0; xx <= x1; xx++) out[outRow + xx] = out[outRow + xx]! + wv * xd[inRow + xx * s]!;
           }
         }
-        out[(o * ho + y) * wo + xx] = L.relu && acc < 0 ? 0 : acc;
       }
     }
   }
+  if (L.relu) for (let i = 0; i < out.length; i++) if (out[i]! < 0) out[i] = 0;
   return { c: L.out, h: ho, w: wo, d: out };
 }
 
 /** Heatmap logits (12 x 16) and offsets (2 x 12 x 16) for one (3 x 24 x 32) input. */
-export function heatForward(model: HeatModel, features: Float32Array): { heatmap: Float32Array; offset: Float32Array } {
+export function heatForward(model: HeatModel, features: Float32Array): { heatmap: Float64Array; offset: Float64Array } {
   if (features.length !== 3 * 24 * 32) throw new Error('heat model input must be 3 x 24 x 32');
-  const t = new Map<string, Tensor>([['x', { c: 3, h: 24, w: 32, d: features }]]);
+  const t = new Map<string, Tensor>([['x', { c: 3, h: 24, w: 32, d: Float64Array.from(features) }]]);
   for (const L of model.layers) {
     if (L.op === 'conv') {
       t.set(L.output, conv(t.get(L.input) as Tensor, L));
     } else if (L.op === 'up2') {
       const x = t.get(L.input) as Tensor;
       const h = x.h * 2, w = x.w * 2;
-      const d = new Float32Array(x.c * h * w);
+      const d = new Float64Array(x.c * h * w);
       for (let c = 0; c < x.c; c++) {
         for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++) d[(c * h + y) * w + xx] = x.d[(c * x.h + (y >> 1)) * x.w + (xx >> 1)] ?? 0;
       }
       t.set(L.output, { c: x.c, h, w, d });
     } else {
       const a = t.get(L.inputs[0]) as Tensor, b = t.get(L.inputs[1]) as Tensor;
-      const d = new Float32Array(a.d.length);
+      const d = new Float64Array(a.d.length);
       for (let i = 0; i < d.length; i++) d[i] = (a.d[i] ?? 0) + (b.d[i] ?? 0);
       t.set(L.output, { ...a, d });
     }
@@ -157,7 +169,7 @@ export function heatForward(model: HeatModel, features: Float32Array): { heatmap
  * Local maxima of the heatmap above `threshold`, as people in thermal pixels.
  * Ties go to raster order (as edgedetect.ts splits blobs), so a flat top is one person.
  */
-export function heatDecode(heatmap: Float32Array, offset: Float32Array, threshold: number, h = 12, w = 16, stride = 2): HeatDetection[] {
+export function heatDecode(heatmap: ArrayLike<number>, offset: ArrayLike<number>, threshold: number, h = 12, w = 16, stride = 2): HeatDetection[] {
   const p = new Float64Array(h * w);
   for (let i = 0; i < h * w; i++) p[i] = 1 / (1 + Math.exp(-(heatmap[i] ?? 0)));
   const out: HeatDetection[] = [];
