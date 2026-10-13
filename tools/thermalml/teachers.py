@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
                     json.dump({'boxes': boxes}, f, separators=(',', ':'))
                 os.replace(partial + '.tmp', partial)
                 done = i + len(chunk)
-                print(f'{a.model} {sdir} {day}: {done}/{len(files)} new photos, {done / (time.time() - t0):.2f}/s', file=sys.stderr, flush=True)
+                print(f'[{time.strftime("%H:%M:%S")}] {a.model} {sdir} {day}: {done}/{len(files)} new photos, {done / (time.time() - t0):.2f}/s', file=sys.stderr, flush=True)
                 last = time.time()
         with open(dest + '.tmp', 'w') as f:
             json.dump({'model': meta, 'day': day, 'boxes': boxes}, f, separators=(',', ':'))

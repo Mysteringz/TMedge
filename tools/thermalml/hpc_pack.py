@@ -170,7 +170,14 @@ def full_zip(out: str) -> str:
               f'Upload thermalml-full.zip ({size / 1e6:.1f} MB) as a new draft and set:',
               '  entrypoint  hpc_job.py', '  args        --stage full', '  partition   debug',
               '  CPUs 56 (the debug partition allows 60)  memory 32 GB  GPUs 0  time 1-00:00:00   (GPUs 1 and time 08:00:00 once iw-g2 has been restarted)', '',
-              'Run it. It resumes where it stopped if run again. Paste the end of its log back to Claude.']
+              'Run it. It resumes where it stopped if run again. Paste the end of its log back to Claude.', '',
+              'On a plain Linux machine with a GPU (no SLURM; AMD/ROCm or NVIDIA), e.g. a team member\'s PC:',
+              '  mkdir -p ~/thermalml/job && cd ~/thermalml/job && unzip -o /path/to/thermalml-full.zip',
+              "  read -rs -p 'Download key: ' K && (umask 077; printf %s \"$K\" > ~/thermalml/download.key) && unset K && echo && echo saved",
+              '  tmux new -s thermalml          # so closing the terminal does not stop it (Ctrl-b d to leave it running)',
+              '  python3 -u hpc_job.py --stage full 2>&1 | tee -a ~/thermalml/full.log',
+              'It installs the ROCm build of PyTorch by itself on an AMD machine. Check progress any time with:',
+              '  tail -n 20 ~/thermalml/full.log']
     with open(os.path.join(out, 'README.txt'), 'w') as f:
         f.write('\n'.join(readme) + '\n')
     print('\n'.join(readme))

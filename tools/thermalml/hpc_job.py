@@ -100,6 +100,7 @@ def stage_check() -> None:
     print(f'home disk: {free / 1e9:.1f} GB free of {total / 1e9:.1f} GB')
     print('gpus:', run(['bash', '-c', 'nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader 2>&1']))
     print('  (NVML errors mean the GPU driver is broken until the machine is restarted; the job then runs on CPU)')
+    print('rocm:', run(['bash', '-c', 'cat /opt/rocm/.info/version 2>/dev/null || echo none; rocminfo 2>/dev/null | grep -m1 -o "gfx[0-9a-f]*" || true']))
     print('slurm limits:', run(['bash', '-c', 'scontrol show config | grep -i -E "MaxJobTime|scron" ; scontrol show partition debug | grep -i -E "MaxTime|State"']))
     print('scrontab:', run(['bash', '-c', 'scrontab -l 2>&1 | head -3']))
     for name in ('numpy', 'torch', 'torchvision'):
@@ -152,6 +153,35 @@ def stage_stage() -> None:
 
 # --- environment: make sure numpy + torch exist, else install and re-run ----
 
+def rocm_indexes(version: str | None) -> list[str]:
+    """PyTorch wheel indexes to try on an AMD/ROCm machine, newest that matches its ROCm first.
+
+    PyPI's torch is the CUDA build. PyTorch publishes ROCm builds per ROCm
+    release (download.pytorch.org/whl/rocmX.Y); the wheels carry their own
+    runtime, so the closest release at or below the system's is tried first.
+    """
+    m = __import__('re').match(r'(\d+)\.(\d+)', version or '')
+    major, minor = (int(m.group(1)), int(m.group(2))) if m else (6, 4)
+    tags = [f'rocm{major}.{n}' for n in range(minor, -1, -1)]
+    if major >= 7:
+        tags += ['rocm6.4', 'rocm6.3', 'rocm6.2']
+    return [f'https://download.pytorch.org/whl/{t}' for t in tags]
+
+
+def torch_indexes() -> list[str] | None:
+    """Where to get PyTorch here: THERMALML_TORCH_INDEX, the ROCm builds on an AMD machine, else PyPI (None)."""
+    if os.environ.get('THERMALML_TORCH_INDEX'):
+        return [os.environ['THERMALML_TORCH_INDEX']]
+    version = None
+    for f in ('/opt/rocm/.info/version', '/opt/rocm/.info/version-dev'):
+        if os.path.exists(f):
+            version = open(f).read().strip()
+            break
+    if version is None and not shutil.which('rocminfo'):
+        return None
+    return rocm_indexes(version)
+
+
 def ensure_pip(py: str) -> None:
     """pip inside the venv, bootstrapped from PyPA if the venv was made without it (or a run died half-way)."""
     if subprocess.run([py, '-m', 'pip', '--version'], capture_output=True).returncode == 0:
@@ -188,7 +218,17 @@ def ensure_torch() -> None:
             shutil.rmtree(venv, ignore_errors=True)
             subprocess.run([sys.executable, '-m', 'venv', '--without-pip', venv], check=True)
     ensure_pip(py)
-    subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'numpy', 'torch', 'torchvision'], check=True)
+    indexes = torch_indexes()
+    if indexes is None:
+        subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'numpy', 'torch', 'torchvision'], check=True)
+    else:
+        subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'numpy'], check=True)
+        for index in indexes:
+            log(f'installing PyTorch for ROCm from {index}')
+            if subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'torch', 'torchvision', '--index-url', index]).returncode == 0:
+                break
+        else:
+            raise SystemExit('no PyTorch ROCm build installed; set THERMALML_TORCH_INDEX to a wheel index from pytorch.org')
     if STAGE == 'full':
         # Ultralytics pulls in opencv-python, whose GUI build needs libGL that a
         # server may not have; the headless build is the same library without it.

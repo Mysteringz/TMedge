@@ -315,6 +315,17 @@ class TrainingTargets(unittest.TestCase):
         self.assertEqual(np.argwhere(y2[0] == 1.0).tolist(), [[12, 20]])  # now 4 px right
 
 
+class Cluster(unittest.TestCase):
+    """The training job finds the right PyTorch on whatever machine runs it."""
+
+    def test_an_amd_machine_gets_the_rocm_builds_closest_to_its_rocm(self) -> None:
+        from tools.thermalml.hpc_job import rocm_indexes
+        self.assertEqual(rocm_indexes('6.4.1-120')[:2], ['https://download.pytorch.org/whl/rocm6.4', 'https://download.pytorch.org/whl/rocm6.3'])
+        self.assertEqual(rocm_indexes('7.1.0')[0], 'https://download.pytorch.org/whl/rocm7.1')
+        self.assertIn('https://download.pytorch.org/whl/rocm6.4', rocm_indexes('7.0.2'))
+        self.assertTrue(rocm_indexes(None))     # rocminfo present but no version file: still ROCm builds
+
+
 class Scoring(unittest.TestCase):
     """The scores everything else is judged by."""
 
