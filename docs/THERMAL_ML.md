@@ -166,6 +166,22 @@ ensemble of yolo11s, yolo26s and Faster R-CNN (F1 0.841).
   models never agreed on one of their 618 "people". Too-dark photos are
   unknown, not empty.
 
+## What the teacher cannot see is unknown (found 2026-10-13)
+
+A pilot model, and today's edge detector, both "invented" people on frames
+the teacher called empty on 7 Oct (0.49 and 0.68 per empty frame). Mapped
+back into a 15:30 photo, the three hottest spots were:
+
+- a real person, seated at the photo's bottom edge and only partly in
+  view. No RGB detector found them, and both thermal detectors did. This is
+  a teacher miss, not a detector error.
+- two warm electronics on the desk. These are real false people, which the
+  model must learn to ignore. 7 Oct is a training day for that reason too.
+
+So the known region stops 60 photo px short of the photo's edge: 305 of 768
+thermal px instead of 503. Count error on 7 Oct fell from 0.68 to 0.12 for
+the edge detector, and from 0.51 to 0.06 for the pilot.
+
 ## One camera-to-thermal fit per period (checked 2026-10-13)
 
 | Period | Error | Frames explained | Other orientation |
@@ -197,10 +213,13 @@ and stops labelling a day if either camera has moved.
 Never by random frames. Frames a second apart are nearly the same picture,
 so a random split scores near-copies of what the model trained on.
 
-- **First thermal model:** P'Ing's 70/30, done by whole days on the rig's
-  October recordings, counting frames with a ready background.
-  - Train on 6, 7 and 10 Oct: 100,643 frames, 74%.
-  - Validate on 9 and 11 Oct: 35,406 frames, 26%.
+- **First thermal model:** whole days.
+  - Train on 6, 7 and 11 Oct. **Validate on 10 Oct.**
+  - The first choice (train on 6, 7, 10; validate on 9, 11 = 74/26 by frames)
+    left almost nobody to validate on. 9 Oct's only lit photos fall in the
+    edge background's first hour, so it has 0 usable frames, and 11 Oct has
+    about 26 people.
+  - Validating on 10 Oct is closer to P'Ing's 70/30 *by people*, about 65/35.
   - Frames within 30 minutes of a day boundary are dropped.
   - Validation picks the epoch and the threshold, and nothing else.
 - **Final check:** the 400 hand-labelled September frames, at milestones only.

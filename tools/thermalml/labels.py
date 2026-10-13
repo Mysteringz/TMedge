@@ -45,10 +45,14 @@ from .shards import sensor_dir
 SURE = 0.5               # teacher confidence for a person to be a target, not set aside
 EDGE_PX = 30             # a box centre this close to the photo's edge is a person cut off
 MIN_BRIGHTNESS = 105.0   # mean grey of the darkest hand-labelled photo: the teacher's tested range
+# The teacher misses people the photo's edge cuts through: on 7 Oct a person
+# seated at the bottom edge was found by both thermal detectors and by no RGB
+# detector, so a band this wide inside the photo's border is unknown, not empty.
+FOOTPRINT_MARGIN_PX = 60
 
 
-def footprint(m: dict) -> np.ndarray:
-    """(24, 32) bool: thermal pixels whose centre maps back inside the photo."""
+def footprint(m: dict, margin: float = FOOTPRINT_MARGIN_PX) -> np.ndarray:
+    """(24, 32) bool: thermal pixels whose centre maps back inside the photo, at least `margin` px from its edge."""
     M = np.asarray(m['M'])
     A, t = M[:, :2], M[:, 2]
     inv = np.linalg.inv(A)
@@ -58,7 +62,7 @@ def footprint(m: dict) -> np.ndarray:
             px, py = inv @ (np.array([x + 0.5, y + 0.5]) - t)
             if m['flipX']:
                 px = RGB_W - px
-            out[y, x] = 0 <= px <= RGB_W and 0 <= py <= RGB_H
+            out[y, x] = margin <= px <= RGB_W - margin and margin <= py <= RGB_H - margin
     return out
 
 
