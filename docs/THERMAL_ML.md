@@ -138,6 +138,27 @@ These settings were fixed before any fine-tuned model was trained:
 - It recovered on its own (mAP50 0.17 by epoch 10). The recipe was left
   unchanged.
 
+## The rig moved in October: one mapping per day
+
+| Fit | Error | Frames | Rotation | Scale (thermal px per photo px) |
+|---|---|---|---|---|
+| September | 1.20 px | 1,072 | −6.6° | 0.0355 |
+| October (one fit) | 1.30 px | 188 | −8.1° | 0.0405 |
+
+- Within October, 6 Oct fitted alone (1.08 px, 98 of 99 frames) and 10 Oct
+  fitted alone (1.53 px, 83 of 105) put the same photo point **2.8 thermal px
+  apart on average, up to 5.6**.
+- The configured pose (280 cm, mirrored) never changed, so the movement went
+  unrecorded.
+- A single October mapping would move every label by about 1.3–1.6 px, close
+  to the 2 px a person is matched within.
+
+So:
+- Labels use one fit per day: `mapping --name <day> --out data/ml/mapping/days`.
+- A day that cannot be fitted is left unlabelled.
+- The nightly loop refits each day and reports the change from the day
+  before.
+
 ## Splitting the thermal model's data (decided 2026-10-13)
 
 Never by random frames. Frames a second apart are nearly the same picture,
