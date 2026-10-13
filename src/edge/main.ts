@@ -12,7 +12,7 @@ import { closePostgres, openPostgres } from '../infrastructure/postgres/data-sou
 import { initializeFileLocationPersistence } from '../infrastructure/location-config/file-location-storage.js';
 import { PostgresRegistryMutationCoordinator } from '../infrastructure/location-config/postgres-registry-mutation-coordinator.js';
 import { bootstrapPostgresLegacyLocations } from '../infrastructure/postgres/location-storage-bootstrap.js';
-import { PostgresLocationDraftRepository, PostgresPublishedLocationRepository } from '../infrastructure/postgres/location-configuration-repositories.js';
+import { PostgresLocationAssetMetadataRepository, PostgresLocationAssetStore, PostgresLocationDraftRepository, PostgresPublishedLocationRepository } from '../infrastructure/postgres/location-configuration-repositories.js';
 import { PostgresLocationRegistrySnapshotRepository } from '../infrastructure/postgres/location-registry-snapshot-repository.js';
 import type { LocationRegistrySnapshot, RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import type { DataSource } from 'typeorm';
@@ -93,6 +93,7 @@ async function loadConfiguration(): Promise<{
         locationPublication: {
           siteSeed: filePersistence.siteSeed, drafts: filePersistence.drafts,
           published: filePersistence.published, snapshots: filePersistence.snapshots,
+          assets: filePersistence.assets, assetMetadata: filePersistence.assetMetadata,
         },
         closePersistence: async () => filePersistence?.close() };
     }
@@ -111,13 +112,15 @@ async function loadConfiguration(): Promise<{
     const published = new PostgresPublishedLocationRepository(source, new Set(seedRegistry.floors.map((floor) => floor.id)), mutationCoordinator);
     const snapshots = new PostgresLocationRegistrySnapshotRepository(site, registryRepository, published);
     const drafts = new PostgresLocationDraftRepository(source);
+    const assets = new PostgresLocationAssetStore(source, cfg.dataDir);
+    const assetMetadata = new PostgresLocationAssetMetadataRepository(source);
     const initialSnapshot = await mutationCoordinator.withMutationLock(() => snapshots.readSnapshot());
     const active = activeDocuments(initialSnapshot);
     const registry = buildRegistryFromLocationDocuments(site, nodesConfigFor(initialSnapshot), active.documents, active.legacySpatialByLocation);
     const provisioningRepository = new PostgresProvisioningRepository(source);
     return { cfg, registry, source, provisioningRepository,
       registryMutationCoordinator: mutationCoordinator,
-      locationPublication: { siteSeed: site, drafts, published, snapshots },
+      locationPublication: { siteSeed: site, drafts, published, snapshots, assets, assetMetadata },
       closePersistence: () => closePostgres(source!) };
   } catch (error) {
     if (filePersistence) filePersistence.close();

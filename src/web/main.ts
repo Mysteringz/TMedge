@@ -19,6 +19,7 @@ import { openStudentPostgresStorage } from '../infrastructure/web/student-postgr
 import { StudentUsageActivity } from '../modules/student-auth/application/student-usage-activity.js';
 import { createStudentUsageRouter } from '../modules/student-auth/routes/student-usage-router.js';
 import { SnapshotPublishers } from './publishers.js';
+import { FilePublishedModelStore } from './published-model-store.js';
 import { GoogleError, googleFromEnv, GoogleLogin } from './google.js';
 import { turnstileCheck, turnstileFromEnv, type HumanCheck } from './auth.js';
 import { safeNext } from './navigation.js';
@@ -39,6 +40,7 @@ export interface WebConfig {
   publishers?: SnapshotPublishers;
   sessionSecret: Buffer;
   usersPath: string;
+  publishedModelsDir?: string;
   allowedDomains: string[];
   signupOpen: boolean;
   cookieSecure: boolean;
@@ -86,6 +88,7 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
     pushToken, publishers,
     sessionSecret: Buffer.from(secret),
     usersPath,
+    publishedModelsDir: join(env.DATA_DIR || dirname(usersPath), 'published-models'),
     allowedDomains: (env.ALLOWED_EMAIL_DOMAINS ?? 'hku.hk,connect.hku.hk').split(',').map((domain) => domain.trim().toLowerCase()).filter(Boolean),
     signupOpen: env.SIGNUP_OPEN === '1',
     cookieSecure: env.COOKIE_SECURE === '1',
@@ -144,6 +147,8 @@ export function createWebApp(cfg: WebConfig, options: {
   const googleEnabled = cfg.studentPersistenceMode !== 'postgres' && !!cfg.google;
   const google = googleEnabled && cfg.google ? new GoogleLogin(cfg.google, cfg.sessionSecret) : null;
   const store = new SnapshotStore(cfg.staleMs);
+  // Keep model bytes beside persistent web account data, outside public/static assets.
+  const modelStore = new FilePublishedModelStore(cfg.publishedModelsDir ?? join(dirname(cfg.usersPath), 'published-models'));
   const noStore = (res: Response) => res.set('Cache-Control', 'no-store').vary('Cookie').vary('Authorization');
   // Counts of how the site is used, for module 05 of the algo console. Always
   // on: it is the only usage record there is when accounts live in a file.
@@ -234,7 +239,7 @@ export function createWebApp(cfg: WebConfig, options: {
   app.get('/', (req, res) => redirectBySession(req, res, sessions, noStore));
   app.get(['/login', '/login/', '/signup', '/signup/'], (req, res) => sendAuthPage(req, res, sessions, cfg.signupOpen, noStore, appPage));
   app.use(createStudentAuthRouter(authDependencies));
-  app.use(createOccupancyRouter({ store, pushToken: cfg.pushToken, publishers: cfg.publishers, requireStudent, usage, onSnapshot: () => sockets.broadcast() }));
+  app.use(createOccupancyRouter({ store, models: modelStore, pushToken: cfg.pushToken, publishers: cfg.publishers, requireStudent, usage, onSnapshot: () => sockets.broadcast() }));
   app.use(createStudentUsageRouter({ requireStudent, usage }));
   // How many accounts there are changes a few times a day; the report is
   // asked for every few seconds while someone has the Analytics page open.

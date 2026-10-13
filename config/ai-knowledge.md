@@ -24,10 +24,14 @@ Sensors use UDP, a TMWAccess Wi-Fi gateway, or secure WebSocket; all paths
 share checks. TMflash provisions over USB in a Mac app or module 07; saved
 settings and boot counters survive.
 
-- Location storage: see docs/location-configuration-storage.md. Stop edge
-  before `db:registry:import --apply`; restart afterward. The CLI cannot
-  check service state. Public v2 snapshots add table shapes and optional
-  model transforms; v1 remains supported. Sensor poses and 2D plans are private.
+- Location management is Admin/Operator only; drafts and previews are private.
+  Public uploaded GLBs transfer to every configured web tier before publish.
+  Console models stay edge-side and plans never go to students. Students can
+  read a GLB only while a current public snapshot references it. See
+  docs/location-configuration-storage.md. Stop edge before
+  `db:registry:import --apply`; restart afterward; the CLI cannot check service
+  state. Public v2 snapshots add table shapes and optional model transforms;
+  v1 remains supported. Sensor poses and plans stay private.
 
 ## How a count is made
 
@@ -227,16 +231,11 @@ can move its status (to do, in progress, done) whatever their role.
 - One server runs the edge and the student web service as separate
   processes. Occupancy history, recordings and the workspace files live in a
   data directory that survives deployments.
-- Deployment is only through the pipeline: a pull request with passing
-  checks, an artifact built by CI, an approval by the owner, then an
-  automatic health check with rollback. Nobody copies files onto the server.
-- A change only to the root README runs brief documentation checks and does
-  not build or deploy the runtime. A daily GitHub task refreshes its generated
-  directory tree only when tracked project paths change, using a pull request
-  and the required checks. Written descriptions are maintained by people.
-  Code and runtime configuration changes still run the full pipeline.
-  Later changes only to the root README do not invalidate an already checked
-  release; every other Git tree entry must still match before deployment.
+- Deployment requires a passing pull request, a CI artifact, owner approval
+  and a health check with rollback. Nobody copies files to the server. A
+  README-only change runs documentation checks; the scheduled tree refresh
+  uses a pull request. Code/config changes run the full pipeline, and every
+  non-README file must still match the checked release before deployment.
 - Firmware and the edge share a wire format. A change to it must be made in
   both repositories and proved by "npm run crosscheck".
 - Training data (thermal and camera frame pairs from the calibration rig) is

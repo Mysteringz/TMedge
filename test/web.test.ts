@@ -3,6 +3,7 @@
  * when data goes stale.
  */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -23,19 +24,148 @@ import { makerspace } from './fixtures.js';
 const TOKEN = 'edge-token-for-tests-0123456789';
 
 test('web: publisher tokens cannot impersonate another edge or publish an unauthorized floor', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'publishers-'));
+  const generatedForA = 'location_edge-a_00000000-0000-4000-8000-000000000001';
+  const generatedAssetId = '00000000-0000-4000-8000-000000000010';
+  const bytes = makeGlb({ asset: { version: '2.0' }, buffers: [] });
+  const digest = createHash('sha256').update(bytes).digest('hex');
   const web = createWebApp({ port: 0, host: '127.0.0.1', pushToken: TOKEN,
-    publishers: new SnapshotPublishers({ version: 1, edges: { 'edge-a': { token: '11'.repeat(32), floors: ['iw-maker-a'] }, 'edge-b': { token: '22'.repeat(32), floors: [] } } }),
-    sessionSecret: Buffer.alloc(40, 1), usersPath: join(mkdtempSync(join(tmpdir(), 'publishers-')), 'users.json'),
+    publishers: new SnapshotPublishers({ version: 1, edges: {
+      'edge-a': { token: '11'.repeat(32), floors: ['iw-maker-a'] },
+      'edge-b': { token: '22'.repeat(32), floors: ['location_library', generatedForA] },
+    } }),
+    sessionSecret: Buffer.alloc(40, 1), usersPath: join(directory, 'users.json'),
     allowedDomains: [], signupOpen: false, cookieSecure: false, trustProxy: false, staleMs: 30000 });
   await new Promise<void>(r => web.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
   const push = (body: OccupancySnapshot, token: string) => fetch(`${base}/api/edge/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+  const upload = (locationId: string, token: string, edgeId = 'edge-a') => fetch(`${base}/api/edge/location-assets/${encodeURIComponent(locationId)}/${generatedAssetId}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'x-tm-edge-id': edgeId, 'x-tm-sha256': digest, 'content-type': 'model/gltf-binary' }, body: bytes,
+  });
   try {
     assert.equal((await push(snapshot('edge-a'), '11'.repeat(32))).status, 200);
     assert.equal((await push(snapshot('edge-b'), '11'.repeat(32))).status, 401);
     assert.equal((await push(snapshot('edge-b'), '22'.repeat(32))).status, 403);
     assert.equal((await push(snapshot('edge-a'), TOKEN)).status, 401);
-  } finally { web.server.closeAllConnections(); await new Promise<void>(r => web.server.close(() => r())); }
+    assert.equal((await upload('location_edge-a_00000000-0000-4000-8000-000000000002', '11'.repeat(32))).status, 201,
+      'a generated floor is accepted for its authenticated edge');
+    assert.equal((await upload('location_edge-a_00000000-0000-4000-8000-000000000002', '22'.repeat(32), 'edge-b')).status, 403,
+      'another edge cannot upload into the generated namespace');
+    assert.equal((await upload(generatedForA, '11'.repeat(32))).status, 403,
+      'an explicit owner globally blocks the matching namespace exception');
+    assert.equal((await upload(generatedForA, '22'.repeat(32), 'edge-b')).status, 200,
+      'the explicit owner can upload; the globally immutable asset is already present from the prior accepted transfer');
+    assert.equal((await upload('location_edge-a_not-a-uuid', '11'.repeat(32))).status, 403,
+      'malformed dynamic IDs are denied');
+    assert.equal((await upload('location_edge-a_00000000-0000-4000-8000-000000000003', TOKEN)).status, 401,
+      'key-file mode does not fall back to the shared token');
+  } finally {
+    web.server.closeAllConnections();
+    await web.dispose();
+    await new Promise<void>(r => web.server.close(() => r()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('web: explicit floor ownership takes precedence over generated edge namespaces', () => {
+  const generatedForA = 'location_edge-a_00000000-0000-4000-8000-000000000001';
+  const publishers = new SnapshotPublishers({ version: 1, edges: {
+    'edge-a': { token: '11'.repeat(32), floors: [] },
+    'edge-b': { token: '22'.repeat(32), floors: ['location_library', generatedForA] },
+  } });
+  assert.equal(publishers.authorizesFloor('edge-a', generatedForA), false, 'explicit ownership blocks the matching implicit namespace');
+  assert.equal(publishers.authorizesFloor('edge-b', generatedForA), true, 'the explicit owner remains authorized');
+  assert.equal(publishers.authorizesFloor('edge-a', 'location_edge-a_00000000-0000-4000-8000-000000000002'), true);
+  assert.equal(publishers.authorizesFloor('edge-b', 'location_edge-a_00000000-0000-4000-8000-000000000002'), false);
+  assert.equal(publishers.authorizesFloor('edge-a', 'location_edge-a_extra_00000000-0000-4000-8000-000000000002'), false);
+  assert.equal(publishers.authorizesFloor('edge-a', 'location_edge-a_not-a-uuid'), false);
+  assert.equal(publishers.authorizesFloor('edge-b', 'location_library'), true);
+  assert.equal(publishers.authorizesFloor('edge-a', 'location_library'), false);
+  assert.equal(publishers.authenticate('edge-a', Buffer.from(TOKEN)), false, 'keyfile mode has no shared-token fallback');
+});
+
+test('web: uploaded models are immutable and student reads follow only the current winning snapshot', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'published-models-'));
+  const usersPath = join(directory, 'users.json');
+  const modelsPath = join(directory, 'published-models');
+  const cfg = {
+    port: 0, host: '127.0.0.1', pushToken: TOKEN, sessionSecret: Buffer.from('s'.repeat(40)),
+    usersPath, publishedModelsDir: modelsPath,
+    allowedDomains: ['connect.hku.hk'], signupOpen: true, cookieSecure: false, trustProxy: false, staleMs: 30_000,
+  };
+  const bytes = makeGlb({ asset: { version: '2.0' }, buffers: [] });
+  const changedBytes = makeGlb({ asset: { version: '2.0', generator: 'other' }, buffers: [] });
+  const assetId = '00000000-0000-4000-8000-000000000091';
+  const legacyAssetId = '00000000-0000-4000-8000-000000000092';
+  let web = createWebApp(cfg);
+  await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  const cookie = await signup(base, 'model-reader@connect.hku.hk');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  try {
+    assert.equal((await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } })).status, 404);
+    const legacyUpload = await fetch(`${base}/api/edge/location-assets/location_library/${legacyAssetId}`, {
+      method: 'PUT', headers: {
+        authorization: `Bearer ${TOKEN}`, 'x-tm-edge-id': 'edge-a', 'x-tm-sha256': digest, 'content-type': 'model/gltf-binary',
+      }, body: bytes,
+    });
+    assert.equal(legacyUpload.status, 201, 'shared-token mode retains existing legacy floor-ID acceptance');
+    const upload = await fetch(`${base}/api/edge/location-assets/iw-maker-a/${assetId}`, {
+      method: 'PUT', headers: {
+        authorization: `Bearer ${TOKEN}`, 'x-tm-edge-id': 'edge-a', 'x-tm-sha256': digest, 'content-type': 'model/gltf-binary',
+      }, body: bytes,
+    });
+    assert.equal(upload.status, 201);
+    const retry = await fetch(`${base}/api/edge/location-assets/iw-maker-a/${assetId}`, {
+      method: 'PUT', headers: {
+        authorization: `Bearer ${TOKEN}`, 'x-tm-edge-id': 'edge-a', 'x-tm-sha256': digest, 'content-type': 'model/gltf-binary',
+      }, body: bytes,
+    });
+    assert.equal(retry.status, 200, 'same ID and bytes are idempotent');
+    const conflict = await fetch(`${base}/api/edge/location-assets/iw-maker-a/${assetId}`, {
+      method: 'PUT', headers: {
+        authorization: `Bearer ${TOKEN}`, 'x-tm-edge-id': 'edge-a',
+        'x-tm-sha256': createHash('sha256').update(changedBytes).digest('hex'), 'content-type': 'model/gltf-binary',
+      }, body: changedBytes,
+    });
+    assert.equal(conflict.status, 409, 'different bytes never overwrite an immutable ID');
+
+    const current = version2Snapshot();
+    current.floors[0]!.model!.assetId = assetId;
+    const pushed = await fetch(`${base}/api/edge/snapshot`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(current),
+    });
+    assert.equal(pushed.status, 200);
+    const visible = await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } });
+    assert.equal(visible.status, 200);
+    assert.equal(visible.headers.get('content-type'), 'model/gltf-binary');
+    assert.equal(visible.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(visible.headers.get('cache-control'), 'private, no-store');
+    assert.deepEqual(Buffer.from(await visible.arrayBuffer()), bytes);
+
+    const noModel = await fetch(`${base}/api/edge/snapshot`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(snapshot()),
+    });
+    assert.equal(noModel.status, 200);
+    assert.equal((await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } })).status, 404);
+  } finally {
+    web.server.closeAllConnections();
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
+  }
+
+  web = createWebApp({ ...cfg, signupOpen: false });
+  await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
+  const restarted = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  try {
+    assert.equal((await fetch(`${restarted}/api/models/${assetId}`, { headers: { cookie } })).status, 404,
+      'persistent bytes do not become readable until a current snapshot references them after restart');
+  } finally {
+    web.server.closeAllConnections();
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 async function start() {
@@ -723,3 +853,16 @@ test('with WEB_PORT unset or empty, the web tier listens on 8080, where the edge
   assert.equal(loadWebConfig({ ...env, WEB_PORT: '' }).port, 8080);
   assert.equal(loadWebConfig({ ...env, WEB_PORT: '9090' }).port, 9090);
 });
+
+function makeGlb(root: Record<string, unknown>): Buffer {
+  const json = Buffer.from(JSON.stringify(root), 'utf8');
+  const jsonLength = Math.ceil(json.byteLength / 4) * 4;
+  const output = Buffer.alloc(20 + jsonLength, 0x20);
+  output.writeUInt32LE(0x46546c67, 0);
+  output.writeUInt32LE(2, 4);
+  output.writeUInt32LE(output.byteLength, 8);
+  output.writeUInt32LE(jsonLength, 12);
+  output.writeUInt32LE(0x4e4f534a, 16);
+  json.copy(output, 20);
+  return output;
+}

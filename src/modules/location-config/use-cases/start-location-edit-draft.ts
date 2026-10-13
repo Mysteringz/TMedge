@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { exposePublishedLocationCandidate, parseLocationCandidate } from '../domain/location-candidate.js';
+import { parseLocationAssetProvenance } from '../domain/location-assets.js';
 import { LocationConflictError } from '../domain/location-records.js';
 import type { LocationDraftRepository, LocationRegistrySnapshotRepository, RegistryMutationCoordinator } from '../repositories/location-storage.js';
 
@@ -47,6 +48,7 @@ export class StartLocationEditDraftUseCase {
       updatedAt: createdAt,
       document: candidate.document,
       legacySpatial: candidate.legacySpatial,
+      assetProvenance: parseLocationAssetProvenance(base.assetProvenance, base.document),
     };
     return this.dependencies.drafts.createDraft(draft);
   }

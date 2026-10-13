@@ -3,6 +3,7 @@ import type { Registry } from '../../edge/registry.js';
 import { legacyFloorToBaseline } from '../location-config/legacy-location-mapper.js';
 import type { RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
 import { LocationStorageUnavailableError } from '../../modules/location-config/domain/location-records.js';
+import { legacyStaticModelProvenance } from '../../modules/location-config/domain/location-assets.js';
 import { readLocationRegistryRevision } from './location-registry-revision.js';
 
 /** Seeds editable revision-0 location documents without modifying DB registrations or placements. */
@@ -26,9 +27,10 @@ export async function bootstrapPostgresLegacyLocations(
         if (history.length > 0) throw new LocationStorageUnavailableError();
 
         const document = legacyFloorToBaseline(floor, registry.nodes.values());
+        const assetProvenance = legacyStaticModelProvenance(document);
         await manager.query(
-          `INSERT INTO public.location_published_revisions (location_id, revision, created_by, created_at, document)
-           VALUES ($1, 0, 'system-bootstrap', 0, $2::jsonb)`, [floor.id, JSON.stringify(document)],
+          `INSERT INTO public.location_published_revisions (location_id, revision, created_by, created_at, document, asset_provenance)
+           VALUES ($1, 0, 'system-bootstrap', 0, $2::jsonb, $3::jsonb)`, [floor.id, JSON.stringify(document), JSON.stringify(assetProvenance)],
         );
         await manager.query(
           'INSERT INTO public.location_active_revisions (location_id, revision) VALUES ($1, 0)', [floor.id],

@@ -3,6 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer as createHttpServer, type ServerResponse } from 'node:http';
 import { createServer, type AddressInfo } from 'node:net';
+import express from 'express';
 import dgram from 'node:dgram';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -42,14 +43,20 @@ import { bootstrapPostgresLegacyLocations } from '../src/infrastructure/postgres
 import type { OccupancyHistoryRecord } from '../src/modules/occupancy-history/repositories/occupancy-history-repository.js';
 import { createLocationId, parseLocationDocument } from '../src/modules/location-config/domain/location-document.js';
 import { LocationConflictError, LocationStorageUnavailableError, type LocationDraft } from '../src/modules/location-config/domain/location-records.js';
+import { principal } from '../src/modules/algo-admin/domain/permissions.js';
+import { createLocationRouter, type LocationRouterDependencies } from '../src/modules/location-config/routes/location-router.js';
+import { computeLocationCoverageSuggestions } from '../src/infrastructure/location-config/location-coverage.js';
 import { createEdgeApplication, createEdgeRuntime } from '../src/edge/composition-root.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { EdgeLocationPublicationRuntime } from '../src/edge/location-publication-runtime.js';
 import { buildRegistryFromLocationDocuments } from '../src/edge/registry.js';
 import { PostgresLocationRegistrySnapshotRepository } from '../src/infrastructure/postgres/location-registry-snapshot-repository.js';
 import { PublishLocationUseCase } from '../src/modules/location-config/use-cases/publish-location.js';
+import { CreateLocationDraftUseCase } from '../src/modules/location-config/use-cases/create-location-draft.js';
 import { StartLocationEditDraftUseCase } from '../src/modules/location-config/use-cases/start-location-edit-draft.js';
 import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
+import { UploadLocationAssetUseCase } from '../src/modules/location-config/use-cases/upload-location-asset.js';
+import { ReadLocationDraftAssetUseCase } from '../src/modules/location-config/use-cases/read-location-draft-asset.js';
 import { exposeLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
 import type { LocationRegistrySnapshot } from '../src/modules/location-config/repositories/location-storage.js';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
@@ -67,6 +74,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791590400000-AddRegistrationDetector.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791676800000-CreateLocationConfigurationStorage.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791763200000-PersistLocationSpatialProvenance.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791849600000-PersistLocationAssetProvenance.js'),
 ];
 
 function postgresStorageTestDocument(locationId: string, tableId: string, seatId: string, sensorUid?: string) {
@@ -85,6 +93,19 @@ function postgresStorageTestDocument(locationId: string, tableId: string, seatId
       owns: [tableId],
     }] : [],
   });
+}
+
+function postgresTestGlb(): Buffer {
+  const json = Buffer.from(JSON.stringify({ asset: { version: '2.0' }, buffers: [] }), 'utf8');
+  const paddedLength = Math.ceil(json.byteLength / 4) * 4;
+  const bytes = Buffer.alloc(20 + paddedLength, 0x20);
+  bytes.writeUInt32LE(0x46546c67, 0);
+  bytes.writeUInt32LE(2, 4);
+  bytes.writeUInt32LE(bytes.byteLength, 8);
+  bytes.writeUInt32LE(paddedLength, 12);
+  bytes.writeUInt32LE(0x4e4f534a, 16);
+  json.copy(bytes, 20);
+  return bytes;
 }
 
 function postgresBatchAssignmentDocument(locationId: string, sensorUids: readonly string[]) {
@@ -200,7 +221,7 @@ test('registration schema and provisioning repository enforce persistence invari
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 9, 'foundation, registration, build, rollout, command, occupancy, detector, location storage, and exact-base provenance migrations all run');
+    assert.equal(appliedMigrations, 10, 'foundation, registration, build, rollout, command, occupancy, detector, location storage, spatial provenance and asset provenance migrations all run');
     assert.equal((await migrator.query("SELECT to_regclass('public.location_published_revisions') AS table_name"))[0].table_name, 'location_published_revisions');
     await assertPostgresBuildLogBoundary(runtime);
     assert.equal(
@@ -819,7 +840,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
   try {
     await migrator.initialize();
     applied = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(applied, 9);
+    assert.equal(applied, 10);
     const runtimePrivileges = (await migrator.query(`
       SELECT
         (SELECT tableowner FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'registered_nodes') AS registered_nodes_owner,
@@ -1040,6 +1061,147 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     await assert.rejects(runtime.query(
       'DELETE FROM public.location_assets WHERE asset_id = $1', [asset.assetId],
     ), (error: { driverError?: { code?: string } }) => error.driverError?.code === '55000');
+
+    const managerAssetLocationId = createLocationId('pg-test', '00000000-0000-4000-8000-000000000099');
+    const managerAInitial = await new CreateLocationDraftUseCase({
+      edgeId: 'pg-test', drafts, published, snapshots: locationSnapshots, coordinator: mutationCoordinator,
+      now: () => 10, createUuid: () => '00000000-0000-4000-8000-000000000099',
+    }).execute({ creatorId: 'manager-a', name: 'Manager asset room', building: 'Test building', widthCm: 400, heightCm: 300 });
+    assert.equal(managerAInitial.draft.locationId, managerAssetLocationId);
+    let managerAssetClock = 11;
+    const managerAssetSave = () => new SaveLocationDraftUseCase({
+      drafts, published, assetMetadata, now: () => managerAssetClock++,
+    });
+    const managerAssetUpload = () => new UploadLocationAssetUseCase({
+      drafts, assets: assetStore, saveDraft: managerAssetSave(), now: () => managerAssetClock++,
+    });
+    const managerAInitialDocument = structuredClone(managerAInitial.draft.document);
+    managerAInitialDocument.zones = [{
+      id: 'PG-MANAGER-ASSET-ZONE', name: 'Manager asset zone', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]],
+    }];
+    const managerAGeometry = await managerAssetSave().execute({
+      creatorId: 'manager-a', draftId: managerAInitial.draft.draftId, expectedDraftRevision: 1,
+      document: managerAInitialDocument,
+    });
+    const managerPlanBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x22]);
+    const managerModelBytes = postgresTestGlb();
+    const managerPlan = await managerAssetUpload().execute({
+      creatorId: 'manager-a', draftId: managerAInitial.draft.draftId,
+      expectedDraftRevision: managerAGeometry.draft.draftRevision, purpose: 'floor-plan', mediaType: 'image/png', bytes: managerPlanBytes,
+    });
+    const managerModel = await managerAssetUpload().execute({
+      creatorId: 'manager-a', draftId: managerAInitial.draft.draftId,
+      expectedDraftRevision: managerPlan.outcome.draft.draftRevision, purpose: 'model', mediaType: 'model/gltf-binary', bytes: managerModelBytes,
+    });
+    const managerUnrelatedPrivate = await assetStore.put('manager-a', 'floor-plan', 'image/png', managerPlanBytes, managerAssetClock++);
+    const managerDistributorOwners: string[] = [];
+    const managerAssetDistributor = {
+      async acknowledge({ candidate }: { candidate: import('../src/modules/location-config/domain/location-records.js').PublishedLocationRevision }) {
+        const provenance = candidate.assetProvenance?.modelAssetId;
+        assert.ok(provenance && provenance.kind === 'upload');
+        assert.ok(candidate.document.modelAssetId);
+        const stored = await assetStore.read(provenance.ownerId, candidate.document.modelAssetId);
+        assert.ok(stored, 'public transfer resolves bytes through the original asset owner');
+        assert.deepEqual(stored.bytes, managerModelBytes);
+        managerDistributorOwners.push(provenance.ownerId);
+      },
+    };
+    const managerAssetRuntime = {
+      prepare: () => 'prepared', refresh: (prepared: string) => prepared,
+      activate: () => undefined, quarantine: () => undefined,
+    };
+    const managerPublisher = () => new PublishLocationUseCase({
+      drafts, published, snapshots: locationSnapshots, mutationCoordinator, runtime: managerAssetRuntime,
+      assetMetadata, modelDistributor: managerAssetDistributor, now: () => managerAssetClock++,
+    });
+    await managerPublisher().execute({
+      creatorId: 'manager-a', draftId: managerAInitial.draft.draftId,
+      expectedDraftRevision: managerModel.outcome.draft.draftRevision, expectedPublishedRevision: null,
+    });
+    const managerStartEdit = (creatorId: string, baseRevision: number, draftId: string) => new StartLocationEditDraftUseCase({
+      drafts, snapshots: locationSnapshots, mutationCoordinator, now: () => managerAssetClock++, createDraftId: () => draftId,
+    }).execute({ creatorId, locationId: managerAssetLocationId, expectedPublishedRevision: baseRevision });
+    const managerAssetReader = (sourceDrafts: PostgresLocationDraftRepository, sourcePublished: PostgresPublishedLocationRepository,
+      sourceMetadata: PostgresLocationAssetMetadataRepository, sourceAssets: PostgresLocationAssetStore) => new ReadLocationDraftAssetUseCase({
+      drafts: sourceDrafts, published: sourcePublished, metadata: sourceMetadata, assets: sourceAssets,
+    });
+    const assertManagerAssetPreviews = async (creatorId: string, draftId: string) => {
+      const reader = managerAssetReader(drafts, published, assetMetadata, assetStore);
+      const planPreview = await reader.execute({ creatorId, draftId, assetId: managerPlan.metadata.assetId });
+      const modelPreview = await reader.execute({ creatorId, draftId, assetId: managerModel.metadata.assetId });
+      assert.deepEqual(planPreview.bytes, managerPlanBytes);
+      assert.deepEqual(modelPreview.bytes, managerModelBytes);
+      await assert.rejects(reader.execute({ creatorId, draftId, assetId: managerUnrelatedPrivate.assetId }), /asset/i,
+        'another manager cannot preview an unrelated private upload from the base creator');
+    };
+
+    const managerBDraft = await managerStartEdit('manager-b', 1, '00000000-0000-4000-8000-000000000073');
+    assert.equal(managerBDraft.draft.assetProvenance?.planAssetId?.kind, 'upload');
+    assert.equal(managerBDraft.draft.assetProvenance?.planAssetId?.kind === 'upload'
+      ? managerBDraft.draft.assetProvenance.planAssetId.ownerId : undefined, 'manager-a');
+    assert.equal(managerBDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
+      ? managerBDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+    await assertManagerAssetPreviews('manager-b', managerBDraft.draft.draftId);
+    const managerBCandidate = exposeLocationCandidate(managerBDraft.draft.document, managerBDraft.draft.legacySpatial) as { name: string };
+    managerBCandidate.name = 'Edited by manager B';
+    const managerBSaved = await managerAssetSave().execute({
+      creatorId: 'manager-b', draftId: managerBDraft.draft.draftId, expectedDraftRevision: 1, document: managerBCandidate,
+    });
+    await managerPublisher().execute({
+      creatorId: 'manager-b', draftId: managerBDraft.draft.draftId,
+      expectedDraftRevision: managerBSaved.draft.draftRevision, expectedPublishedRevision: 1,
+    });
+
+    const managerCDraft = await managerStartEdit('manager-c', 2, '00000000-0000-4000-8000-000000000074');
+    assert.equal(managerCDraft.draft.assetProvenance?.planAssetId?.kind === 'upload'
+      ? managerCDraft.draft.assetProvenance.planAssetId.ownerId : undefined, 'manager-a');
+    assert.equal(managerCDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
+      ? managerCDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+    await assertManagerAssetPreviews('manager-c', managerCDraft.draft.draftId);
+    const managerCCandidate = exposeLocationCandidate(managerCDraft.draft.document, managerCDraft.draft.legacySpatial) as { name: string };
+    managerCCandidate.name = 'Edited by manager C';
+    const managerCSaved = await managerAssetSave().execute({
+      creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, expectedDraftRevision: 1, document: managerCCandidate,
+    });
+    await managerPublisher().execute({
+      creatorId: 'manager-c', draftId: managerCDraft.draft.draftId,
+      expectedDraftRevision: managerCSaved.draft.draftRevision, expectedPublishedRevision: 2,
+    });
+
+    const managerAssetHistory = await published.listHistory(managerAssetLocationId);
+    assert.deepEqual(managerAssetHistory.map((revision) => revision.revision), [1, 2, 3]);
+    for (const revision of managerAssetHistory) {
+      assert.equal(revision.assetProvenance?.planAssetId?.kind === 'upload'
+        ? revision.assetProvenance.planAssetId.ownerId : undefined, 'manager-a');
+      assert.equal(revision.assetProvenance?.modelAssetId?.kind === 'upload'
+        ? revision.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+    }
+    assert.deepEqual(managerDistributorOwners, ['manager-a', 'manager-a', 'manager-a']);
+    assert.equal(await assetStore.read('manager-b', managerModel.metadata.assetId), null);
+    assert.equal(await assetStore.read('manager-c', managerPlan.metadata.assetId), null);
+
+    const managerReopenedRuntime = await openPostgres(config.runtime);
+    try {
+      const managerReopenedCoordinator = new PostgresRegistryMutationCoordinator(managerReopenedRuntime);
+      const managerReopenedPublished = new PostgresPublishedLocationRepository(managerReopenedRuntime, seedIds, managerReopenedCoordinator);
+      const managerReopenedDrafts = new PostgresLocationDraftRepository(managerReopenedRuntime);
+      const managerReopenedAssets = new PostgresLocationAssetStore(managerReopenedRuntime, dataDirectory);
+      const managerReopenedMetadata = new PostgresLocationAssetMetadataRepository(managerReopenedRuntime);
+      const reader = managerAssetReader(managerReopenedDrafts, managerReopenedPublished, managerReopenedMetadata, managerReopenedAssets);
+      const reopenedPlan = await reader.execute({ creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: managerPlan.metadata.assetId });
+      const reopenedModel = await reader.execute({ creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: managerModel.metadata.assetId });
+      assert.deepEqual(reopenedPlan.bytes, managerPlanBytes);
+      assert.deepEqual(reopenedModel.bytes, managerModelBytes);
+      await assert.rejects(reader.execute({ creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: managerUnrelatedPrivate.assetId }), /asset/i);
+      const reopenedHistory = await managerReopenedPublished.listHistory(managerAssetLocationId);
+      assert.deepEqual(reopenedHistory.map((revision) => revision.revision), [1, 2, 3]);
+      for (const revision of reopenedHistory) {
+        assert.equal(revision.assetProvenance?.planAssetId?.kind === 'upload'
+          ? revision.assetProvenance.planAssetId.ownerId : undefined, 'manager-a');
+        assert.equal(revision.assetProvenance?.modelAssetId?.kind === 'upload'
+          ? revision.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+      }
+    } finally { await closePostgres(managerReopenedRuntime); }
 
     await mutationCoordinator.withMutationLock(() => nodeRepository.importNodes([{
       uid: registeredUids[1]!, label: 'Unplaced for location publication', floorId: null, pose: null,
@@ -1370,6 +1532,60 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     })), (error: { name?: string }) => error.name === 'UnknownRegistryCommitOutcomeError');
     assert.throws(() => quarantinedCoordinator.assertHealthy(), (error: { name?: string }) => error.name === 'RegistryMutationQuarantinedError');
     await assert.rejects(quarantinedCoordinator.withMutationLock(async () => undefined), (error: { name?: string }) => error.name === 'RegistryMutationQuarantinedError');
+
+    const apiApp = express();
+    apiApp.use('/api', createLocationRouter({
+      auth: {
+        principalOf: (request) => request.headers.cookie === 'tm_algo=pg-owner'
+          ? principal('pg-route-owner', 'operator')
+          : request.headers.cookie === 'tm_algo=pg-other'
+            ? principal('pg-route-other', 'operator') : null,
+      },
+      edgeId: 'pg-route-test', siteSeed: site, drafts, published, snapshots: locationSnapshots,
+      assets: assetStore, assetMetadata: new PostgresLocationAssetMetadataRepository(runtime), coordinator: mutationCoordinator,
+      runtime: {
+        prepare: () => ({}), refresh: (prepared: object) => prepared,
+        activate: () => undefined, quarantine: () => undefined,
+      } as unknown as LocationRouterDependencies['runtime'],
+      suggestCoverage: computeLocationCoverageSuggestions, now: () => 40,
+    }));
+    const apiServer = createHttpServer(apiApp);
+    await new Promise<void>((resolve) => apiServer.listen(0, '127.0.0.1', resolve));
+    const apiBase = `http://127.0.0.1:${(apiServer.address() as AddressInfo).port}`;
+    const apiOwnerHeaders = { cookie: 'tm_algo=pg-owner', origin: apiBase, 'x-tm-algo': '1', 'content-type': 'application/json' };
+    try {
+      const createdDraftResponse = await fetch(`${apiBase}/api/locations/drafts`, {
+        method: 'POST', headers: apiOwnerHeaders,
+        body: JSON.stringify({ name: 'PostgreSQL route location', building: 'Test building', widthCm: 400, heightCm: 300 }),
+      });
+      assert.equal(createdDraftResponse.status, 201);
+      const createdDraft = (await createdDraftResponse.json() as { data: { draftId: string; locationId: string; draftRevision: number } }).data;
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const uploadResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}/assets/floor-plan`, {
+        method: 'PUT', headers: { cookie: 'tm_algo=pg-owner', origin: apiBase, 'x-tm-algo': '1', 'content-type': 'image/png', 'if-match': String(createdDraft.draftRevision) },
+        body: png,
+      });
+      assert.equal(uploadResponse.status, 200);
+      const uploaded = (await uploadResponse.json() as { data: { assetId: string; draftRevision: number } }).data;
+      const foreignDraftResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}`, { headers: { cookie: 'tm_algo=pg-other' } });
+      assert.equal(foreignDraftResponse.status, 404, 'PostgreSQL route reads remain creator-private');
+      const previewResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}/assets/${uploaded.assetId}`, { headers: { cookie: 'tm_algo=pg-owner' } });
+      assert.equal(previewResponse.status, 200);
+      assert.deepEqual(Buffer.from(await previewResponse.arrayBuffer()), png, 'preview uses the PostgreSQL metadata plus durable owner-scoped bytes');
+      const publicationResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}/publications`, {
+        method: 'POST', headers: apiOwnerHeaders,
+        body: JSON.stringify({ expectedDraftRevision: uploaded.draftRevision, expectedPublishedRevision: null }),
+      });
+      assert.equal(publicationResponse.status, 200);
+      assert.equal((await published.getActive(createdDraft.locationId))?.activeRevision, 1,
+        'the HTTP publication route commits its draft through PostgreSQL and survives repository readback');
+      const persistedApiDraft = await drafts.getDraft('pg-route-owner', createdDraft.draftId);
+      assert.equal(persistedApiDraft?.assetProvenance?.planAssetId?.kind, 'upload');
+      assert.equal(persistedApiDraft?.assetProvenance?.planAssetId?.ownerId, 'pg-route-owner');
+    } finally {
+      apiServer.closeAllConnections();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
   } finally {
     if (approvalEdgeRuntime) await approvalEdgeRuntime.stop().catch(() => undefined);
     if (runtime.isInitialized) {

@@ -1,6 +1,6 @@
 export const ADMIN_ROLES = ['viewer', 'operator', 'engineer', 'admin'] as const;
 export type AdminRole = typeof ADMIN_ROLES[number];
-export const CAPABILITIES = ['algo.read', 'algo.write', 'training.read', 'training.write', 'firmware.read', 'firmware.write', 'nodes.write', 'nodes.admin', 'accounts.manage'] as const;
+export const CAPABILITIES = ['algo.read', 'algo.write', 'training.read', 'training.write', 'firmware.read', 'firmware.write', 'nodes.write', 'nodes.admin', 'accounts.manage', 'locations.manage'] as const;
 export type Capability = typeof CAPABILITIES[number];
 /**
  * What somebody works on. A label for the team to find and assign each other
@@ -20,6 +20,7 @@ export function principal(name: string, role: AdminRole, namedAccount = true): A
   const capabilities: Capability[] = ['algo.read', 'training.read', 'firmware.read'];
   if (role !== 'viewer') capabilities.push('algo.write', 'training.write', 'nodes.write');
   if (role === 'engineer' || role === 'admin') capabilities.push('firmware.write', 'nodes.admin');
+  if (role === 'operator' || role === 'admin') capabilities.push('locations.manage');
   if (role === 'admin' && namedAccount) capabilities.push('accounts.manage');
   return { name, role, namedAccount, capabilities };
 }

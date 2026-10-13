@@ -1,8 +1,9 @@
 import { type LocationSensorAssignment } from '../domain/location-document.js';
 import { revalidateLocationCandidate } from '../domain/location-candidate.js';
 import { LocationConflictError, LocationDraftNotFoundError, UnknownRegistryCommitOutcomeError, RegistryMutationQuarantinedError, type PublishedLocationRevision } from '../domain/location-records.js';
+import { resolveLocationAssetProvenance, sameResolvedLocationAssetProvenance } from './resolve-location-asset-provenance.js';
 import type {
-  LocationDraftRepository, LocationRegistrySnapshotRepository, LocationRegistryNodeSnapshot,
+  LocationAssetMetadataRepository, LocationDraftRepository, LocationRegistrySnapshotRepository, LocationRegistryNodeSnapshot,
   PreparedLocationRuntime, PublishedLocationRepository, PublishedModelDistributor, RegistryMutationCoordinator,
   LocationRegistrySnapshot,
 } from '../repositories/location-storage.js';
@@ -30,6 +31,13 @@ export class PublishedModelDistributionUnavailableError extends Error {
   }
 }
 
+export class PublishedModelDistributionFailedError extends Error {
+  constructor(cause: unknown) {
+    super('A student web tier did not acknowledge the published GLB.', { cause });
+    this.name = 'PublishedModelDistributionFailedError';
+  }
+}
+
 export class PublishLocationUseCase<Prepared> {
   constructor(private readonly dependencies: {
     drafts: LocationDraftRepository;
@@ -37,6 +45,7 @@ export class PublishLocationUseCase<Prepared> {
     snapshots: LocationRegistrySnapshotRepository;
     mutationCoordinator: RegistryMutationCoordinator;
     runtime: PreparedLocationRuntime<Prepared>;
+    assetMetadata?: LocationAssetMetadataRepository;
     modelDistributor?: PublishedModelDistributor;
     now?: () => number;
   }) {}
@@ -76,6 +85,14 @@ export class PublishLocationUseCase<Prepared> {
     );
     const document = validated.document;
     if (document.locationId !== draft.locationId) throw new LocationConflictError('The draft location identity is invalid.');
+    const assetProvenance = await resolveLocationAssetProvenance(input.creatorId, document, basePublishedRevision ? {
+      revision: basePublishedRevision.revision,
+      document: basePublishedRevision.document,
+      assetProvenance: basePublishedRevision.assetProvenance,
+    } : null, this.dependencies.assetMetadata);
+    if (!sameResolvedLocationAssetProvenance(assetProvenance, draft.assetProvenance)) {
+      throw new LocationConflictError('The draft asset references changed; reload it before publishing.');
+    }
 
     if (!state) await published.assertLocationIdAvailable(draft.locationId);
     validateSensorAssignments(document.sensorAssignments, snapshot.nodes, document.locationId, document.visibility);
@@ -89,13 +106,19 @@ export class PublishLocationUseCase<Prepared> {
       createdAt,
       document,
       legacySpatial: validated.legacySpatial,
+      assetProvenance,
     };
-    let prepared = runtime.prepare(snapshot, document, validated.legacySpatial);
+    const modelProvenance = assetProvenance.modelAssetId;
+    const runtimeDocument = modelProvenance?.kind === 'legacy-static'
+      ? { ...document, modelAssetId: undefined, modelTransform: undefined }
+      : document;
+    let prepared = runtime.prepare(snapshot, runtimeDocument, validated.legacySpatial);
 
-    if (document.modelAssetId) {
+    if (document.visibility === 'public' && document.modelAssetId && modelProvenance?.kind === 'upload') {
       const distributor = this.dependencies.modelDistributor;
       if (!distributor) throw new PublishedModelDistributionUnavailableError();
-      await distributor.acknowledge({ draft, candidate, basePublishedRevision });
+      try { await distributor.acknowledge({ draft, candidate, basePublishedRevision }); }
+      catch (error) { throw new PublishedModelDistributionFailedError(error); }
       // Ingest continues while transfer is pending. Refresh the detached, pre-serialized snapshot from the shared tracks.
     }
 

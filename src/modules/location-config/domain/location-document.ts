@@ -129,7 +129,7 @@ export function parseLocationDocument(value: unknown): LocationDocument {
 }
 
 /** Makes a collision-resistant server-side location ID in the edge namespace. */
-export function createLocationId(edgeId: string, uuid = randomUUID()): string {
+export function createLocationId(edgeId: string, uuid: string = randomUUID()): string {
   if (!EDGE_ID_RE.test(edgeId) || !UUID_RE.test(uuid)) fail('edgeId or UUID is invalid');
   return `location_${edgeId}_${uuid.toLowerCase()}`;
 }

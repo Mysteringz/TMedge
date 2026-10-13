@@ -8,6 +8,10 @@ A legacy JSON record with no `role` key remains an Engineer. An explicit empty s
 
 Device Adoption reads remain available to signed-in accounts. Issuing/revoking TMflash access, approving/denying physical devices, and authorizing a native TMflash sign-in require Engineer or Admin. Native provisioning credentials recheck the enabled account epoch and this capability; demotion, revoke-all, password reset, deletion or same-name recreation invalidates prior credentials.
 
+Location configuration is available to named Admin and Operator accounts through the dedicated `locations.manage` capability. Engineers and Viewers do not receive it, even though Engineers retain their separate firmware and provisioning capabilities. Published locations are visible in the manager; each account sees and edits only its own private drafts and previews.
+
+See the [location management OpenAPI contract](location-management.openapi.yaml) for the console API, edge model transfer and student model response requirements.
+
 Build the tools in the release directory with `npm run build`. Tools use the release's `.env`, `ALGO_USERS_FILE`, or `DATA_DIR/algo/users.json`. Passwords are entered through the existing terminal prompt or stdin, never command-line arguments.
 
 For an empty store, explicitly create the first admin:

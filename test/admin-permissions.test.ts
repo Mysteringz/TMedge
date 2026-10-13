@@ -17,9 +17,13 @@ import { KEY, nodesJson, siteJson } from './fixtures.js';
 test('policy distinguishes reader, engineer, admin and local account management', () => {
   assert.deepEqual(principal('reader', 'viewer').capabilities, ['algo.read', 'training.read', 'firmware.read']);
   assert.ok(principal('operator', 'operator').capabilities.includes('training.write'));
+  assert.ok(principal('operator', 'operator').capabilities.includes('locations.manage'));
   assert.ok(!principal('operator', 'operator').capabilities.includes('firmware.write'));
   assert.ok(principal('engineer', 'engineer').capabilities.includes('firmware.write'));
   assert.ok(principal('engineer', 'engineer').capabilities.includes('nodes.admin'));
+  assert.ok(!principal('engineer', 'engineer').capabilities.includes('locations.manage'));
+  assert.ok(!principal('reader', 'viewer').capabilities.includes('locations.manage'));
+  assert.ok(principal('admin', 'admin').capabilities.includes('locations.manage'));
   assert.ok(!principal('engineer', 'engineer').capabilities.includes('accounts.manage'));
   assert.ok(!principal('local', 'admin', false).capabilities.includes('accounts.manage'));
   for (const op of ['set', 'reset-bg', 'identify', 'save']) assert.equal(nodeCommandCapability({ op }), 'nodes.write');

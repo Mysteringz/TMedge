@@ -1,0 +1,1029 @@
+openapi: 3.0.3
+info:
+  title: TMedge location management and model assets
+  version: 1.0.0
+  description: >-
+    Task 2.3 API for private console drafts, publishing, immutable asset
+    transfer, and student delivery of a model referenced by the current public
+    snapshot. Every console route requires the signed Algo session and the
+    locations.manage capability (named Admin or Operator only). The document
+    describes the current routes; it does not add a second authentication or
+    publication mechanism.
+servers:
+  - url: /
+tags:
+  - name: Location management
+    description: Algo console API on the edge service.
+  - name: Model transfer
+    description: Authenticated edge-to-web immutable GLB ingress.
+  - name: Student models
+    description: Student-session model bytes gated by the current snapshot.
+paths:
+  /api/locations:
+    get:
+      tags: [Location management]
+      summary: List published locations and the caller's drafts
+      description: Requires the current signed Algo session and locations.manage. Drafts from other creators are omitted.
+      security:
+        - algoCookie: []
+      responses:
+        '200':
+          description: Published summaries and private drafts owned by the current principal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeLocationList'
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/locations/drafts:
+    post:
+      tags: [Location management]
+      summary: Create a private location draft
+      description: >-
+        Creates a new location and draft; it never replaces an existing
+        location. The server generates both IDs and sets visibility to public.
+        JSON request bodies are limited to 1 MiB. Mutations require both the
+        same-origin Origin header and X-TM-Algo: 1.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLocationDraft'
+      responses:
+        '201':
+          description: Draft created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeDraftWrite'
+        '400': { $ref: '#/components/responses/ConsoleMalformedRequest' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '409': { $ref: '#/components/responses/ConsoleConflict' }
+        '413': { $ref: '#/components/responses/ConsoleTooLarge' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/locations/{locationId}/drafts:
+    post:
+      tags: [Location management]
+      summary: Start a private edit draft from the active revision
+      description: The expected published revision is compared with the current active revision; stale requests return 409.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/LocationId'
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedPublishedRevision]
+              properties:
+                expectedPublishedRevision: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: New private draft pinned to the requested published revision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeDraftWrite'
+        '400': { $ref: '#/components/responses/ConsoleMalformedRequest' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '409': { $ref: '#/components/responses/ConsoleConflict' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/locations/drafts/{draftId}:
+    get:
+      tags: [Location management]
+      summary: Read a caller-owned draft
+      description: Foreign and missing draft IDs are indistinguishable. Internal asset provenance and owner IDs are never returned.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+      responses:
+        '200':
+          description: Draft document and safe asset capability projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeDraftDetail'
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+    put:
+      tags: [Location management]
+      summary: Save a caller-owned draft
+      description: >-
+        Uses draft-revision compare-and-swap. The document's location ID,
+        visibility and provenance are server-managed. A committed file update
+        whose directory durability could not be confirmed returns the applied
+        revision with durability unconfirmed; clients must reload, not retry as
+        if the save had failed.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveDraftRequest'
+      responses:
+        '200':
+          description: Draft saved; durability distinguishes a confirmed write from an applied write with unconfirmed directory sync.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeDraftWrite'
+        '400': { $ref: '#/components/responses/ConsoleMalformedRequest' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '409': { $ref: '#/components/responses/ConsoleConflict' }
+        '413': { $ref: '#/components/responses/ConsoleTooLarge' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/locations/drafts/{draftId}/sensors:
+    get:
+      tags: [Location management]
+      summary: List eligible sensors for a draft
+      description: Returns only approved unplaced sensors and sensors already assigned to this location; RGB sensors are excluded for public locations.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+      responses:
+        '200':
+          description: Eligible sensors with current assignment metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeSensors'
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/locations/drafts/{draftId}/coverage-suggestions:
+    post:
+      tags: [Location management]
+      summary: Calculate read-only sensor coverage suggestions
+      description: >-
+        The candidate document and proposed poses are validated, then coverage
+        is calculated from all seats. The request does not save the draft or
+        alter live sensor assignments. As a POST it requires the write header
+        and same-origin Origin guard.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [document, proposedSensors]
+              properties:
+                document: { $ref: '#/components/schemas/LocationDocument' }
+                proposedSensors:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [uid, pose]
+                    properties:
+                      uid: { type: string, pattern: '^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$' }
+                      pose: { $ref: '#/components/schemas/SensorPose' }
+      responses:
+        '200':
+          description: Advisory per-table coverage result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeCoverage'
+        '400': { $ref: '#/components/responses/ConsoleMalformedRequest' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '413': { $ref: '#/components/responses/ConsoleTooLarge' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/locations/drafts/{draftId}/assets/{assetRef}:
+    get:
+      tags: [Location management]
+      summary: Preview an asset referenced by a caller-owned draft
+      description: >-
+        For GET, assetRef is an opaque UUID. The asset must be a creator-owned
+        upload referenced by this draft or the exact immutable asset inherited
+        from its pinned base revision. The response is private/no-store and
+        has X-Content-Type-Options: nosniff. This route never authorizes a bare
+        guessed asset ID.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+        - name: assetRef
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Exact referenced PNG, JPEG or GLB bytes.
+          headers:
+            Cache-Control:
+              description: Private response; not cacheable by shared caches.
+              schema: { type: string, example: 'private, no-store' }
+            X-Content-Type-Options:
+              schema: { type: string, enum: [nosniff] }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            model/gltf-binary: { schema: { type: string, format: binary } }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+    put:
+      tags: [Location management]
+      summary: Upload and attach a private floor plan or GLB
+      description: >-
+        Sends raw bytes. floor-plan accepts PNG or JPEG up to 20 MiB;
+        model accepts a self-contained GLB (glTF 2.0 binary) up to 128 MiB.
+        The declared media type must match the byte signature/format. If-Match
+        is the current positive draft revision, optionally quoted. The file is
+        immutable and creator-scoped; upload followed by a draft CAS failure
+        may leave an unreferenced private orphan.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+        - name: assetRef
+          in: path
+          required: true
+          description: For PUT, the path value is an asset purpose.
+          schema: { type: string, enum: [floor-plan, model] }
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+        - $ref: '#/components/parameters/DraftIfMatch'
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema: { type: string, format: binary }
+          image/jpeg:
+            schema: { type: string, format: binary }
+          model/gltf-binary:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Asset attached to the draft; includes immutable digest and resulting draft revision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopeAssetUpload'
+        '400': { $ref: '#/components/responses/ConsoleMalformedRequest' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '409': { $ref: '#/components/responses/ConsoleConflict' }
+        '413': { $ref: '#/components/responses/ConsoleTooLarge' }
+        '415': { $ref: '#/components/responses/ConsoleUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/locations/drafts/{draftId}/publications:
+    post:
+      tags: [Location management]
+      summary: Publish the current draft revision
+      description: >-
+        Requires both expected revisions. Revalidates the exact base and
+        assignments under the registry writer lock. For a public candidate
+        with an uploaded GLB, every configured web target must durably
+        acknowledge the immutable bytes before commit. Console-only and
+        trusted legacy-static model references are not transferred. A
+        committed-but-durability-unconfirmed file write is applied and returns
+        durability unconfirmed; an unknown PostgreSQL commit outcome returns
+        503 and is not represented as a normal conflict.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedDraftRevision, expectedPublishedRevision]
+              properties:
+                expectedDraftRevision: { type: integer, minimum: 1 }
+                expectedPublishedRevision: { type: integer, minimum: 0, nullable: true }
+      responses:
+        '200':
+          description: Published revision and registry revision; durability may be unconfirmed after a logical file commit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleEnvelopePublished'
+        '400': { $ref: '#/components/responses/ConsoleMalformedRequest' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '409': { $ref: '#/components/responses/ConsoleConflict' }
+        '413': { $ref: '#/components/responses/ConsoleTooLarge' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503':
+          description: Storage unavailable, model distribution failed before commit, or PostgreSQL commit outcome is unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleErrorEnvelope'
+
+  /api/edge/location-assets/{locationId}/{assetId}:
+    put:
+      tags: [Model transfer]
+      summary: Durably ingest an immutable published GLB
+      description: >-
+        Edge-to-web transfer only. Authorization is the configured snapshot
+        publisher policy: either the shared fleet token, or a configured edge
+        token with explicit floor ownership / the canonical dynamic location
+        namespace exception. In keyed mode explicit ownership wins globally.
+        The body must be a valid GLB no larger than 128 MiB and its SHA-256
+        must match X-TM-SHA256. Same-ID identical bytes are idempotent; a
+        different immutable payload conflicts. This route accepts no URL,
+        owner, or filesystem path.
+      security:
+        - edgeBearer: []
+      parameters:
+        - name: locationId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 160, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$' }
+        - $ref: '#/components/parameters/AssetId'
+        - name: X-TM-Edge-Id
+          in: header
+          required: false
+          description: Required with the per-edge key-file credential mode; identifies the authenticated edge. Shared-token mode retains its existing fleet-wide semantics.
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: X-TM-SHA256
+          in: header
+          required: true
+          description: Lowercase hexadecimal SHA-256 of the request body.
+          schema: { type: string, pattern: '^[0-9a-f]{64}$' }
+      requestBody:
+        required: true
+        content:
+          model/gltf-binary:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Identical immutable bytes were already stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeAssetAcknowledgement' }
+        '201':
+          description: Bytes were validated and durably stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeAssetAcknowledgement' }
+        '400':
+          description: Invalid path ID, digest, media type, size, or GLB bytes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeError' }
+        '401':
+          description: Missing or invalid edge bearer credential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeError' }
+        '403':
+          description: Authenticated edge is not authorized for this location.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeError' }
+        '409':
+          description: The immutable asset ID already stores different bytes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeError' }
+        '413':
+          description: Request exceeds the 128 MiB limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeError' }
+        '503':
+          description: Durable web model storage is unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EdgeError' }
+
+  /api/models/{assetId}:
+    get:
+      tags: [Student models]
+      summary: Read a currently published uploaded GLB
+      description: >-
+        Requires a valid student session cookie or student bearer token. The
+        exact asset ID must be referenced by a current winning public snapshot;
+        drafts, history, private/console-only models, stale uploads, and
+        revision-0 static models do not authorize this route. A restarted web
+        service denies reads until a current snapshot is received.
+      security:
+        - studentCookie: []
+        - studentBearer: []
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: Current winner-referenced immutable GLB bytes.
+          headers:
+            Cache-Control:
+              description: Private response; not cacheable by shared caches.
+              schema: { type: string, example: 'private, no-store' }
+            X-Content-Type-Options:
+              schema: { type: string, enum: [nosniff] }
+            ETag:
+              description: Quoted lowercase SHA-256 digest.
+              schema: { type: string }
+          content:
+            model/gltf-binary:
+              schema: { type: string, format: binary }
+        '401':
+          description: Student session/token missing, expired, revoked or invalid.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudentError' }
+        '404':
+          description: Invalid, unavailable, stale, private, or unreferenced model; cases intentionally return the same result.
+        '503':
+          description: Published model storage is unavailable.
+
+components:
+  securitySchemes:
+    algoCookie:
+      type: apiKey
+      in: cookie
+      name: tm_algo
+      description: Existing signed Algo console session; the server derives the principal and locations.manage capability.
+    edgeBearer:
+      type: http
+      scheme: bearer
+      description: Existing configured edge publisher token (per-edge key-file mode or shared WEB_PUSH_TOKEN mode).
+    studentCookie:
+      type: apiKey
+      in: cookie
+      name: tm_session
+      description: Signed student browser session cookie.
+    studentBearer:
+      type: http
+      scheme: bearer
+      description: Short-lived signed student access token; mutually exclusive with the tm_session cookie.
+  parameters:
+    TmAlgoWriteHeader:
+      name: X-TM-Algo
+      in: header
+      required: true
+      description: Must be exactly 1 for console mutations.
+      schema: { type: string, enum: ['1'] }
+    SameOrigin:
+      name: Origin
+      in: header
+      required: true
+      description: Must be present and match the request's scheme, host and port exactly; missing or foreign origins are forbidden.
+      schema: { type: string, format: uri }
+    LocationId:
+      name: locationId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 160 }
+    DraftId:
+      name: draftId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AssetId:
+      name: assetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AssetPurpose:
+      name: purpose
+      in: path
+      required: true
+      schema: { type: string, enum: [floor-plan, model] }
+    DraftIfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Positive current draft revision, quoted or unquoted, used for upload compare-and-swap.
+      schema: { type: string, pattern: '^"?[1-9][0-9]*"?$' }
+  schemas:
+    CreateLocationDraft:
+      type: object
+      additionalProperties: false
+      required: [name, building, widthCm, heightCm]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 160 }
+        building: { type: string, minLength: 1, maxLength: 160 }
+        widthCm: { type: number, minimum: 100, maximum: 100000 }
+        heightCm: { type: number, minimum: 100, maximum: 100000 }
+    SaveDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedDraftRevision, document]
+      properties:
+        expectedDraftRevision: { type: integer, minimum: 1 }
+        document: { $ref: '#/components/schemas/LocationDocument' }
+    LocationDocument:
+      type: object
+      description: >-
+        Strict authored document. Server supplies schemaVersion, locationId
+        and inherited visibility. Unknown keys and client provenance/owner
+        fields are rejected. JSON is limited to 1 MiB; geometry and transform
+        ranges follow the location document validator. Newly authored or
+        changed geometry must satisfy strict geometry limits. Exact unchanged
+        revision-zero legacy geometry may be retained only when the server
+        proves the pinned base and unchanged floor dimensions.
+      additionalProperties: false
+      required: [name, building, widthCm, heightCm, outline, zones, tables, sensorAssignments]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 160 }
+        building: { type: string, minLength: 1, maxLength: 160 }
+        widthCm: { type: number, minimum: 100, maximum: 100000 }
+        heightCm: { type: number, minimum: 100, maximum: 100000 }
+        outline: { $ref: '#/components/schemas/Polygon' }
+        zones:
+          type: array
+          items:
+            $ref: '#/components/schemas/Zone'
+        tables:
+          type: array
+          items: { $ref: '#/components/schemas/Table' }
+        sensorAssignments:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [uid, pose, owns]
+            properties:
+              uid: { type: string, pattern: '^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$' }
+              pose: { $ref: '#/components/schemas/SensorPose' }
+              owns: { type: array, items: { $ref: '#/components/schemas/StableId' }, uniqueItems: true }
+        planAssetId: { type: string, format: uuid }
+        modelAssetId: { type: string, format: uuid, description: Must be supplied together with modelTransform. }
+        modelTransform: { $ref: '#/components/schemas/ModelTransform' }
+    LocationDocumentView:
+      type: object
+      description: >-
+        Canonical persisted document returned by the server. It includes
+        server-managed identity and visibility. A trusted inherited legacy
+        rectangle may omit shape while retaining rect; no client can submit
+        that compatibility representation as authorship provenance.
+      required: [schemaVersion, locationId, name, building, visibility, widthCm, heightCm, outline, zones, tables, sensorAssignments]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        locationId: { type: string }
+        name: { type: string }
+        building: { type: string }
+        visibility: { type: string, enum: [public, console] }
+        widthCm: { type: number, minimum: 100, maximum: 100000 }
+        heightCm: { type: number, minimum: 100, maximum: 100000 }
+        outline: { $ref: '#/components/schemas/Polygon' }
+        zones: { type: array, items: { $ref: '#/components/schemas/Zone' } }
+        tables: { type: array, items: { $ref: '#/components/schemas/TableView' } }
+        sensorAssignments:
+          type: array
+          items:
+            type: object
+            required: [uid, pose, owns]
+            properties:
+              uid: { type: string }
+              pose: { $ref: '#/components/schemas/SensorPose' }
+              owns: { type: array, items: { type: string } }
+        planAssetId: { type: string, format: uuid }
+        modelAssetId: { type: string, format: uuid }
+        modelTransform: { $ref: '#/components/schemas/ModelTransform' }
+    Zone:
+      type: object
+      additionalProperties: false
+      required: [id, name, polygon]
+      properties:
+        id: { $ref: '#/components/schemas/StableId' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        polygon: { $ref: '#/components/schemas/Polygon' }
+    TableView:
+      type: object
+      description: shape is optional only for a trusted inherited legacy rectangle; rect retains its bounds.
+      required: [id, name, zoneId, capacity, seats]
+      properties:
+        id: { type: string }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        zoneId: { type: string }
+        capacity: { type: integer }
+        shape: { $ref: '#/components/schemas/TableShape' }
+        rect:
+          type: object
+          required: [x, y, width, height]
+          properties:
+            x: { type: number }
+            y: { type: number }
+            width: { type: number }
+            height: { type: number }
+        seats:
+          type: array
+          items:
+            type: object
+            required: [id, x, y, neighbors]
+            properties:
+              id: { type: string }
+              x: { type: number }
+              y: { type: number }
+              neighbors: { type: array, items: { type: string } }
+              side: { type: string, enum: [L, R, T, B] }
+              index: { type: integer }
+        seatRadiusCm: { type: number }
+    TableShape:
+      oneOf:
+        - type: object
+          required: [type, x, y, width, height]
+          properties:
+            type: { type: string, enum: [rect] }
+            x: { type: number }
+            y: { type: number }
+            width: { type: number }
+            height: { type: number }
+        - type: object
+          required: [type, cx, cy, radius]
+          properties:
+            type: { type: string, enum: [circle] }
+            cx: { type: number }
+            cy: { type: number }
+            radius: { type: number }
+        - type: object
+          required: [type, points]
+          properties:
+            type: { type: string, enum: [polygon] }
+            points: { $ref: '#/components/schemas/Polygon' }
+    StableId:
+      type: string
+      minLength: 1
+      maxLength: 160
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+    Point:
+      type: array
+      minItems: 2
+      maxItems: 2
+      items: { type: number }
+    Polygon:
+      type: array
+      minItems: 3
+      maxItems: 1000
+      description: >-
+        New or changed authored polygons are limited to 256 points and must be
+        simple, nondegenerate, and inside the floor. Up to 1000 points are
+        retained only for exact unchanged trusted revision-zero outline/zone
+        geometry; the server's exact-base check decides whether this applies.
+      items: { $ref: '#/components/schemas/Point' }
+    Table:
+      type: object
+      additionalProperties: false
+      required: [id, name, zoneId, capacity, shape, seats]
+      properties:
+        id: { $ref: '#/components/schemas/StableId' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        zoneId: { $ref: '#/components/schemas/StableId' }
+        capacity: { type: integer, minimum: 1, maximum: 20 }
+        shape:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [type, x, y, width, height]
+              properties:
+                type: { type: string, enum: [rect] }
+                x: { type: number, minimum: 0 }
+                y: { type: number, minimum: 0 }
+                width: { type: number, minimum: 0, exclusiveMinimum: true }
+                height: { type: number, minimum: 0, exclusiveMinimum: true }
+            - type: object
+              additionalProperties: false
+              required: [type, cx, cy, radius]
+              properties:
+                type: { type: string, enum: [circle] }
+                cx: { type: number, minimum: 0 }
+                cy: { type: number, minimum: 0 }
+                radius: { type: number, minimum: 0, exclusiveMinimum: true }
+            - type: object
+              additionalProperties: false
+              required: [type, points]
+              properties:
+                type: { type: string, enum: [polygon] }
+                points: { $ref: '#/components/schemas/Polygon' }
+        seats:
+          type: array
+          description: Must contain exactly capacity seat records with valid symmetric adjacency.
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, x, y, neighbors]
+            properties:
+              id: { $ref: '#/components/schemas/StableId' }
+              x: { type: number }
+              y: { type: number }
+              neighbors: { type: array, items: { $ref: '#/components/schemas/StableId' }, uniqueItems: true }
+              side: { type: string, enum: [L, R, T, B] }
+              index: { type: integer, minimum: 0, maximum: 10000 }
+        seatRadiusCm: { type: number, minimum: 20, maximum: 150 }
+    SensorPose:
+      type: object
+      additionalProperties: false
+      required: [x, y, heightCm, yawDeg, mirror]
+      properties:
+        x: { type: number, description: Between -1000 cm and floor width + 1000 cm. }
+        y: { type: number, description: Between -1000 cm and floor height + 1000 cm. }
+        heightCm: { type: number, minimum: 150, maximum: 1500 }
+        yawDeg: { type: number, minimum: -360, maximum: 360 }
+        mirror: { type: boolean }
+    ModelTransform:
+      type: object
+      additionalProperties: false
+      required: [scale, rotationDeg, positionM]
+      properties:
+        scale: { $ref: '#/components/schemas/Vector3Scale' }
+        rotationDeg: { $ref: '#/components/schemas/Vector3Rotation' }
+        positionM: { $ref: '#/components/schemas/Vector3Position' }
+    Vector3Scale:
+      type: object
+      additionalProperties: false
+      required: [x, y, z]
+      properties:
+        x: { type: number, minimum: 0.000001, maximum: 10000 }
+        y: { type: number, minimum: 0.000001, maximum: 10000 }
+        z: { type: number, minimum: 0.000001, maximum: 10000 }
+    Vector3Rotation:
+      type: object
+      additionalProperties: false
+      required: [x, y, z]
+      properties:
+        x: { type: number, minimum: -3600, maximum: 3600 }
+        y: { type: number, minimum: -3600, maximum: 3600 }
+        z: { type: number, minimum: -3600, maximum: 3600 }
+    Vector3Position:
+      type: object
+      additionalProperties: false
+      required: [x, y, z]
+      properties:
+        x: { type: number, minimum: -100000, maximum: 100000 }
+        y: { type: number, minimum: -100000, maximum: 100000 }
+        z: { type: number, minimum: -100000, maximum: 100000 }
+    LocationSummary:
+      type: object
+      required: [locationId, name, building, visibility, activeRevision]
+      properties:
+        locationId: { type: string }
+        name: { type: string }
+        building: { type: string }
+        visibility: { type: string, enum: [public, console] }
+        activeRevision: { type: integer, minimum: 0 }
+    DraftSummary:
+      type: object
+      required: [draftId, locationId, name, building, visibility, draftRevision, basePublishedRevision, updatedAt]
+      properties:
+        draftId: { type: string, format: uuid }
+        locationId: { type: string }
+        name: { type: string }
+        building: { type: string }
+        visibility: { type: string, enum: [public, console] }
+        draftRevision: { type: integer, minimum: 1 }
+        basePublishedRevision: { type: integer, minimum: 0, nullable: true }
+        updatedAt: { type: integer }
+    DraftWrite:
+      type: object
+      required: [draftId, locationId, draftRevision, basePublishedRevision, durability, document]
+      properties:
+        draftId: { type: string, format: uuid }
+        locationId: { type: string }
+        draftRevision: { type: integer, minimum: 1 }
+        basePublishedRevision: { type: integer, minimum: 0, nullable: true }
+        durability: { type: string, enum: [confirmed, unconfirmed] }
+        document: { $ref: '#/components/schemas/LocationDocumentView' }
+    DraftDetail:
+      allOf:
+        - $ref: '#/components/schemas/DraftWrite'
+        - type: object
+          required: [updatedAt, assetCapabilities, legacyBaseAvailable]
+          properties:
+            updatedAt: { type: integer }
+            assetCapabilities:
+              type: object
+              description: Safe capability projection only; it contains no owner, provenance, path, or generated URL.
+              additionalProperties:
+                type: object
+                required: [source, previewAvailable, alignmentEditable, replaceWithUpload]
+                properties:
+                  source: { type: string, enum: [upload, legacy-static] }
+                  previewAvailable: { type: boolean }
+                  alignmentEditable: { type: boolean }
+                  replaceWithUpload: { type: boolean }
+            legacyBaseAvailable: { type: boolean }
+    Sensor:
+      type: object
+      required: [uid, label, simulated, rgb, detector, pose]
+      properties:
+        uid: { type: string }
+        label: { type: string }
+        simulated: { type: boolean }
+        rgb: { type: boolean }
+        detector: { type: string }
+        pose:
+          oneOf:
+            - { $ref: '#/components/schemas/SensorPose' }
+            - { type: object, nullable: true }
+    CoverageSuggestion:
+      type: object
+      required: [tableId, coveredBy, suggestedOwner]
+      properties:
+        tableId: { $ref: '#/components/schemas/StableId' }
+        coveredBy: { type: array, items: { type: string } }
+        suggestedOwner: { type: string, nullable: true }
+    AssetUpload:
+      type: object
+      required: [assetId, mediaType, sha256, byteLength, draftRevision, durability]
+      properties:
+        assetId: { type: string, format: uuid }
+        mediaType: { type: string, enum: [image/png, image/jpeg, model/gltf-binary] }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        byteLength: { type: integer, minimum: 1 }
+        draftRevision: { type: integer, minimum: 1 }
+        durability: { type: string, enum: [confirmed, unconfirmed] }
+    Published:
+      type: object
+      required: [locationId, publishedRevision, registryRevision, durability, acknowledgement]
+      properties:
+        locationId: { type: string }
+        publishedRevision: { type: integer, minimum: 1 }
+        registryRevision: { type: integer, minimum: 1 }
+        durability: { type: string, enum: [confirmed, unconfirmed] }
+        acknowledgement: { type: string, enum: [received, reconciled] }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, INVALID_JSON, TOO_LARGE, UNSUPPORTED_MEDIA_TYPE, VALIDATION, ASSET_NOT_FOUND, MODEL_DISTRIBUTION_FAILED, COMMIT_OUTCOME_UNKNOWN, STORAGE_UNAVAILABLE, INTERNAL]
+        message: { type: string }
+    ConsoleErrorEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data: { type: object, nullable: true }
+        error: { $ref: '#/components/schemas/Error' }
+    ConsoleEnvelopeLocationList:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [published, drafts]
+          properties:
+            published: { type: array, items: { $ref: '#/components/schemas/LocationSummary' } }
+            drafts: { type: array, items: { $ref: '#/components/schemas/DraftSummary' } }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopeDraftWrite:
+      type: object
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/DraftWrite' }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopeDraftDetail:
+      type: object
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/DraftDetail' }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopeSensors:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [locationId, sensors]
+          properties:
+            locationId: { type: string }
+            sensors: { type: array, items: { $ref: '#/components/schemas/Sensor' } }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopeCoverage:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [locationId, suggestions]
+          properties:
+            locationId: { type: string }
+            suggestions: { type: array, items: { $ref: '#/components/schemas/CoverageSuggestion' } }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopeAssetUpload:
+      type: object
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/AssetUpload' }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopePublished:
+      type: object
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/Published' }
+        error: { type: object, nullable: true, description: Always null on success. }
+    EdgeAssetAcknowledgement:
+      type: object
+      required: [ok, assetId, sha256]
+      properties:
+        ok: { type: boolean, enum: [true] }
+        assetId: { type: string, format: uuid }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    EdgeError:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    StudentError:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+  responses:
+    ConsoleMalformedRequest:
+      description: Malformed JSON or invalid request framing.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleUnauthenticated:
+      description: Algo session is missing, expired, revoked or invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleForbidden:
+      description: locations.manage is absent, or the required x-tm-algo / same-origin Origin write guard failed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleNotFound:
+      description: Resource is absent or private to another principal.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleConflict:
+      description: Draft or published revision compare-and-swap conflict.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleTooLarge:
+      description: Request exceeds the route/document/asset size limit.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleUnsupportedMedia:
+      description: Content-Type does not match the selected asset purpose.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleValidation:
+      description: Request fields, geometry, seats, assignments, media signature or GLB content are invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
+    ConsoleUnavailable:
+      description: Storage unavailable, public GLB transfer not acknowledged, or publication outcome unknown (COMMIT_OUTCOME_UNKNOWN).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }

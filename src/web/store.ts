@@ -22,21 +22,36 @@ export class SnapshotStore {
   }
 
   view(now = Date.now()): CampusView {
-    const byFloor = new Map<string, CampusView['floors'][number]>();
+    const byFloor = this.currentWinningFloors(now);
+    const floors = [...byFloor.values()].map(({ floor, edgeId, receivedAt, stale }) => ({
+      ...(stale ? blank(floor) : floor), edgeId, updatedAt: receivedAt, stale,
+    }));
+    floors.sort((a, b) => a.building.localeCompare(b.building) || a.name.localeCompare(b.name));
+    return { generatedAt: now, floors };
+  }
+
+  /** Current winner lookup shared by the student view and model authorization. */
+  referencesUploadedModel(assetId: string, now = Date.now()): boolean {
+    for (const { floor } of this.currentWinningFloors(now).values()) {
+      if (floor.model?.assetId === assetId) return true;
+    }
+    return false;
+  }
+
+  private currentWinningFloors(now: number): Map<string, { floor: FloorState; edgeId: string; receivedAt: number; stale: boolean }> {
+    const byFloor = new Map<string, { floor: FloorState; edgeId: string; receivedAt: number; stale: boolean }>();
     for (const { snap, receivedAt } of this.latest.values()) {
       const stale = now - receivedAt > this.staleMs;
       for (const f of snap.floors) {
         // During an edge migration two publishers may name the same floor.
         // Show its newest publication once, rather than double-count its seats.
         const previous = byFloor.get(f.id);
-        if (!previous || previous.updatedAt <= receivedAt) {
-          byFloor.set(f.id, { ...(stale ? blank(f) : f), edgeId: snap.edgeId, updatedAt: receivedAt, stale });
+        if (!previous || previous.receivedAt <= receivedAt) {
+          byFloor.set(f.id, { floor: f, edgeId: snap.edgeId, receivedAt, stale });
         }
       }
     }
-    const floors = [...byFloor.values()];
-    floors.sort((a, b) => a.building.localeCompare(b.building) || a.name.localeCompare(b.name));
-    return { generatedAt: now, floors };
+    return byFloor;
   }
 
   edges(now = Date.now()): { edgeId: string; ageMs: number }[] {

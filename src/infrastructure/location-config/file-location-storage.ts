@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { isLocationId, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../../modules/location-config/domain/location-document.js';
 import { revalidateLocationCandidate, type LegacySpatialProvenance } from '../../modules/location-config/domain/location-candidate.js';
+import { legacyStaticModelProvenance, validateLocationAssetProvenanceTransition } from '../../modules/location-config/domain/location-assets.js';
 import { legacyFloorToBaseline } from './legacy-location-mapper.js';
 import { parseNodesConfig, type NodesConfigV2 } from '../../modules/location-config/domain/nodes-config.js';
 import { LocationConflictError, type PublishedLocationRevision, type PublishedLocationState } from '../../modules/location-config/domain/location-records.js';
@@ -170,11 +171,16 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
       createdAt: activeRow?.createdAt ?? 0,
       document: activeDocument,
       legacySpatial: activeRow?.legacySpatial ?? null,
+      assetProvenance: activeRow?.assetProvenance ?? (activeRevision === 0 ? legacyStaticModelProvenance(activeDocument as ReturnType<typeof legacyFloorToBaseline>) : {}),
     } : null;
     const validatedCandidate = revalidateLocationCandidate(
       document, input.revision.legacySpatial, baseRevision ? {
         revision: baseRevision.revision, document: baseRevision.document, legacySpatial: baseRevision.legacySpatial,
       } : null, activeRevision,
+    );
+    const assetProvenance = validateLocationAssetProvenanceTransition(
+      validatedCandidate.document, input.revision.assetProvenance, input.revision.createdBy,
+      baseRevision ? { revision: baseRevision.revision, document: baseRevision.document, assetProvenance: baseRevision.assetProvenance } : null,
     );
     if (activeDocument && document.visibility !== activeDocument.visibility) {
       throw new LocationConflictError('Location visibility is inherited and cannot be changed by a draft.');
@@ -193,7 +199,7 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
       ...config,
       revision: config.revision + 1,
       nodes,
-      publishedLocations: upsertPublished(config.publishedLocations, { ...input.revision, document: validatedCandidate.document, legacySpatial: validatedCandidate.legacySpatial }),
+      publishedLocations: upsertPublished(config.publishedLocations, { ...input.revision, document: validatedCandidate.document, legacySpatial: validatedCandidate.legacySpatial, assetProvenance }),
     };
     const reparsed = parseNodesConfig(candidate);
     if (reparsed.kind !== 'v2') throw new Error('Internal registry schema conversion failed.');
@@ -301,12 +307,14 @@ function activeDocuments(snapshot: LocationRegistrySnapshot): { documents: Locat
 }
 
 function legacyRevision(floor: FloorDef, registry: Registry): PublishedLocationRevision {
+  const document = legacyFloorToBaseline(floor, registry.nodes.values());
   return {
     locationId: floor.id,
     revision: 0,
     createdBy: 'system-bootstrap',
     createdAt: 0,
-    document: legacyFloorToBaseline(floor, registry.nodes.values()),
+    document,
+    assetProvenance: legacyStaticModelProvenance(document),
   };
 }
 
@@ -323,6 +331,7 @@ function upsertPublished(
     createdAt: revision.createdAt,
     document: parseLocationDocument(revision.document),
     legacySpatial: revision.legacySpatial ?? null,
+    assetProvenance: revision.assetProvenance ?? {},
   };
   if (existing) {
     existing.revisions.push(serialized);
@@ -373,6 +382,19 @@ function validatePublishedAgainstSeed(registry: Registry, document: NodesConfigV
   for (const override of document.publishedLocations) {
     let base = seedById.get(override.locationId) ?? null;
     for (const revision of override.revisions) {
+      // Older Task 2.2 files have no asset provenance field. The only safe
+      // migration is copying an exact reference from its trusted prior row;
+      // new/unrelated IDs fail closed.
+      const inheritedAssetProvenance = revision.assetProvenance ?? (base ? {
+        ...(revision.document.planAssetId !== undefined && revision.document.planAssetId === base.document.planAssetId && base.assetProvenance?.planAssetId
+          ? { planAssetId: base.assetProvenance.planAssetId } : {}),
+        ...(revision.document.modelAssetId !== undefined && revision.document.modelAssetId === base.document.modelAssetId && base.assetProvenance?.modelAssetId
+          ? { modelAssetId: base.assetProvenance.modelAssetId } : {}),
+      } : {});
+      revision.assetProvenance = validateLocationAssetProvenanceTransition(
+        revision.document, inheritedAssetProvenance, revision.createdBy,
+        base ? { revision: base.revision, document: base.document, assetProvenance: base.assetProvenance } : null,
+      );
       if (revision.legacySpatial) {
         if (!base) throw new LocationConflictError('Legacy spatial provenance has no matching immutable base revision.');
         try {

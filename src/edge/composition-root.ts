@@ -34,8 +34,12 @@ import type { RolloutRepository } from '../modules/rollouts/repositories/rollout
 import { postgresAvailability } from '../infrastructure/postgres/data-source.js';
 import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import type { LocationDraftRepository, LocationRegistrySnapshotRepository, PublishedLocationRepository, PublishedModelDistributor } from '../modules/location-config/repositories/location-storage.js';
+import type { LocationAssetMetadataRepository, LocationAssetStore } from '../modules/location-config/repositories/location-storage.js';
 import { PublishLocationUseCase } from '../modules/location-config/use-cases/publish-location.js';
 import { EdgeLocationPublicationRuntime } from './location-publication-runtime.js';
+import { HttpPublishedModelDistributor } from '../infrastructure/location-config/http-published-model-distributor.js';
+import { createLocationRouter } from '../modules/location-config/routes/location-router.js';
+import { computeLocationCoverageSuggestions } from '../infrastructure/location-config/location-coverage.js';
 import type { PreparedRuntimeGeneration } from './runtime.js';
 
 /** Persistence adapters are optional in legacy file mode. */
@@ -139,6 +143,8 @@ export interface EdgeApplicationOptions {
     drafts: LocationDraftRepository;
     published: PublishedLocationRepository;
     snapshots: LocationRegistrySnapshotRepository;
+    assets: LocationAssetStore;
+    assetMetadata: LocationAssetMetadataRepository;
     modelDistributor?: PublishedModelDistributor;
   };
 }
@@ -150,14 +156,21 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
     rolloutRepository: options.postgres ? new PostgresRolloutRepository(options.postgres) : undefined,
     persistenceAvailable: options.postgres ? async () => (await postgresAvailability(options.postgres!)).available : undefined,
   });
-  const locationPublication = options.locationPublication && options.registryMutationCoordinator
+  const publicationRuntime = options.locationPublication && options.registryMutationCoordinator
+    ? new EdgeLocationPublicationRuntime(runtime, options.locationPublication.siteSeed) : null;
+  const modelDistributor = options.locationPublication
+    ? options.locationPublication.modelDistributor ?? new HttpPublishedModelDistributor(
+      cfg.pushUrls, cfg.pushToken, cfg.edgeId, options.locationPublication.assets,
+    ) : undefined;
+  const locationPublication = options.locationPublication && options.registryMutationCoordinator && publicationRuntime
     ? new PublishLocationUseCase<PreparedRuntimeGeneration>({
       drafts: options.locationPublication.drafts,
       published: options.locationPublication.published,
       snapshots: options.locationPublication.snapshots,
       mutationCoordinator: options.registryMutationCoordinator,
-      runtime: new EdgeLocationPublicationRuntime(runtime, options.locationPublication.siteSeed),
-      modelDistributor: options.locationPublication.modelDistributor,
+      runtime: publicationRuntime,
+      assetMetadata: options.locationPublication.assetMetadata,
+      modelDistributor,
     })
     : null;
   const provisioningService = options.provisioningService ?? (options.provisioningRepository
@@ -179,7 +192,15 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
     listen: false, uiMovedTo: cfg.algoPort > 0 ? consoleMovedTo(cfg.algoPort) : undefined,
   });
   const debuggerServer = cfg.algoPort > 0
-    ? startAlgo(runtime, cfg.algoPort, cfg.consoleHost, { listen: false, dataDir: cfg.dataDir }, consoleCore)
+    ? startAlgo(runtime, cfg.algoPort, cfg.consoleHost, { listen: false, dataDir: cfg.dataDir }, consoleCore, {
+      locationApi: publicationRuntime && options.locationPublication && options.registryMutationCoordinator ? (auth) => createLocationRouter({
+        auth, edgeId: cfg.edgeId, siteSeed: options.locationPublication!.siteSeed,
+        drafts: options.locationPublication!.drafts, published: options.locationPublication!.published,
+        snapshots: options.locationPublication!.snapshots, assets: options.locationPublication!.assets,
+        assetMetadata: options.locationPublication!.assetMetadata, coordinator: options.registryMutationCoordinator!,
+        runtime: publicationRuntime, modelDistributor, suggestCoverage: computeLocationCoverageSuggestions, now: Date.now,
+      }) : undefined,
+    })
     : null;
   return new EdgeApplication(runtime, consoleServer, debuggerServer, cfg, locationPublication, options.closePersistence,
     async () => {

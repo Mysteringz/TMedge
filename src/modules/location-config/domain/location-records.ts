@@ -1,5 +1,6 @@
 import type { LocationDocument, TrustedLegacyLocationBaseline } from './location-document.js';
 import type { LegacySpatialProvenance } from './location-candidate.js';
+import type { LocationAssetProvenance } from './location-assets.js';
 
 export interface LocationDraft {
   draftId: string;
@@ -12,6 +13,8 @@ export interface LocationDraft {
   document: LocationDocument;
   /** Server-derived; never copied from request JSON. */
   legacySpatial?: LegacySpatialProvenance | null;
+  /** Server-derived slot ownership/static compatibility; never copied from request JSON. */
+  assetProvenance?: LocationAssetProvenance;
 }
 
 export interface PublishedLocationRevision {
@@ -22,6 +25,8 @@ export interface PublishedLocationRevision {
   document: LocationDocument | TrustedLegacyLocationBaseline;
   /** Server-derived, immutable provenance for unchanged legacy geometry. */
   legacySpatial?: LegacySpatialProvenance | null;
+  /** Server-derived immutable provenance for each referenced plan/model asset slot. */
+  assetProvenance?: LocationAssetProvenance;
 }
 
 export type LocationAssetPurpose = 'floor-plan' | 'model';

@@ -1,5 +1,6 @@
 import { parseLocationDocument, type LocationDocument } from './location-document.js';
 import { parseLegacySpatialProvenance, type LegacySpatialProvenance } from './location-candidate.js';
+import { parseLocationAssetProvenance, type LocationAssetProvenance } from './location-assets.js';
 
 export interface PublishedLocationRecord {
   locationId: string;
@@ -11,6 +12,7 @@ export interface PublishedLocationRecord {
     createdAt: number;
     document: LocationDocument;
     legacySpatial: LegacySpatialProvenance | null;
+    assetProvenance?: LocationAssetProvenance;
   }>;
 }
 
@@ -83,7 +85,7 @@ function parsePublishedLocation(value: unknown, index: number): PublishedLocatio
   const revisions = input.revisions.map((item, revisionIndex) => {
     const revisionWhere = `${where}.revisions[${revisionIndex}]`;
     const row = object(item, revisionWhere);
-    only(row, revisionWhere, ['locationId', 'revision', 'createdBy', 'createdAt', 'document', 'legacySpatial']);
+    only(row, revisionWhere, ['locationId', 'revision', 'createdBy', 'createdAt', 'document', 'legacySpatial', 'assetProvenance']);
     const revisionLocationId = safeId(row.locationId, `${revisionWhere}.locationId`);
     if (revisionLocationId !== locationId) invalid(`${revisionWhere}.locationId: must match its published location`);
     const revision = integer(row.revision, `${revisionWhere}.revision`, 1, Number.MAX_SAFE_INTEGER);
@@ -91,9 +93,10 @@ function parsePublishedLocation(value: unknown, index: number): PublishedLocatio
     const createdBy = string(row.createdBy, `${revisionWhere}.createdBy`);
     const document = parseLocationDocument(row.document);
     const legacySpatial = parseLegacySpatialProvenance(row.legacySpatial);
+    const assetProvenance = row.assetProvenance === undefined ? undefined : parseLocationAssetProvenance(row.assetProvenance, document);
     if (legacySpatial && legacySpatial.basePublishedRevision !== revision - 1) invalid(`${revisionWhere}.legacySpatial: must derive from the previous published revision`);
     if (document.locationId !== locationId) invalid(`${revisionWhere}.document.locationId: must match its published location`);
-    return { locationId, revision, createdBy, createdAt, document, legacySpatial };
+    return { locationId, revision, createdBy, createdAt, document, legacySpatial, ...(assetProvenance ? { assetProvenance } : {}) };
   });
   unique(revisions.map((item) => String(item.revision)), `${where}.revisions`);
   const ordered = [...revisions].sort((a, b) => a.revision - b.revision);

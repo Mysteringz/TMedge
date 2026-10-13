@@ -1,6 +1,7 @@
 import { parseLocationCandidate } from '../domain/location-candidate.js';
 import { LocationConflictError, LocationDraftNotFoundError } from '../domain/location-records.js';
-import type { LocationDraftRepository, PublishedLocationRepository } from '../repositories/location-storage.js';
+import { resolveLocationAssetProvenance } from './resolve-location-asset-provenance.js';
+import type { LocationAssetMetadataRepository, LocationDraftRepository, PublishedLocationRepository } from '../repositories/location-storage.js';
 
 export interface SaveLocationDraftInput {
   creatorId: string;
@@ -13,6 +14,7 @@ export class SaveLocationDraftUseCase {
   constructor(private readonly dependencies: {
     drafts: LocationDraftRepository;
     published: PublishedLocationRepository;
+    assetMetadata?: LocationAssetMetadataRepository;
     now?: () => number;
   }) {}
 
@@ -33,8 +35,11 @@ export class SaveLocationDraftUseCase {
       base ? { revision: base.revision, document: base.document, legacySpatial: base.legacySpatial } : null,
       draft.basePublishedRevision,
     );
+    const assetProvenance = await resolveLocationAssetProvenance(input.creatorId, candidate.document, base ? {
+      revision: base.revision, document: base.document, assetProvenance: base.assetProvenance,
+    } : null, this.dependencies.assetMetadata);
     return this.dependencies.drafts.saveDraft(
-      input.creatorId, input.draftId, input.expectedDraftRevision, candidate,
+      input.creatorId, input.draftId, input.expectedDraftRevision, { ...candidate, assetProvenance },
       (this.dependencies.now ?? Date.now)(),
     );
   }

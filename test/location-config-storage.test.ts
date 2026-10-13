@@ -12,8 +12,11 @@ import { atomicWriteNodesConfig, readNodesConfig, recoverNodesConfig } from '../
 import { initializeFileLocationPersistence } from '../src/infrastructure/location-config/file-location-storage.js';
 import { parseTrustedLegacyBaseline } from '../src/infrastructure/location-config/legacy-location-mapper.js';
 import { exposeLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
+import { CreateLocationDraftUseCase } from '../src/modules/location-config/use-cases/create-location-draft.js';
 import { StartLocationEditDraftUseCase } from '../src/modules/location-config/use-cases/start-location-edit-draft.js';
 import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
+import { UploadLocationAssetUseCase } from '../src/modules/location-config/use-cases/upload-location-asset.js';
+import { ReadLocationDraftAssetUseCase } from '../src/modules/location-config/use-cases/read-location-draft-asset.js';
 import { PublishLocationUseCase } from '../src/modules/location-config/use-cases/publish-location.js';
 import { buildRegistry, buildRegistryFromLocationDocuments } from '../src/edge/registry.js';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
@@ -219,6 +222,165 @@ test('file legacy edits preserve exact-base geometry through a second publish an
     assert.deepEqual(reopenedActive?.legacySpatial, active?.legacySpatial);
     assert.equal(reopenedActive?.document.name, 'Legacy floor edited twice');
     assert.deepEqual(reopenedActive?.legacySpatial?.outline, legacyBridgeOutline());
+  } finally {
+    persistence?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('file asset provenance survives manager A upload then B/C exact-base publish, preview and restart', async () => {
+  const directory = tempDirectory();
+  let persistence: ReturnType<typeof initializeFileLocationPersistence> | null = null;
+  try {
+    const { sitePath, nodesPath } = writeConfigFiles(directory, { nodes: [] });
+    const dataDirectory = join(directory, 'manager-assets');
+    persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDirectory);
+    let clock = 100;
+    const now = () => ++clock;
+    const create = new CreateLocationDraftUseCase({
+      edgeId: 'edge-manager-assets', drafts: persistence.drafts, published: persistence.published,
+      snapshots: persistence.snapshots, coordinator: persistence.coordinator, now,
+      createUuid: () => '00000000-0000-4000-8000-000000000091',
+    });
+    const initial = await create.execute({ creatorId: 'manager-a', name: 'Asset room', building: 'Test building', widthCm: 400, heightCm: 300 });
+    const save = () => new SaveLocationDraftUseCase({
+      drafts: persistence!.drafts, published: persistence!.published,
+      assetMetadata: persistence!.assetMetadata, now,
+    });
+    const upload = () => new UploadLocationAssetUseCase({
+      drafts: persistence!.drafts, assets: persistence!.assets, saveDraft: save(), now,
+    });
+    const initialDocument = structuredClone(initial.draft.document);
+    initialDocument.zones = [{
+      id: 'ASSET-ROOM-ZONE', name: 'Asset room zone', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]],
+    }];
+    const initialGeometry = await save().execute({
+      creatorId: 'manager-a', draftId: initial.draft.draftId, expectedDraftRevision: 1, document: initialDocument,
+    });
+    const planBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x11]);
+    const modelBytes = makeGlb({ asset: { version: '2.0' }, buffers: [] });
+    const plan = await upload().execute({
+      creatorId: 'manager-a', draftId: initial.draft.draftId, expectedDraftRevision: initialGeometry.draft.draftRevision,
+      purpose: 'floor-plan', mediaType: 'image/png', bytes: planBytes,
+    });
+    const model = await upload().execute({
+      creatorId: 'manager-a', draftId: initial.draft.draftId, expectedDraftRevision: plan.outcome.draft.draftRevision,
+      purpose: 'model', mediaType: 'model/gltf-binary', bytes: modelBytes,
+    });
+    const unrelatedPrivate = await persistence.assets.put('manager-a', 'floor-plan', 'image/png', planBytes, now());
+    const distributorOwners: string[] = [];
+    const modelDistributor = {
+      async acknowledge({ candidate }: { candidate: import('../src/modules/location-config/domain/location-records.js').PublishedLocationRevision }) {
+        const provenance = candidate.assetProvenance?.modelAssetId;
+        assert.equal(provenance?.kind, 'upload');
+        if (!provenance || provenance.kind !== 'upload' || !candidate.document.modelAssetId) throw new Error('model provenance is missing');
+        const stored = await persistence!.assets.read(provenance.ownerId, candidate.document.modelAssetId);
+        assert.ok(stored, 'the distributor resolves immutable bytes through the persisted owner');
+        assert.deepEqual(stored.bytes, modelBytes);
+        distributorOwners.push(provenance.ownerId);
+      },
+    };
+    const runtime = {
+      prepare: () => 'prepared', refresh: (prepared: string) => prepared,
+      activate: () => undefined, quarantine: () => undefined,
+    };
+    const publisher = () => new PublishLocationUseCase({
+      drafts: persistence!.drafts, published: persistence!.published, snapshots: persistence!.snapshots,
+      mutationCoordinator: persistence!.coordinator, runtime, assetMetadata: persistence!.assetMetadata,
+      modelDistributor, now,
+    });
+    await publisher().execute({
+      creatorId: 'manager-a', draftId: initial.draft.draftId, expectedDraftRevision: model.outcome.draft.draftRevision,
+      expectedPublishedRevision: null,
+    });
+    const locationId = initial.draft.locationId;
+    const startEdit = (creatorId: string, baseRevision: number, draftId: string) => new StartLocationEditDraftUseCase({
+      drafts: persistence!.drafts, snapshots: persistence!.snapshots, mutationCoordinator: persistence!.coordinator,
+      now, createDraftId: () => draftId,
+    }).execute({ creatorId, locationId, expectedPublishedRevision: baseRevision });
+    const readAsset = () => new ReadLocationDraftAssetUseCase({
+      drafts: persistence!.drafts, published: persistence!.published,
+      metadata: persistence!.assetMetadata, assets: persistence!.assets,
+    });
+    const assertInheritedPreviews = async (creatorId: string, draftId: string) => {
+      const reader = readAsset();
+      const planPreview = await reader.execute({ creatorId, draftId, assetId: plan.metadata.assetId });
+      const modelPreview = await reader.execute({ creatorId, draftId, assetId: model.metadata.assetId });
+      assert.deepEqual(planPreview.bytes, planBytes);
+      assert.deepEqual(modelPreview.bytes, modelBytes);
+      await assert.rejects(reader.execute({ creatorId, draftId, assetId: unrelatedPrivate.assetId }), /asset/i,
+        'a creator-private upload not referenced by the pinned published revision is not readable through another manager draft');
+    };
+
+    const managerBDraft = await startEdit('manager-b', 1, '00000000-0000-4000-8000-000000000092');
+    assert.equal(managerBDraft.draft.assetProvenance?.planAssetId?.kind, 'upload');
+    assert.equal(managerBDraft.draft.assetProvenance?.planAssetId?.kind === 'upload'
+      ? managerBDraft.draft.assetProvenance.planAssetId.ownerId : undefined, 'manager-a');
+    assert.equal(managerBDraft.draft.assetProvenance?.modelAssetId?.kind, 'upload');
+    assert.equal(managerBDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
+      ? managerBDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+    await assertInheritedPreviews('manager-b', managerBDraft.draft.draftId);
+    const editB = exposeLocationCandidate(managerBDraft.draft.document, managerBDraft.draft.legacySpatial) as { name: string };
+    editB.name = 'Edited by manager B';
+    const savedB = await save().execute({
+      creatorId: 'manager-b', draftId: managerBDraft.draft.draftId, expectedDraftRevision: 1, document: editB,
+    });
+    await publisher().execute({
+      creatorId: 'manager-b', draftId: managerBDraft.draft.draftId, expectedDraftRevision: savedB.draft.draftRevision,
+      expectedPublishedRevision: 1,
+    });
+
+    const managerCDraft = await startEdit('manager-c', 2, '00000000-0000-4000-8000-000000000093');
+    assert.equal(managerCDraft.draft.assetProvenance?.planAssetId?.kind === 'upload'
+      ? managerCDraft.draft.assetProvenance.planAssetId.ownerId : undefined, 'manager-a');
+    assert.equal(managerCDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
+      ? managerCDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+    await assertInheritedPreviews('manager-c', managerCDraft.draft.draftId);
+    const editC = exposeLocationCandidate(managerCDraft.draft.document, managerCDraft.draft.legacySpatial) as { name: string };
+    editC.name = 'Edited by manager C';
+    const savedC = await save().execute({
+      creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, expectedDraftRevision: 1, document: editC,
+    });
+    await publisher().execute({
+      creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, expectedDraftRevision: savedC.draft.draftRevision,
+      expectedPublishedRevision: 2,
+    });
+
+    let history = await persistence.published.listHistory(locationId);
+    assert.deepEqual(history.map((revision) => revision.revision), [1, 2, 3]);
+    for (const revision of history) {
+      assert.equal(revision.assetProvenance?.planAssetId?.kind, 'upload');
+      assert.equal(revision.assetProvenance?.planAssetId?.ownerId, 'manager-a');
+      assert.equal(revision.assetProvenance?.modelAssetId?.kind, 'upload');
+      assert.equal(revision.assetProvenance?.modelAssetId?.ownerId, 'manager-a');
+    }
+    assert.deepEqual(distributorOwners, ['manager-a', 'manager-a', 'manager-a']);
+    assert.equal(await persistence.assets.read('manager-b', model.metadata.assetId), null);
+    assert.equal(await persistence.assets.read('manager-c', plan.metadata.assetId), null);
+
+    persistence.close();
+    persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDirectory);
+    history = await persistence.published.listHistory(locationId);
+    assert.deepEqual(history.map((revision) => revision.revision), [1, 2, 3]);
+    for (const revision of history) {
+      assert.equal(revision.assetProvenance?.modelAssetId?.kind === 'upload'
+        ? revision.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+    }
+    const reopenedReader = new ReadLocationDraftAssetUseCase({
+      drafts: persistence.drafts, published: persistence.published, metadata: persistence.assetMetadata, assets: persistence.assets,
+    });
+    const reopenedPlan = await reopenedReader.execute({
+      creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: plan.metadata.assetId,
+    });
+    const reopenedModel = await reopenedReader.execute({
+      creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: model.metadata.assetId,
+    });
+    assert.deepEqual(reopenedPlan.bytes, planBytes);
+    assert.deepEqual(reopenedModel.bytes, modelBytes);
+    await assert.rejects(reopenedReader.execute({
+      creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: unrelatedPrivate.assetId,
+    }), /asset/i);
+    assert.equal((await persistence.published.getActive(locationId))?.history.at(-1)?.document.name, 'Edited by manager C');
   } finally {
     persistence?.close();
     rmSync(directory, { recursive: true, force: true });

@@ -13,13 +13,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import type { ConsoleCore } from '../edge/console.js';
 import { flasherLogin } from './flasher-login.js';
 import { applicationErrorHandler } from '../infrastructure/http/errors.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
-import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuthConfig } from './auth.js';
+import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuth, type AlgoAuthConfig } from './auth.js';
 import { accountRoutes } from '../modules/algo-admin/controllers/accounts.js';
 import { ManageAccounts } from '../modules/algo-admin/use-cases/manage-accounts.js';
 import { FileAccountRepository } from '../infrastructure/algo-admin/file-account-repository.js';
@@ -83,6 +83,8 @@ export interface AlgoServerServices {
   tmflashRelease?: TMflashReleaseSource;
   /** What sends email; null for a server that cannot. Default: Amazon SES if EMAIL_FROM and EMAIL_SES_REGION are set. */
   mailer?: Mailer | null;
+  /** Location API owns its locations.manage and write-origin guards. */
+  locationApi?: (auth: AlgoAuth) => Router;
 }
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
@@ -293,6 +295,9 @@ export function startAlgo(
     assistant: assistantConfig ? new AskAssistant(new OllamaChatModel(assistantConfig), new KnowledgeFile(process.env.AI_KNOWLEDGE_FILE || join(ROOT, 'config', 'ai-knowledge.md')), liveFacts) : null,
     teamRolesOf: (name) => teamMembers().find((member) => member.name === name)?.teamRoles ?? [],
   }));
+  // Mount before auth.router's legacy 8 KiB JSON parser. This router applies
+  // its own 1 MiB document and bounded raw-asset parsers after its session gate.
+  if (services.locationApi) app.use('/api', services.locationApi(auth));
   app.use(auth.router);
   const nativeLogin = consoleCore ? flasherLogin(auth, consoleCore) : null;
   if (nativeLogin) app.use('/api/tmflash', express.json({ limit: '4kb' }), nativeLogin.machine);

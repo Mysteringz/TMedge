@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { InvalidLocationDocumentError, parseLocationDocument, isLocationId, type LocationDocument } from '../../modules/location-config/domain/location-document.js';
 import { parseLegacySpatialProvenance, type ValidatedLocationCandidate } from '../../modules/location-config/domain/location-candidate.js';
+import { parseLocationAssetProvenance } from '../../modules/location-config/domain/location-assets.js';
 import { LocationConflictError, LocationDraftNotFoundError, LocationStorageUnavailableError, type LocationDraft } from '../../modules/location-config/domain/location-records.js';
 import type { DraftWriteOutcome, LocationDraftRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
 import { atomicReplaceFile, fileSha256, verifyAndSyncFile, type AtomicFileOperations } from './atomic-file-write.js';
@@ -77,6 +78,7 @@ export class FileLocationDraftRepository implements LocationDraftRepository {
           updatedAt,
           document,
           legacySpatial: candidate.legacySpatial,
+          assetProvenance: candidate.assetProvenance,
         };
         rows[index] = saved;
         const write = writeRows(path, rows, this.writeOperations);
@@ -120,7 +122,7 @@ export class FileLocationDraftRepository implements LocationDraftRepository {
 function validateDraft(value: LocationDraft): LocationDraft {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Draft record is invalid.');
   const keys = Object.keys(value);
-  if (keys.some((key) => !['draftId', 'creatorId', 'locationId', 'draftRevision', 'basePublishedRevision', 'createdAt', 'updatedAt', 'document', 'legacySpatial'].includes(key))
+  if (keys.some((key) => !['draftId', 'creatorId', 'locationId', 'draftRevision', 'basePublishedRevision', 'createdAt', 'updatedAt', 'document', 'legacySpatial', 'assetProvenance'].includes(key))
     || !UUID_RE.test(value.draftId) || typeof value.creatorId !== 'string'
     || !isLocationId(value.locationId) || !Number.isSafeInteger(value.draftRevision) || value.draftRevision < 1
     || (value.basePublishedRevision !== null && (!Number.isSafeInteger(value.basePublishedRevision) || value.basePublishedRevision < 0))
@@ -131,17 +133,19 @@ function validateDraft(value: LocationDraft): LocationDraft {
   const document = parseLocationDocument(value.document);
   if (document.locationId !== value.locationId) throw new TypeError('Draft location ID must match its document.');
   const legacySpatial = parseLegacySpatialProvenance(value.legacySpatial);
+  const assetProvenance = parseLocationAssetProvenance(value.assetProvenance, document);
   if ((legacySpatial?.basePublishedRevision ?? null) !== (legacySpatial ? value.basePublishedRevision : null)) throw new TypeError('Draft legacy spatial provenance must match its pinned base revision.');
-  return { ...value, draftId: value.draftId.toLowerCase(), document, legacySpatial };
+  return { ...value, draftId: value.draftId.toLowerCase(), document, legacySpatial, assetProvenance };
 }
 
 function validateCandidate(value: ValidatedLocationCandidate): ValidatedLocationCandidate {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).some((key) => !['document', 'legacySpatial'].includes(key))) throw new TypeError('Draft candidate is invalid.');
+    || Object.keys(value).some((key) => !['document', 'legacySpatial', 'assetProvenance'].includes(key))) throw new TypeError('Draft candidate is invalid.');
   const document = parseLocationDocument(value.document);
   const legacySpatial = parseLegacySpatialProvenance(value.legacySpatial);
+  const assetProvenance = parseLocationAssetProvenance(value.assetProvenance, document);
   if (legacySpatial && value.legacySpatial?.basePublishedRevision !== legacySpatial.basePublishedRevision) throw new TypeError('Draft candidate provenance is invalid.');
-  return { document, legacySpatial };
+  return { document, legacySpatial, assetProvenance };
 }
 
 function readRows(path: string, ownerId: string): LocationDraft[] {

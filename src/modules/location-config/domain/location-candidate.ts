@@ -1,5 +1,6 @@
 import type { Rect } from '../../../shared/types.js';
 import { parseLocationDocument, type FloorPoint, type LocationDocument, type TrustedLegacyLocationBaseline } from './location-document.js';
+import type { LocationAssetProvenance } from './location-assets.js';
 
 export interface LegacySpatialProvenance {
   /** The immutable published revision from which these exact values were inherited. */
@@ -16,6 +17,7 @@ export interface LegacySpatialProvenance {
 export interface ValidatedLocationCandidate {
   document: LocationDocument;
   legacySpatial: LegacySpatialProvenance | null;
+  assetProvenance?: LocationAssetProvenance;
 }
 
 export interface LocationCandidateBase {
