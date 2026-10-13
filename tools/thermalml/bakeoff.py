@@ -110,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--replay', default='data/ml/replay', help='edge detector, production background')
     p.add_argument('--replay-empty', default='data/ml/replay-emptybg', help='edge detector, 19-Sept empty room')
     p.add_argument('--stored', default='data/ml/export-20261012/dataset.sql', help='for rf-overhead outputs')
+    p.add_argument('--models', default=','.join(RGB_MODELS), help='RGB candidates, comma-separated teacher folders')
+    p.add_argument('--fuse', action='append', help='name=a+b+c: a WBF ensemble of those candidates (repeatable)')
+    p.add_argument('--no-baselines', action='store_true', help='score only the RGB candidates')
     p.add_argument('--out', default='data/ml/reports/bakeoff.json')
     a = p.parse_args(argv)
 
@@ -131,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
     def rgb_boxes(model: str, d: str) -> dict:
         return json.load(open(os.path.join(a.teachers, model, 'locked', sensor_dir(UID), f'{d}.json')))['boxes']
 
-    boxes = {mdl: {d: rgb_boxes(mdl, d) for d in DAYS} for mdl in RGB_MODELS}
+    models = [x for x in a.models.split(',') if x]
+    fuses = [f.split('=', 1) for f in (a.fuse or ['ensemble_wbf=' + '+'.join(RGB_MODELS)])]
+    needed = sorted(set(models) | {x for _n, spec in fuses for x in spec.split('+')})
+    boxes = {mdl: {d: rgb_boxes(mdl, d) for d in DAYS} for mdl in needed}
     results: dict[str, dict] = {}
 
     def score(name: str, predict) -> None:
@@ -145,9 +151,13 @@ def main(argv: list[str] | None = None) -> int:
             frames.append(Frame(at, len(truth), len(pred), tp, fp, fn, dists))
         results[name] = summarise(frames)
 
-    for mdl in RGB_MODELS:
+    for mdl in models:
         score(mdl, lambda n, d, i, tid, rid, mdl=mdl: to_t([centre(b) for b in boxes[mdl][d][rid]]))
-    score('ensemble_wbf', lambda n, d, i, tid, rid: to_t([centre(b) for b in wbf([boxes[x][d][rid] for x in RGB_MODELS], 3)]))
+    for name, spec in fuses:
+        members = spec.split('+')
+        score(name, lambda n, d, i, tid, rid, members=members: to_t([centre(b) for b in wbf([boxes[x][d][rid] for x in members], len(members))]))
+    if a.no_baselines:
+        return finish(a, rows, labels, m, results, models, fuses)
 
     # rf-overhead: stored outputs only, on the frames it happens to have.
     stored = {}
@@ -163,10 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     def thermal(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
         return [(x, y) for (x, y) in points if inside_photo(m, x, y)]
 
-    def in_view_truth_ok() -> None:
-        pass
-
-    obs = {d: shards[d].observed for d in DAYS}
+    obs ={d: shards[d].observed for d in DAYS}
     score('firmware_observed', lambda n, d, i, tid, rid: thermal([(o['x'], o['y']) for o in (obs[d][i] or [])]) if obs[d][i] is not None else None)
     for key, root in (('edge_empty_room_bg', a.replay_empty), ('edge_production_bg', a.replay)):
         path = lambda d: os.path.join(root, 'locked', sensor_dir(UID), f'{d}.edge.json')
@@ -175,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
         rep = {d: json.load(open(path(d))) for d in DAYS}
         score(key, lambda n, d, i, tid, rid, rep=rep: thermal([(x[0], x[1]) for x in rep[d]['dets'][i]]) if rep[d]['ready'][i] else None)
 
+    return finish(a, rows, labels, m, results, models, fuses)
+
+
+def finish(a, rows, labels, m, results, models, fuses) -> int:
     report = {
         'generated': datetime.now(timezone(timedelta(hours=8))).isoformat(timespec='seconds'),
         'rule': 'docs/THERMAL_ML.md#scoring-the-hand-labelled-test',
@@ -182,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         'labelledPeople': sum(len(labels[r[0]]) for r in rows),
         'mapping': {k: m[k] for k in ('period', 'flipX', 'rms', 'framesUsed', 'excludedFrames')},
         'candidates': results,
-        'note': 'Teacher candidates: yolo11s, yolo26s, fasterrcnn_v2, ensemble_wbf. Others are baselines or partial.',
+        'teacherCandidates': models + [name for name, _spec in fuses],
+        'note': 'Candidates not listed in teacherCandidates are baselines or partial.',
     }
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, 'w') as f:

@@ -185,6 +185,47 @@ class Background(unittest.TestCase):
         self.assertTrue(math.isclose(median32(np.array([0.1, 0.2, 0.3], dtype=np.float32)), float(np.float32(0.2))))
 
 
+class Features(unittest.TestCase):
+    """What the detector sees; heatfeatures.ts is checked against these numbers in test/thermalml.test.ts."""
+
+    def frames(self, warm: callable, seconds: int, every_ms: int) -> tuple[list[np.ndarray], list[int]]:
+        rng = np.random.default_rng(5)
+        out, ats = [], []
+        for at in range(0, seconds * 1000, every_ms):
+            t = (22 + rng.normal(0, 0.05, (24, 32))).astype(np.float32)
+            t[10:12, 10:12] += warm(at)
+            out.append(t.ravel())
+            ats.append(at)
+        return out, ats
+
+    def last_features(self, warm: callable, every_ms: int = 1000):
+        from tools.thermalml.features import RecentMedian, features
+        frames, ats = self.frames(warm, 8 * 60, every_ms)
+        rm = RecentMedian()
+        for t, at in zip(frames, ats):
+            rm.add(t, at)
+        t = frames[-1]
+        return features(t, np.full(768, median32(t), dtype=np.float32), rm.recent()).reshape(3, 24, 32)
+
+    def test_someone_who_just_sat_down_is_positive_in_the_recent_channel(self) -> None:
+        f = self.last_features(lambda at: 4.0 if at > 7 * 60_000 else 0.0)
+        self.assertGreater(float(f[2, 10:12, 10:12].mean()), 0.5)
+
+    def test_a_chair_cooling_after_someone_left_is_negative_in_the_recent_channel_but_still_warm(self) -> None:
+        f = self.last_features(lambda at: 4.0 if at < 6 * 60_000 else 1.0)
+        self.assertLess(float(f[2, 10:12, 10:12].mean()), -0.3)
+        self.assertGreater(float(f[1, 10:12, 10:12].mean()), 0.1)
+
+    def test_the_recent_channel_means_the_same_at_one_frame_every_eight_seconds(self) -> None:
+        fast = self.last_features(lambda at: 4.0 if at > 7 * 60_000 else 0.0, every_ms=1000)
+        slow = self.last_features(lambda at: 4.0 if at > 7 * 60_000 else 0.0, every_ms=8000)
+        self.assertLess(abs(float(fast[2, 10:12, 10:12].mean()) - float(slow[2, 10:12, 10:12].mean())), 0.1)
+
+    def test_without_a_background_there_is_nothing_to_detect_from(self) -> None:
+        from tools.thermalml.features import features
+        self.assertIsNone(features(np.full(768, 22, dtype=np.float32), None, None))
+
+
 class Scoring(unittest.TestCase):
     """The scores everything else is judged by."""
 

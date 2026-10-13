@@ -98,6 +98,36 @@ so it cannot be bent to fit the results.
   the thermal frame. Hand labels are never used for it.
 - **Refused if the RMS is above 3 thermal px.**
 
+**Result, and the fine-tuning round (decided 2026-10-13).** The best
+off-the-shelf candidate, the ensemble, scored F1 0.841 (95% interval
+0.793–0.882), below 0.90. Kevin chose to fine-tune, scored two-fold by day.
+These settings were fixed before any fine-tuned model was trained:
+
+- **Models:** yolo11s and yolo26s from their COCO weights, single class person.
+  - Ultralytics training: imgsz 640, 60 epochs, batch 16, patience 20, seed 0.
+  - Default augmentation, plus vertical flips (`flipud` 0.5), because the view
+    is from overhead.
+  - Prediction as before: confidence ≥ 0.25, NMS IoU 0.7.
+- **Folds:**
+  - Fold A trains on 26 Sept and predicts 29 Sept. Fold B trains on 29 Sept
+    and predicts 26 Sept.
+  - Inside the training day, the last 20% of its labelled frames by time are
+    the validation set for early stopping. The other day is never seen.
+  - Together the folds give one honest prediction for each of the 400 frames.
+- **Candidates scored that way:**
+  - each fine-tuned model alone;
+  - the two fused (WBF, divided by 2);
+  - the two plus the untuned Faster R-CNN (WBF, divided by 3).
+
+  The same point-F1 rule picks the winner.
+- **The teacher that labels October** is the winner's recipe trained on all 400
+  frames, with the same settings (the last 20% of each day by time for early
+  stopping). Its quality is quoted as the two-fold score, never as a score on
+  frames it trained on.
+- **The thermal test is unchanged.** The thermal model never trains on
+  September, so fine-tuning the RGB teacher on September photos does not
+  touch the thermal frames it is tested on.
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 

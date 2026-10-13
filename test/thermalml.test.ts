@@ -19,6 +19,7 @@ import { GRID_SIZE, TYPE_RAW, type Raw } from '../src/edge/protocol.js';
 import { DEFAULT_STATIC_BACKGROUND, median, StaticBackground, type StaticBackgroundOptions } from '../src/edge/staticbg.js';
 import { replayAll, replayDayAgainst, type ReplayDay } from '../src/tools/replay.js';
 import { listShards, readShard, sensorDir } from '../src/tools/thermal-shards.js';
+import { heatFeatures, RecentMedian } from '../src/algo/heatfeatures.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RIG = '2c:cf:67:0b:c0:94';
@@ -188,4 +189,55 @@ test('a test day scored against a fixed background runs the edge segmenter again
   });
   assert.equal(day.dets[0]?.length, 0, 'the always-on heater is in the reference, so an empty room is empty');
   assert.ok((day.dets[3]?.length ?? 0) >= 1, 'the person is found');
+});
+
+test('the detector sees the same three channels on the edge as in training', (t) => {
+  // c0/c1/c2 are computed in Python for training and in heatfeatures.ts on
+  // the edge. Frames arrive at an irregular pace (0.3-9 s apart), as they do
+  // across the legacy, rig and bench recordings, so the 30-second slices of
+  // c2 are exercised the way production will exercise them.
+  const rand = rng(21);
+  const frames: { at: number; tMin: number; step: number; pixels: Uint8Array }[] = [];
+  let at = 1_790_000_000_000;
+  for (let i = 0; at < 1_790_000_000_000 + 9 * 60_000; i++) {
+    frames.push({ at, ...wireFrame(rand, at > 1_790_000_000_000 + 6 * 60_000) });
+    at += Math.round(300 + rand() * 8700);
+  }
+  const bgRel = new Float32Array(GRID_SIZE);
+  for (let p = 0; p < GRID_SIZE; p++) bgRel[p] = 0.4 * Math.sin((p % W) / 5) + ((((p % W) - 26) ** 2 + (Math.floor(p / W) - 5) ** 2) <= 4 ? 6 : 0);
+  const probe = frames.map((_, i) => i).filter((i) => i % 7 === 0 || i === frames.length - 1);
+  const input = join(mkdtempSync(join(tmpdir(), 'heatfeatures-')), 'frames.json');
+  writeFileSync(input, JSON.stringify({ probe, bgRel: Array.from(bgRel), frames: frames.map((f) => ({ at: f.at, tMin: f.tMin, step: f.step, pixels: Buffer.from(f.pixels).toString('base64') })) }));
+  let reference: { i: number; recent: boolean; f: number[] | null }[];
+  try {
+    reference = JSON.parse(execFileSync('python3', ['-m', 'tools.thermalml.features', input], {
+      cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, timeout: 60_000,
+    })) as typeof reference;
+  } catch (err) {
+    if (process.env.CI) throw err;
+    return t.skip(`the Python tools could not run here (numpy?): ${(err as Error).message.slice(0, 80)}`);
+  }
+  const recent = new RecentMedian();
+  const probes = new Set(probe);
+  let k = 0, worst = 0, withRecent = 0;
+  frames.forEach((f, i) => {
+    const temps = rawTemps({ tMin: f.tMin, step: f.step, pixels: f.pixels } as Raw);
+    recent.add(temps, f.at);
+    if (!probes.has(i)) return;
+    const level = median(temps);
+    const bg = new Float32Array(GRID_SIZE);
+    for (let p = 0; p < GRID_SIZE; p++) bg[p] = level + (bgRel[p] ?? 0);
+    const r = recent.recent();
+    const mine = heatFeatures(temps, bg, r);
+    const theirs = reference[k++];
+    assert.equal(theirs?.i, i);
+    assert.equal(theirs?.recent, r !== null, `frame ${i}: one side has 5-minute history and the other does not`);
+    if (r) withRecent++;
+    assert.ok(mine && theirs?.f);
+    for (let p = 0; p < 3 * GRID_SIZE; p++) worst = Math.max(worst, Math.abs((mine[p] ?? 0) - (theirs.f[p] ?? 0)));
+  });
+  assert.ok(withRecent >= 5, 'the sequence must be long enough for the 5-minute channel to exist');
+  assert.ok(worst < 1e-5, `features drift by ${worst}; features.py and heatfeatures.ts disagree`);
+  assert.equal(heatFeatures(rawTemps({ tMin: 20, step: 0.02, pixels: new Uint8Array(GRID_SIZE) } as Raw), null, null), null,
+    'no background, no features: the node is not-ready, never empty');
 });
