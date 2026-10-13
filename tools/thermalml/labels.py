@@ -91,6 +91,19 @@ def teacher_boxes(teacher: str, uid: str, day: str, members: list[str] | None) -
             {'name': 'wbf:' + '+'.join(members), 'fusion': 'weighted box fusion, IoU 0.55, sum/n, kept from 0.25'})
 
 
+def label_frames(rid_of: dict[str, str], boxes: dict[str, list], bright: dict[str, float], m: dict) -> tuple[dict, int]:
+    """Labels for thermal frames whose paired photo the teacher read: {thermal id: {pts, ign}}, and how many were too dark."""
+    frames, dark = {}, 0
+    for tid, rid in rid_of.items():
+        if rid not in boxes:
+            continue
+        if bright.get(rid, 0.0) < MIN_BRIGHTNESS:
+            dark += 1
+            continue
+        frames[tid] = frame_labels(boxes[rid], m)
+    return frames, dark
+
+
 def brightness(path: str) -> float:
     import cv2
     img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
@@ -107,14 +120,9 @@ def build(teacher_dir: str, mapping_path: str, rgb_root: str, uid: str, day_list
         boxes, model = teacher_boxes(teacher_dir, uid, day, members)
         pairs = read_pairs_index(rgb_root, uid, day)
         folder = os.path.join(rgb_root, sensor_dir(uid), day)
-        frames, dark = {}, 0
-        for tid, p in pairs.items():
-            if p['rgb'] not in boxes:
-                continue
-            if brightness(os.path.join(folder, f"{p['rgb']}.jpg")) < MIN_BRIGHTNESS:
-                dark += 1
-                continue
-            frames[tid] = frame_labels(boxes[p['rgb']], m)
+        rid_of = {tid: p['rgb'] for tid, p in pairs.items() if p['rgb'] in boxes}
+        bright = {rid: brightness(os.path.join(folder, f'{rid}.jpg')) for rid in rid_of.values()}
+        frames, dark = label_frames(rid_of, boxes, bright, m)
         dest = os.path.join(out, sensor_dir(uid), f'{day}.json')
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest + '.tmp', 'w') as f:

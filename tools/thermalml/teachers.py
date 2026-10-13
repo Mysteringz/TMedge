@@ -70,7 +70,8 @@ def frcnn_runner(device: str):
     from torchvision.models.detection import FasterRCNN_ResNet50_FPN_V2_Weights, fasterrcnn_resnet50_fpn_v2
     os.environ.setdefault('TORCH_HOME', os.path.join(WEIGHTS_DIR, 'torch'))
     weights = FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1
-    model = fasterrcnn_resnet50_fpn_v2(weights=weights, box_score_thresh=CONF).eval().to(device)
+    # progress=False: a percentage bar is thousands of characters in a SLURM log.
+    model = fasterrcnn_resnet50_fpn_v2(weights=weights, progress=False, box_score_thresh=CONF).eval().to(device)
     meta = {'name': 'fasterrcnn_v2', 'framework': f'torchvision {torchvision.__version__}', 'weights': str(weights),
             'conf': CONF, 'label': 'person (COCO 1)', 'device': device}
 

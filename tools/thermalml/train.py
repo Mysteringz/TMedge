@@ -50,7 +50,19 @@ def load_day(features_root: str, labels_root: str, shards_root: str, uid: str, d
     """Ready, labelled frames of one day, away from the day's boundaries."""
     f = load_features(features_root, uid, day)
     lab = json.load(open(os.path.join(labels_root, sensor_dir(uid), f'{day}.json')))
-    ids = read_shard(shards_root, uid, day).ids
+    return assemble(f, read_shard(shards_root, uid, day).ids, lab)
+
+
+def load_pack_day(pack_dir: str, labels_root: str, uid: str, day: str) -> dict:
+    """The same, from a training pack (hpc_pack.py) instead of the full feature cache and shards."""
+    with np.load(os.path.join(pack_dir, f'{day}.npz')) as z:
+        f = {k: z[k] for k in z.files}
+    meta = json.load(open(os.path.join(pack_dir, f'{day}.json')))
+    lab = json.load(open(os.path.join(labels_root, sensor_dir(uid), f'{day}.json')))
+    return assemble(f, meta['tid'], lab)
+
+
+def assemble(f: dict, ids: list[str], lab: dict) -> dict:
     keep = [i for i, tid in enumerate(ids)
             if f['ready'][i] and tid in lab['frames'] and not days.near_boundary(int(f['at'][i]))]
     return {
@@ -198,8 +210,9 @@ def evaluate(model, d: dict, every: int = 3) -> dict[float, dict]:
     with torch.no_grad():
         for s in range(0, len(idx), 512):
             b = idx[s:s + 512]
-            hm, off = model(torch.from_numpy(d['x'][b]))
-            hm, off = hm.numpy(), off.numpy()
+            dev = next(model.parameters()).device
+            hm, off = model(torch.from_numpy(d['x'][b]).to(dev))
+            hm, off = hm.cpu().numpy(), off.cpu().numpy()
             for k, i in enumerate(b):
                 known = d['footprint'][i]
                 truth = [(p[0], p[1]) for p in d['pts'][i]]
@@ -230,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--labels', required=True)
     p.add_argument('--features', default='data/ml/features')
     p.add_argument('--shards', default='data/ml/shards')
+    p.add_argument('--pack', help='read frames from a training pack (hpc_pack.py) instead of --features/--shards')
+    p.add_argument('--device', default='cpu', help='cpu, cuda or mps')
     p.add_argument('--uid', default='2c:cf:67:0b:c0:94')
     p.add_argument('--train-day', action='append', required=True)
     p.add_argument('--val-day', action='append', required=True)
@@ -246,13 +261,15 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit('a day cannot be both trained and validated on')
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
-    tr = concat([load_day(a.features, a.labels, a.shards, a.uid, d) for d in a.train_day])
-    va = concat([load_day(a.features, a.labels, a.shards, a.uid, d) for d in a.val_day])
+    load = (lambda d: load_pack_day(a.pack, a.labels, a.uid, d)) if a.pack else (lambda d: load_day(a.features, a.labels, a.shards, a.uid, d))
+    tr = concat([load(d) for d in a.train_day])
+    va = concat([load(d) for d in a.val_day])
     with_people = np.array([len(q) > 0 for q in tr['pts']])
     donors = donor_patches(tr, rng)
     print(f'train {len(tr["at"])} frames ({int(with_people.sum())} with people), val {len(va["at"])}, donors {len(donors)}', flush=True)
 
-    model = torch_model()
+    dev = torch.device(a.device)
+    model = torch_model().to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     steps = a.epochs * math.ceil(a.samples / a.batch)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.1)
@@ -270,9 +287,9 @@ def main(argv: list[str] | None = None) -> int:
                 x, pts, ign, known = augment(tr['x'][i], tr['xthin'][i], tr['pts'][i], tr['ign'][i], tr['footprint'][i], rng, donors)
                 hm, w, off, pos = targets(pts, ign, known)
                 xs.append(x); hms.append(hm); ws.append(w); offs.append(off); poss.append(pos)
-            X = torch.from_numpy(np.stack(xs))
-            HM, WGT = torch.from_numpy(np.stack(hms))[:, None], torch.from_numpy(np.stack(ws))[:, None]
-            OFF, POS = torch.from_numpy(np.stack(offs)), torch.from_numpy(np.stack(poss))[:, None]
+            X = torch.from_numpy(np.stack(xs)).to(dev)
+            HM, WGT = torch.from_numpy(np.stack(hms))[:, None].to(dev), torch.from_numpy(np.stack(ws))[:, None].to(dev)
+            OFF, POS = torch.from_numpy(np.stack(offs)).to(dev), torch.from_numpy(np.stack(poss))[:, None].to(dev)
             logits, off_pred = model(X)
             loss = focal(logits, HM, WGT, POS) + (torch.abs(off_pred - OFF) * POS).sum() / POS.sum().clamp(min=1)
             opt.zero_grad()
@@ -291,7 +308,8 @@ def main(argv: list[str] | None = None) -> int:
             best = row
             torch.save(model.state_dict(), os.path.join(a.out, 'best.pt'))
 
-    model.load_state_dict(torch.load(os.path.join(a.out, 'best.pt')))
+    model.load_state_dict(torch.load(os.path.join(a.out, 'best.pt'), map_location=dev))
+    model = model.cpu()
     meta = {'threshold': best['threshold'], 'trainedAt': int(time.time() * 1000), 'trainDays': a.train_day, 'valDays': a.val_day,
             'labels': os.path.basename(os.path.normpath(a.labels)), 'metrics': {'validation': best}, 'seed': a.seed}
     doc = finite(export(model, meta))
