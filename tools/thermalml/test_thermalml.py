@@ -332,6 +332,11 @@ class Scoring(unittest.TestCase):
         self.assertEqual(s['countMAE'], 0.5)
         self.assertEqual(s['exactCount'], 0.5)
 
+    def test_the_count_table_says_which_mistakes_are_made(self) -> None:
+        from tools.thermalml.metrics import Frame, confusion
+        c = confusion([Frame(0, 2, 2, 2, 0, 0), Frame(1, 2, 3, 2, 1, 0), Frame(2, 0, 1, 0, 1, 0), Frame(3, 7, 6, 6, 0, 1)])
+        self.assertEqual(c, {'0,1': 1, '2,2': 1, '2,3': 1, '4,4': 1})   # 7 and 6 people share the 4+ cell
+
     def test_intervals_resample_blocks_of_time_not_frames(self) -> None:
         from tools.thermalml.metrics import Frame, bootstrap
         # Two ten-minute blocks: one perfect, one all wrong. Frame-level

@@ -28,7 +28,7 @@ from .bakeoff import DAYS, UID, hand_labels, inside_photo
 from .dataset import load as load_features
 from .heatnet import decode, forward_np
 from .mapping import apply
-from .metrics import Frame, bootstrap, by_true_count, match, score_frames
+from .metrics import Frame, bootstrap, by_true_count, confusion, match, score_frames
 from .shards import read_shard
 
 RADIUS = 2.0
@@ -56,7 +56,7 @@ def run(model_path: str, why: str, mapping_path: str = 'data/ml/mapping/2ccf670b
             frames.append(Frame(int(f['at'][i]), len(truth), len(pred), tp, fp, fn, dists))
     if len(frames) != len(labels):
         raise SystemExit(f'only {len(frames)} of {len(labels)} hand-labelled frames were found')
-    result = {'all': score_frames(frames), 'byTrueCount': by_true_count(frames), 'ci95': bootstrap(frames)}
+    result = {'all': score_frames(frames), 'byTrueCount': by_true_count(frames), 'confusion': confusion(frames), 'ci95': bootstrap(frames)}
     entry = {'at': datetime.now(timezone(timedelta(hours=8))).isoformat(timespec='seconds'), 'model': model.get('id'),
              'modelFile': model_path, 'why': why, 'frames': len(frames), 'background': '19-Sept empty room',
              'f1': result['all']['f1'], 'f1ci95': result['ci95']['f1'], 'countMAE': result['all']['countMAE']}

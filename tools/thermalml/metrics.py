@@ -117,6 +117,15 @@ def by_true_count(frames: list[Frame]) -> dict[str, dict]:
     return {k: score_frames(v) for k, v in sorted(groups.items())}
 
 
+def confusion(frames: list[Frame], cap: int = 4) -> dict[str, int]:
+    """How often a frame with t people was read as p people, as {"t,p": frames}; counts above `cap` share a row."""
+    out: dict[str, int] = {}
+    for f in frames:
+        key = f'{min(f.truth, cap)},{min(f.pred, cap)}'
+        out[key] = out.get(key, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def bootstrap(frames: list[Frame], block_ms: int = 600_000, n: int = 2000, seed: int = 11) -> dict[str, list[float]]:
     """95% intervals for F1 and count MAE, resampling whole blocks of time."""
     blocks: dict[int, list[Frame]] = {}

@@ -25,7 +25,7 @@ import os
 import numpy as np
 
 from .heatnet import decode, forward_np
-from .metrics import Frame, bootstrap, by_true_count, match, score_frames
+from .metrics import Frame, bootstrap, by_true_count, confusion, match, score_frames
 from .shards import sensor_dir
 from .train import H, RADIUS, W, finite, load_day
 
@@ -42,7 +42,7 @@ def score(d: dict, predict) -> dict:
         truth = [(p[0], p[1]) for p in d['pts'][i]]
         tp, fp, fn, dist = match(truth, pred, RADIUS)
         frames.append(Frame(int(d['at'][i]), len(truth), len(pred), tp, fp, fn, dist))
-    return {'all': score_frames(frames), 'byTrueCount': by_true_count(frames), 'ci95': bootstrap(frames)}
+    return {'all': score_frames(frames), 'byTrueCount': by_true_count(frames), 'confusion': confusion(frames), 'ci95': bootstrap(frames)}
 
 
 def edge_points(replay_root: str, uid: str, day: str, at: np.ndarray):
