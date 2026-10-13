@@ -22,6 +22,10 @@ const artifacts = resolve(process.env.LOCATION_EDITOR_ARTIFACT_DIR ?? 'tmp/task-
 const tempRoot = resolve('tmp/wizard-e2e');
 const planPng = resolve('../.codex/docs/new-location-add-wizard/task-2-3-location-api-and-assets/artifacts/synthetic-assets/valid-plan.png');
 const planJpg = resolve('../.codex/docs/new-location-add-wizard/task-2-3-location-api-and-assets/artifacts/synthetic-assets/valid-plan.jpg');
+const texturedGlb = resolve('../tmp/new-location-add-wizard/task-3-3-qa-preparation/qa-self-contained-textured-triangle.glb');
+const externalGlb = resolve('../tmp/new-location-add-wizard/task-3-3-qa-preparation/qa-external-resource-rejected.glb');
+const truncatedGlb = resolve('../tmp/new-location-add-wizard/task-3-3-qa-preparation/qa-truncated-file-rejected.glb');
+const malformedHeaderGlb = resolve('../tmp/new-location-add-wizard/task-3-3-qa-preparation/qa-malformed-header-rejected.glb');
 mkdirSync(artifacts, { recursive: true });
 mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
 const fixtureRoot = mkdtempSync(join(tempRoot, 'run-'));
@@ -50,6 +54,55 @@ function legacyOutline() {
   return points;
 }
 
+function createMalformedEmbeddedImage(sourcePath, targetPath) {
+  const bytes = readFileSync(sourcePath);
+  const jsonLength = bytes.readUInt32LE(12);
+  const json = JSON.parse(bytes.toString('utf8', 20, 20 + jsonLength).trim());
+  const imageView = json.bufferViews[json.images[0].bufferView];
+  const binaryStart = 20 + jsonLength + 8;
+  const imageStart = binaryStart + (imageView.byteOffset ?? 0);
+  bytes.fill(0, imageStart, imageStart + imageView.byteLength);
+  writeFileSync(targetPath, bytes);
+  return targetPath;
+}
+
+function createDataUriEmbeddedImage(sourcePath, targetPath) {
+  const source = readFileSync(sourcePath);
+  const sourceJsonLength = source.readUInt32LE(12);
+  const document = JSON.parse(source.toString('utf8', 20, 20 + sourceJsonLength).trim());
+  const sourceBinaryHeader = 20 + sourceJsonLength;
+  const sourceBinaryLength = source.readUInt32LE(sourceBinaryHeader);
+  const sourceBinaryStart = sourceBinaryHeader + 8;
+  const imageView = document.bufferViews[document.images[0].bufferView];
+  const imageStart = sourceBinaryStart + (imageView.byteOffset ?? 0);
+  const imageBytes = source.subarray(imageStart, imageStart + imageView.byteLength);
+  document.images[0].uri = `data:${document.images[0].mimeType};base64,${imageBytes.toString('base64')}`;
+  delete document.images[0].bufferView;
+
+  const jsonBytes = Buffer.from(JSON.stringify(document), 'utf8');
+  const paddedJsonLength = Math.ceil(jsonBytes.byteLength / 4) * 4;
+  const paddedJson = Buffer.alloc(paddedJsonLength, 0x20);
+  jsonBytes.copy(paddedJson);
+  const binary = source.subarray(sourceBinaryStart, sourceBinaryStart + sourceBinaryLength);
+  const totalLength = 12 + 8 + paddedJsonLength + 8 + binary.byteLength;
+  const result = Buffer.alloc(totalLength);
+  result.writeUInt32LE(0x46546c67, 0);
+  result.writeUInt32LE(2, 4);
+  result.writeUInt32LE(totalLength, 8);
+  result.writeUInt32LE(paddedJsonLength, 12);
+  result.writeUInt32LE(0x4e4f534a, 16);
+  paddedJson.copy(result, 20);
+  const binaryHeader = 20 + paddedJsonLength;
+  result.writeUInt32LE(binary.byteLength, binaryHeader);
+  result.writeUInt32LE(0x004e4942, binaryHeader + 4);
+  binary.copy(result, binaryHeader + 8);
+  writeFileSync(targetPath, result);
+  return targetPath;
+}
+
+const malformedEmbeddedImageGlb = createMalformedEmbeddedImage(texturedGlb, join(fixtureRoot, 'malformed-embedded-image.glb'));
+const dataUriTexturedGlb = createDataUriEmbeddedImage(texturedGlb, join(fixtureRoot, 'data-uri-textured-image.glb'));
+
 const siteSeed = {
   site: { id: 'wizard-e2e-site', name: 'Synthetic Location Wizard QA' },
   floors: [{
@@ -57,6 +110,9 @@ const siteSeed = {
     outline: legacyOutline(),
     zones: [{ id: 'qa-legacy-zone', name: 'Legacy area', polygon: [[-10, -10], [410, -10], [400, 300]] }],
     tables: [{ id: 'QA-LEGACY-TABLE', name: 'Legacy rectangle', zone: 'qa-legacy-zone', x: 0, y: 100, width: 40, height: 60, capacity: 1 }],
+    model: { assetId: '00000000-0000-4000-8000-000000000033', transform: {
+      scale: { x: 1.1, y: 0.9, z: 1 }, rotationDeg: { x: 5, y: 15, z: -5 }, positionM: { x: 0.25, y: 0, z: -0.5 },
+    } },
   }],
 };
 writeFileSync(sitePath, JSON.stringify(siteSeed));
@@ -79,7 +135,8 @@ const cfg = {
 };
 
 let persistence, runtime, handle, browser;
-const browserErrors = [], network = [], checks = [];
+const browserErrors = [], network = [], checks = [], expectedBrowserEvents = [], externalBrowserRequests = [];
+let expectViewerModuleFailure = false, expectEmbeddedTextureFailure = false, expectRendererFailure = false;
 const jsonFrom = async (response) => {
   const envelope = await response.json();
   assert.ok(envelope && Object.hasOwn(envelope, 'data'), `expected API data envelope, got status ${response.status()}`);
@@ -145,10 +202,27 @@ async function run() {
     page.on('console', (message) => {
       if (message.type() !== 'error') return;
       const text = message.text();
+      if (expectViewerModuleFailure && /location-model-viewer\.js/i.test(text)) {
+        expectedBrowserEvents.push({ kind: 'viewer-module-retry', message: text.slice(0, 240) }); return;
+      }
+      if (expectEmbeddedTextureFailure && /couldn.t load texture/i.test(text)) {
+        expectedBrowserEvents.push({ kind: 'embedded-texture-parse-failure', message: text.slice(0, 240) }); return;
+      }
+      if (expectRendererFailure && /THREE\.WebGLRenderer: Error creating WebGL context/i.test(text)) {
+        expectedBrowserEvents.push({ kind: 'renderer-construction-failure', message: text.slice(0, 240) }); return;
+      }
       if (/server responded with a status of (?:409|503)/i.test(text)) return; // Deliberate conflict/unavailable recovery probes.
       browserErrors.push({ kind: 'console', message: text.slice(0, 300) });
     });
-    page.on('requestfailed', (request) => network.push({ method: request.method(), path: new URL(request.url()).pathname, result: 'failed' }));
+    page.on('requestfailed', (request) => network.push({
+      method: request.method(), path: new URL(request.url()).pathname,
+      result: 'failed', reason: request.failure()?.errorText ?? 'unknown',
+    }));
+    page.on('request', (request) => {
+      const url = request.url();
+      if (!url.startsWith(base) && !url.startsWith('data:') && !url.startsWith('blob:')
+        && !url.startsWith('https://fonts.googleapis.com/')) externalBrowserRequests.push(url);
+    });
     page.on('response', (response) => network.push({ method: response.request().method(), path: new URL(response.url()).pathname, status: response.status() }));
   };
 
@@ -165,6 +239,12 @@ async function run() {
       'existing signed-in workspace APIs remain available to non-location managers');
     assert.equal((await context.request.get(`${base}/api/locations`)).status(), 403);
     assert.equal((await context.request.get(`${base}/api/locations/drafts/not-owned`)).status(), 403);
+    assert.equal((await context.request.get(`${base}/location-model-viewer.js?attempt=1`)).status(), 404,
+      'the edge-hosted executable viewer entry is restricted to locations managers');
+    assert.equal((await context.request.get(`${base}/location-model-viewer/scene.js`)).status(), 404,
+      'the scene module is also restricted to locations managers');
+    assert.equal((await context.request.get(`${base}/location-model/vendor/three/three.module.js`)).status(), 404,
+      'the signed same-origin Three module mount is restricted to locations managers');
     await page.goto(`${base}/`);
     const search = page.getByRole('combobox', { name: 'Search the site or ask a question' });
     await search.waitFor(); await search.fill('Locations');
@@ -181,6 +261,17 @@ async function run() {
   const adminContext = await signIn('qa-admin');
   assert.equal((await adminContext.request.get(`${base}/api/me`)).status(), 200, 'admin session route remains reachable');
   assert.equal((await adminContext.request.get(`${base}/api/workspace/`)).status(), 200, 'admin workspace route remains reachable');
+  const locationShell = await adminContext.request.get(`${base}/locations`);
+  assert.equal(locationShell.status(), 200);
+  const locationCsp = locationShell.headers()['content-security-policy'] ?? '';
+  assert.match(locationCsp, /img-src 'self' data: blob:/, 'private plan previews use local image Blob URLs');
+  assert.match(locationCsp, /connect-src 'self' data: blob:/, 'self-contained data and loader-owned Blob image resources are allowed');
+  assert.doesNotMatch(locationCsp, /connect-src[^;]*(?:https?:|\*)/i, 'Blob support does not allow arbitrary network connections');
+  const allowedThree = await adminContext.request.get(`${base}/location-model/vendor/three/three.module.js`);
+  assert.equal(allowedThree.status(), 200, 'location managers can load the checked-in viewer core from the edge');
+  assert.match(allowedThree.headers()['cache-control'] ?? '', /no-store/);
+  const deniedVendorPath = await adminContext.request.get(`${base}/location-model/vendor/three/not-allowlisted.js`);
+  assert.equal(deniedVendorPath.status(), 404, 'the signed mount does not expose arbitrary vendor files');
   const page = await adminContext.newPage(); attachEvidence(page);
   await page.goto(`${base}/locations`);
   await page.getByRole('heading', { name: 'Locations', exact: true }).waitFor();
@@ -411,6 +502,9 @@ async function run() {
   assert.equal(await page.getByLabel('Mirror orientation').isChecked(), true, 'pointer drag preserves mirror');
 
   await sensorBButton.click();
+  await page.waitForFunction((testId) => document.querySelector(`[data-testid="${testId}"]`)?.getAttribute('aria-pressed') === 'true', 'location-sensor-aa-bb-cc-dd-ee-22');
+  await page.waitForFunction(() => document.querySelector('[aria-label="Position X (m)"]')?.value === '9.5',
+    undefined, { timeout: 5000 });
   assert.equal(await page.getByLabel('Position X (m)').inputValue(), '9.5');
   assert.equal(await page.getByLabel('Position Y (m)').inputValue(), '2.5');
   assert.equal(await page.getByLabel('Height (m)').inputValue(), '4');
@@ -823,6 +917,324 @@ async function run() {
   assert.equal(detail.document.planAssetId, confirmedUpload.document.planAssetId);
   checks.push('confirmed upload plus failed detail read retains its applied revision/preview and succeeds only after explicit reload');
 
+  // Exercise the actual signed-in model step, its same-origin module graph,
+  // immutable upload metadata, in-memory GLB parsing and transform persistence.
+  await page.addInitScript(() => {
+    const evidence = { createdUrls: [], revokedUrls: [], imageBitmapAttempts: 0, imageBitmapsCreated: 0, imageBitmapDecodeFailures: 0, imageBitmapsClosed: 0 };
+    const rendererFailurePending = sessionStorage.getItem('wizard-model-renderer-failure') !== 'used';
+    if (rendererFailurePending) sessionStorage.setItem('wizard-model-renderer-failure', 'used');
+    globalThis.__failLocationModelRenderer = rendererFailurePending;
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+      if (globalThis.__failLocationModelRenderer && /^(?:webgl2?|experimental-webgl)$/i.test(String(type))) return null;
+      return getContext.call(this, type, ...args);
+    };
+    const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => {
+      const url = create(blob);
+      evidence.createdUrls.push({ url, type: blob.type, stack: new Error().stack ?? '' });
+      return url;
+    };
+    URL.revokeObjectURL = (url) => { evidence.revokedUrls.push(String(url)); return revoke(url); };
+    const createBitmap = globalThis.createImageBitmap.bind(globalThis);
+    globalThis.createImageBitmap = async (...args) => {
+      evidence.imageBitmapAttempts += 1;
+      try {
+        const bitmap = await createBitmap(...args);
+        evidence.imageBitmapsCreated += 1;
+        return bitmap;
+      } catch (error) {
+        evidence.imageBitmapDecodeFailures += 1;
+        throw error;
+      }
+    };
+    const bitmapPrototype = globalThis.ImageBitmap?.prototype;
+    const close = bitmapPrototype && Object.getOwnPropertyDescriptor(bitmapPrototype, 'close');
+    if (close?.value && close.configurable) Object.defineProperty(bitmapPrototype, 'close', {
+      ...close, value() { evidence.imageBitmapsClosed += 1; return close.value.call(this); },
+    });
+    Object.defineProperty(globalThis, '__locationModelResourceEvidence', { value: evidence, configurable: false });
+  });
+  await page.reload();
+  await page.getByLabel('Location name').waitFor();
+  await page.evaluate(() => { globalThis.__failLocationModelRenderer = false; });
+  let failModelRead = true;
+  await page.getByTestId('location-step-model').click();
+  await page.waitForURL(new RegExp(`/locations/${draftId}/model$`));
+  await page.getByRole('heading', { name: '3D model', exact: true }).waitFor();
+  await page.route('**/api/locations/drafts/*/assets/*', async (route) => {
+    const request = route.request();
+    if (failModelRead && request.method() === 'GET' && request.headers().accept === 'model/gltf-binary') {
+      failModelRead = false;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_UNAVAILABLE', message: 'Synthetic model-preview failure.' } }) });
+      return;
+    }
+    await route.continue();
+  });
+  let releaseModelUpload, markModelUploadStarted;
+  let gatedModelUploadStatus;
+  const modelUploadStarted = new Promise((done) => { markModelUploadStarted = done; });
+  await page.route(`**/api/locations/drafts/${draftId}/assets/model`, async (route) => {
+    const response = await route.fetch();
+    gatedModelUploadStatus = response.status();
+    markModelUploadStarted();
+    await new Promise((done) => { releaseModelUpload = done; });
+    await route.fulfill({ response });
+  });
+  const publicUploadResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === `/api/locations/drafts/${draftId}/assets/model`, { timeout: 45000 })
+    .then((response) => ({ response }), (error) => ({ error }));
+  const modelFileInput = page.getByTestId('location-model-upload');
+  await modelFileInput.waitFor({ state: 'visible' });
+  assert.equal(await modelFileInput.isDisabled(), false, 'model upload is enabled after authoritative draft recovery');
+  await modelFileInput.setInputFiles({
+    name: 'QA textured alignment.glb', mimeType: 'model/gltf-binary', buffer: readFileSync(texturedGlb),
+  });
+  const uploadRouteStarted = await Promise.race([
+    modelUploadStarted.then(() => true), new Promise((done) => setTimeout(() => done(false), 10000)),
+  ]);
+  assert.equal(uploadRouteStarted, true, `the GLB upload request reached the edge route; UI problem: ${await page.locator('.loc-alert').allInnerTexts()}`);
+  try {
+    await page.getByTestId('location-model-upload-progress').waitFor({ state: 'visible' });
+    assert.equal(await page.getByTestId('location-model-save-draft').isDisabled(), true,
+      'draft writes cannot race an upload transaction');
+    assert.equal(await page.getByTestId('location-model-continue').isDisabled(), true,
+      'navigation cannot leave the upload transaction pending');
+  } finally { releaseModelUpload(); }
+  const uploadEvent = await publicUploadResponse;
+  assert.ok('response' in uploadEvent, `the model upload returned a browser response: ${'error' in uploadEvent ? uploadEvent.error : ''}`);
+  const publicUpload = uploadEvent.response;
+  assert.equal(gatedModelUploadStatus, 200); assert.equal(publicUpload.status(), 200);
+  await page.unroute(`**/api/locations/drafts/${draftId}/assets/model`);
+  await page.getByTestId('location-model-preview-retry').waitFor();
+  await page.getByTestId('location-model-preview-retry').click();
+  await page.getByText('GLB preview loaded.', { exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('[data-testid="location-model-viewer"] tm-location-model-viewer')?.scene?.modelRoot?.children?.length > 0);
+  const firstModel = await readDraft(adminContext, base, draftId);
+  const firstModelId = firstModel.document.modelAssetId;
+  assert.ok(firstModelId);
+  assert.equal(firstModel.assetCapabilities.modelAssetId.displayName, 'QA textured alignment.glb');
+  assert.equal(firstModel.assetCapabilities.modelAssetId.fromPublishedBase, false);
+  assert.equal(Object.hasOwn(firstModel.document, 'assetProvenance'), false, 'model provenance stays outside authored documents');
+  assert.equal(Object.hasOwn(firstModel.assetCapabilities.modelAssetId, 'ownerId'), false, 'safe model capabilities omit owner IDs');
+  assert.match(await page.getByTestId('location-model-delivery-status').innerText(), /student delivery will be verified during publication/);
+  const allowedVendorFiles = ['three.module.js', 'GLTFLoader.js', 'BufferGeometryUtils.js', 'OrbitControls.js'];
+  for (const file of allowedVendorFiles) {
+    assert.ok(network.some((item) => item.path === `/location-model/vendor/three/${file}` && item.status === 200),
+      `the signed browser import graph resolves ${file} from the edge release`);
+  }
+  assert.ok(network.some((item) => item.path === `/api/locations/drafts/${draftId}/assets/${firstModelId}` && item.status === 200),
+    'uploaded model bytes are read only from the exact owned-draft asset route');
+  assert.equal(await page.getByText(firstModelId, { exact: true }).count(), 0, 'the opaque asset ID is not displayed in the editor');
+  await page.screenshot({ path: join(artifacts, 'model-preview-loaded.png'), fullPage: true });
+
+  const previewPath = `/api/locations/drafts/${draftId}/assets/${firstModelId}`;
+  const readCountBeforeTransform = network.filter((item) => item.path === previewPath && item.method === 'GET').length;
+  const transformInputs = [
+    ['Scale X', '1.25'], ['Rotation X (°)', '15.5'], ['Rotation Y (°)', '90'], ['Rotation Z (°)', '-30'],
+    ['Position X (m)', '0.25'], ['Position Y (m)', '1.5'], ['Position Z (m)', '-2.125'],
+  ];
+  for (const [label, value] of transformInputs) { const field = page.getByLabel(label); await field.fill(value); await field.press('Tab'); }
+  const transformState = await page.locator('[data-testid="location-model-viewer"] tm-location-model-viewer').evaluate((viewer) => ({
+    scale: viewer.scene.modelRoot.scale.toArray(), rotation: viewer.scene.modelRoot.rotation.toArray(), position: viewer.scene.modelRoot.position.toArray(),
+    overlayPosition: viewer.scene.overlay.position.toArray(), overlayCount: viewer.scene.overlay.children.length,
+  }));
+  assert.deepEqual(transformState.scale, [1.25, 1, 1]);
+  assert.deepEqual(transformState.rotation.slice(0, 3), [15.5 * Math.PI / 180, Math.PI / 2, -Math.PI / 6]);
+  assert.deepEqual(transformState.position, [0.25, 1.5, -2.125]);
+  assert.deepEqual(transformState.overlayPosition, [0, 0, 0], 'the GLB transform never moves the fixed authored overlay group');
+  assert.ok(transformState.overlayCount > 0, 'table, seat and current-draft sensor overlays stay in the separate scene group');
+  assert.equal(network.filter((item) => item.path === previewPath && item.method === 'GET').length, readCountBeforeTransform,
+    'numeric transform edits do not refetch immutable model bytes');
+  await page.getByTestId('location-model-save-draft').click();
+  await page.getByText('Draft saved · private', { exact: true }).waitFor();
+  let alignedDraft = await readDraft(adminContext, base, draftId);
+  assert.deepEqual(alignedDraft.document.modelTransform, {
+    scale: { x: 1.25, y: 1, z: 1 }, rotationDeg: { x: 15.5, y: 90, z: -30 }, positionM: { x: 0.25, y: 1.5, z: -2.125 },
+  });
+  let failViewerModule = true;
+  expectViewerModuleFailure = true;
+  await page.route((url) => new URL(url).pathname === '/location-model-viewer.js', async (route) => {
+    if (failViewerModule) {
+      failViewerModule = false;
+      expectedBrowserEvents.push({ kind: 'viewer-module-503', status: 503, path: '/location-model-viewer.js' });
+      await route.fulfill({ status: 503, contentType: 'text/plain', body: 'Synthetic viewer-module failure.' });
+      return;
+    }
+    await route.continue();
+  });
+  expectRendererFailure = true;
+  await page.evaluate(() => sessionStorage.removeItem('wizard-model-renderer-failure'));
+  await page.reload();
+  await page.getByRole('heading', { name: '3D model', exact: true }).waitFor();
+  await page.getByTestId('location-model-viewer-retry').waitFor();
+  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'viewer-module-503'), 'viewer module failure is captured on reload');
+  await page.getByTestId('location-model-viewer-retry').click();
+  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'viewer-module-503'), 'viewer module failure is captured on reload');
+  await page.getByText('The 3D preview could not be started in this browser. Retry the viewer.', { exact: true }).waitFor();
+  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'renderer-construction-failure'), 'renderer construction failure is distinct from GLB parsing and has an actionable retry');
+  expectRendererFailure = false;
+  await page.evaluate(() => { globalThis.__failLocationModelRenderer = false; });
+  await page.getByTestId('location-model-viewer-retry').click();
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="location-model-viewer"] tm-location-model-viewer')?.scene);
+  expectViewerModuleFailure = false;
+  await page.getByText('GLB preview loaded.', { exact: true }).waitFor();
+  alignedDraft = await readDraft(adminContext, base, draftId);
+  assert.deepEqual(alignedDraft.document.modelTransform.positionM, { x: 0.25, y: 1.5, z: -2.125 },
+    'the exact model transform survives private save and page reload');
+  assert.equal(alignedDraft.assetCapabilities.modelAssetId.displayName, 'QA textured alignment.glb');
+  assert.equal(await page.getByTestId('location-model-filename').innerText(), 'QA textured alignment.glb · This draft · private');
+  const resourcesAfterFirstLoad = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
+  assert.ok(resourcesAfterFirstLoad.createdUrls.length >= 1, 'the embedded texture path created a temporary image URL');
+  const embeddedTextureUrls = resourcesAfterFirstLoad.createdUrls.filter((item) => /GLTFLoader\.js/.test(item.stack)).map((item) => item.url);
+  assert.ok(embeddedTextureUrls.length >= 1, 'the embedded GLB texture creates an image/png object URL');
+  assert.deepEqual(resourcesAfterFirstLoad.revokedUrls.filter((url) => embeddedTextureUrls.includes(url)), embeddedTextureUrls,
+    'successful embedded texture loading revokes every GLTFLoader image URL');
+  const editorPlanResources = resourcesAfterFirstLoad.createdUrls.filter((item) => !/GLTFLoader\.js/.test(item.stack)
+    && /^image\/(?:png|jpeg)$/.test(item.type));
+  assert.ok(editorPlanResources.length > 0, 'the separate editor plan preview creates its own image Blob URL');
+  assert.ok(editorPlanResources.every((item) => !resourcesAfterFirstLoad.revokedUrls.includes(item.url)),
+    'the editor retains its plan-preview URL while the draft editor remains mounted');
+  assert.ok(resourcesAfterFirstLoad.imageBitmapsClosed <= resourcesAfterFirstLoad.imageBitmapsCreated,
+    'live preview bitmap cleanup never exceeds the number of browser-created resources');
+  if (resourcesAfterFirstLoad.imageBitmapsCreated > 0) {
+    assert.ok(resourcesAfterFirstLoad.imageBitmapsClosed < resourcesAfterFirstLoad.imageBitmapsCreated,
+      'the active GLB retains its ImageBitmap until replacement or viewer unmount');
+  }
+  const loadedTextureEvidence = await page.locator('[data-testid="location-model-viewer"] tm-location-model-viewer').evaluate((viewer) => {
+    const textures = new Set(), objects = [];
+    viewer.scene.modelRoot.traverse((object) => {
+      const materials = Array.isArray(object.material) ? object.material : object.material ? [object.material] : [];
+      objects.push({ type: object.type, materials: materials.map((material) => ({ type: material.type, keys: Object.keys(material) })) });
+      for (const material of materials) for (const value of Object.values(material)) if (value?.isTexture) textures.add(value);
+    });
+    return { count: textures.size, objects };
+  });
+  assert.ok(loadedTextureEvidence.count > 0, `the embedded GLB texture is present in the live scene: ${JSON.stringify(loadedTextureEvidence)}`);
+  await page.screenshot({ path: join(artifacts, 'model-transform-reloaded.png'), fullPage: true });
+
+  // Local preflight rejects malformed candidates before save or upload and
+  // leaves both the persisted reference and unsaved local alignment untouched.
+  const savedBeforeInvalid = await readDraft(adminContext, base, draftId);
+  await page.getByLabel('Position X (m)').fill('0.375');
+  await page.getByLabel('Position X (m)').press('Tab');
+  const expectNoDraftWrite = () => page.waitForRequest((request) => request.method() === 'PUT'
+    && new URL(request.url()).pathname.startsWith(`/api/locations/drafts/${draftId}`), { timeout: 1200 })
+    .then(() => true, () => false);
+  const invalidFiles = [
+    { path: externalGlb, label: 'external resource' },
+    { path: truncatedGlb, label: 'truncated' },
+    { path: malformedHeaderGlb, label: 'malformed container' },
+    { path: malformedEmbeddedImageGlb, label: 'malformed embedded image', displayName: 'QA malformed embedded image.glb' },
+  ];
+  for (const invalid of invalidFiles) {
+    if (invalid.displayName) expectEmbeddedTextureFailure = true;
+    const requestSent = expectNoDraftWrite();
+    await page.getByTestId('location-model-upload').setInputFiles(invalid.displayName ? {
+      name: invalid.displayName, mimeType: 'model/gltf-binary', buffer: readFileSync(invalid.path),
+    } : invalid.path);
+    await page.getByText(/could not be decoded for preview/i).waitFor();
+    assert.equal(await requestSent, false, `${invalid.label} rejection sends no draft save or model upload request`);
+    assert.equal(await page.getByTestId('location-model-upload-retry').isEnabled(), true);
+    assert.equal(await page.getByTestId('location-model-save-draft').isDisabled(), true);
+    assert.equal(await page.getByTestId('location-model-continue').isDisabled(), true);
+    assert.equal(await page.getByLabel('Position X (m)').inputValue(), '0.375', 'preflight preserves unsaved alignment edits');
+    assert.equal(await page.getByTestId('location-model-filename').innerText(), 'QA textured alignment.glb · This draft · private');
+    const pendingText = await page.getByTestId('location-model-pending-file').innerText();
+    assert.match(pendingText, /selected for private draft upload/);
+    if (invalid.displayName) assert.ok(pendingText.includes(invalid.displayName));
+    const unchanged = await readDraft(adminContext, base, draftId);
+    assert.equal(unchanged.document.modelAssetId, firstModelId);
+    assert.equal(unchanged.draftRevision, savedBeforeInvalid.draftRevision, 'preflight does not advance the saved draft revision');
+    assert.deepEqual(unchanged.document.modelTransform, savedBeforeInvalid.document.modelTransform);
+    await page.getByTestId('location-model-upload-clear').click();
+    assert.equal(await page.getByTestId('location-model-save-draft').isEnabled(), true);
+    if (invalid.displayName) expectEmbeddedTextureFailure = false;
+  }
+  const resourcesAfterBadImage = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
+  assert.ok(resourcesAfterBadImage.imageBitmapDecodeFailures > 0,
+    'the malformed embedded image is counted as a failed decode, not as a leaked ImageBitmap');
+  const malformedTextureUrls = resourcesAfterBadImage.createdUrls.filter((item) => /GLTFLoader\.js/.test(item.stack)).map((item) => item.url);
+  assert.deepEqual(resourcesAfterBadImage.revokedUrls.filter((url) => malformedTextureUrls.includes(url)), malformedTextureUrls,
+    'local malformed embedded-image parsing releases every GLTFLoader image URL');
+  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'embedded-texture-parse-failure'),
+    'the invalid embedded texture parser failure is captured');
+  assert.equal(externalBrowserRequests.length, 0, 'GLTF preflight and preview issue no off-edge requests');
+
+  const sharedReplacementResources = await page.evaluate(async () => {
+    const THREE = await import('/location-model/vendor/three/three.module.js');
+    const counters = { geometry: 0, material: 0, texture: 0, image: 0 };
+    const geometry = new THREE.BufferGeometry();
+    const image = { close() { counters.image += 1; } };
+    const texture = new THREE.Texture(image);
+    const material = new THREE.MeshBasicMaterial({ map: texture });
+    const trackDispose = (resource, key) => {
+      const dispose = resource.dispose.bind(resource);
+      resource.dispose = () => { counters[key] += 1; dispose(); };
+    };
+    trackDispose(geometry, 'geometry');
+    trackDispose(material, 'material');
+    trackDispose(texture, 'texture');
+    const root = document.querySelector('[data-testid="location-model-viewer"] tm-location-model-viewer').scene.modelRoot;
+    root.add(new THREE.Mesh(geometry, material), new THREE.Mesh(geometry, material));
+    Object.defineProperty(globalThis, '__sharedReplacementResources', { value: counters, configurable: true });
+    return counters;
+  });
+  assert.deepEqual(sharedReplacementResources, { geometry: 0, material: 0, texture: 0, image: 0 },
+    'resources shared by sibling meshes remain live until the current model is replaced');
+
+  const replacementResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === `/api/locations/drafts/${draftId}/assets/model`, { timeout: 10000 })
+    .then((response) => ({ response }), (error) => ({ error }));
+  await page.getByTestId('location-model-upload').setInputFiles({
+    name: 'QA replacement textured.glb', mimeType: 'model/gltf-binary', buffer: readFileSync(dataUriTexturedGlb),
+  });
+  const replacementEvent = await replacementResponse;
+  assert.ok('response' in replacementEvent,
+    `replacement reaches the upload route; status=${await page.getByTestId('location-model-upload').isDisabled()}, pending=${await page.getByTestId('location-model-pending-file').allInnerTexts()}, message=${await page.locator('.loc-model-upload-status').allInnerTexts()}, wait=${'error' in replacementEvent ? replacementEvent.error : ''}`);
+  assert.equal(replacementEvent.response.status(), 200);
+  await page.getByText('GLB preview loaded.', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.__sharedReplacementResources),
+    { geometry: 1, material: 1, texture: 1, image: 1 },
+    'replacement disposes each geometry, material, texture, and shared image exactly once across sibling meshes');
+  const replacedResources = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
+  assert.ok(replacedResources.imageBitmapsClosed > 0, 'replacing the successful textured model closes its released ImageBitmap');
+  assert.equal(await page.getByTestId('location-model-filename').innerText(), 'QA replacement textured.glb · This draft · private');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.getByTestId('location-model-zoom-in').isVisible());
+  assert.ok(await page.getByTestId('location-model-reset-view').isVisible());
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'the model step remains within a mobile viewport');
+  const modelViewer = page.locator('[data-testid="location-model-viewer"] tm-location-model-viewer');
+  const cameraDistanceBeforeZoom = await modelViewer.evaluate((viewer) => viewer.scene.camera.position.distanceTo(viewer.scene.controls.target));
+  await page.getByTestId('location-model-zoom-in').click();
+  const cameraDistanceAfterZoomIn = await modelViewer.evaluate((viewer) => viewer.scene.camera.position.distanceTo(viewer.scene.controls.target));
+  assert.ok(cameraDistanceAfterZoomIn < cameraDistanceBeforeZoom, 'Zoom in moves the camera closer to the fixed target');
+  await page.getByTestId('location-model-zoom-out').click();
+  const cameraDistanceAfterZoomOut = await modelViewer.evaluate((viewer) => viewer.scene.camera.position.distanceTo(viewer.scene.controls.target));
+  assert.ok(cameraDistanceAfterZoomOut > cameraDistanceAfterZoomIn, 'Zoom out moves the camera farther from the fixed target');
+  await page.getByTestId('location-model-reset-view').click();
+  await page.screenshot({ path: join(artifacts, 'model-preview-mobile.png'), fullPage: true });
+  await page.getByTestId('location-step-details').click();
+  await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
+  await page.getByAltText('Private floor plan background preview').waitFor();
+  const retainedPlanPreviewUrl = await page.getByAltText('Private floor plan background preview').getAttribute('src');
+  assert.ok(retainedPlanPreviewUrl?.startsWith('blob:'), 'the editor keeps its plan preview through model-step navigation');
+  assert.ok(editorPlanResources.some((item) => item.url === retainedPlanPreviewUrl),
+    'the active plan image is the separately tracked non-GLTF Blob URL');
+  const releasedResources = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
+  assert.equal(releasedResources.imageBitmapsClosed, releasedResources.imageBitmapsCreated,
+    'leaving the model step disposes every successful embedded texture ImageBitmap exactly once');
+  const allEmbeddedTextureUrls = releasedResources.createdUrls.filter((item) => /GLTFLoader\.js/.test(item.stack)).map((item) => item.url);
+  assert.deepEqual(releasedResources.revokedUrls.filter((url) => allEmbeddedTextureUrls.includes(url)), allEmbeddedTextureUrls,
+    'all successful and failed embedded-image parse paths revoke their object URLs');
+  await page.getByTestId('location-step-model').click();
+  await page.getByTestId('location-model-filename').waitFor();
+  await page.getByTestId('location-model-continue').click();
+  await page.getByRole('heading', { name: 'Review location', exact: true }).waitFor();
+  assert.equal(await page.getByTestId('location-review-model-filename').innerText(), 'QA replacement textured.glb');
+  assert.match(await page.locator('.loc-model-review').innerText(), /student delivery will be verified during publication/);
+  checks.push('signed model upload progress and private capability; edge-hosted four-module import graph; authenticated in-memory textured preview; exact transform/save/reload without refetch; malformed upload and embedded-image retry; object URL/ImageBitmap disposal; mobile camera controls; public delivery remains pending until explicit publication passed');
+
   // Review is read-only and separate; no publication occurs from a save or upload.
   await page.getByRole('navigation', { name: 'Location wizard steps' }).getByRole('button', { name: /Review/ }).click();
   await page.getByRole('heading', { name: 'Review location' }).waitFor();
@@ -914,6 +1326,12 @@ async function run() {
   // Explicit publication is separate from saving/review and returns to the list.
   await page.getByRole('button', { name: 'Back to locations', exact: true }).click();
   await page.getByRole('heading', { name: 'Locations', exact: true }).waitFor();
+  const resourcesAfterEditorUnmount = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
+  assert.ok(resourcesAfterEditorUnmount.revokedUrls.includes(retainedPlanPreviewUrl),
+    'the retained floor-plan Blob URL is revoked when the actual editor component unmounts');
+  const finalGlbImageUrls = resourcesAfterEditorUnmount.createdUrls.filter((item) => /GLTFLoader\.js/.test(item.stack)).map((item) => item.url);
+  assert.deepEqual(resourcesAfterEditorUnmount.revokedUrls.filter((url) => finalGlbImageUrls.includes(url)), finalGlbImageUrls,
+    'all GLTF-owned temporary URLs remain revoked after the editor unmounts');
   await page.getByRole('button', { name: 'Add location' }).click();
   const publishForm = page.getByRole('form', { name: 'Create a location draft' });
   await publishForm.getByLabel('Location name').fill('QA Published Location');
@@ -1089,7 +1507,7 @@ try {
   await run();
 } catch (error) {
   const safeMessage = error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 1200) : 'Unknown browser harness failure';
-  writeFileSync(join(artifacts, 'failure-trace.json'), JSON.stringify({ unexpectedFailure: safeMessage, network }, null, 2));
+  writeFileSync(join(artifacts, 'failure-trace.json'), JSON.stringify({ unexpectedFailure: safeMessage, network, browserErrors }, null, 2));
   throw error;
 } finally {
   if (browser) await browser.close();

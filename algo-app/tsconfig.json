@@ -14,5 +14,5 @@
     "verbatimModuleSyntax": true,
     "types": ["w3c-web-serial"]
   },
-  "include": ["src"]
+  "include": ["src", "../src/shared"]
 }

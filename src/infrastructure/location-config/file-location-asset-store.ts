@@ -3,6 +3,7 @@ import { link, lstat, mkdir, open, readFile, unlink, writeFile } from 'node:fs/p
 import { dirname, join } from 'node:path';
 import { syncDirectory, syncFileHandle } from '../../shared/directory-sync.js';
 import type { LocationAssetMetadata, LocationAssetPurpose } from '../../modules/location-config/domain/location-records.js';
+import { normalizeLocationAssetDisplayName } from '../../modules/location-config/domain/location-assets.js';
 import { LocationStorageUnavailableError } from '../../modules/location-config/domain/location-records.js';
 import type { LocationAssetMetadataRepository, LocationAssetStore } from '../../modules/location-config/repositories/location-storage.js';
 
@@ -34,14 +35,16 @@ export class FileLocationAssetStore implements LocationAssetStore, LocationAsset
     }
   }
 
-  async put(creatorId: string, purpose: LocationAssetPurpose, declaredMediaType: string, bytes: Uint8Array, createdAt = this.now()): Promise<LocationAssetMetadata> {
+  async put(creatorId: string, purpose: LocationAssetPurpose, declaredMediaType: string, bytes: Uint8Array, createdAt = this.now(), displayName?: string): Promise<LocationAssetMetadata> {
     validateCreator(creatorId);
     if (!(bytes instanceof Uint8Array)) throw new TypeError('Asset bytes must be a byte array.');
     const mediaType = validateAsset(purpose, declaredMediaType, bytes, this.maxImageBytes, this.maxModelBytes);
+    if (displayName !== undefined && purpose !== 'model') throw new TypeError('Only model uploads may have a display name.');
     const assetId = this.uuid().toLowerCase();
     if (!UUID_RE.test(assetId)) throw new Error('Asset ID generator returned an invalid UUID.');
     const metadata: LocationAssetMetadata = {
       assetId, creatorId, purpose, mediaType,
+      ...(displayName === undefined ? {} : { displayName: normalizeLocationAssetDisplayName(displayName) }),
       sha256: createHash('sha256').update(bytes).digest('hex'),
       byteLength: bytes.byteLength,
       createdAt: validTimestamp(createdAt),
@@ -222,7 +225,7 @@ function validTimestamp(value: number): number {
 }
 function validateMetadata(value: LocationAssetMetadata, maxImageBytes = DEFAULT_IMAGE_LIMIT, maxModelBytes = DEFAULT_MODEL_LIMIT): void {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).some((key) => !['assetId', 'creatorId', 'purpose', 'mediaType', 'sha256', 'byteLength', 'createdAt'].includes(key))) {
+    || Object.keys(value).some((key) => !['assetId', 'creatorId', 'purpose', 'mediaType', 'displayName', 'sha256', 'byteLength', 'createdAt'].includes(key))) {
     throw new TypeError('Asset metadata is invalid.');
   }
   if (!value || typeof value !== 'object' || !UUID_RE.test(value.assetId) || typeof value.creatorId !== 'string'
@@ -237,6 +240,10 @@ function validateMetadata(value: LocationAssetMetadata, maxImageBytes = DEFAULT_
   if ((value.purpose === 'model' && value.mediaType !== 'model/gltf-binary')
     || (value.purpose === 'floor-plan' && value.mediaType !== 'image/png' && value.mediaType !== 'image/jpeg')) {
     throw new TypeError('Asset media type does not match its purpose.');
+  }
+  if (value.displayName !== undefined && (value.purpose !== 'model'
+    || normalizeLocationAssetDisplayName(value.displayName) !== value.displayName)) {
+    throw new TypeError('Asset display name is invalid.');
   }
 }
 async function readMetadata(path: string, maxImageBytes: number, maxModelBytes: number): Promise<LocationAssetMetadata | null> {

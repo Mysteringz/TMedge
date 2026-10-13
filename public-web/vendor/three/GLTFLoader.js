@@ -3205,6 +3205,7 @@ class GLTFParser {
 
 		let sourceURI = sourceDef.uri || '';
 		let isObjectURL = false;
+		let objectURL = '';
 
 		if ( sourceDef.bufferView !== undefined ) {
 
@@ -3212,10 +3213,10 @@ class GLTFParser {
 
 			sourceURI = parser.getDependency( 'bufferView', sourceDef.bufferView ).then( function ( bufferView ) {
 
-				isObjectURL = true;
 				const blob = new Blob( [ bufferView ], { type: sourceDef.mimeType } );
-				sourceURI = URL.createObjectURL( blob );
-				return sourceURI;
+				objectURL = URL.createObjectURL( blob );
+				isObjectURL = true;
+				return objectURL;
 
 			} );
 
@@ -3224,6 +3225,18 @@ class GLTFParser {
 			throw new Error( 'THREE.GLTFLoader: Image ' + sourceIndex + ' is missing URI and bufferView' );
 
 		}
+
+		const cleanupObjectURL = function () {
+
+			if ( isObjectURL === true && objectURL ) {
+
+				URL.revokeObjectURL( objectURL );
+				objectURL = '';
+				isObjectURL = false;
+
+			}
+
+		};
 
 		const promise = Promise.resolve( sourceURI ).then( function ( sourceURI ) {
 
@@ -3252,17 +3265,15 @@ class GLTFParser {
 
 			// Clean up resources and configure Texture.
 
-			if ( isObjectURL === true ) {
-
-				URL.revokeObjectURL( sourceURI );
-
-			}
+			cleanupObjectURL();
 
 			texture.userData.mimeType = sourceDef.mimeType || getImageURIMimeType( sourceDef.uri );
 
 			return texture;
 
 		} ).catch( function ( error ) {
+
+			cleanupObjectURL();
 
 			console.error( 'THREE.GLTFLoader: Couldn\'t load texture', sourceURI );
 			throw error;

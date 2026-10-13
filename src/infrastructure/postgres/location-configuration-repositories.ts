@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { DataSource, EntityManager } from 'typeorm';
 import { InvalidLocationDocumentError, isLocationId, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../../modules/location-config/domain/location-document.js';
 import { parseLegacySpatialProvenance, revalidateLocationCandidate, type ValidatedLocationCandidate } from '../../modules/location-config/domain/location-candidate.js';
-import { parseLocationAssetProvenance, validateLocationAssetProvenanceTransition, legacyStaticModelProvenance, sameLocationAssetProvenance } from '../../modules/location-config/domain/location-assets.js';
+import { normalizeLocationAssetDisplayName, parseLocationAssetProvenance, validateLocationAssetProvenanceTransition, legacyStaticModelProvenance, sameLocationAssetProvenance } from '../../modules/location-config/domain/location-assets.js';
 import {
   LocationConflictError, LocationDraftNotFoundError, LocationStorageUnavailableError, UnknownRegistryCommitOutcomeError,
   type LocationAssetMetadata, type LocationDraft, type PublishedLocationRevision, type PublishedLocationState,
@@ -23,7 +23,7 @@ interface DraftRow {
 }
 interface PublishedRow { location_id: string; revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial?: unknown; asset_provenance?: unknown; }
 interface ActivePublishedRow extends PublishedRow { active_revision: number | string; }
-interface AssetRow { asset_id: string; creator_id: string; purpose: 'floor-plan' | 'model'; media_type: LocationAssetMetadata['mediaType']; sha256: string; byte_length: number | string; created_at: number | string; }
+interface AssetRow { asset_id: string; creator_id: string; purpose: 'floor-plan' | 'model'; media_type: LocationAssetMetadata['mediaType']; display_name?: string | null; sha256: string; byte_length: number | string; created_at: number | string; }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** PostgreSQL CAS adapter. A missing or foreign-owned row has the same result. */
@@ -118,9 +118,9 @@ export class PostgresLocationAssetMetadataRepository implements LocationAssetMet
     validateAssetMetadata(metadata);
     try {
       const result: unknown = await this.source.query(
-        `INSERT INTO public.location_assets (asset_id, creator_id, purpose, media_type, sha256, byte_length, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (asset_id) DO NOTHING RETURNING asset_id`,
-        [metadata.assetId, metadata.creatorId, metadata.purpose, metadata.mediaType, metadata.sha256, metadata.byteLength, metadata.createdAt],
+        `INSERT INTO public.location_assets (asset_id, creator_id, purpose, media_type, display_name, sha256, byte_length, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (asset_id) DO NOTHING RETURNING asset_id`,
+        [metadata.assetId, metadata.creatorId, metadata.purpose, metadata.mediaType, metadata.displayName ?? null, metadata.sha256, metadata.byteLength, metadata.createdAt],
       );
       const rows = queryRows<{ asset_id: string }>(result);
       if (!rows[0]) throw new LocationConflictError('Asset metadata is immutable and already exists.');
@@ -132,7 +132,7 @@ export class PostgresLocationAssetMetadataRepository implements LocationAssetMet
     if (!UUID_RE.test(assetId)) return null;
     try {
       const rows = await this.source.query(
-        `SELECT asset_id, creator_id, purpose, media_type, sha256, byte_length, created_at
+        `SELECT asset_id, creator_id, purpose, media_type, display_name, sha256, byte_length, created_at
          FROM public.location_assets WHERE creator_id = $1 AND asset_id = $2`, [creatorId, assetId],
       ) as AssetRow[];
       return rows[0] ? mapAsset(rows[0]) : null;
@@ -149,9 +149,9 @@ export class PostgresLocationAssetStore implements LocationAssetStore {
     this.metadata = new PostgresLocationAssetMetadataRepository(source);
   }
 
-  async put(creatorId: string, purpose: LocationAssetMetadata['purpose'], declaredMediaType: string, data: Uint8Array, createdAt: number): Promise<LocationAssetMetadata> {
+  async put(creatorId: string, purpose: LocationAssetMetadata['purpose'], declaredMediaType: string, data: Uint8Array, createdAt: number, displayName?: string): Promise<LocationAssetMetadata> {
     validateAsset(purpose, declaredMediaType, data);
-    const metadata = await this.bytes.put(creatorId, purpose, declaredMediaType, data, createdAt);
+    const metadata = await this.bytes.put(creatorId, purpose, declaredMediaType, data, createdAt, displayName);
     await this.metadata.saveAssetMetadata(metadata);
     return metadata;
   }
@@ -474,6 +474,7 @@ function mapAsset(row: AssetRow): LocationAssetMetadata {
     assetId: row.asset_id.toLowerCase(), creatorId: row.creator_id, purpose: row.purpose,
     mediaType: row.media_type, sha256: row.sha256, byteLength: toSafeInteger(row.byte_length, 'asset size'),
     createdAt: toSafeInteger(row.created_at, 'asset creation time'),
+    ...(typeof row.display_name === 'string' ? { displayName: row.display_name } : {}),
   };
   validateAssetMetadata(metadata);
   return metadata;
@@ -551,6 +552,10 @@ function validateAssetMetadata(metadata: LocationAssetMetadata): void {
     || (metadata.purpose === 'floor-plan' && metadata.mediaType !== 'image/png' && metadata.mediaType !== 'image/jpeg')) {
     throw new TypeError('Asset metadata is invalid.');
   }
+  if (metadata.displayName !== undefined && (metadata.purpose !== 'model'
+    || normalizeLocationAssetDisplayName(metadata.displayName) !== metadata.displayName)) {
+    throw new TypeError('Asset display name is invalid.');
+  }
 }
 
 function validateCreatorId(value: string): void {
@@ -559,7 +564,7 @@ function validateCreatorId(value: string): void {
 
 function sameAssetMetadata(a: LocationAssetMetadata, b: LocationAssetMetadata): boolean {
   return a.assetId === b.assetId && a.creatorId === b.creatorId && a.purpose === b.purpose && a.mediaType === b.mediaType
-    && a.sha256 === b.sha256 && a.byteLength === b.byteLength && a.createdAt === b.createdAt;
+    && a.displayName === b.displayName && a.sha256 === b.sha256 && a.byteLength === b.byteLength && a.createdAt === b.createdAt;
 }
 function sameAssignments(a: readonly LocationSensorAssignment[], b: readonly LocationSensorAssignment[]): boolean {
   const normalize = (rows: readonly LocationSensorAssignment[]) => [...rows].map((row) => ({

@@ -37,6 +37,8 @@ export interface LocationAssetMetadata {
   creatorId: string;
   purpose: LocationAssetPurpose;
   mediaType: LocationAssetMediaType;
+  /** Sanitized user-facing label; never used for authorization or storage paths. */
+  displayName?: string;
   sha256: string;
   byteLength: number;
   createdAt: number;

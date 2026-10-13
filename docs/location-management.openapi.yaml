@@ -296,6 +296,14 @@ paths:
         - $ref: '#/components/parameters/TmAlgoWriteHeader'
         - $ref: '#/components/parameters/SameOrigin'
         - $ref: '#/components/parameters/DraftIfMatch'
+        - name: X-Asset-Display-Name
+          in: header
+          required: false
+          description: >-
+            Optional model-upload filename encoded once as ASCII percent escapes. The server decodes
+            and sanitizes a basename for display only; it is not used for paths, lookup, identity or
+            authorization. Supplying this header for a floor-plan upload is rejected.
+          schema: { type: string, maxLength: 2048, pattern: '^[\x20-\x7e]*$' }
       requestBody:
         required: true
         content:
@@ -307,7 +315,7 @@ paths:
             schema: { type: string, format: binary }
       responses:
         '200':
-          description: Asset attached to the draft; includes immutable digest and resulting draft revision.
+          description: Asset attached to the draft; includes immutable digest, resulting draft revision, and optional sanitized model display name.
           content:
             application/json:
               schema:
@@ -870,12 +878,14 @@ components:
               description: Safe capability projection only; it contains no owner, provenance, path, or generated URL.
               additionalProperties:
                 type: object
-                required: [source, previewAvailable, alignmentEditable, replaceWithUpload]
+                required: [source, previewAvailable, alignmentEditable, replaceWithUpload, fromPublishedBase]
                 properties:
                   source: { type: string, enum: [upload, legacy-static] }
                   previewAvailable: { type: boolean }
                   alignmentEditable: { type: boolean }
                   replaceWithUpload: { type: boolean }
+                  fromPublishedBase: { type: boolean, description: True only when the exact asset reference equals the draft's pinned published-base slot. }
+                  displayName: { type: string, maxLength: 128, description: Optional sanitized uploaded-model basename; absent for old unnamed assets. }
             legacyBaseAvailable: { type: boolean }
     Sensor:
       type: object
@@ -923,6 +933,7 @@ components:
         byteLength: { type: integer, minimum: 1 }
         draftRevision: { type: integer, minimum: 1 }
         durability: { type: string, enum: [confirmed, unconfirmed] }
+        displayName: { type: string, maxLength: 128, description: Sanitized model upload basename; omitted for floor plans and unnamed legacy uploads. }
     Published:
       type: object
       required: [locationId, publishedRevision, registryRevision, durability, acknowledgement]

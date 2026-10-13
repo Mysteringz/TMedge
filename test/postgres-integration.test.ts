@@ -75,6 +75,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791676800000-CreateLocationConfigurationStorage.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791763200000-PersistLocationSpatialProvenance.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791849600000-PersistLocationAssetProvenance.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791936000000-AddLocationAssetDisplayName.js'),
 ];
 
 function postgresStorageTestDocument(locationId: string, tableId: string, seatId: string, sensorUid?: string) {
@@ -221,7 +222,7 @@ test('registration schema and provisioning repository enforce persistence invari
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 10, 'foundation, registration, build, rollout, command, occupancy, detector, location storage, spatial provenance and asset provenance migrations all run');
+    assert.equal(appliedMigrations, 11, 'foundation, registration, build, rollout, command, occupancy, detector, location storage, spatial provenance, asset provenance and optional model display-name migrations all run');
     assert.equal((await migrator.query("SELECT to_regclass('public.location_published_revisions') AS table_name"))[0].table_name, 'location_published_revisions');
     await assertPostgresBuildLogBoundary(runtime);
     assert.equal(
@@ -840,7 +841,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
   try {
     await migrator.initialize();
     applied = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(applied, 10);
+    assert.equal(applied, 11);
     const runtimePrivileges = (await migrator.query(`
       SELECT
         (SELECT tableowner FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'registered_nodes') AS registered_nodes_owner,
@@ -1047,6 +1048,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const asset = await assetStore.put('pg-operator', 'floor-plan', 'image/png', png, 2);
     assert.deepEqual((await assetStore.read('pg-operator', asset.assetId))?.bytes, png);
+    assert.equal(asset.displayName, undefined, 'older floor-plan metadata stays valid without an optional model label');
     assert.equal(await assetStore.read('another-operator', asset.assetId), null);
     const assetMetadata = new PostgresLocationAssetMetadataRepository(runtime);
     await assert.rejects(assetMetadata.saveAssetMetadata({ ...asset, assetId: randomUUID(), byteLength: 20 * 1024 * 1024 + 1 }), TypeError);
@@ -1061,6 +1063,10 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     await assert.rejects(runtime.query(
       'DELETE FROM public.location_assets WHERE asset_id = $1', [asset.assetId],
     ), (error: { driverError?: { code?: string } }) => error.driverError?.code === '55000');
+    await assert.rejects(runtime.query(
+      'UPDATE public.location_assets SET display_name = $2 WHERE asset_id = $1', [asset.assetId, 'renamed.glb'],
+    ), (error: { driverError?: { code?: string } }) => error.driverError?.code === '55000',
+    'the optional label is immutable with the rest of asset metadata');
 
     const managerAssetLocationId = createLocationId('pg-test', '00000000-0000-4000-8000-000000000099');
     const managerAInitial = await new CreateLocationDraftUseCase({
@@ -1092,11 +1098,14 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const managerModel = await managerAssetUpload().execute({
       creatorId: 'manager-a', draftId: managerAInitial.draft.draftId,
       expectedDraftRevision: managerPlan.outcome.draft.draftRevision, purpose: 'model', mediaType: 'model/gltf-binary', bytes: managerModelBytes,
+      displayName: 'A models/Published seating.glb',
     });
+    assert.equal(managerModel.metadata.displayName, 'Published seating.glb', 'the upload boundary stores only a safe basename');
     const managerUnrelatedPrivate = await assetStore.put('manager-a', 'floor-plan', 'image/png', managerPlanBytes, managerAssetClock++);
     const managerDistributorOwners: string[] = [];
     const managerAssetDistributor = {
       async acknowledge({ candidate }: { candidate: import('../src/modules/location-config/domain/location-records.js').PublishedLocationRevision }) {
+        assert.equal(JSON.stringify(candidate).includes('displayName'), false, 'private upload filename never enters the publication/distribution descriptor');
         const provenance = candidate.assetProvenance?.modelAssetId;
         assert.ok(provenance && provenance.kind === 'upload');
         assert.ok(candidate.document.modelAssetId);
@@ -1131,6 +1140,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
       const modelPreview = await reader.execute({ creatorId, draftId, assetId: managerModel.metadata.assetId });
       assert.deepEqual(planPreview.bytes, managerPlanBytes);
       assert.deepEqual(modelPreview.bytes, managerModelBytes);
+      assert.equal(modelPreview.metadata.displayName, 'Published seating.glb', 'authorized cross-manager preview resolves filename through pinned provenance');
       await assert.rejects(reader.execute({ creatorId, draftId, assetId: managerUnrelatedPrivate.assetId }), /asset/i,
         'another manager cannot preview an unrelated private upload from the base creator');
     };
@@ -1179,6 +1189,9 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     assert.deepEqual(managerDistributorOwners, ['manager-a', 'manager-a', 'manager-a']);
     assert.equal(await assetStore.read('manager-b', managerModel.metadata.assetId), null);
     assert.equal(await assetStore.read('manager-c', managerPlan.metadata.assetId), null);
+    const managerPublicSnapshot = emittedLocationSnapshot(site, await locationSnapshots.readSnapshot(), 'pg-model-label-test');
+    assert.equal(isSnapshot(managerPublicSnapshot), true);
+    assert.equal(JSON.stringify(managerPublicSnapshot).includes('displayName'), false, 'public occupancy snapshots never contain private upload names');
 
     const managerReopenedRuntime = await openPostgres(config.runtime);
     try {
@@ -1192,6 +1205,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
       const reopenedModel = await reader.execute({ creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: managerModel.metadata.assetId });
       assert.deepEqual(reopenedPlan.bytes, managerPlanBytes);
       assert.deepEqual(reopenedModel.bytes, managerModelBytes);
+      assert.equal(reopenedModel.metadata.displayName, 'Published seating.glb', 'filename and bytes survive a fresh PostgreSQL/file-store reopen');
       await assert.rejects(reader.execute({ creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: managerUnrelatedPrivate.assetId }), /asset/i);
       const reopenedHistory = await managerReopenedPublished.listHistory(managerAssetLocationId);
       assert.deepEqual(reopenedHistory.map((revision) => revision.revision), [1, 2, 3]);
@@ -1200,7 +1214,10 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
           ? revision.assetProvenance.planAssetId.ownerId : undefined, 'manager-a');
         assert.equal(revision.assetProvenance?.modelAssetId?.kind === 'upload'
           ? revision.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
+        assert.equal(JSON.stringify(revision).includes('displayName'), false, 'immutable public history never carries upload labels');
       }
+      const reopenedMetadata = await managerReopenedMetadata.getAssetMetadata('manager-a', managerModel.metadata.assetId);
+      assert.equal(reopenedMetadata?.displayName, 'Published seating.glb');
     } finally { await closePostgres(managerReopenedRuntime); }
 
     await mutationCoordinator.withMutationLock(() => nodeRepository.importNodes([{
@@ -1586,6 +1603,12 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
       apiServer.closeAllConnections();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
+    await closePostgres(runtime);
+    await migrator.undoLastMigration({ transaction: 'all' });
+    applied -= 1;
+    assert.equal((await migrator.query(
+      "SELECT count(*)::int AS count FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'location_assets' AND column_name = 'display_name'",
+    ))[0].count, 0, 'the additive asset display-name migration reverses without rewriting older asset metadata');
   } finally {
     if (approvalEdgeRuntime) await approvalEdgeRuntime.stop().catch(() => undefined);
     if (runtime.isInitialized) {

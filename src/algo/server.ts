@@ -17,6 +17,7 @@ import express, { type NextFunction, type Request, type Response, type Router } 
 import type { ConsoleCore } from '../edge/console.js';
 import { flasherLogin } from './flasher-login.js';
 import { applicationErrorHandler } from '../infrastructure/http/errors.js';
+import { routeParam } from '../shared/http.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CMD_RESET_BACKGROUND } from '../edge/protocol.js';
 import { createAlgoAuth, loadAlgoAuthConfig, safeAlgoNext, type AlgoAuth, type AlgoAuthConfig } from './auth.js';
@@ -88,6 +89,7 @@ export interface AlgoServerServices {
 }
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-algo');
+const LOCATION_MODEL_VENDOR_FILES = new Set(['three.module.js', 'GLTFLoader.js', 'OrbitControls.js', 'BufferGeometryUtils.js']);
 
 export interface AlgoServerHandle {
   server: Server;
@@ -198,9 +200,10 @@ export function startAlgo(
   // the student site.
   const cf = authCfg.turnstile ? ' https://challenges.cloudflare.com' : '';
   // frame-src 'self': module 03 is the debug console in a same-origin frame.
-  // The location editor previews a user-selected image through a local Blob URL.
+  // The location editor previews local Blob URLs, and the GLB preflight loader
+  // fetches embedded image bytes through a loader-owned Blob URL.
   const cspWith = (styleNonce?: string) => `default-src 'self'; script-src 'self'${cf}; frame-src 'self'${cf}; img-src 'self' data: blob:; ` +
-    `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ''} https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; ` +
+    `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ''} https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' data: blob:; ` +
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
   const csp = cspWith();
 
@@ -309,6 +312,15 @@ export function startAlgo(
     if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
     return sendShell(res);
   });
+  // The model viewer is executable code, not a public shell asset. Serve only
+  // the two checked-in files required by the wizard after its capability gate.
+  const sendLocationModelModule = (file: string) => (req: Request, res: Response) => {
+    if (!auth.principalOf(req)?.capabilities.includes('locations.manage')) return res.status(404).send('not found');
+    res.set('Cache-Control', 'no-store');
+    return res.sendFile(join(PUBLIC, file));
+  };
+  app.get('/location-model-viewer.js', sendLocationModelModule('location-model-viewer.js'));
+  app.get('/location-model-viewer/scene.js', sendLocationModelModule(join('location-model-viewer', 'scene.js')));
   // The raw template would otherwise be served by the static handler below,
   // past the gate and with its placeholders still in.
   app.get('/index.html', (_req, res) => res.redirect('/'));
@@ -317,6 +329,16 @@ export function startAlgo(
 
   // --- everything else needs a signed-in engineer ---------------------------
   app.use(auth.requireUser);
+  // The wizard's checked-in renderer imports only these same-origin vendor files.
+  // Keep the allowlist narrow so a location session cannot browse the whole vendor tree.
+  app.get('/location-model/vendor/three/:file', (req: Request, res: Response) => {
+    const file = routeParam(req.params, 'file');
+    if (!auth.principalOf(req)?.capabilities.includes('locations.manage') || !LOCATION_MODEL_VENDOR_FILES.has(file)) {
+      return res.status(404).send('not found');
+    }
+    res.set('Cache-Control', 'no-store');
+    return res.sendFile(join(ROOT, 'public-web', 'vendor', 'three', file));
+  });
   /** Who did it, for the audit log: a real account now, not a shared password. */
   const by = (res: Response) => `algo:${String(res.locals.user ?? 'unknown')}`;
 

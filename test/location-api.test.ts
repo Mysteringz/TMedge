@@ -11,6 +11,7 @@ import { FileLocationAssetStore } from '../src/infrastructure/location-config/fi
 import { computeLocationCoverageSuggestions } from '../src/infrastructure/location-config/location-coverage.js';
 import type { LocationDraft, PublishedLocationState } from '../src/modules/location-config/domain/location-records.js';
 import { LocationConflictError } from '../src/modules/location-config/domain/location-records.js';
+import { parseLocationDocument } from '../src/modules/location-config/domain/location-document.js';
 import type {
   LocationDraftRepository, LocationRegistrySnapshot, LocationRegistrySnapshotRepository,
   PreparedLocationRuntime, PublishedLocationRepository, RegistryMutationCoordinator,
@@ -136,6 +137,15 @@ test('location routes enforce capability, write guard, ownership and immutable u
 
     const forged = await json('PUT', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 1, document: { creatorId: 'other' } });
     assert.equal(forged.status, 422);
+    const forgedBaseCapability = await json('PUT', `/api/locations/drafts/${draftId}`, {
+      expectedDraftRevision: 1,
+      document: {
+        name: 'Room', building: 'North', widthCm: 400, heightCm: 300,
+        outline: [[0, 0], [400, 0], [400, 300], [0, 300]], zones: [], tables: [], sensorAssignments: [],
+        fromPublishedBase: true,
+      },
+    });
+    assert.equal(forgedBaseCapability.status, 422, 'the safe inherited-source projection cannot be supplied in a draft request');
 
     const rejectedMedia = await fetch(`${base}/api/locations/drafts/${draftId}/assets/floor-plan`, {
       method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'application/octet-stream', 'if-match': '1' }, body: PNG,
@@ -155,20 +165,82 @@ test('location routes enforce capability, write guard, ownership and immutable u
     assert.deepEqual(Buffer.from(await planPreview.arrayBuffer()), PNG);
     assert.equal((await fetch(`${base}/api/locations/drafts/${draftId}/assets/${planBody.data.assetId}`, { headers: { cookie: secondOperatorCookie } })).status, 404);
 
+    const malformedDisplayName = await fetch(`${base}/api/locations/drafts/${draftId}/assets/model`, {
+      method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'model/gltf-binary', 'if-match': '2', 'x-asset-display-name': '%E0%A4%A' }, body: GLB,
+    });
+    assert.equal(malformedDisplayName.status, 422, 'malformed display-name percent escapes are rejected before writing');
+    const planDisplayName = await fetch(`${base}/api/locations/drafts/${draftId}/assets/floor-plan`, {
+      method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'image/png', 'if-match': '2', 'x-asset-display-name': 'plan.png' }, body: PNG,
+    });
+    assert.equal(planDisplayName.status, 422, 'display names are model metadata only');
+
     const modelUpload = await fetch(`${base}/api/locations/drafts/${draftId}/assets/model`, {
-      method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'model/gltf-binary', 'if-match': '2' }, body: GLB,
+      method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'model/gltf-binary', 'if-match': '2', 'x-asset-display-name': 'private%5Cmodel%20one.glb' }, body: GLB,
     });
     assert.equal(modelUpload.status, 200);
-    const modelBody = await modelUpload.json() as { data: { assetId: string; draftRevision: number } };
+    const modelBody = await modelUpload.json() as { data: { assetId: string; draftRevision: number; displayName?: string } };
     assert.equal(modelBody.data.draftRevision, 3);
+    assert.equal(modelBody.data.displayName, 'model one.glb', 'upload returns only a normalized basename');
     const detail = await json('GET', `/api/locations/drafts/${draftId}`);
-    const detailBody = await detail.json() as { data: { assetCapabilities: Record<string, { previewAvailable: boolean; alignmentEditable: boolean }>; assetProvenance?: unknown } };
+    const detailBody = await detail.json() as { data: { assetCapabilities: Record<string, { previewAvailable: boolean; alignmentEditable: boolean; fromPublishedBase: boolean; displayName?: string }>; assetProvenance?: unknown } };
     assert.equal(detailBody.data.assetCapabilities.planAssetId?.previewAvailable, true);
     assert.equal(detailBody.data.assetCapabilities.modelAssetId?.alignmentEditable, true);
+    assert.equal(detailBody.data.assetCapabilities.modelAssetId?.fromPublishedBase, false, 'new draft uploads are not mislabeled as inherited');
+    assert.equal(detailBody.data.assetCapabilities.modelAssetId?.displayName, 'model one.glb', 'safe model detail returns only the stored display label');
     assert.equal(Object.hasOwn(detailBody.data, 'assetProvenance'), false);
     const modelPreview = await fetch(`${base}/api/locations/drafts/${draftId}/assets/${modelBody.data.assetId}`, { headers: { cookie: operatorCookie } });
     assert.equal(modelPreview.status, 200);
     assert.deepEqual(Buffer.from(await modelPreview.arrayBuffer()), GLB);
+
+    const baseModel = await persistence.assets.put('original-model-owner', 'model', 'model/gltf-binary', GLB, 120, 'venue/published-base.glb');
+    const baseDocument = parseLocationDocument({
+      schemaVersion: 1, locationId: 'published-model-floor', name: 'Published model', building: 'North', visibility: 'public',
+      widthCm: 400, heightCm: 300, outline: [[0, 0], [400, 0], [400, 300], [0, 300]],
+      zones: [], tables: [], sensorAssignments: [], modelAssetId: baseModel.assetId,
+      modelTransform: { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } },
+    });
+    persistence.setPublishedLocation({
+      locationId: baseDocument.locationId, activeRevision: 4,
+      history: [{ locationId: baseDocument.locationId, revision: 4, createdBy: 'seed', createdAt: 120,
+        document: baseDocument, assetProvenance: { modelAssetId: { kind: 'upload', ownerId: 'original-model-owner' } } }],
+    });
+    const inheritedStart = await json('POST', `/api/locations/${baseDocument.locationId}/drafts`, { expectedPublishedRevision: 4 });
+    assert.equal(inheritedStart.status, 201, await inheritedStart.clone().text());
+    const inherited = (await inheritedStart.json() as { data: { draftId: string; draftRevision: number } }).data;
+    const inheritedDetail = await json('GET', `/api/locations/drafts/${inherited.draftId}`);
+    const inheritedDto = (await inheritedDetail.json() as { data: { document: { modelAssetId?: string }; assetCapabilities: Record<string, { fromPublishedBase: boolean; displayName?: string }> } }).data;
+    assert.equal(inheritedDto.document.modelAssetId, baseModel.assetId);
+    assert.equal(inheritedDto.assetCapabilities.modelAssetId?.fromPublishedBase, true, 'same pinned-base model is safely labeled after reload');
+    assert.equal(inheritedDto.assetCapabilities.modelAssetId?.displayName, 'published-base.glb', 'cross-manager inheritance resolves only the sanitized filename through trusted provenance');
+    const inheritedPreview = await fetch(`${base}/api/locations/drafts/${inherited.draftId}/assets/${baseModel.assetId}`, { headers: { cookie: operatorCookie } });
+    assert.equal(inheritedPreview.status, 200, 'the exact published-base reference can be previewed through the new manager-owned draft');
+    assert.deepEqual(Buffer.from(await inheritedPreview.arrayBuffer()), GLB, 'inherited bytes remain under their original immutable owner');
+    assert.equal(JSON.stringify(inheritedDto).includes('original-model-owner'), false, 'the safe capability DTO does not disclose the original asset owner');
+    assert.equal(JSON.stringify(inheritedDto).includes('assetProvenance'), false);
+    const inheritedSave = await json('PUT', `/api/locations/drafts/${inherited.draftId}`, {
+      expectedDraftRevision: 1,
+      document: {
+        name: baseDocument.name, building: baseDocument.building, widthCm: baseDocument.widthCm, heightCm: baseDocument.heightCm,
+        outline: baseDocument.outline, zones: baseDocument.zones, tables: baseDocument.tables,
+        sensorAssignments: baseDocument.sensorAssignments, modelAssetId: baseDocument.modelAssetId, modelTransform: baseDocument.modelTransform,
+      },
+    });
+    assert.equal(inheritedSave.status, 200, 'ordinary authored save remains accepted and returns its committed write result');
+    assert.equal(Object.hasOwn((await inheritedSave.json() as { data: Record<string, unknown> }).data, 'assetCapabilities'), false,
+      'write result does not invent a post-commit capability projection');
+    const inheritedAfterSave = await json('GET', `/api/locations/drafts/${inherited.draftId}`);
+    const savedInheritedDto = (await inheritedAfterSave.json() as { data: { assetCapabilities: Record<string, { fromPublishedBase: boolean; displayName?: string }> } }).data;
+    assert.equal(savedInheritedDto.assetCapabilities.modelAssetId?.fromPublishedBase, true, 'confirmed editor saves recover the capability from authoritative detail');
+    assert.equal(savedInheritedDto.assetCapabilities.modelAssetId?.displayName, 'published-base.glb');
+    const replacement = await fetch(`${base}/api/locations/drafts/${inherited.draftId}/assets/model`, {
+      method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'model/gltf-binary', 'if-match': '2', 'x-asset-display-name': 'replacement.glb' }, body: GLB,
+    });
+    assert.equal(replacement.status, 200, await replacement.clone().text());
+    const replacedDetail = await json('GET', `/api/locations/drafts/${inherited.draftId}`);
+    const replacedDto = (await replacedDetail.json() as { data: { document: { modelAssetId?: string }; assetCapabilities: Record<string, { fromPublishedBase: boolean; displayName?: string }> } }).data;
+    assert.notEqual(replacedDto.document.modelAssetId, baseModel.assetId);
+    assert.equal(replacedDto.assetCapabilities.modelAssetId?.fromPublishedBase, false, 'replacement upload is distinguishable after reload');
+    assert.equal(replacedDto.assetCapabilities.modelAssetId?.displayName, 'replacement.glb', 'replacement display metadata follows the exact new asset reference');
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

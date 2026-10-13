@@ -159,9 +159,11 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     const revision = parseIfMatch(req.get('if-match'));
     const mediaType = req.get('content-type')?.split(';', 1)[0]?.trim() ?? '';
     if (!Buffer.isBuffer(req.body)) throw new TypeError('Asset request body is invalid.');
-    const result = await upload.execute({ creatorId: actor(req), draftId, expectedDraftRevision: revision, purpose, mediaType, bytes: req.body });
+    const displayName = decodeAssetDisplayName(req.get('x-asset-display-name'), purpose);
+    const result = await upload.execute({ creatorId: actor(req), draftId, expectedDraftRevision: revision, purpose, mediaType, bytes: req.body, displayName });
     return send(res, 200, {
       assetId: result.metadata.assetId, mediaType: result.metadata.mediaType,
+      ...(result.metadata.displayName ? { displayName: result.metadata.displayName } : {}),
       sha256: result.metadata.sha256, byteLength: result.metadata.byteLength,
       draftRevision: result.outcome.draft.draftRevision, durability: result.outcome.durability,
     });
@@ -257,6 +259,13 @@ function parseIfMatch(value: string | undefined): number {
   return revision;
 }
 
+function decodeAssetDisplayName(value: string | undefined, purpose: 'floor-plan' | 'model'): string | undefined {
+  if (value === undefined) return undefined;
+  if (purpose !== 'model' || value.length > 2048) throw new TypeError('Asset display name is invalid.');
+  try { return decodeURIComponent(value); }
+  catch { throw new TypeError('Asset display name is invalid.'); }
+}
+
 function draftSummary(draft: LocationDraft) {
   return {
     draftId: draft.draftId, locationId: draft.locationId,
@@ -269,8 +278,9 @@ async function draftWriteDto(
   draft: LocationDraft,
   durability: 'confirmed' | 'unconfirmed',
   dependencies: LocationRouterDependencies,
+  resolvedBase?: Awaited<ReturnType<typeof pinnedBase>>,
 ) {
-  const base = await pinnedBase(draft, dependencies);
+  const base = resolvedBase === undefined ? await pinnedBase(draft, dependencies) : resolvedBase;
   const candidate = revalidateLocationCandidate(draft.document, draft.legacySpatial, base, draft.basePublishedRevision);
   return {
     draftId: draft.draftId, locationId: draft.locationId,
@@ -282,9 +292,17 @@ async function draftWriteDto(
   };
 }
 
-async function draftDetailDto(draft: LocationDraft, dependencies: LocationRouterDependencies) {
-  const write = await draftWriteDto(draft, 'confirmed', dependencies);
-  const capabilities: Partial<Record<LocationAssetSlot, { source: 'upload' | 'legacy-static'; previewAvailable: boolean; alignmentEditable: boolean; replaceWithUpload: boolean }>> = {};
+async function draftDetailDto(
+  draft: LocationDraft,
+  dependencies: LocationRouterDependencies,
+  durability: 'confirmed' | 'unconfirmed' = 'confirmed',
+) {
+  const base = await pinnedBase(draft, dependencies);
+  const write = await draftWriteDto(draft, durability, dependencies, base);
+  const capabilities: Partial<Record<LocationAssetSlot, {
+    source: 'upload' | 'legacy-static'; previewAvailable: boolean; alignmentEditable: boolean; replaceWithUpload: boolean;
+    fromPublishedBase: boolean; displayName?: string;
+  }>> = {};
   const refs = [
     ['planAssetId', draft.document.planAssetId], ['modelAssetId', draft.document.modelAssetId],
   ] as const;
@@ -292,15 +310,17 @@ async function draftDetailDto(draft: LocationDraft, dependencies: LocationRouter
     if (!assetId) continue;
     const provenance = draft.assetProvenance?.[slot];
     if (!provenance) throw new InvalidLocationAssetReferenceError();
+    const fromPublishedBase = slot === 'modelAssetId' && base?.document.modelAssetId === assetId;
     if (provenance.kind === 'legacy-static') {
-      capabilities[slot] = { source: 'legacy-static', previewAvailable: false, alignmentEditable: false, replaceWithUpload: true };
+      capabilities[slot] = { source: 'legacy-static', previewAvailable: false, alignmentEditable: false, replaceWithUpload: true, fromPublishedBase };
       continue;
     }
     const metadata = await dependencies.assetMetadata.getAssetMetadata(provenance.ownerId, assetId);
     const purpose = slot === 'planAssetId' ? 'floor-plan' : 'model';
     capabilities[slot] = {
       source: 'upload', previewAvailable: !!metadata && metadata.purpose === purpose,
-      alignmentEditable: slot === 'modelAssetId', replaceWithUpload: true,
+      alignmentEditable: slot === 'modelAssetId', replaceWithUpload: true, fromPublishedBase,
+      ...(slot === 'modelAssetId' && metadata?.purpose === 'model' && metadata.displayName ? { displayName: metadata.displayName } : {}),
     };
   }
   return {

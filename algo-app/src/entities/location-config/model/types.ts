@@ -48,13 +48,20 @@ export interface DraftSummary {
 }
 export interface AssetCapability {
   source: 'upload' | 'legacy-static'; previewAvailable: boolean; alignmentEditable: boolean; replaceWithUpload: boolean;
+  /** True only when this exact asset reference still equals the pinned published base slot. */
+  fromPublishedBase: boolean;
+  /** Sanitized original basename for uploaded models only; absent for legacy/older assets. */
+  displayName?: string;
 }
-export interface DraftDetail {
+export interface DraftWriteResult {
   draftId: string; locationId: string; draftRevision: number; basePublishedRevision: number | null;
-  visibility: 'public' | 'console'; durability?: 'confirmed' | 'unconfirmed'; updatedAt?: number;
+  visibility: 'public' | 'console'; durability: 'confirmed' | 'unconfirmed';
   legacyBaseAvailable: boolean; document: LocationDocument;
+}
+export interface DraftDetail extends DraftWriteResult {
+  updatedAt?: number;
   assetCapabilities?: Partial<Record<'planAssetId' | 'modelAssetId', AssetCapability>>;
 }
 export interface LocationList { published: PublishedSummary[]; drafts: DraftSummary[] }
-export interface AssetUploadResult { assetId: string; mediaType: string; sha256: string; byteLength: number; draftRevision: number; durability: 'confirmed' | 'unconfirmed' }
+export interface AssetUploadResult { assetId: string; mediaType: string; sha256: string; byteLength: number; draftRevision: number; durability: 'confirmed' | 'unconfirmed'; displayName?: string }
 export interface PublicationResult { kind: 'committed'; locationId: string; publishedRevision: number; registryRevision: number; durability: 'confirmed' | 'unconfirmed'; acknowledgement: 'received' | 'reconciled' }

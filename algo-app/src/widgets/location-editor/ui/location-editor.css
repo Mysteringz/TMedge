@@ -92,6 +92,47 @@
 .cx .loc-review-card h3 { margin-top: 8px; }
 .cx .loc-review-note { max-width: 900px; padding: 12px 16px; background: var(--layer-01); color: var(--text-secondary); }
 .cx .loc-future-step { min-height: 280px; align-items: flex-start; justify-content: center; }
+.cx .loc-model-step { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
+.cx .loc-model-heading, .cx .loc-model-transform-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.cx .loc-model-heading h2, .cx .loc-model-transform h3 { margin-top: 0; }
+.cx .loc-model-heading .loc-visibility { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border: 1px solid var(--border-subtle-01); }
+.cx .loc-model-preview-panel { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(220px, .8fr); gap: 12px; align-items: start; }
+.cx .loc-model-viewer-frame { min-width: 0; grid-row: span 3; overflow: hidden; border: 1px solid var(--border-subtle-01); border-radius: 4px; background: #171d24; }
+.cx .loc-model-viewer, .cx tm-location-model-viewer { display: block; width: 100%; height: clamp(340px, 55vh, 680px); }
+.cx .loc-model-viewer canvas { display: block; width: 100%; height: 100%; }
+.cx .loc-model-view-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.cx .loc-model-view-controls .btn, .cx .loc-model-upload-panel .btn { min-height: 44px; }
+.cx .loc-model-preview-status, .cx .loc-model-delivery, .cx .loc-model-pending, .cx .loc-model-upload-status { margin: 0; padding: 10px 12px; background: var(--layer-01); color: var(--text-secondary); }
+.cx .loc-model-preview-status.is-error, .cx .loc-model-field-error { color: var(--support-error); }
+.cx .loc-model-scene-list, .cx .loc-model-transform, .cx .loc-model-legacy, .cx .loc-model-empty, .cx .loc-model-review { min-width: 0; padding: 16px; background: var(--layer-01); }
+.cx .loc-model-scene-list h3, .cx .loc-model-transform h3, .cx .loc-model-legacy h3, .cx .loc-model-floor-fallback h3 { margin: 0 0 8px; }
+.cx .loc-model-scene-list ul, .cx .loc-model-floor-fallback ul { margin: 4px 0 0; padding-left: 20px; }
+.cx .loc-model-source { padding: 7px 10px; border: 1px solid var(--border-subtle-01); color: var(--text-primary); }
+.cx .loc-model-delivery { border-left: 3px solid var(--support-warning); }
+.cx .loc-transform-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.cx .loc-transform-group { min-width: 0; padding: 12px; border: 1px solid var(--border-subtle-01); }
+.cx .loc-transform-group legend { padding-inline: 4px; color: var(--text-primary); font-weight: 600; }
+.cx .loc-transform-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.cx .loc-model-number-field { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
+.cx .loc-model-number-field > span { color: var(--text-secondary); font-size: 12px; }
+.cx .loc-model-number-field small { color: var(--text-helper); font-size: 10px; overflow-wrap: anywhere; }
+.cx .loc-model-number-field input[aria-invalid="true"] { border-color: var(--support-error); }
+.cx .loc-model-alignment-note, .cx .loc-model-legacy-help { margin: 0; color: var(--text-helper); }
+.cx .loc-model-upload-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-subtle-01); }
+.cx .loc-model-upload-panel > p { flex: 1 1 100%; margin: 0; }
+.cx .loc-model-upload-panel .loc-upload { flex: 1 1 240px; }
+.cx .loc-model-pending { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.cx .loc-model-readonly-transform { display: grid; grid-template-columns: minmax(110px, .4fr) minmax(0, 1fr); gap: 6px 12px; margin: 12px 0; }
+.cx .loc-model-readonly-transform dt { color: var(--text-helper); }
+.cx .loc-model-readonly-transform dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
+.cx .loc-model-floor-fallback { max-width: 720px; margin-top: 12px; }
+.cx .loc-model-floor-fallback svg { display: block; width: 100%; max-height: 420px; border: 1px solid var(--border-subtle-01); background: #171d24; }
+.cx .loc-model-floor-outline { fill: #202831; stroke: #8995a2; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.cx .loc-model-floor-table { fill: color-mix(in srgb, var(--support-success) 25%, #202831); stroke: #57a0e8; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.cx .loc-model-floor-seat { fill: #e6edf4; stroke: #171d24; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.cx .loc-model-floor-sensor { fill: #ffa600; stroke: #171d24; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.cx .loc-model-review { margin-block: 12px; }
+.cx .loc-model-review h3 { margin-top: 0; }
 .cx .loc-sensor-step { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
 .cx .loc-sensor-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
 .cx .loc-sensor-heading h2 { margin: 0 0 6px; }
@@ -136,6 +177,8 @@
   .cx .loc-inspector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .cx .loc-inspector-block:last-child { grid-column: 1 / -1; }
   .cx .loc-sensor-layout { grid-template-columns: minmax(180px, .7fr) minmax(0, 1.3fr); }
+  .cx .loc-model-preview-panel { grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-model-viewer-frame { grid-row: auto; }
   .cx .loc-sensor-inspector { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .cx .loc-sensor-inspector h3, .cx .loc-sensor-inspector > p { grid-column: 1 / -1; }
 }
@@ -148,6 +191,8 @@
   .cx .loc-inspector { grid-template-columns: minmax(0, 1fr); }
   .cx .loc-inspector-block:last-child { grid-column: auto; }
   .cx .loc-sensor-layout { grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-transform-grid { grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-model-viewer, .cx tm-location-model-viewer { height: min(52vh, 480px); min-height: 300px; }
   .cx .loc-sensor-inspector { grid-column: auto; grid-template-columns: minmax(0, 1fr); }
   .cx .loc-sensor-inspector h3, .cx .loc-sensor-inspector > p { grid-column: auto; }
   .cx .loc-canvas { height: min(55vh, 520px); min-height: 320px; }

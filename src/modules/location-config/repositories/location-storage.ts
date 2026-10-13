@@ -96,7 +96,7 @@ export interface LocationAssetMetadataRepository {
 }
 
 export interface LocationAssetStore {
-  put(creatorId: string, purpose: LocationAssetMetadata['purpose'], declaredMediaType: string, bytes: Uint8Array, createdAt: number): Promise<LocationAssetMetadata>;
+  put(creatorId: string, purpose: LocationAssetMetadata['purpose'], declaredMediaType: string, bytes: Uint8Array, createdAt: number, displayName?: string): Promise<LocationAssetMetadata>;
   read(creatorId: string, assetId: string): Promise<{ metadata: LocationAssetMetadata; bytes: Buffer } | null>;
 }
 

@@ -953,10 +953,21 @@ test('file asset storage validates signatures and self-contained GLB bytes and i
     await assert.rejects(store.saveAssetMetadata({ ...metadata, assetId: '00000000-0000-4000-8000-000000000099', creatorId: '   ' }), /Asset metadata is invalid/);
     await assert.rejects(store.saveAssetMetadata({ ...metadata, assetId: '00000000-0000-4000-8000-000000000098', byteLength: 20 * 1024 * 1024 + 1 }), /Asset metadata is invalid/);
 
-    const glbStore = new FileLocationAssetStore(directory, { uuid: () => '00000000-0000-4000-8000-000000000021' });
+    let glbId = 21;
+    const glbStore = new FileLocationAssetStore(directory, { uuid: () => `00000000-0000-4000-8000-${String(glbId++).padStart(12, '0')}` });
     const glb = makeGlb({ asset: { version: '2.0' } });
     const model = await glbStore.put('operator-1', 'model', 'model/gltf-binary', glb);
     assert.deepEqual((await glbStore.read('operator-1', model.assetId))?.bytes, glb);
+    assert.equal(model.displayName, undefined, 'old or unnamed model metadata remains compatible');
+    const named = await glbStore.put('operator-1', 'model', 'model/gltf-binary', glb, 124, 'C:\\private\\seat-model.glb');
+    assert.equal(named.displayName, 'seat-model.glb', 'only a sanitized basename is stored');
+    const reopened = new FileLocationAssetStore(directory);
+    assert.equal((await reopened.read('operator-1', named.assetId))?.metadata.displayName, 'seat-model.glb',
+      'the optional display label survives a fresh file-store instance');
+    assert.equal((await reopened.read('operator-1', model.assetId))?.metadata.displayName, undefined,
+      'pre-existing unnamed file metadata remains readable after restart');
+    await assert.rejects(glbStore.put('operator-1', 'model', 'model/gltf-binary', glb, 125, `x${'a'.repeat(130)}.glb`), /display name/);
+    await assert.rejects(glbStore.put('operator-1', 'floor-plan', 'image/png', Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), 126, 'plan.png'), /Only model uploads/);
     await assert.rejects(glbStore.put('operator-1', 'model', 'model/gltf-binary', makeGlb({
       asset: { version: '2.0' }, buffers: [{ uri: 'https://example.invalid/model.bin' }],
     })), /external resource URIs/);

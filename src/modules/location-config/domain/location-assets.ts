@@ -25,6 +25,17 @@ export interface LocationAssetReference {
   purpose: LocationAssetPurpose;
 }
 
+/** Normalizes an optional upload label for safe display; it is not an identity or storage key. */
+export function normalizeLocationAssetDisplayName(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 2048) throw new TypeError('Asset display name is invalid.');
+  const basename = value.normalize('NFC').replace(/\\/g, '/').split('/').at(-1) ?? '';
+  const sanitized = basename.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim().replace(/[. ]+$/g, '');
+  if (!sanitized || Array.from(sanitized).length > 128 || sanitized === '.' || sanitized === '..') {
+    throw new TypeError('Asset display name is invalid.');
+  }
+  return sanitized;
+}
+
 export class InvalidLocationAssetReferenceError extends Error {
   constructor(message = 'The asset is not available to this location draft.') {
     super(message);

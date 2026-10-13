@@ -13,12 +13,14 @@ export class UploadLocationAssetUseCase {
 
   async execute(input: {
     creatorId: string; draftId: string; expectedDraftRevision: number;
-    purpose: 'floor-plan' | 'model'; mediaType: string; bytes: Uint8Array;
+    purpose: 'floor-plan' | 'model'; mediaType: string; bytes: Uint8Array; displayName?: string;
   }) {
     const draft = await this.dependencies.drafts.getDraft(input.creatorId, input.draftId);
     if (!draft) throw new LocationDraftNotFoundError();
     if (draft.draftRevision !== input.expectedDraftRevision) throw new LocationConflictError('The draft changed; reload it before uploading.');
-    const metadata = await this.dependencies.assets.put(input.creatorId, input.purpose, input.mediaType, input.bytes, (this.dependencies.now ?? Date.now)());
+    const metadata = await this.dependencies.assets.put(
+      input.creatorId, input.purpose, input.mediaType, input.bytes, (this.dependencies.now ?? Date.now)(), input.displayName,
+    );
     const document = exposeAuthoredLocationCandidate(draft.document, draft.legacySpatial);
     if (input.purpose === 'floor-plan') document.planAssetId = metadata.assetId;
     else {

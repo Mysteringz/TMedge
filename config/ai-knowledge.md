@@ -27,8 +27,9 @@ settings and boot counters survive.
 - Location management is Admin/Operator only; drafts and previews are private.
   Public uploaded GLBs transfer to every configured web tier before publish.
   Console models stay edge-side and plans never go to students. Students can
-  read a GLB only while a current public snapshot references it. See
-  docs/location-configuration-storage.md. Stop edge before
+  read a GLB only while a current public snapshot references it. The edge
+  release carries signed viewer modules; GLB bytes stay behind the draft API.
+  See docs/location-configuration-storage.md. Stop edge before
   `db:registry:import --apply`; restart afterward; the CLI cannot check service
   state. Public v2 snapshots add table shapes and optional model transforms;
   v1 remains supported. Sensor poses and plans stay private.

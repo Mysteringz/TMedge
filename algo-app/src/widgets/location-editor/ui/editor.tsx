@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { getLocationDraft, LocationApiError, publishLocationDraft, readDraftPlan, saveLocationDraft, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
+import { getLocationDraft, LocationApiError, publishLocationDraft, readDraftPlan, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
 import type { DraftDetail, LocationDocument, Point, Table, TableShape } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
 import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue } from '../../../features/location-editor/index.ts';
@@ -7,6 +7,7 @@ import { EditorCanvas, type DragStart, type Drawing, type Selection } from './ed
 import { EditorInspector } from './editor-inspector.tsx';
 import { SensorPlacementStep } from './sensor-placement-step.tsx';
 import { SensorCoverageSummary } from './sensor-coverage-summary.tsx';
+import { ModelAlignmentStep, ModelReviewSummary, type ModelUploadOutcome } from './model-alignment-step.tsx';
 import './location-editor.css';
 
 type Step = 'details' | 'sensors' | 'model' | 'review';
@@ -23,6 +24,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   const [message, setMessage] = useState('');
   const [conflict, setConflict] = useState(false);
   const [mustReload, setMustReload] = useState(false);
+  const [modelPreflightBlocked, setModelPreflightBlocked] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [drawing, setDrawing] = useState<Drawing | null>(null);
   const [planUrl, setPlanUrl] = useState<string | null>(null);
@@ -100,6 +102,10 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const save = async (transactionOwnsBusy = false): Promise<DraftDetail | null> => {
     if (!draft || !document || mustReload) return null;
+    if (modelPreflightBlocked && !transactionOwnsBusy) {
+      setProblem('Retry or clear the selected GLB before saving this draft.');
+      return null;
+    }
     const invalidRaw = wizard.current?.querySelector<HTMLElement>('[data-local-invalid="true"]');
     if (invalidRaw) {
       setProblem('Correct the highlighted field before saving.');
@@ -118,12 +124,34 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
     }
     if (!transactionOwnsBusy) setBusy('save'); setProblem(''); setConflict(false);
     try {
-      const result = await saveLocationDraft(draft, document);
-      setDraft(result); setDocument(structuredClone(result.document)); setSavedDocument(structuredClone(result.document)); setBaseDocument(structuredClone(result.document));
-      const uncertain = result.durability === 'unconfirmed';
-      setMustReload(uncertain);
-      setMessage(uncertain ? 'Draft save was applied, but storage durability could not be confirmed. Reload latest before continuing.' : 'Draft saved · private');
-      return result;
+      const written = await saveLocationDraft(draft, document);
+      const appliedDocument = structuredClone(written.document);
+      const preservedCapabilities = {
+        ...(draft.assetCapabilities?.planAssetId && appliedDocument.planAssetId === draft.document.planAssetId
+          ? { planAssetId: draft.assetCapabilities.planAssetId } : {}),
+        ...(draft.assetCapabilities?.modelAssetId && appliedDocument.modelAssetId === draft.document.modelAssetId
+          ? { modelAssetId: draft.assetCapabilities.modelAssetId } : {}),
+      };
+      if (written.durability === 'unconfirmed') {
+        const applied: DraftDetail = { ...draft, ...written, document: appliedDocument, assetCapabilities: preservedCapabilities };
+        setDraft(applied); setDocument(appliedDocument); setSavedDocument(structuredClone(appliedDocument)); setBaseDocument(structuredClone(appliedDocument));
+        setMustReload(true);
+        setMessage(`Draft revision ${written.draftRevision} was applied, but storage durability could not be confirmed. Reload latest before continuing.`);
+        return applied;
+      }
+      try {
+        const authoritative = await getLocationDraft(draft.draftId);
+        setDraft(authoritative); setDocument(structuredClone(authoritative.document)); setSavedDocument(structuredClone(authoritative.document)); setBaseDocument(structuredClone(authoritative.document));
+        setMustReload(authoritative.durability === 'unconfirmed');
+        setMessage(authoritative.durability === 'unconfirmed' ? 'Draft save was applied, but storage durability could not be confirmed. Reload latest before continuing.' : 'Draft saved · private');
+        return authoritative;
+      } catch {
+        const applied: DraftDetail = { ...draft, ...written, document: appliedDocument, assetCapabilities: preservedCapabilities };
+        setDraft(applied); setDocument(appliedDocument); setSavedDocument(structuredClone(appliedDocument)); setBaseDocument(structuredClone(appliedDocument));
+        setMustReload(true); setMessage('');
+        setProblem(`Draft revision ${written.draftRevision} was saved, but safe asset details could not be reloaded. Your saved revision is retained; reload before further changes.`);
+        return null;
+      }
     } catch (cause) {
       if (cause instanceof LocationApiError && cause.status === 409) { setConflict(true); setProblem('This draft changed elsewhere. Your local edits are still here. Reload latest or keep a copy before comparing.'); }
       else setProblem(messageFor(cause, 'Draft could not be saved. Your edits are still here.'));
@@ -183,8 +211,75 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
     finally { setBusy(''); }
   };
 
+  const uploadModel = async (file: File): Promise<ModelUploadOutcome | null> => {
+    if (!draft || !document) return null;
+    if (mustReload) { setProblem('Reload the latest saved draft before uploading a model.'); return null; }
+    setBusy('model-upload'); setProblem('');
+    let savedBeforeUpload: DraftDetail | null = null;
+    try {
+      const ready = dirty ? await save(true) : draft;
+      if (!ready) return null;
+      if (dirty && ready.draftRevision > draft.draftRevision) savedBeforeUpload = ready;
+      if (ready.durability === 'unconfirmed') {
+        setMustReload(true);
+        setProblem('Draft save was applied, but storage durability could not be confirmed. Reload before uploading a model.');
+        return null;
+      }
+      const result = await uploadDraftModel(ready, file);
+      const appliedDocument: LocationDocument = {
+        ...ready.document,
+        modelAssetId: result.assetId,
+        modelTransform: ready.document.modelTransform ?? defaultModelTransform(),
+      };
+      const appliedDraft: DraftDetail = {
+        ...ready,
+        draftRevision: result.draftRevision,
+        durability: result.durability,
+        document: appliedDocument,
+        assetCapabilities: {
+          ...ready.assetCapabilities,
+          modelAssetId: {
+            source: 'upload', previewAvailable: true, alignmentEditable: true,
+            replaceWithUpload: true, fromPublishedBase: false,
+            ...(result.displayName ? { displayName: result.displayName } : {}),
+          },
+        },
+      };
+      setDraft(appliedDraft);
+      setDocument(structuredClone(appliedDocument));
+      setSavedDocument(structuredClone(appliedDocument));
+      setBaseDocument(structuredClone(appliedDocument));
+      if (result.durability === 'unconfirmed') {
+        setMustReload(true);
+        setProblem(`GLB attachment was applied to draft revision ${result.draftRevision}, but storage durability could not be confirmed. The selected file and preview are retained. Reload latest before further changes.`);
+        return { assetId: result.assetId, draftRevision: result.draftRevision, durability: result.durability, displayName: result.displayName, reloaded: false };
+      }
+      const loaded = await load();
+      if (!loaded) {
+        setMustReload(true);
+        setProblem(`GLB attachment was saved to draft revision ${result.draftRevision}, but draft details could not be reloaded. The selected file and preview are retained. Retry reload before further changes.`);
+        return { assetId: result.assetId, draftRevision: result.draftRevision, durability: result.durability, displayName: result.displayName, reloaded: false };
+      }
+      setMessage('GLB attached to this private draft. The previously published model remains active until publication.');
+      return { assetId: result.assetId, draftRevision: result.draftRevision, durability: result.durability, displayName: result.displayName, reloaded: true };
+    } catch (cause) {
+      if (cause instanceof LocationApiError && cause.status === 409) {
+        setConflict(true);
+        setProblem(savedBeforeUpload
+          ? `Draft revision ${savedBeforeUpload.draftRevision} was saved privately, but the GLB upload conflicted. The selected file and prior model are retained. Reload latest before retrying.`
+          : 'This draft changed before the GLB upload completed. The selected file and prior model are retained. Reload latest before retrying.');
+      } else {
+        setProblem(savedBeforeUpload
+          ? `Draft revision ${savedBeforeUpload.draftRevision} was saved privately. The GLB upload failed; the prior model is retained and the selected file can be retried.`
+          : 'The GLB upload failed. The prior model is retained and the selected file can be retried.');
+      }
+      return null;
+    } finally { setBusy(''); }
+  };
+
   const publish = async () => {
     if (!draft) return;
+    if (modelPreflightBlocked) { setProblem('Retry or clear the selected GLB before publishing this draft.'); return; }
     if (mustReload) { setProblem('Reload the latest saved draft before publishing.'); return; }
     setBusy('publish'); setProblem('');
     try {
@@ -215,6 +310,10 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   };
 
   const changeStep = async (next: Step) => {
+    if (modelPreflightBlocked && step !== next) {
+      setProblem('Retry or clear the selected GLB before leaving the model step.');
+      return;
+    }
     if (step !== next && dirty) {
       const result = await save(); if (!result) return;
       if (result.durability === 'unconfirmed') return;
@@ -318,10 +417,10 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
     <header className="cx-train-head loc-editor-head">
       <div><p className="cx-kicker">{draft.basePublishedRevision === null ? 'New location' : `Editing revision ${draft.basePublishedRevision}`}</p><h1 className="cx-h2" tabIndex={-1} data-location-step-heading>{document.name || 'Location draft'}</h1>
         <p className="cx-muted">{draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'} · Visibility is read-only</p></div>
-      <button type="button" className="btn btn-secondary" data-testid="location-editor-back" disabled={busy !== ''} onClick={() => navigate('/locations')}>Back to locations</button>
+      <button type="button" className="btn btn-secondary" data-testid="location-editor-back" disabled={busy !== '' || modelPreflightBlocked} onClick={() => navigate('/locations')}>Back to locations</button>
     </header>
     <nav className="loc-steps" aria-label="Location wizard steps">
-      {stepItems.map((item, index) => <button type="button" key={item.id} data-testid={`location-step-${item.id}`} disabled={busy !== ''} className={`loc-step ${step === item.id ? 'is-current' : ''}`} aria-current={step === item.id ? 'step' : undefined}
+      {stepItems.map((item, index) => <button type="button" key={item.id} data-testid={`location-step-${item.id}`} disabled={busy !== '' || modelPreflightBlocked} className={`loc-step ${step === item.id ? 'is-current' : ''}`} aria-current={step === item.id ? 'step' : undefined}
         onClick={() => void changeStep(item.id)}><span className="loc-step-number">{index + 1}</span><span>{item.label}<small className="loc-step-state">{item.id === step ? 'Current step' : item.id === 'details' ? dirty ? 'Unsaved changes' : 'Saved draft' : item.id === 'review' ? 'Final check' : 'Not started'}</small></span></button>)}
     </nav>
     {problem && <div className="loc-alert" role="alert"><p>{problem}</p>
@@ -380,15 +479,16 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
       </footer>
     </fieldset> : step === 'sensors' ? <SensorPlacementStep draft={draft} document={document} onUpdate={update} onSave={() => save()}
       onBack={() => onStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
-      : step === 'review' ? <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />
-        : <FutureStep step={step} onBack={() => onStep('sensors')} onReview={() => void changeStep('review')} />}
+      : step === 'model' ? <ModelAlignmentStep draft={draft} document={document} busy={busy} mustReload={mustReload} onUpdate={update}
+        onUpload={uploadModel} onSave={() => void save()} onBack={() => void changeStep('sensors')} onContinue={() => void changeStep('review')} onPreflightBlockedChange={setModelPreflightBlocked} />
+        : <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onEditModel={() => onStep('model')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />}
   </main>;
 }
 
 /** Private pre-publication summary; publishing is an explicit parent callback and never follows a save implicitly. */
-function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCoverage, onSave, onPublish, onBack }: {
+function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCoverage, onEditModel, onSave, onPublish, onBack }: {
   document: LocationDocument; draft: DraftDetail; dirty: boolean; busy: string; mustReload: boolean;
-  onEdit(): void; onEditCoverage(): void; onSave(): void; onPublish(): void; onBack(): void;
+  onEdit(): void; onEditCoverage(): void; onEditModel(): void; onSave(): void; onPublish(): void; onBack(): void;
 }) {
   return <section className="loc-review">
     <div className="loc-review-header"><div><p className="cx-kicker">Final check</p><h2 tabIndex={-1} data-location-step-heading>Review location</h2></div><button className="btn btn-secondary" type="button" data-testid="location-review-edit-details" disabled={busy !== ''} onClick={onEdit}>Edit details & layout</button></div>
@@ -398,6 +498,7 @@ function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCovera
       <h3>Zones</h3><ul>{document.zones.map((zone) => <li key={zone.id}>{zone.name} · {zone.polygon.length} vertices</li>)}</ul>
       <h3>Tables and seats</h3>{document.tables.length ? <ul>{document.tables.map((table) => <li key={table.id}>{table.name} · {table.shape?.type ?? 'legacy rectangle'} · {table.capacity} seats</li>)}</ul> : <p>No tables yet.</p>}
     </div>
+    <ModelReviewSummary draft={draft} document={document} onEdit={onEditModel} />
     <SensorCoverageSummary draft={draft} document={document} onEdit={onEditCoverage} />
     <p className="loc-review-note">{draft.visibility === 'public'
       ? 'This draft is private. Students continue to see the current published version until you publish these changes.'
@@ -406,15 +507,6 @@ function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCovera
       <button type="button" className="btn btn-secondary" data-testid="location-review-save-draft" disabled={busy !== '' || mustReload} onClick={onSave}>Save draft</button>
       <button type="button" className="btn btn-primary" data-testid="location-publish" disabled={busy !== '' || dirty || mustReload} onClick={onPublish}>{busy === 'publish' ? 'Publishing…' : 'Publish location'}</button>
     </footer>
-  </section>;
-}
-
-/** Shared placeholder for the later sensor/model editors; retains their route and review navigation without editing values. */
-function FutureStep({ step, onBack, onReview }: { step: Exclude<Step, 'details' | 'review'>; onBack(): void; onReview(): void }) {
-  return <section className="card loc-future-step"><p className="cx-kicker">Wizard step</p><h2 tabIndex={-1} data-location-step-heading>{step === 'sensors' ? 'Sensors' : '3D model · optional'}</h2>
-    <p className="cx-muted">This step preserves the current server values. Its editing controls are part of the next wizard stage.</p>
-    <p>Sensor assignments and any saved model alignment remain on this draft unless you change them in their dedicated editor.</p>
-    <div className="loc-inline-actions"><button type="button" className="btn btn-secondary" data-testid={`location-${step}-back`} onClick={onBack}>Back</button><button type="button" className="btn btn-primary" data-testid={`location-${step}-review`} onClick={onReview}>Continue to review</button></div>
   </section>;
 }
 
@@ -473,6 +565,10 @@ function shapeBounds(shape: TableShape): { x: number; y: number; width: number; 
 }
 
 function roomOutline(width: number, height: number): Point[] { return [[0, 0], [width, 0], [width, height], [0, height]]; }
+function defaultModelTransform(): NonNullable<LocationDocument['modelTransform']> {
+  return { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } };
+}
+
 function messageFor(error: unknown, fallback: string): string { return error instanceof LocationApiError ? error.message : error instanceof Error ? error.message : fallback; }
 
 function focusInvalidField(issue: EditorValidationIssue, root: HTMLElement | null): void {
