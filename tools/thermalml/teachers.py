@@ -109,16 +109,38 @@ def main(argv: list[str] | None = None) -> int:
         if only is not None:
             files = [f for f in files if f[:-4] in only]
         files = files[::a.every]
-        t0, boxes = time.time(), {}
+        dest = os.path.join(a.out, a.model, *(['locked'] if locked else []), sdir, f'{day}.json')
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if os.path.exists(dest):
+            print(f'{a.model} {sdir} {day}: already done', file=sys.stderr)
+            continue
+        # Progress is saved as it goes: a long day (hours for Faster R-CNN on
+        # a laptop) that is interrupted resumes instead of starting over.
+        partial = dest + '.partial.json'
+        boxes = json.load(open(partial))['boxes'] if os.path.exists(partial) else {}
+        files = [f for f in files if f[:-4] not in boxes]
+        t0, last = time.time(), time.time()
         for i in range(0, len(files), a.batch):
             chunk = files[i:i + a.batch]
             for f, b in zip(chunk, run([os.path.join(folder, f) for f in chunk])):
                 boxes[f[:-4]] = [[round(v, 2) for v in box[:4]] + [round(box[4], 4)] for box in b]
-        dest = os.path.join(a.out, a.model, *(['locked'] if locked else []), sdir, f'{day}.json')
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+            if a.device == 'mps':
+                # PyTorch's MPS cache otherwise grows batch after batch until a
+                # 16 GB Mac swaps (seen: 12 GB wired after three hours).
+                import torch
+                torch.mps.empty_cache()
+            if time.time() - last > 60:
+                with open(partial + '.tmp', 'w') as f:
+                    json.dump({'boxes': boxes}, f, separators=(',', ':'))
+                os.replace(partial + '.tmp', partial)
+                done = i + len(chunk)
+                print(f'{a.model} {sdir} {day}: {done}/{len(files)} new photos, {done / (time.time() - t0):.2f}/s', file=sys.stderr, flush=True)
+                last = time.time()
         with open(dest + '.tmp', 'w') as f:
             json.dump({'model': meta, 'day': day, 'boxes': boxes}, f, separators=(',', ':'))
         os.replace(dest + '.tmp', dest)
+        if os.path.exists(partial):
+            os.remove(partial)
         print(f'{a.model} {sdir} {day}: {len(boxes)} photos, {sum(len(v) for v in boxes.values())} people, '
               f'{time.time() - t0:.0f} s', file=sys.stderr)
     return 0
