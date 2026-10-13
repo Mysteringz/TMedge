@@ -124,7 +124,9 @@ for the same tunnel as AWS and would split users between different stores.
 first implemented control is a PostgreSQL-backed site lease: one origin may
 bind sensor/console listeners and serve student traffic, while a database
 generation fences the other. The lease passed an isolated two-origin expiry
-and takeover rehearsal on the Proxmox PostgreSQL service.
+and takeover rehearsal on the Proxmox PostgreSQL service. The cutover command
+in that runbook imports node, command and gateway replay state monotonically
+after the legacy edge has stopped.
 
 Do not add the failover environment variables to these live units yet. The
 current local-file state and read-only physical replica are not sufficient for

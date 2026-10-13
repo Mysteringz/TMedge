@@ -39,6 +39,7 @@ import { PostgresSiteLease, PostgresSiteTrafficGuard } from '../src/infrastructu
 import { PostgresReplayStore, ReplayRejectedError } from '../src/infrastructure/postgres/replay-store.js';
 import { ReplayFenceError } from '../src/edge/replay.js';
 import { PostgresHelloReplayStore } from '../src/infrastructure/postgres/hello-replay-store.js';
+import { importLegacyReplayState, ReplayImportError } from '../src/infrastructure/postgres/replay-import.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -171,6 +172,38 @@ test('registration schema and provisioning repository enforce persistence invari
       await helloLease.stop();
       await runtime.query("DELETE FROM public.gateway_hello_replays WHERE gateway_id = 'integration-gateway'");
       await runtime.query("DELETE FROM public.site_leadership WHERE site_id = 'hello-integration-site'");
+    }
+
+    const importUid = '02:00:00:00:00:98';
+    const importGateway = 'import-gateway';
+    const importSite = 'import-integration-site';
+    const importLease = new PostgresSiteLease(runtime, {
+      siteId: importSite, originId: 'primary', ttlMs: 5_000, renewMs: 1_000,
+    }, '00000000-0000-4000-8000-000000000005');
+    try {
+      const expires = Date.now() + 60_000;
+      const imported = await importLegacyReplayState(migrator, importSite, {
+        commandSeq: 500, cursors: new Map([[importUid, { boot: 9, seq: 20 }]]),
+      }, { highWater: Date.now(), nonces: [[`${importGateway}|nonce-1`, expires]] });
+      assert.deepEqual(imported, { nodeCursors: 1, commandSequence: 500, liveGatewayNonces: 1 });
+      await importLegacyReplayState(migrator, importSite, {
+        commandSeq: 400, cursors: new Map([[importUid, { boot: 8, seq: 1000 }]]),
+      }, { highWater: Date.now(), nonces: [] });
+      const cursors = await runtime.query(
+        'SELECT boot::int, sequence::int FROM public.ingest_replay_cursors WHERE uid = $1', [importUid],
+      );
+      assert.deepEqual(cursors[0], { boot: 9, sequence: 20 }, 'repeated imports cannot lower a replay cursor');
+      assert.equal((await runtime.query('SELECT sequence::int FROM public.ingest_command_cursor'))[0].sequence, 500);
+      assert.equal(await importLease.start(() => undefined), true);
+      await assert.rejects(importLegacyReplayState(migrator, importSite, {
+        commandSeq: 501, cursors: new Map(),
+      }, { highWater: Date.now(), nonces: [] }), ReplayImportError);
+    } finally {
+      await importLease.stop();
+      await runtime.query('DELETE FROM public.ingest_replay_cursors WHERE uid = $1', [importUid]);
+      await runtime.query('DELETE FROM public.ingest_command_cursor');
+      await runtime.query('DELETE FROM public.gateway_hello_replays WHERE gateway_id = $1', [importGateway]);
+      await runtime.query('DELETE FROM public.site_leadership WHERE site_id = $1', [importSite]);
     }
 
     const runner = migrator.createQueryRunner();

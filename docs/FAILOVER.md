@@ -67,6 +67,20 @@ primary fences a competitor, simulates abrupt loss of the primary database
 path, waits for expiry, proves generation-2 takeover, and removes the row. It
 does not touch registrations, accounts, occupancy or training data.
 
+At cutover, stop the legacy edge first and keep it stopped while importing its
+last durable replay files with migrator credentials:
+
+```sh
+npm run failover:import-replay -- /path/to/replay.jsonl /path/to/gateway-hellos.json
+```
+
+The reader validates without rewriting either source file. The transaction
+refuses an active site owner, locks out a concurrent lease acquisition, never
+lowers an existing node or command high-water mark, and imports only gateway
+nonces that remain live according to the database clock. Use the explicit
+`--no-gateway-journal` second argument only when no gateway journal exists.
+Keep the source files and import receipt until failback testing is complete.
+
 ## State still to migrate before rollout
 
 The lease prevents split brain, but it does not make host-local files appear
@@ -78,8 +92,8 @@ has an independent durable home and a tested restore path.
 | Student accounts/activity | PostgreSQL | Seed into shared managed PostgreSQL |
 | Registrations, provisioning, build/rollout metadata, command outcomes, occupancy history | PostgreSQL in postgres mode | Seed into shared managed PostgreSQL |
 | Algo users, revocations, account settings, mail, board, email ledger | Private JSON on one origin | Transactional PostgreSQL repositories |
-| Node replay and command high-water marks | Fenced PostgreSQL in failover mode | Implemented; seed the existing journal at cutover |
-| Gateway HELLO high-water/nonces | Fenced PostgreSQL in failover mode | Implemented; seed the live nonce window or drain it for 60 seconds at cutover |
+| Node replay and command high-water marks | Fenced PostgreSQL in failover mode | Implemented with monotonic legacy import |
+| Gateway HELLO high-water/nonces | Fenced PostgreSQL in failover mode | Implemented with live-window import |
 | Pending parameter reverts and their audit | Memory/JSONL on one origin | Durable PostgreSQL workflow with the same 15-minute revert rule |
 | Firmware artifact bytes and uploads | Private origin disk | Immutable object storage; PostgreSQL metadata remains authoritative |
 | Long-horizon detector backgrounds | Private origin disk | Versioned object snapshots; failover stays unknown while missing/warming |

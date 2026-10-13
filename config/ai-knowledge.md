@@ -250,9 +250,9 @@ both websites; if it stops, counts become unknown, never empty.
 A full-site mode is being prepared, but is not live. A PostgreSQL lease
 will authorize one origin for sensor, console and student traffic;
 the old owner closes listeners before takeover, and the standby's
-readiness stays false until it owns the lease. Node and gateway replay plus
-command cursors are fenced. Console/session, artifact and ML state
-must move to shared durable stores, and a managed cloud
+readiness stays false until it owns the lease. Node/gateway replay and command
+cursors are fenced and importable. Console/session, artifact and ML state
+must move to shared stores, and a managed cloud
 database must pass restore/failover tests before this mode is enabled. See
 docs/FAILOVER.md and deploy/backup/README.md.
 
