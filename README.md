@@ -48,42 +48,42 @@ The [student styles](web-app/src/tokens.css) use [CSS custom properties](https:/
 ```text
 TMedge/
 ├── .github/workflows/
-├── algo-app/src/
-│   ├── console/
-│   │   ├── flash/
-│   │   ├── train/
-│   │   └── updates/
-│   ├── entities/
-│   │   ├── admin-account/
-│   │   ├── admin-session/
-│   │   ├── analytics/
-│   │   │   ├── api/
-│   │   │   └── model/
-│   │   ├── assistant/
-│   │   ├── connection-state/model/
-│   │   ├── operation-notification/
-│   │   ├── operational-health/
-│   │   │   ├── api/
-│   │   │   └── model/
-│   │   ├── usage/
-│   │   └── workspace/
-│   │       ├── api/
-│   │       ├── lib/
-│   │       └── model/
-│   ├── features/manage-admin-accounts/
-│   ├── pages/
-│   │   ├── admin-accounts/
-│   │   └── analytics/
-│   │       ├── lib/
-│   │       └── ui/
-│   └── widgets/
-│       ├── charts/
-│       │   ├── lib/
-│       │   └── ui/
-│       ├── connection-status/ui/
-│       ├── health-overview/ui/
-│       ├── notification-center/
-│       └── workspace/ui/
+├── algo-app/
+│   ├── public/
+│   └── src/
+│       ├── console/
+│       │   ├── flash/
+│       │   ├── train/
+│       │   └── updates/
+│       ├── entities/
+│       │   ├── admin-account/
+│       │   ├── admin-session/
+│       │   ├── analytics/
+│       │   │   ├── api/
+│       │   │   └── model/
+│       │   ├── assistant/
+│       │   ├── connection-state/model/
+│       │   ├── operation-notification/
+│       │   ├── own-account/
+│       │   ├── usage/
+│       │   └── workspace/
+│       │       ├── api/
+│       │       ├── lib/
+│       │       └── model/
+│       ├── features/manage-admin-accounts/
+│       ├── pages/
+│       │   ├── account-settings/
+│       │   ├── admin-accounts/
+│       │   └── analytics/
+│       │       ├── lib/
+│       │       └── ui/
+│       └── widgets/
+│           ├── charts/
+│           │   ├── lib/
+│           │   └── ui/
+│           ├── connection-status/ui/
+│           ├── notification-center/
+│           └── workspace/ui/
 ├── ci/
 ├── config/
 ├── deploy/training/
@@ -105,15 +105,16 @@ TMedge/
 │   ├── console-client/
 │   ├── edge/
 │   ├── infrastructure/
-│   │   ├── algo/
 │   │   ├── algo-admin/
 │   │   ├── analytics/
 │   │   ├── assistant/
+│   │   ├── email/
 │   │   ├── firmware-build/
 │   │   ├── firmware-release/
 │   │   ├── http/
 │   │   ├── postgres/migrations/
 │   │   ├── provisioning/
+│   │   ├── tmflash-release/
 │   │   ├── web/
 │   │   └── workspace/
 │   ├── modules/
@@ -130,7 +131,6 @@ TMedge/
 │   │   │   ├── application/
 │   │   │   ├── domain/
 │   │   │   └── routes/
-│   │   ├── console-live/
 │   │   ├── firmware/
 │   │   │   ├── application/
 │   │   │   ├── domain/
@@ -166,6 +166,7 @@ TMedge/
 │   │   │   ├── domain/
 │   │   │   ├── repositories/
 │   │   │   └── routes/
+│   │   ├── tmflash/routes/
 │   │   └── workspace/
 │   │       ├── application/
 │   │       ├── domain/
