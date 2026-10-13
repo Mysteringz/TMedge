@@ -161,8 +161,6 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
   font-size: 13px; white-space: nowrap;
 }
 
-.field-hint { margin: 6px 0 0; font-size: 11px; line-height: 1.4; color: color-mix(in srgb, var(--color-text) 55%, transparent) }
-
 /* The password rules, as a checklist that fills itself in. Grey is the norm
    here, not an error colour: an unmet rule is simply not done yet. */
 .pw-rules {

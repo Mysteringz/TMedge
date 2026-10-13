@@ -217,7 +217,7 @@ export class ParamBroker {
    * parameters take effect on the next frame.
    */
   async apply(opts: {
-    uid: string; nodeId: string; param: string; binding: ParamBinding; value: number; by: string;
+    uid: string; nodeId: string; binding: ParamBinding; value: number; by: string;
   }): Promise<PendingChange> {
     const { uid, nodeId, binding, value, by } = opts;
     if (this.persisting.has(uid)) throw new Error('wait for the parameter save to finish');

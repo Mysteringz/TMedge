@@ -45,7 +45,3 @@ export function unmetPasswordRequirements(password: unknown): PasswordRequiremen
   const value = typeof password === 'string' ? password : '';
   return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(value));
 }
-
-export function passwordMeetsRequirements(password: unknown): boolean {
-  return unmetPasswordRequirements(password).length === 0;
-}

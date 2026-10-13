@@ -213,7 +213,15 @@ export class FirmwareStore implements FirmwareArtifactFiles {
 
   // --- build ----------------------------------------------------------------
 
-  /** Returns a validated project directory for the isolated build service. */
+  /**
+   * Returns a validated project directory for the isolated build service.
+   *
+   * The project's own platformio.ini is what gets built; all that is checked
+   * here is that it has the release environment. An ini can fetch build tools
+   * and run hooks, so nothing in this process ever compiles this directory:
+   * it goes to the worker (docker/firmware-worker.py), and the worker's
+   * sandbox is what contains it.
+   */
   buildWorkspace(uploadId: string): string {
     const up = this.uploads.get(uploadId);
     if (!up) throw new FirmwareError('no such upload');

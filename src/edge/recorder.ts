@@ -3,7 +3,7 @@ import { createWriteStream, mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import type { OccupancySnapshot } from '../shared/types.js';
-import type { RecorderHealth, RecordingHealthProvider, RecordingStreamHealth } from '../modules/recordings/repositories/recording-lifecycle.js';
+import type { RecorderHealth, RecordingHealthProvider, RecordingStreamHealth } from '../modules/recordings/repositories/recording-health.js';
 import { operationalLog } from '../shared/logging/operational-logger.js';
 import type { Raw, Report } from './protocol.js';
 

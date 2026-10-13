@@ -86,7 +86,6 @@ const PUBLIC = join(ROOT, 'public-algo');
 
 export interface AlgoServerHandle {
   server: Server;
-  algo: AlgoRuntime;
   dispose(): Promise<void>;
 }
 
@@ -506,7 +505,7 @@ export function startAlgo(
     }
     try {
       const change = await broker.apply({
-        uid: body.uid ?? pipeline.uid, nodeId: n.id, param: ps.id,
+        uid: body.uid ?? pipeline.uid, nodeId: n.id,
         binding: ps.binding, value: body.value, by: by(res),
       });
       delete n.params[ps.id];   // it is the live value now, not an edit
@@ -714,7 +713,6 @@ export function startAlgo(
   if (options.listen !== false) server.listen(port, host);
   return {
     server,
-    algo,
     // Release owned feeds and timers once, including during startup rollback.
     dispose: () => {
       if (disposal) return disposal;

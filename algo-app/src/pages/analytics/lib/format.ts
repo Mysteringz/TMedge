@@ -87,7 +87,6 @@ export function thin(values: (number | null)[] | undefined, points = 40): (numbe
   return out;
 }
 
-
 const GROUP_NAMES: Record<string, string> = {
   pages: 'Pages', 'sign-in': 'Sign-in and sign-up', occupancy: 'Occupancy reads', search: 'Seat search', activity: 'Usage reports', assets: 'Scripts, styles and images', other: 'Anything else',
 };

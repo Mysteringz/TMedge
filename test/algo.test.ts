@@ -165,7 +165,7 @@ test('a live parameter change can always be taken back', async () => {
 
   const broker = new ParamBroker(rt);
   const change = await broker.apply({
-    uid: UID, nodeId: 'bg-1', param: 'min_contrast',
+    uid: UID, nodeId: 'bg-1',
     binding: { kind: 'device', param: 'min_contrast' }, value: 90, by: 'test',
   });
   assert.equal(sent.length, 1, 'the sensor was actually told');
@@ -175,7 +175,7 @@ test('a live parameter change can always be taken back', async () => {
 
   // A second edit still reverts to the value the system had before anyone started.
   const again = await broker.apply({
-    uid: UID, nodeId: 'bg-1', param: 'min_contrast',
+    uid: UID, nodeId: 'bg-1',
     binding: { kind: 'device', param: 'min_contrast' }, value: 120, by: 'test',
   });
   assert.equal(again.from, 60, 'not to the middle of an experiment');
@@ -187,10 +187,10 @@ test('a live parameter change can always be taken back', async () => {
   // Edge parameters are clamped here, not trusted: this one decides what
   // students are told about a real room.
   await assert.rejects(
-    broker.apply({ uid: UID, nodeId: 'occ-1', param: 'seatRadiusCm', binding: { kind: 'edge', path: 'occupancy.seatRadiusCm' }, value: 5000, by: 'test' }),
+    broker.apply({ uid: UID, nodeId: 'occ-1', binding: { kind: 'edge', path: 'occupancy.seatRadiusCm' }, value: 5000, by: 'test' }),
     /between 20 and 300/,
   );
-  await broker.apply({ uid: UID, nodeId: 'occ-1', param: 'seatRadiusCm', binding: { kind: 'edge', path: 'occupancy.seatRadiusCm' }, value: 120, by: 'test' });
+  await broker.apply({ uid: UID, nodeId: 'occ-1', binding: { kind: 'edge', path: 'occupancy.seatRadiusCm' }, value: 120, by: 'test' });
   assert.equal(opts.seatRadiusCm, 120, 'the running engine changed');
   broker.commit(UID, 'occupancy.seatRadiusCm', 'test');
   assert.equal(broker.changes().length, 0, 'a committed change is off the timer');
@@ -358,14 +358,14 @@ test('a device write holds the value it asked for until the node confirms it', a
   // and quietly ignored -- that silence is the bug this guards.
   await assert.rejects(
     broker.apply({
-      uid: UID, nodeId: 'bg-1', param: 'refresh',
+      uid: UID, nodeId: 'bg-1',
       binding: { kind: 'device', param: 'refresh' }, value: 7, by: 'test',
     }),
     /only accepts refresh between 1 and 5/,
   );
 
   const change = await broker.apply({
-    uid: UID, nodeId: 'bg-1', param: 'min_contrast',
+    uid: UID, nodeId: 'bg-1',
     binding: { kind: 'device', param: 'min_contrast' }, value: 90, by: 'test',
   });
   assert.equal(change.cmdSeq, 101, 'we kept the sequence the node will echo');

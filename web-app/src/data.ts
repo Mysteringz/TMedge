@@ -13,8 +13,8 @@ import { allocate, floorIsDark, knownFree, walkOrder } from '../../src/shared/al
 import { spaceInfo, VENUES, type Venue } from '../../src/shared/venues.js';
 import type { CampusFloor, CampusView, TableState } from '../../src/shared/types.js';
 
-export type { CampusFloor, CampusView, TableState, Venue };
-export { allocate, knownFree, spaceInfo, walkOrder, VENUES };
+export type { CampusFloor };
+export { allocate, knownFree, spaceInfo, walkOrder };
 
 export interface Me {
   email: string;
