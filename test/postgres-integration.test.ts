@@ -42,6 +42,7 @@ import { PostgresHelloReplayStore } from '../src/infrastructure/postgres/hello-r
 import { importLegacyReplayState, ReplayImportError } from '../src/infrastructure/postgres/replay-import.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
+const detectorMigration = join(testDirectory, '../src/infrastructure/postgres/migrations/1791590400000-AddRegistrationDetector.js');
 const migrations = [
   join(testDirectory, 'postgres-foundation-probe-migration.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1790812800000-CreateRegistrationProvisioningAuditSchema.js'),
@@ -49,7 +50,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791072000000-CreateFirmwareRolloutPersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791158400000-CreateCommandOutcomePersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791244800000-CreateOccupancyHistory.js'),
-  join(testDirectory, '../src/infrastructure/postgres/migrations/1791590400000-AddRegistrationDetector.js'),
+  detectorMigration,
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791676800000-CreateSiteLeadership.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791763200000-CreateIngestReplayCursors.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791849600000-CreateGatewayHelloReplay.js'),
@@ -721,6 +722,14 @@ test('registration schema and provisioning repository enforce persistence invari
       /permission denied/i,
     );
 
+    for (const table of ['gateway_hello_replays', 'ingest_replay_cursors', 'site_leadership']) {
+      await migrator.undoLastMigration({ transaction: 'all' });
+      appliedMigrations -= 1;
+      assert.equal((await migrator.query(`SELECT to_regclass('public.${table}') AS table_name`))[0].table_name, null,
+        `${table} can be reverted independently`);
+    }
+    assert.equal((await migrator.query("SELECT to_regclass('public.ingest_command_cursor') AS table_name"))[0].table_name, null,
+      'the command cursor is reverted with ingest replay state');
     await migrator.undoLastMigration({ transaction: 'all' });
     appliedMigrations -= 1;
     assert.equal((await migrator.query(
@@ -782,7 +791,7 @@ test('registration detector migration preserves legacy rows and enforces detecto
 }, async () => {
   const config = loadPostgresConfig();
   const baseline = createPostgresDataSource(config.migrator, migrations.slice(0, 2));
-  const upgraded = createPostgresDataSource(config.migrator, [...migrations.slice(0, 2), migrations.at(-1)!]);
+  const upgraded = createPostgresDataSource(config.migrator, [...migrations.slice(0, 2), detectorMigration]);
   const uid = 'aa:bb:cc:00:00:01';
   let applied = 0;
   try {
