@@ -152,10 +152,70 @@ export function MlData() {
             {job.state === 'completed' && <><a className="btn btn-primary" href={`/api/ml-data/exports/${encodeURIComponent(job.id)}/download`}>Download ZIP</a><p className="cx-hint">Expires {new Date(job.expiresAt).toLocaleString()}</p><details><summary>SHA-256 checksum</summary><code className="cx-data-hash">{job.sha256}</code></details></>}
           </article>)}</div>}
         </div>
+        <DownloadKeysPanel />
       </div>}
     </section>
     </div><DatabaseDiagram /></div>
   </main>;
+}
+
+interface DownloadKey { id: string; label: string; createdAt: number; expiresAt: number }
+const SAVE_KEY = "mkdir -p ~/thermalml && read -rs -p 'Download key: ' K && (umask 077; printf %s \"$K\" > ~/thermalml/download.key) && unset K && echo && echo saved";
+
+/**
+ * Keys for training jobs: a job on the cluster (module 02) uses one to fetch
+ * your exports from this page, and nothing else. Shown once; revocable here.
+ */
+function DownloadKeysPanel() {
+  const [keys, setKeys] = useState<DownloadKey[]>([]);
+  const [available, setAvailable] = useState(true);
+  const [label, setLabel] = useState('iw-g2 training');
+  const [hours, setHours] = useState(24);
+  const [made, setMade] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const load = async () => {
+    try { const value = await request<{ available: boolean; keys: DownloadKey[] }>('/keys'); setAvailable(value.available); setKeys(value.keys); }
+    catch (e) { setError((e as Error).message); }
+  };
+  useEffect(() => { void load(); }, []);
+  const create = async () => {
+    setBusy(true); setError(''); setMade(null);
+    try { const value = await request<DownloadKey & { key: string }>('/keys', undefined, { label, hours }); setMade(value.key); await load(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  const revoke = async (id: string) => {
+    setError('');
+    const response = await fetch(`/api/ml-data/keys/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'x-tm-algo': '1' } });
+    permissionChanged(response.status);
+    if (!response.ok) setError(((await response.json().catch(() => ({}))) as { error?: string }).error || 'The key could not be revoked.');
+    await load();
+  };
+  if (!available) return null;
+  return <div className="cx-data-panel"><div className="cx-data-panel-head"><h2>Download keys for training jobs</h2><span className="tag tag-neutral">read-only</span></div>
+    <p className="cx-hint">A job on the training cluster uses a key to download <em>your</em> exports from this page — nothing else: no queries, no new exports, nobody else's data. It stops working when it expires, when you revoke it, or when your password changes.</p>
+    <div className="cx-data-query-actions">
+      <label className="cx-hint" htmlFor="ml-key-label">Label</label>
+      <input id="ml-key-label" className="input" value={label} maxLength={60} onChange={e => setLabel(e.target.value)} />
+      <select className="input" aria-label="Key lifetime" value={hours} onChange={e => setHours(Number(e.target.value))}>
+        <option value={1}>1 hour</option><option value={24}>24 hours</option><option value={168}>7 days</option></select>
+      <button className="btn btn-primary" disabled={busy || !label.trim()} onClick={() => void create()}>{busy ? 'Creating…' : 'Create key'}</button>
+    </div>
+    {made && <div className="cx-data-notice" role="status">
+      <p><strong>Copy this key now — it will not be shown again.</strong></p>
+      <code className="cx-data-hash">{made}</code>
+      <button className="btn btn-ghost" onClick={() => void navigator.clipboard?.writeText(made)}>Copy key</button>
+      <p className="cx-hint">On the cluster (02 ML Training → ssh console), run this and paste the key when asked. It is not shown on screen or kept in the shell history:</p>
+      <code className="cx-data-hash">{SAVE_KEY}</code>
+      <button className="btn btn-ghost" onClick={() => setMade(null)}>Done</button>
+    </div>}
+    {error && <p className="cx-data-error" role="alert">{error}</p>}
+    {keys.length === 0 ? <p className="cx-data-empty">No download keys.</p> : <div className="cx-data-jobs">{keys.map(k => <article key={k.id} className="cx-data-job">
+      <div className="cx-data-panel-head"><strong>{k.label}</strong><button className="btn btn-ghost" onClick={() => void revoke(k.id)}>Revoke</button></div>
+      <p className="cx-hint">Created {new Date(k.createdAt).toLocaleString()} · expires {new Date(k.expiresAt).toLocaleString()}</p>
+    </article>)}</div>}
+  </div>;
 }
 
 function DatabaseDiagram() {

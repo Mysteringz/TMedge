@@ -6,6 +6,7 @@ import { DataError, PostgresTrainingDatabase, readerUrl, type TrainingDatabase }
 import { DIAGRAM_FILE, schemaDiagram, schemaHtml } from './schema-report.js';
 import { Exports, nativeDump, type ExportJob } from './exports.js';
 import { remoteExports } from './remote-exports.js';
+import { DownloadKeys } from './download-keys.js';
 import { pipeline } from 'node:stream/promises';
 
 const summary = ({ id, state, tables, createdAt, expiresAt, bytes, sha256, error }: ExportJob) => ({ id, state, tables, createdAt, expiresAt, bytes, sha256, error });
@@ -16,7 +17,7 @@ function positive(env: NodeJS.ProcessEnv, name: string, fallback: number): numbe
   return value;
 }
 export interface MlDataOptions { env: NodeJS.ProcessEnv; dataDir: string; db?: TrainingDatabase; exports?: Exports }
-export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'>, options: MlDataOptions) {
+export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'> & Partial<Pick<AlgoAuth, 'accountSubject'>>, options: MlDataOptions) {
   const url = readerUrl(options.env);
   const db = options.db ?? (url ? new PostgresTrainingDatabase(url) : null);
   const remote = options.exports ? null : remoteExports(options.env);
@@ -24,6 +25,9 @@ export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'
     nativeDump(url, options.env.ML_PG_DUMP || 'pg_dump'), positive(options.env, 'ML_EXPORT_MAX_BYTES', (remote ? 16 : 8) * 1024 ** 3),
     positive(options.env, 'ML_EXPORT_RESERVE_BYTES', 1024 ** 3), remote ?? undefined) : null);
   const schemaDir = options.env.ML_SCHEMA_DIR || join(options.dataDir, 'algo', 'ml-schema');
+  // Without a way to tell when an account changed, a key could outlive its owner's password: no keys then.
+  const accountSubject = auth.accountSubject?.bind(auth);
+  const keys = accountSubject ? new DownloadKeys(join(options.dataDir, 'algo', 'ml-download-keys.json'), accountSubject, n => auth.accountEpoch(n)) : null;
   const router = express.Router();
   router.use((req, res, next) => {
     res.set({ 'Cache-Control': 'private, no-store, no-transform', 'CDN-Cache-Control': 'no-store', 'Cloudflare-CDN-Cache-Control': 'no-store' });
@@ -96,12 +100,15 @@ export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'
       res.json(summary(exports.get(String(req.params.id), user.name, auth.accountEpoch(user.name))));
     } catch (error) { res.status(error instanceof DataError ? error.status : 503).json({ error: error instanceof DataError ? error.message : 'Export unavailable.' }); }
   });
-  router.get('/exports/:id/download', (req, res) => {
-    const user = auth.principalOf(req); if (!user) return;
-    const epoch = auth.accountEpoch(user.name);
+  /**
+   * Streams one completed export, resumable by byte range. `allowed` is asked
+   * again every five seconds: a signed-out session, a changed account or a
+   * revoked download key ends the transfer mid-way, not only before it.
+   */
+  const sendExport = (req: Request, res: Response, owner: string, epoch: string | null, allowed: () => boolean): void => {
     try {
       if (!exports) throw new DataError('Export not found.', 404);
-      const job = exports.get(String(req.params.id), user.name, epoch);
+      const job = exports.get(String(req.params.id), owner, epoch);
       if (job.state !== 'completed') throw new DataError('This export is not ready to download.', 409);
       if (job.storage === 'remote') {
         if (!exports.remote) throw new DataError('The remote export service is not configured.', 503);
@@ -115,10 +122,7 @@ export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'
         if (first) res.set('Content-Range', 'bytes ' + start + '-' + end + '/' + job.bytes);
         if (req.method === 'HEAD') return void res.end();
         const download = exports.remote.download(job.id, start, length), release = exports.lease(job.id);
-        const check = setInterval(() => {
-          const principal = auth.principalOf(req);
-          if (!principal || principal.name !== user.name || auth.accountEpoch(user.name) !== epoch || !principal.capabilities.includes('training.read')) res.destroy();
-        }, 5000).unref();
+        const check = setInterval(() => { if (!allowed()) res.destroy(); }, 5000).unref();
         res.once('close', () => { clearInterval(check); release(); download.cancel(); });
         void pipeline(download.stream, res).catch(() => res.destroy()).finally(() => {
           clearInterval(check); release(); download.cancel();
@@ -126,10 +130,7 @@ export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'
         return;
       }
       const release = exports.lease(job.id);
-      const check = setInterval(() => {
-        const principal = auth.principalOf(req);
-        if (!principal || principal.name !== user.name || auth.accountEpoch(user.name) !== epoch || !principal.capabilities.includes('training.read')) res.destroy();
-      }, 5000).unref();
+      const check = setInterval(() => { if (!allowed()) res.destroy(); }, 5000).unref();
       res.once('close', () => { clearInterval(check); release(); });
       // sendFile streams, supports byte ranges for resumed downloads, and
       // sends headers before copying the file; no whole-file Buffer/blob.
@@ -139,7 +140,68 @@ export function createMlData(auth: Pick<AlgoAuth, 'principalOf' | 'accountEpoch'
         else if (error) res.destroy();
       });
     } catch (error) { res.status(error instanceof DataError ? error.status : 503).json({ error: error instanceof DataError ? error.message : 'Export unavailable.' }); }
+  };
+  router.get('/exports/:id/download', (req, res) => {
+    const user = auth.principalOf(req); if (!user) return;
+    const epoch = auth.accountEpoch(user.name);
+    sendExport(req, res, user.name, epoch, () => {
+      const principal = auth.principalOf(req);
+      return !!principal && principal.name === user.name && auth.accountEpoch(user.name) === epoch && principal.capabilities.includes('training.read');
+    });
   });
+
+  // Download keys, managed by their owner while signed in (download-keys.ts).
+  const fail = (res: Response, error: unknown) => res.status(error instanceof DataError ? error.status : 503).json({ error: error instanceof DataError ? error.message : 'Download keys are unavailable.' });
+  router.get('/keys', (req, res) => {
+    const user = auth.principalOf(req); if (!user) return;
+    if (!keys) return void res.json({ available: false, keys: [] });
+    try { res.json({ available: true, keys: keys.list(user.name) }); } catch (error) { fail(res, error); }
+  });
+  router.post('/keys', (req, res) => {
+    const user = auth.principalOf(req); if (!user) return;
+    if (!keys) return void res.status(503).json({ error: 'Download keys are unavailable on this edge.' });
+    try { res.status(201).json(keys.issue(user.name, req.body?.label, req.body?.hours)); } catch (error) { fail(res, error); }
+  });
+  router.delete('/keys/:id', (req, res) => {
+    const user = auth.principalOf(req); if (!user) return;
+    if (req.get('x-tm-algo') !== '1') return void res.status(403).json({ error: 'missing x-tm-algo header' });
+    if (!keys) return void res.status(404).json({ error: 'No such download key.' });
+    try { keys.revoke(user.name, String(req.params.id)); res.status(204).end(); } catch (error) { fail(res, error); }
+  });
+
+  /**
+   * The key-only door, mounted before the console's sign-in: a download key
+   * may list its owner's exports, read one's state, and download it. Nothing
+   * else answers here, and no cookie is looked at.
+   */
+  const keyed = express.Router();
+  keyed.use((req, res, next) => {
+    res.set({ 'Cache-Control': 'private, no-store, no-transform', 'CDN-Cache-Control': 'no-store', 'Cloudflare-CDN-Cache-Control': 'no-store' });
+    if (req.method !== 'GET' && req.method !== 'HEAD') return void res.status(405).json({ error: 'A download key can only read exports.' });
+    const presented = /^Bearer (\S+)$/.exec(req.get('authorization') ?? '')?.[1];
+    const grant = keys?.authorize(presented);
+    if (!grant) return void res.status(401).json({ error: 'A valid download key is required.' });
+    res.locals.grant = grant;
+    res.locals.key = presented;
+    next();
+  });
+  const grantOf = (res: Response) => res.locals.grant as { id: string; owner: string; epoch: string };
+  keyed.get('/exports', (_req, res) => {
+    const g = grantOf(res);
+    res.json({ jobs: exports?.list(g.owner, g.epoch).map(summary) ?? [] });
+  });
+  keyed.get('/exports/:id', (req, res) => {
+    const g = grantOf(res);
+    try {
+      if (!exports) throw new DataError('Export not found.', 404);
+      res.json(summary(exports.get(String(req.params.id), g.owner, g.epoch)));
+    } catch (error) { fail(res, error); }
+  });
+  keyed.get('/exports/:id/download', (req, res) => {
+    const g = grantOf(res), presented = String(res.locals.key);
+    sendExport(req, res, g.owner, g.epoch, () => keys?.authorize(presented)?.id === g.id);
+  });
+
   let stopping: Promise<void> | undefined;
-  return { router, stop: () => stopping ??= (async () => { await exports?.stop(); await db?.close(); })() };
+  return { router, keyed, stop: () => stopping ??= (async () => { await exports?.stop(); await db?.close(); })() };
 }
