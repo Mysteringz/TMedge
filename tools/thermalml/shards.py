@@ -19,7 +19,8 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Iterator
 
 import numpy as np
@@ -171,12 +172,22 @@ def list_shards(root: str, include_locked: bool = False) -> list[tuple[str, str]
     return found
 
 
+_TS = re.compile(r'^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?([+-])(\d{2})(?::?(\d{2}))?$')
+
+
 def _ms(ts: str) -> int:
-    # pg_dump writes '2026-09-26 03:55:53.459+00'.
-    s = ts.replace(' ', 'T')
-    if s[-3] in '+-':
-        s += ':00'
-    return int(round(datetime.fromisoformat(s).timestamp() * 1000))
+    """ms since epoch for a pg_dump timestamptz, e.g. '2026-09-26 03:55:53.459+00' or '... 03:56:20.1+00'.
+
+    By hand rather than datetime.fromisoformat: before Python 3.11 that takes
+    only 3- or 6-digit fractions, and the cluster runs 3.10.
+    """
+    m = _TS.match(ts)
+    if not m:
+        raise ValueError(f'unexpected timestamp {ts!r}')
+    y, mo, d, h, mi, sec, frac, sign, oh, om = m.groups()
+    offset = timedelta(hours=int(oh), minutes=int(om or 0)) * (1 if sign == '+' else -1)
+    t = datetime(int(y), int(mo), int(d), int(h), int(mi), int(sec), tzinfo=timezone(offset))
+    return int(t.timestamp()) * 1000 + int(round(int((frac or '0').ljust(6, '0')) / 1000))
 
 
 def thermal_rows_from_dump(lines: Iterable[bytes]) -> Iterator[ThermalRow]:

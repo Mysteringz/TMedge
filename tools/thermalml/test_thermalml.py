@@ -108,6 +108,19 @@ class Shards(unittest.TestCase):
         self.assertEqual(int(s.pixels[0, 10, 20]), 250)        # row-major 24x32, as on the wire
         self.assertAlmostEqual(float(s.temps()[0, 10, 20]), 20.5 + 250 * 0.02, places=4)
 
+    def test_every_timestamp_form_pg_dump_writes_is_read_the_same_on_python_3_10(self) -> None:
+        # iw-g2 runs Python 3.10, whose datetime.fromisoformat refuses '.1+00'.
+        from tools.thermalml.shards import _ms
+        base = 1790394980000            # 2026-09-26 03:56:20 UTC
+        self.assertEqual(_ms('2026-09-26 03:56:20+00'), base)
+        self.assertEqual(_ms('2026-09-26 03:56:20.1+00'), base + 100)
+        self.assertEqual(_ms('2026-09-26 03:56:20.459+00'), base + 459)
+        self.assertEqual(_ms('2026-09-26 03:56:20.123456+00'), base + 123)
+        self.assertEqual(_ms('2026-09-26 11:56:20.1+08'), base + 100)
+        self.assertEqual(_ms('2026-09-26 09:26:20+05:30'), base)
+        with self.assertRaises(ValueError):
+            _ms('26/09/2026 03:56')
+
     def test_the_same_frame_twice_is_kept_once(self) -> None:
         row = frames_row('t1', RIG, '2026-10-06 08:00:00+00', pixels())
         self.build(row, row)
