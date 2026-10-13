@@ -20,6 +20,7 @@ import { DEFAULT_STATIC_BACKGROUND, median, StaticBackground, type StaticBackgro
 import { replayAll, replayDayAgainst, type ReplayDay } from '../src/tools/replay.js';
 import { listShards, readShard, sensorDir } from '../src/tools/thermal-shards.js';
 import { heatFeatures, RecentMedian } from '../src/algo/heatfeatures.js';
+import { heatDecode, heatForward, isHeatModel, type HeatModel } from '../src/algo/heatmodel.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RIG = '2c:cf:67:0b:c0:94';
@@ -240,4 +241,40 @@ test('the detector sees the same three channels on the edge as in training', (t)
   assert.ok(worst < 1e-5, `features drift by ${worst}; features.py and heatfeatures.ts disagree`);
   assert.equal(heatFeatures(rawTemps({ tMin: 20, step: 0.02, pixels: new Uint8Array(GRID_SIZE) } as Raw), null, null), null,
     'no background, no features: the node is not-ready, never empty');
+});
+
+test('the edge runs the detector network exactly as the trainer defines it', () => {
+  // test/golden/heatmodel was written by tools/thermalml/heatnet.py (numpy):
+  // a model, an input, and what that network computes from it. The edge must
+  // compute the same heatmap and offsets, and find the same people.
+  const g = JSON.parse(readFileSync(join(REPO, 'test', 'golden', 'heatmodel', 'seed3.json'), 'utf8')) as {
+    model: unknown; x: number[]; heatmap: number[]; offset: number[]; people: [number, number, number][];
+  };
+  assert.ok(isHeatModel(g.model), 'the golden model is a valid model file');
+  const out = heatForward(g.model, Float32Array.from(g.x));
+  let worst = 0;
+  g.heatmap.forEach((v, i) => { worst = Math.max(worst, Math.abs(v - (out.heatmap[i] ?? NaN))); });
+  g.offset.forEach((v, i) => { worst = Math.max(worst, Math.abs(v - (out.offset[i] ?? NaN))); });
+  assert.ok(worst < 1e-4, `the edge's network drifts from the trainer's by ${worst}`);
+  const people = heatDecode(out.heatmap, out.offset, g.model.threshold);
+  assert.equal(people.length, g.people.length);
+  people.forEach((p, i) => {
+    assert.ok(Math.abs(p.x - (g.people[i]?.[0] ?? NaN)) < 1e-3 && Math.abs(p.y - (g.people[i]?.[1] ?? NaN)) < 1e-3, `person ${i} moved`);
+  });
+});
+
+test('a model file the edge cannot run exactly is refused, not half-run', () => {
+  const g = JSON.parse(readFileSync(join(REPO, 'test', 'golden', 'heatmodel', 'seed3.json'), 'utf8')) as { model: HeatModel };
+  const broken = (edit: (m: Record<string, unknown> & { layers: Record<string, unknown>[] }) => void) => {
+    const m = JSON.parse(JSON.stringify(g.model)) as Record<string, unknown> & { layers: Record<string, unknown>[] };
+    edit(m);
+    return isHeatModel(m);
+  };
+  assert.equal(broken((m) => { (m.layers[0] as { w: number[] }).w.pop(); }), false, 'a weight missing');
+  assert.equal(broken((m) => { (m.layers[0] as { w: number[] }).w[0] = Number.NaN; }), false, 'a weight not a number');
+  assert.equal(broken((m) => { m.layers[0] = { ...m.layers[0], in: 4 }; }), false, 'a channel count that does not chain');
+  assert.equal(broken((m) => { m.features = 'heatfeatures-v0'; }), false, 'trained on other inputs');
+  assert.equal(broken((m) => { m.threshold = 1.5; }), false, 'a threshold that is not a probability');
+  assert.equal(broken((m) => { m.layers.splice(m.layers.length - 1, 1); }), false, 'no offset head');
+  assert.equal(broken((m) => { m.layers.push({ op: 'softmax', input: 'hm', output: 'z' }); }), false, 'an operation the edge does not have');
 });

@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--out', required=True)
     p.add_argument('--day', action='append')
     p.add_argument('--only', help='file with one rgb id per line: run on these photos only')
+    p.add_argument('--every', type=int, default=1, help='every Nth photo of a day (by name, an arbitrary sample)')
     p.add_argument('--device', default='mps')
     p.add_argument('--batch', type=int, default=32)
     a = p.parse_args(argv)
@@ -107,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         files = sorted(f for f in os.listdir(folder) if f.endswith('.jpg'))
         if only is not None:
             files = [f for f in files if f[:-4] in only]
+        files = files[::a.every]
         t0, boxes = time.time(), {}
         for i in range(0, len(files), a.batch):
             chunk = files[i:i + a.batch]

@@ -128,6 +128,31 @@ These settings were fixed before any fine-tuned model was trained:
   September, so fine-tuning the RGB teacher on September photos does not
   touch the thermal frames it is tested on.
 
+**Note on the first fine-tuning runs.**
+- Validation collapsed after epoch 1, on the Mac GPU and on the CPU alike.
+- Evaluated after epoch 9, the model output the maximum 300 boxes per
+  image at up to 0.98 confidence.
+- The likely cause is the class head, which Ultralytics re-initialises when
+  going from 80 classes to 1: it overshoots once the learning rate ramps up
+  after warm-up.
+- It recovered on its own (mAP50 0.17 by epoch 10). The recipe was left
+  unchanged.
+
+## Splitting the thermal model's data (decided 2026-10-13)
+
+Never by random frames. Frames a second apart are nearly the same picture,
+so a random split scores near-copies of what the model trained on.
+
+- **First thermal model:** P'Ing's 70/30, done by whole days on the rig's
+  October recordings, counting frames with a ready background.
+  - Train on 6, 7 and 10 Oct: 100,643 frames, 74%.
+  - Validate on 9 and 11 Oct: 35,406 frames, 26%.
+  - Frames within 30 minutes of a day boundary are dropped.
+  - Validation picks the epoch and the threshold, and nothing else.
+- **Final check:** the 400 hand-labelled September frames, at milestones only.
+- **Nightly:** train on every day up to the day before yesterday, test on
+  yesterday. The series of those scores is the "is it getting better" curve.
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 

@@ -226,6 +226,75 @@ class Features(unittest.TestCase):
         self.assertIsNone(features(np.full(768, 22, dtype=np.float32), None, None))
 
 
+class Network(unittest.TestCase):
+    """The exported file computes what the trained network computes (needs PyTorch; CI checks the edge against golden files)."""
+
+    def test_the_exported_json_computes_what_pytorch_computes(self) -> None:
+        try:
+            import torch
+        except ImportError:
+            self.skipTest('PyTorch is not installed here')
+        from tools.thermalml.heatnet import export, forward_np, torch_model
+        torch.manual_seed(0)
+        net = torch_model()
+        # Give batch norm non-trivial statistics so folding it is actually tested.
+        net.train()
+        with torch.no_grad():
+            for _ in range(5):
+                net(torch.randn(8, 3, 24, 32) * 0.7 + 0.2)
+        net.eval()
+        doc = export(net, {'threshold': 0.5})
+        x = (torch.randn(1, 3, 24, 32) * 0.6).float()
+        with torch.no_grad():
+            hm, off = net(x)
+        np_hm, np_off = forward_np(doc, x[0].numpy())
+        self.assertLess(float(np.abs(np_hm - hm[0].double().numpy()).max()), 1e-4)
+        self.assertLess(float(np.abs(np_off - off[0].double().numpy()).max()), 1e-4)
+
+
+class TrainingTargets(unittest.TestCase):
+    """Where the model is told a person is. A target off by a cell trains a model off by two pixels."""
+
+    def test_a_person_becomes_one_peak_cell_with_the_exact_remainder_as_offset(self) -> None:
+        from tools.thermalml.train import targets
+        hm, w, off, pos = targets([[10.3, 7.9, 0.9]], [], np.ones((24, 32), dtype=np.float32))
+        self.assertEqual(np.argwhere(pos == 1).tolist(), [[3, 5]])          # y 7.9 -> row 3, x 10.3 -> column 5
+        self.assertEqual(float(hm[3, 5]), 1.0)
+        self.assertAlmostEqual(float(off[0, 3, 5]), 10.3 / 2 - 5.5, places=5)
+        self.assertAlmostEqual(float(off[1, 3, 5]), 7.9 / 2 - 3.5, places=5)
+
+    def test_what_the_photo_cannot_see_and_unsure_people_carry_no_weight(self) -> None:
+        from tools.thermalml.train import targets
+        known = np.ones((24, 32), dtype=np.float32)
+        known[:, :16] = 0                                                  # left half unseen by the camera
+        _hm, w, _off, _pos = targets([], [[25.0, 12.0]], known)
+        self.assertEqual(float(w[:, :8].sum()), 0.0)                       # unknown is never "nobody"
+        self.assertEqual(float(w[6, 12]), 0.0)                             # around the unsure person
+        self.assertEqual(float(w[2, 14]), 1.0)
+
+    def test_a_flip_moves_the_person_and_their_heat_together(self) -> None:
+        from tools.thermalml.train import augment
+        x = np.zeros((3, 24, 32), dtype=np.float32)
+        x[1, 10, 4] = 2.0
+        rng = np.random.default_rng(0)
+        for _ in range(20):
+            xa, pts, _ign, _known = augment(x, x[2], [[4.5, 10.5, 1.0]], [], np.ones((24, 32), np.float32), rng, [])
+            px, py = pts[0][0], pts[0][1]
+            hot = np.unravel_index(int(np.argmax(xa[1])), (24, 32))
+            self.assertLess(math.hypot(hot[1] + 0.5 - px, hot[0] + 0.5 - py), 1.5)
+
+    def test_zoom_keeps_its_centre_still_and_shrinks_distances(self) -> None:
+        from tools.thermalml.train import _affine
+        x = np.zeros((1, 24, 32), dtype=np.float32)
+        x[0, 12, 16] = 1.0
+        y = _affine(x, 0.5, 16.5, 12.5, 0)
+        self.assertEqual(float(y[0, 12, 16]), 1.0)
+        x2 = np.zeros((1, 24, 32), dtype=np.float32)
+        x2[0, 12, 24] = 1.0                                                # 8 px right of the centre
+        y2 = _affine(x2, 0.5, 16.5, 12.5, 0)
+        self.assertEqual(np.argwhere(y2[0] == 1.0).tolist(), [[12, 20]])  # now 4 px right
+
+
 class Scoring(unittest.TestCase):
     """The scores everything else is judged by."""
 
