@@ -98,7 +98,7 @@ async function main(): Promise<void> {
     c.on('close', () => r(out));
   });
   console.log(`\n${a.submitHost} presented:\n${fingerprints}`);
-  const yes = await ask(`Pin these for module 02 in ${target}? Type "yes": `);
+  const yes = await ask(`Pin these for ML training in ${target}? Type "yes": `);
   if (yes !== 'yes') { rmSync(scratch, { recursive: true, force: true }); console.log('Not pinned.'); return; }
   const lines = readFileSync(found, 'utf8').split('\n').filter((l) => l.trim()).map((l) => l.replace(/^\S+/, a.submitHost));
   const kept = existsSync(target) ? readFileSync(target, 'utf8').split('\n').filter((l) => l.trim() && !l.startsWith(`${a.submitHost} `)) : [];
@@ -106,7 +106,7 @@ async function main(): Promise<void> {
   writeFileSync(target, `${[...kept, ...lines].join('\n')}\n`, { mode: 0o600 });
   chmodSync(target, 0o600);
   rmSync(scratch, { recursive: true, force: true });
-  console.log(`Pinned ${lines.length} key(s). Module 02 can now log in to ${a.submitHost}.`);
+  console.log(`Pinned ${lines.length} key(s). ML training can now log in to ${a.submitHost}.`);
 }
 
 main().then(() => process.exit(0), (err: Error) => {

@@ -151,7 +151,6 @@ export function Updates() {
       {!canWrite && <p role="status">Engineer or admin access required.</p>}
       <header className="cx-train-head">
         <div>
-          <div className="cx-kicker">Module 04 · Firmware</div>
           <h1 className="cx-h2">Updates</h1>
           <p className="cx-up-lede">Build from source. Prove it on one node. Then roll it out.</p>
         </div>

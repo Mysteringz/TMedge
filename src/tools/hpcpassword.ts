@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     first.fill(0);
     again.fill(0);
   }
-  console.log(`Saved ${file}. Module 02 checks every sign-in against it from now on.`);
+  console.log(`Saved ${file}. ML training checks every sign-in against it from now on.`);
 }
 
 main().then(() => process.exit(0), (err: Error) => {

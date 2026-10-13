@@ -23,7 +23,7 @@ Three parts:
 Sensors reach the edge by UDP, through a Wi-Fi site gateway (TMWAccess), or
 directly over a secure WebSocket. All three go through the same checks.
 TMflash flashes and provisions a sensor over USB. It exists twice: a Mac app,
-and module 07 of this console, which does the same from a browser.
+and TMflash web in this console, which does the same from a browser.
 The Mac app preserves saved node settings and boot counters; damaged
 firmware is refused before USB writes.
 
@@ -58,8 +58,7 @@ including both ML pages. Accounts appears only for named accounts with
 account-management access. The current page is highlighted; selecting,
 tapping outside or Escape closes the menu. The wide header has Algorithm
 flow, ML (ML job, ML data), Debug console, Devices (Updates, Adoption,
-TMflash web, TMflash download) and Analytics. Each page has its own address
-and landing-page card.
+TMflash web, TMflash download) and Analytics. Each page has its own address.
 
 At the right of the header are the notifications bell and an account icon.
 The account icon opens a menu with the person's username and access role,
@@ -73,7 +72,7 @@ The search box looks things up on the site first: modules, pages, members,
 your own mail, requests, tasks and sensors. A question, or anything the site
 has no match for, goes to Ask AI instead (that is you). Press "/" to focus it.
 
-Modules:
+Modules (docs number them; pages show names):
 - 01 Algorithm flow, /flow. A node graph over the real detection pipeline.
   Change a parameter and see its effect on live or recorded frames. A live
   parameter change reaches the real sensor or engine, and reverts by itself
@@ -255,6 +254,6 @@ can move its status (to do, in progress, done) whatever their role.
 - Server health and storage: Analytics, server view.
 - Student usage: Analytics, usage view.
 - A sensor that will not join: Adoption, and docs/ADOPTION.md.
-- Browser flashing: TMflash web (07), docs/WEB_FLASHER.md. Mac app: TMflash download (08), docs/TMFLASH_DOWNLOAD.md.
+- Browser flashing: TMflash web, docs/WEB_FLASHER.md. Mac app: TMflash download, docs/TMFLASH_DOWNLOAD.md.
 - Firmware: Updates. Training: ML job, and docs/hpc/. Database: ML data, and docs/ML_DATA.md.
 - The workspace and this assistant: docs/WORKSPACE.md, docs/ASSISTANT.md.
