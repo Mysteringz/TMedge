@@ -259,11 +259,18 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     mutating,
   }));
 
+  /**
+   * Who did it, for provisioning, firmware and rollout records: the account
+   * signed in to the algo console. The standalone console has one shared
+   * password and nobody to name, so there it is "console".
+   */
+  const actor = (req: Request) => req.res?.locals.user ? `algo:${String(req.res.locals.user)}` : 'console';
+
   ui.use('/api/provision', createProvisioningAdminRouter({
     service: provisioningService,
     mutating,
     broadcast: (message) => broadcast(message),
-    actor: req => req.res?.locals.user ? `algo:${String(req.res.locals.user)}` : 'console',
+    actor,
   }));
 
   const imageInUse = new RolloutImageUsageQuery(rt.rollouts);
@@ -274,6 +281,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     rollouts: rt.rolloutService,
     imageInUse,
     mutating,
+    actor,
     buildWorkerConfigured: () => firmwareBuildWorker.configured,
   }));
 

@@ -111,9 +111,9 @@ Modules:
   occupancy, per-sensor health, and commands to a sensor (set a parameter,
   reset its background, identify, save, reboot).
 - 04 Updates, /updates. Upload firmware source, build an image, roll it out
-  over the air. A rollout always flashes one pilot sensor first and waits for
-  it to report the new version with a working sensor; a failed pilot stops
-  everything.
+  over the air; each records who did it. A rollout always flashes one pilot
+  sensor first; it must report the new version with a working sensor, or
+  everything stops.
 - 05 Analytics, /analytics. How the student site is used (students online,
   searches, sign-ins, traffic) at /analytics/usage, and how the server is
   doing (processor, memory, storage with a fill forecast, services, sensor

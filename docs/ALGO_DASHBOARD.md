@@ -303,7 +303,7 @@ provisioning queue, the live feed) exists once and is served in two places:
   global stylesheet and a run-once module that would collide with the React
   app. Its CSP allows framing by this origin only (`frame-ancestors 'self'`)
   and `blob:` images (rig RGB). Its writes still need `x-tm-console: 1`, and
-  approvals, uploads and rollouts are recorded as `console:<name>`.
+  approvals, uploads, builds and rollouts are recorded as `algo:<name>`.
 - **`machine`** -- rig RGB uploads (`/api/demo/rgb`), firmware downloads
   (`/fw/<id>.bin`) and TMflash (`/api/provision/request|status`) -- stays on
   CONSOLE_PORT (8090). Those callers are devices with their own
