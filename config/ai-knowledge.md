@@ -90,16 +90,16 @@ Modules:
   The console shows at most 200 rows, bounds result sizes and query time, and
   summarizes binary values as byte counts. Queries cannot change the database. The dedicated reader can read table
   data and sequence values for exports, but cannot advance or change sequences.
-  Every signed-in access role may query and inspect the schema; Operator,
-  Engineer and Admin may prepare exports. Each export belongs to the account
-  that requested it. With the private worker configured, Proxmox stores the
-  ZIP; the edge keeps account-owned receipts and streams the download without
-  storing the ZIP. Downloads resume and fail on truncation. Existing local ZIPs work.
-  Preparation runs in the background and the page polls
-  for completion; completed ZIPs expire after 24 hours. Active downloads are
-  protected from cleanup. The worker enforces disk and archive limits; raising
-  a quota does not create free space. Restarted unfinished
-  exports fail and can be generated again. The table browser reads the live
+  Every signed-in role may query and inspect the schema; Operator, Engineer
+  and Admin may prepare exports, each owned by the account that asked. With
+  the private worker, Proxmox stores the ZIP and the edge streams it without a
+  copy; downloads resume and fail on truncation. Preparation runs in the
+  background; ZIPs expire 24 hours after completion, active downloads are kept.
+  The worker enforces disk and archive limits. Restarted unfinished exports
+  fail and can be generated again. A download key
+  (Download data tab; 1 h, 24 h or 7 days; revocable; shown once) lets a
+  training job on the cluster list and download its owner's exports and
+  nothing else; it ends when the owner's password changes. The table browser reads the live
   database; the SchemaSpy report is a separately generated snapshot. SchemaSpy generation
   runs on Proxmox; the console serves its static output.
   A Graphviz diagram sits beside the tools, below them on phones. A watcher

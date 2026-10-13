@@ -101,6 +101,56 @@ compression. Raising the size limit or lowering the reserve does not add
 physical capacity. Use the Proxmox worker when the edge cannot hold a large
 dataset archive.
 
+## Download keys (for training jobs)
+
+A training job on the cluster (module 02, iw-g2) can reach this edge but
+cannot sign in: the console's login is a browser form behind a human check,
+and a copied session cookie would give a shared cluster account everything
+the person can do. A **download key** lets a job fetch its owner's exports
+and nothing else.
+
+**Creating one.** In the Download data tab, under "Download keys for training
+jobs":
+- Give it a label and a lifetime: 1 hour, 24 hours or 7 days.
+- The key (`tmdata_` plus 64 hex digits) is shown **once**.
+- On the cluster, save it with the command the page shows. It reads the key
+  without echoing it or keeping it in history, and writes
+  `~/thermalml/download.key` with mode 0600.
+
+**What a key may do.** These answer **before** the console's sign-in, with
+`Authorization: Bearer <key>`:
+
+| Request | Returns |
+|---|---|
+| `GET /api/ml-data/keyed/exports` | The owner's exports (same fields as the page) |
+| `GET /api/ml-data/keyed/exports/:id` | One export's state |
+| `GET`/`HEAD /api/ml-data/keyed/exports/:id/download` | The ZIP, resumable by byte range |
+
+Every other method on that path is refused. The signed-in API ignores keys,
+so the database, schema, exports and key management stay behind the human
+sign-in.
+
+**When a key stops working:**
+- when it expires;
+- when its owner revokes it (`DELETE /api/ml-data/keys/:id`, or Revoke on the
+  page);
+- when the owner's password changes;
+- when the account is disabled, or deleted and recreated under the same name.
+
+A download in progress is checked every five seconds and ends mid-way when
+the key stops working.
+
+**Storage.**
+- `DATA_DIR/algo/ml-download-keys.json`, mode 0600, holds only SHA-256
+  digests.
+- Issue and revoke are appended to `ml-download-keys.json.audit.jsonl`,
+  without the key or its digest.
+- At most 8 live keys per account and 64 in all.
+- A damaged key file fails closed: no key works.
+
+Code: `src/algo/ml-data/download-keys.ts`, `src/algo/ml-data/routes.ts`; tests:
+`test/ml-data-keys.test.ts`.
+
 ## Private Proxmox export worker
 
 Configure `ML_EXPORT_SSH_HOST`, `ML_EXPORT_SSH_KEY` and
