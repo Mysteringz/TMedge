@@ -42,6 +42,9 @@ import urllib.error
 import urllib.request
 
 ROOT = os.path.join(os.path.expanduser('~'), 'thermalml')
+# Cloudflare in front of the console answers Python's default user agent with
+# 403 (error 1010) before the request reaches the edge; say what this is.
+UA = 'thermalml-hpc-job/1.0 (+TMedge tools/thermalml)'
 CODE = os.path.dirname(os.path.abspath(__file__))
 UID = '2c:cf:67:0b:c0:94'
 SENSOR = UID.replace(':', '')
@@ -67,7 +70,7 @@ def paths(b: str) -> dict[str, str]:
 
 def reach(url: str) -> str:
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': UA}), timeout=10) as r:
             return f'yes ({r.status})'
     except urllib.error.HTTPError as e:   # the server answered: the network path works
         return f'reachable (HTTP {e.code})'
@@ -77,7 +80,7 @@ def reach(url: str) -> str:
 
 def reach_head(url: str) -> str:
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, method='HEAD'), timeout=10) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, method='HEAD', headers={'User-Agent': UA}), timeout=10) as r:
             return f'yes ({r.status}, {int(r.headers.get("Content-Length", 0)) / 1e6:.0f} MB)'
     except Exception as e:  # noqa: BLE001
         return f'no ({type(e).__name__}: {str(e)[:80]})'
@@ -156,7 +159,7 @@ def ensure_pip(py: str) -> None:
         return
     script = os.path.join(ROOT, 'get-pip.py')
     log('installing pip into ~/thermalml/venv from bootstrap.pypa.io')
-    with urllib.request.urlopen('https://bootstrap.pypa.io/get-pip.py', timeout=60) as r, open(script, 'wb') as f:
+    with urllib.request.urlopen(urllib.request.Request('https://bootstrap.pypa.io/get-pip.py', headers={'User-Agent': UA}), timeout=60) as r, open(script, 'wb') as f:
         f.write(r.read())
     subprocess.run([py, script, '--quiet'], check=True)
 
@@ -318,7 +321,7 @@ NEEDED = ('training.frames', 'training.pairs')
 
 
 def keyed(path: str, key: str, extra: dict | None = None):
-    req = urllib.request.Request(EDGE + '/api/ml-data/keyed' + path, headers={'Authorization': 'Bearer ' + key, **(extra or {})})
+    req = urllib.request.Request(EDGE + '/api/ml-data/keyed' + path, headers={'Authorization': 'Bearer ' + key, 'User-Agent': UA, **(extra or {})})
     return urllib.request.urlopen(req, timeout=60)
 
 
@@ -335,7 +338,10 @@ def stage_fetch() -> dict[str, str]:
         with keyed('/exports', key) as r:
             jobs = json.load(r)['jobs']
     except urllib.error.HTTPError as e:
-        raise SystemExit(f'the edge refused the download key (HTTP {e.code}): it may have expired or been revoked')
+        if e.code == 401:
+            raise SystemExit('the edge refused the download key (HTTP 401): it has expired, been revoked, or was saved wrongly '
+                             '(wc -c < ~/thermalml/download.key should print 71)')
+        raise SystemExit(f'the edge did not answer the request (HTTP {e.code}: {e.read()[:80]!r}); the key was not checked')
     done = sorted((j for j in jobs if j['state'] == 'completed'), key=lambda j: -j['createdAt'])
     picked: dict[str, dict] = {}
     for table in NEEDED:
@@ -378,6 +384,7 @@ VAL_DAYS = ['2026-10-10']
 
 def stage_full() -> None:
     os.environ.setdefault('YOLO_CONFIG_DIR', os.path.join(ROOT, 'ultralytics'))   # its settings stay under ~/thermalml
+    os.makedirs(os.environ['YOLO_CONFIG_DIR'], exist_ok=True)
     ensure_torch()
     sys.path.insert(0, CODE)
     os.chdir(CODE)                       # assets (rigs/, data/ml/...) are found relative to the code
