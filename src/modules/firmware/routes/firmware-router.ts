@@ -1,4 +1,4 @@
-import express, { Router, type RequestHandler } from 'express';
+import express, { Router, type Request, type RequestHandler } from 'express';
 import type { FirmwareBuildJobService } from '../application/firmware-build-job-service.js';
 import { StartFirmwareRollout } from '../application/start-firmware-rollout.js';
 import type { FirmwareArtifactFiles, ImageInUseQuery } from '../repositories/firmware-repository.js';
@@ -12,6 +12,11 @@ export interface FirmwareRouterDependencies {
   rollouts: RolloutService;
   imageInUse: ImageInUseQuery;
   mutating: RequestHandler;
+  /**
+   * Who is asking, for the upload, build and rollout records. Required, so a
+   * caller cannot leave it out and have every record say the same thing.
+   */
+  actor(request: Request): string;
   buildWorkerConfigured(): boolean;
 }
 
@@ -46,9 +51,9 @@ function cleanupFirmware(dependencies: FirmwareRouterDependencies): RequestHandl
 }
 
 function startFirmwareUpload(dependencies: FirmwareRouterDependencies): RequestHandler {
-  return (_req, res) => {
+  return (req, res) => {
     const retention = dependencies.firmware.cleanup(dependencies.imageInUse);
-    return res.json({ uploadId: dependencies.firmware.startUpload('console'), retention });
+    return res.json({ uploadId: dependencies.firmware.startUpload(dependencies.actor(req)), retention });
   };
 }
 
@@ -66,7 +71,7 @@ function addFirmwareFile(dependencies: FirmwareRouterDependencies): RequestHandl
 }
 
 function startFirmwareBuild(dependencies: FirmwareRouterDependencies): RequestHandler {
-  return async (req, res) => await dependencies.buildJobs.start(routeParam(req.params, 'id'), { id: 'console', kind: 'console' })
+  return async (req, res) => await dependencies.buildJobs.start(routeParam(req.params, 'id'), { id: dependencies.actor(req), kind: 'console' })
     ? res.status(202).json({ ok: true })
     : res.status(409).json({ error: 'a build is already running' });
 }
@@ -83,7 +88,7 @@ function startFirmwareRollout(dependencies: FirmwareRouterDependencies): Request
   const useCase = new StartFirmwareRollout(dependencies.rollouts);
   return async (req, res) => {
     try {
-      return res.json(await useCase.execute(req.body, 'console'));
+      return res.json(await useCase.execute(req.body, dependencies.actor(req)));
     } catch (error: unknown) {
       return res.status(400).json({ error: errorMessage(error) });
     }
@@ -91,8 +96,8 @@ function startFirmwareRollout(dependencies: FirmwareRouterDependencies): Request
 }
 
 function cancelFirmwareRollout(dependencies: FirmwareRouterDependencies): RequestHandler {
-  return async (_req, res) => {
-    await dependencies.rollouts.cancel('console');
+  return async (req, res) => {
+    await dependencies.rollouts.cancel(dependencies.actor(req));
     return res.json({ ok: true });
   };
 }
