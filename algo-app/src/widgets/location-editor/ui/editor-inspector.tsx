@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react';
 import type { LocationDocument, Point, Table, TableShape, Zone } from '../../../entities/location-config/model/types.ts';
-import { changeShapeKind, cmToMetres, metresToCm, setShape, shapeOf } from '../../../features/location-editor/model/geometry.ts';
+import { changeShapeKind, cmToMetres, metresToCm, setShape, shapeOf } from '../../../features/location-editor/index.ts';
 import type { Selection } from './editor-canvas.tsx';
 import { generateSeats } from '../../../../../src/shared/seats.ts';
 

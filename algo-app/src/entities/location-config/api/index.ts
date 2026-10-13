@@ -1,5 +1,5 @@
 import { permissionChanged } from '../../admin-session/index.tsx';
-import type { AssetUploadResult, DraftDetail, DraftSummary, LocationDocument, LocationList, PublicationResult, PublishedSummary } from '../model/types.ts';
+import type { AssetUploadResult, CoverageSuggestionResponse, DraftDetail, DraftSummary, EligibleSensorsResponse, LocationDocument, LocationList, ProposedSensor, PublicationResult, PublishedSummary } from '../model/types.ts';
 
 export class LocationApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); this.name = 'LocationApiError'; }
@@ -33,6 +33,14 @@ export function startLocationEdit(locationId: string, expectedPublishedRevision:
 
 export function getLocationDraft(draftId: string): Promise<DraftDetail> {
   return jsonRequest(`/api/locations/drafts/${encodeURIComponent(draftId)}`);
+}
+
+export function getEligibleDraftSensors(draftId: string): Promise<EligibleSensorsResponse> {
+  return jsonRequest(`/api/locations/drafts/${encodeURIComponent(draftId)}/sensors`);
+}
+
+export function suggestDraftCoverage(draftId: string, document: LocationDocument, proposedSensors: ProposedSensor[]): Promise<CoverageSuggestionResponse> {
+  return jsonRequest(`/api/locations/drafts/${encodeURIComponent(draftId)}/coverage-suggestions`, 'POST', { document, proposedSensors });
 }
 
 export function saveLocationDraft(draft: DraftDetail, document: LocationDocument): Promise<DraftDetail> {

@@ -1,20 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LocationDocument, Point, Table } from '../../../entities/location-config/model/types.ts';
-import { shapeOf } from '../../../features/location-editor/model/geometry.ts';
+import { shapeOf } from '../../../features/location-editor/index.ts';
 
 export interface Selection { kind: 'zone' | 'table' | 'seat'; id: string; index?: number }
 export interface Drawing { kind: 'zone' | 'polygon-table'; points: Point[] }
 export interface DragStart { kind: Selection['kind'] | 'zone-vertex'; id: string; index?: number; x: number; y: number; document: LocationDocument }
+export interface SensorMarker { uid: string; label: string; x: number; y: number; stale: boolean; movable: boolean }
 
 /** Controlled geometry canvas in centimetres; `LocationEditor` owns mutations and supplies an authorized plan preview URL. */
-export function EditorCanvas({ document, selected, drawing, planUrl, onSelect, onSketchPoint, onDragStart, onDragTo, onDragEnd, onNudge, onFinishDrawing, onCancelDrawing }: {
+export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [], selectedSensorUid, coverageStatus = {}, onSensorSelect, onSensorMove, onSensorNudge, onSelect, onSketchPoint, onDragStart, onDragTo, onDragEnd, onNudge, onFinishDrawing, onCancelDrawing }: {
   document: LocationDocument; selected: Selection | null; drawing: Drawing | null; planUrl: string | null;
+  sensors?: SensorMarker[]; selectedSensorUid?: string; coverageStatus?: Record<string, 'none' | 'partial' | 'full' | 'unknown'>;
+  onSensorSelect?(uid: string): void; onSensorMove?(uid: string, xCm: number, yCm: number): void; onSensorNudge?(dx: number, dy: number): void;
   onSelect(selection: Selection): void; onSketchPoint(point: Point): void;
   onDragStart(drag: DragStart): void; onDragTo(point: Point): void; onDragEnd(): void;
   onNudge(dx: number, dy: number): void; onFinishDrawing(): void; onCancelDrawing(): void;
 }) {
   const svg = useRef<SVGSVGElement>(null);
   const drag = useRef<DragStart | null>(null);
+  const sensorDrag = useRef<string | null>(null);
   const pan = useRef<{ clientX: number; clientY: number; x: number; y: number; width: number; height: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [view, setView] = useState({ x: 0, y: 0, width: document.widthCm, height: document.heightCm });
@@ -46,6 +50,7 @@ export function EditorCanvas({ document, selected, drawing, planUrl, onSelect, o
     svg.current?.setPointerCapture(event.pointerId);
   };
   const pointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (sensorDrag.current) { onSensorMove?.(sensorDrag.current, ...toFloor(event.clientX, event.clientY)); return; }
     if (drag.current) { onDragTo(toFloor(event.clientX, event.clientY)); return; }
     const started = pan.current, element = svg.current;
     const bounds = element?.getBoundingClientRect();
@@ -55,6 +60,7 @@ export function EditorCanvas({ document, selected, drawing, planUrl, onSelect, o
     setView({ ...view, x, y });
   };
   const pointerUp = (event: React.PointerEvent<SVGSVGElement>) => {
+    sensorDrag.current = null;
     if (drag.current) { drag.current = null; onDragEnd(); }
     pan.current = null;
     if (svg.current?.hasPointerCapture(event.pointerId)) svg.current.releasePointerCapture(event.pointerId);
@@ -86,7 +92,15 @@ export function EditorCanvas({ document, selected, drawing, planUrl, onSelect, o
     const amount = event.shiftKey ? 10 : 1;
     const delta: Record<string, Point> = { ArrowLeft: [-amount, 0], ArrowRight: [amount, 0], ArrowUp: [0, -amount], ArrowDown: [0, amount] };
     const move = delta[event.key];
+    if (move && selectedSensorUid && onSensorNudge) { event.preventDefault(); onSensorNudge(move[0], move[1]); return; }
     if (move) { event.preventDefault(); onNudge(move[0], move[1]); }
+  };
+  const beginSensorDrag = (event: React.PointerEvent<SVGCircleElement>, sensor: SensorMarker) => {
+    event.preventDefault(); event.stopPropagation();
+    onSensorSelect?.(sensor.uid);
+    if (!sensor.movable) return;
+    sensorDrag.current = sensor.uid;
+    svg.current?.focus(); svg.current?.setPointerCapture(event.pointerId);
   };
   const selectedZone = selected?.kind === 'zone' ? document.zones.find((zone) => zone.id === selected.id) : undefined;
   const tableZoneIds = new Set(document.zones.map((zone) => zone.id));
@@ -105,7 +119,7 @@ export function EditorCanvas({ document, selected, drawing, planUrl, onSelect, o
       <button type="button" className="btn btn-secondary" data-testid="location-canvas-zoom-in" aria-label="Zoom in" disabled={zoom >= 5} onClick={() => zoomBy(1.25)}>+</button>
       <button type="button" className="btn btn-ghost" data-testid="location-canvas-reset" onClick={() => { setZoom(1); setView({ x: 0, y: 0, width: document.widthCm, height: document.heightCm }); }}>Reset view</button>
     </div>
-    <svg ref={svg} className="loc-canvas" data-testid="location-floor-canvas" data-location-field="floor.outline" viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} role="application" aria-label="Floor plan editor. Use the arrow keys to adjust the selected item. Drag the blank canvas to pan." tabIndex={0}
+    <svg ref={svg} className="loc-canvas" data-testid="location-floor-canvas" data-location-field="floor.outline" viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} role="application" aria-label={selectedSensorUid ? 'Sensor placement map. Use arrow keys to move the selected sensor; hold Shift for larger steps.' : 'Floor plan editor. Use the arrow keys to adjust the selected item. Drag the blank canvas to pan.'} tabIndex={0}
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onClick={clickCanvas} onKeyDown={keyDown}>
       <rect width={document.widthCm} height={document.heightCm} className="loc-floor" />
       {planUrl && <image href={planUrl} x="0" y="0" width={document.widthCm} height={document.heightCm} preserveAspectRatio="none" className="loc-plan" />}
@@ -116,9 +130,12 @@ export function EditorCanvas({ document, selected, drawing, planUrl, onSelect, o
         {selectedZone?.id === zone.id && zone.polygon.map((point, vertex) => <circle key={`${zone.id}-${vertex}`} data-testid={`location-canvas-vertex-${testToken(zone.id)}-${vertex + 1}`} cx={point[0]} cy={point[1]} r={Math.max(12, document.widthCm / 120)} className={`loc-vertex ${selected?.index === vertex ? 'is-selected' : ''}`} data-drag-kind="zone-vertex" data-id={zone.id} data-index={vertex}
           onPointerDown={(event) => beginDrag(event, 'zone-vertex', zone.id, vertex)}><title>{`${zone.name} vertex ${vertex + 1}`}</title></circle>)}
       </g>)}
-      {document.tables.map((table) => <TableDrawing key={table.id} table={table} selected={selected?.kind === 'table' && selected.id === table.id}
+      {document.tables.map((table) => <TableDrawing key={table.id} table={table} selected={selected?.kind === 'table' && selected.id === table.id} coverageStatus={coverageStatus[table.id]}
         seatsSelected={selected?.kind === 'seat' && table.seats.some((seat) => seat.id === selected.id)} floorWidth={document.widthCm}
         zoneExists={tableZoneIds.has(table.zoneId)} onStartTable={(event) => beginDrag(event, 'table', table.id)} onStartSeat={(event, seatId) => beginDrag(event, 'seat', seatId)} onSelectTable={() => onSelect({ kind: 'table', id: table.id })} />)}
+      {sensors.map((sensor) => <circle key={sensor.uid} data-testid={`location-canvas-sensor-${testToken(sensor.uid)}`} data-drag-kind="sensor" cx={sensor.x} cy={sensor.y}
+        r={Math.max(16, document.widthCm / 100)} className={`loc-sensor-marker ${sensor.stale ? 'is-stale' : ''} ${selectedSensorUid?.toLowerCase() === sensor.uid.toLowerCase() ? 'is-selected' : ''}`}
+        onPointerDown={(event) => beginSensorDrag(event, sensor)}><title>{sensor.stale ? 'Previously assigned sensor; no longer eligible' : `${sensor.label} sensor position`}</title></circle>)}
       {drawing && <g className="loc-sketch" aria-label="Polygon in progress">
         {drawing.points.length > 1 && <polyline points={drawingPoints} />}
         {drawing.points.map(([x, y], index) => <circle key={index} cx={x} cy={y} r={Math.max(10, document.widthCm / 150)} />)}
@@ -131,17 +148,17 @@ export function EditorCanvas({ document, selected, drawing, planUrl, onSelect, o
 }
 
 /** Canvas child for one table and its seats; the parent supplies selection and pointer handlers. */
-function TableDrawing({ table, selected, seatsSelected, floorWidth, zoneExists, onStartTable, onStartSeat, onSelectTable }: {
-  table: Table; selected: boolean; seatsSelected: boolean; floorWidth: number; zoneExists: boolean;
+function TableDrawing({ table, selected, seatsSelected, floorWidth, zoneExists, coverageStatus, onStartTable, onStartSeat, onSelectTable }: {
+  table: Table; selected: boolean; seatsSelected: boolean; floorWidth: number; zoneExists: boolean; coverageStatus?: 'none' | 'partial' | 'full' | 'unknown';
   onStartTable(event: React.PointerEvent<SVGElement>): void; onStartSeat(event: React.PointerEvent<SVGCircleElement>, id: string): void; onSelectTable(): void;
 }) {
   const shape = shapeOf(table);
-  const stroke = selected ? 'loc-table is-selected' : 'loc-table';
+  const stroke = `loc-table${selected ? ' is-selected' : ''}${coverageStatus ? ` is-coverage-${coverageStatus}` : ''}`;
   const radius = Math.max(9, floorWidth / 200);
   return <g className={!zoneExists ? 'is-invalid' : undefined}>
-    {shape.type === 'rect' ? <rect {...{ x: shape.x, y: shape.y, width: shape.width, height: shape.height }} data-testid={`location-canvas-table-${testToken(table.id)}`} className={stroke} data-drag-kind="table" data-id={table.id} onPointerDown={onStartTable} onClick={onSelectTable} />
-      : shape.type === 'circle' ? <circle data-testid={`location-canvas-table-${testToken(table.id)}`} cx={shape.cx} cy={shape.cy} r={shape.radius} className={stroke} data-drag-kind="table" data-id={table.id} onPointerDown={onStartTable} onClick={onSelectTable} />
-        : <polygon data-testid={`location-canvas-table-${testToken(table.id)}`} points={pointString(shape.points)} className={stroke} data-drag-kind="table" data-id={table.id} onPointerDown={onStartTable} onClick={onSelectTable} />}
+    {shape.type === 'rect' ? <rect {...{ x: shape.x, y: shape.y, width: shape.width, height: shape.height }} data-testid={`location-canvas-table-${testToken(table.id)}`} data-coverage-status={coverageStatus} className={stroke} data-drag-kind="table" data-id={table.id} onPointerDown={onStartTable} onClick={onSelectTable} />
+      : shape.type === 'circle' ? <circle data-testid={`location-canvas-table-${testToken(table.id)}`} data-coverage-status={coverageStatus} cx={shape.cx} cy={shape.cy} r={shape.radius} className={stroke} data-drag-kind="table" data-id={table.id} onPointerDown={onStartTable} onClick={onSelectTable} />
+        : <polygon data-testid={`location-canvas-table-${testToken(table.id)}`} data-coverage-status={coverageStatus} points={pointString(shape.points)} className={stroke} data-drag-kind="table" data-id={table.id} onPointerDown={onStartTable} onClick={onSelectTable} />}
     <text className="loc-table-label" x={shape.type === 'circle' ? shape.cx : shape.type === 'rect' ? shape.x + shape.width / 2 : center(shape.points)[0]}
       y={shape.type === 'circle' ? shape.cy : shape.type === 'rect' ? shape.y + shape.height / 2 : center(shape.points)[1]}>{table.name}</text>
     {table.seats.map((seat) => <circle key={seat.id} data-testid={`location-canvas-seat-${testToken(seat.id)}`} cx={seat.x} cy={seat.y} r={radius} className={`loc-seat ${selected && seatsSelected ? 'is-selected' : ''}`}

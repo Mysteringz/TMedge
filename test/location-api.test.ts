@@ -121,8 +121,12 @@ test('location routes enforce capability, write guard, ownership and immutable u
       document: coverageDocument, proposedSensors: [{ uid: freeUid, pose }],
     });
     assert.equal(suggestions.status, 200, await suggestions.clone().text());
-    assert.deepEqual(((await suggestions.json()) as { data: { suggestions: Array<{ tableId: string; coveredBy: string[]; suggestedOwner: string | null }> } }).data.suggestions,
-      [{ tableId: 'WIZARD-API-TABLE', coveredBy: [freeUid], suggestedOwner: freeUid }]);
+    assert.deepEqual(((await suggestions.json()) as { data: { suggestions: Array<{
+      tableId: string; coveredBy: string[]; suggestedOwner: string | null;
+      seatCoverage: { totalSeats: number; coveredSeats: number; bySensor: Array<{ uid: string; coveredSeats: number }> };
+    }> } }).data.suggestions,
+      [{ tableId: 'WIZARD-API-TABLE', coveredBy: [freeUid], suggestedOwner: freeUid,
+        seatCoverage: { totalSeats: 1, coveredSeats: 1, bySensor: [{ uid: freeUid, coveredSeats: 1 }] } }]);
     for (const uid of [otherLocationUid, rgbUid]) {
       const ineligible = await json('POST', `/api/locations/drafts/${draftId}/coverage-suggestions`, {
         document: coverageDocument, proposedSensors: [{ uid, pose }],
@@ -233,6 +237,25 @@ test('legacy editor DTO round-trips exact inherited geometry through unchanged s
     assert.equal(detail.status, 200);
     const detailData = (await detail.json() as { data: DraftDto }).data;
     assert.deepEqual(detailData.document, startData.document, 'GET exposes the same exact base-derived edit DTO');
+
+    const legacySensorUid = 'aa:bb:cc:dd:ee:35';
+    const legacyPose = { x: -35, y: 130, heightCm: 150, yawDeg: 0, mirror: false };
+    persistence.setSnapshotNodes([{
+      uid: legacySensorUid, label: 'Legacy sensor', floorId: 'legacy-room', pose: legacyPose,
+      owns: [], simulated: false, rgb: false, detector: 'node',
+    }]);
+    const legacyCoverage = await json('POST', `/api/locations/drafts/${startData.draftId}/coverage-suggestions`, {
+      document: startData.document,
+      proposedSensors: [{ uid: legacySensorUid, pose: legacyPose }],
+    });
+    assert.equal(legacyCoverage.status, 200, await legacyCoverage.clone().text());
+    const legacySuggestions = ((await legacyCoverage.json()) as { data: { suggestions: Array<{
+      tableId: string; coveredBy: string[]; seatCoverage: { totalSeats: number; coveredSeats: number };
+    }> } }).data.suggestions;
+    assert.deepEqual(legacySuggestions[0], {
+      tableId: 'legacy-table', coveredBy: [legacySensorUid], suggestedOwner: legacySensorUid,
+      seatCoverage: { totalSeats: 1, coveredSeats: 1, bySensor: [{ uid: legacySensorUid, coveredSeats: 1 }] },
+    }, 'coverage evaluates the exact inherited off-floor seat, not the safe placeholder');
 
     const saveUnchanged = await json('PUT', `/api/locations/drafts/${startData.draftId}`, {
       expectedDraftRevision: 1, document: structuredClone(startData.document),

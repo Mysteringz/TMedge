@@ -3,7 +3,7 @@ import type { AlgoAuth } from '../../../algo/auth.js';
 import { routeParam } from '../../../shared/http.js';
 import type { LocationAssetSlot } from '../domain/location-assets.js';
 import { InvalidLocationAssetReferenceError } from '../domain/location-assets.js';
-import { exposeAuthoredLocationCandidate, revalidateLocationCandidate } from '../domain/location-candidate.js';
+import { exposeAuthoredLocationCandidate, parseLocationCandidate, revalidateLocationCandidate } from '../domain/location-candidate.js';
 import { InvalidLocationDocumentError, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../domain/location-document.js';
 import type { LocationDraft } from '../domain/location-records.js';
 import {
@@ -19,6 +19,7 @@ import { SaveLocationDraftUseCase } from '../use-cases/save-location-draft.js';
 import { PublishLocationUseCase, PublishedModelDistributionFailedError, PublishedModelDistributionUnavailableError } from '../use-cases/publish-location.js';
 import { UploadLocationAssetUseCase } from '../use-cases/upload-location-asset.js';
 import { ReadLocationDraftAssetUseCase } from '../use-cases/read-location-draft-asset.js';
+import type { SuggestLocationCoverage } from '../use-cases/location-coverage-contract.js';
 import type { PreparedRuntimeGeneration } from '../../../edge/runtime.js';
 
 export interface LocationRouterDependencies {
@@ -33,12 +34,7 @@ export interface LocationRouterDependencies {
   coordinator: RegistryMutationCoordinator;
   runtime: import('../repositories/location-storage.js').PreparedLocationRuntime<PreparedRuntimeGeneration>;
   modelDistributor?: PublishedModelDistributor;
-  suggestCoverage(
-    siteSeed: unknown,
-    snapshot: import('../repositories/location-storage.js').LocationRegistrySnapshot,
-    document: LocationDocument,
-    proposedSensors: LocationSensorAssignment[],
-  ): Array<{ tableId: string; coveredBy: string[]; suggestedOwner: string | null }>;
+  suggestCoverage: SuggestLocationCoverage;
   now?: () => number;
 }
 
@@ -138,10 +134,14 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
   router.post('/locations/drafts/:draftId/coverage-suggestions', writeGuard, asyncRoute(async (req, res) => {
     const body = strictRecord(req.body, ['document', 'proposedSensors']);
     const draft = await requireDraft(dependencies.drafts, actor(req), routeParam(req.params, 'draftId'));
-    const document = authoredDocument(body.document, draft);
-    const proposedSensors = parseProposedSensors(body.proposedSensors, document);
+    const authored = authoredDocument(body.document);
+    const base = await pinnedBase(draft, dependencies);
+    const candidate = parseLocationCandidate({
+      schemaVersion: 1, locationId: draft.locationId, visibility: draft.document.visibility, ...authored,
+    }, base ? { revision: base.revision, document: base.document, legacySpatial: base.legacySpatial } : null, draft.basePublishedRevision);
+    const proposedSensors = parseProposedSensors(body.proposedSensors, candidate.document);
     const snapshot = await dependencies.snapshots.readSnapshot();
-    const suggestions = dependencies.suggestCoverage(dependencies.siteSeed, snapshot, document, proposedSensors);
+    const suggestions = dependencies.suggestCoverage(dependencies.siteSeed, snapshot, candidate.document, proposedSensors, candidate.legacySpatial);
     return send(res, 200, { locationId: draft.locationId, suggestions });
   }));
 
@@ -232,15 +232,12 @@ function strictRecord(value: unknown, allowed: string[]): Record<string, unknown
   return input;
 }
 
-function authoredDocument(value: unknown, draft: { document: LocationDocument; locationId: string }): LocationDocument {
+function authoredDocument(value: unknown): Record<string, unknown> {
   const input = strictRecord(value, DOC_KEYS);
   if (!['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments'].every((key) => Object.hasOwn(input, key))) {
     throw new TypeError('The authored location document is incomplete.');
   }
-  return parseLocationDocument({
-    schemaVersion: 1, locationId: draft.locationId, visibility: draft.document.visibility,
-    ...input,
-  });
+  return input;
 }
 
 function parseProposedSensors(value: unknown, document: LocationDocument): LocationSensorAssignment[] {

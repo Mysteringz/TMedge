@@ -222,7 +222,11 @@ paths:
                       pose: { $ref: '#/components/schemas/SensorPose' }
       responses:
         '200':
-          description: Advisory per-table coverage result.
+          description: >-
+            Advisory per-table coverage result. coveredBy retains the full-seat-only
+            meaning. seatCoverage counts seats covered by any proposed sensor and
+            gives a per-proposed-sensor count, so partial coverage is not inferred
+            from the full-seat list. This does not change the draft or live state.
           content:
             application/json:
               schema:
@@ -888,11 +892,27 @@ components:
             - { type: object, nullable: true }
     CoverageSuggestion:
       type: object
-      required: [tableId, coveredBy, suggestedOwner]
+      required: [tableId, coveredBy, suggestedOwner, seatCoverage]
       properties:
         tableId: { $ref: '#/components/schemas/StableId' }
         coveredBy: { type: array, items: { type: string } }
         suggestedOwner: { type: string, nullable: true }
+        seatCoverage: { $ref: '#/components/schemas/SeatCoverage' }
+    SeatCoverage:
+      type: object
+      required: [totalSeats, coveredSeats, bySensor]
+      properties:
+        totalSeats: { type: integer, minimum: 0 }
+        coveredSeats: { type: integer, minimum: 0, description: Count covered by the union of all proposed sensors. }
+        bySensor:
+          type: array
+          items: { $ref: '#/components/schemas/SensorSeatCoverageCount' }
+    SensorSeatCoverageCount:
+      type: object
+      required: [uid, coveredSeats]
+      properties:
+        uid: { type: string }
+        coveredSeats: { type: integer, minimum: 0 }
     AssetUpload:
       type: object
       required: [assetId, mediaType, sha256, byteLength, draftRevision, durability]

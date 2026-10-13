@@ -2,9 +2,11 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { getLocationDraft, LocationApiError, publishLocationDraft, readDraftPlan, saveLocationDraft, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
 import type { DraftDetail, LocationDocument, Point, Table, TableShape } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
-import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue } from '../../../features/location-editor/model/geometry.ts';
+import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue } from '../../../features/location-editor/index.ts';
 import { EditorCanvas, type DragStart, type Drawing, type Selection } from './editor-canvas.tsx';
 import { EditorInspector } from './editor-inspector.tsx';
+import { SensorPlacementStep } from './sensor-placement-step.tsx';
+import { SensorCoverageSummary } from './sensor-coverage-summary.tsx';
 import './location-editor.css';
 
 type Step = 'details' | 'sensors' | 'model' | 'review';
@@ -213,8 +215,9 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   };
 
   const changeStep = async (next: Step) => {
-    if (step === 'details' && next !== 'details' && dirty) {
+    if (step !== next && dirty) {
       const result = await save(); if (!result) return;
+      if (result.durability === 'unconfirmed') return;
     }
     onStep(next);
   };
@@ -375,15 +378,17 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
         <button type="button" className="btn btn-secondary" data-testid="location-save-draft" disabled={busy !== '' || mustReload} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : 'Save draft'}</button>
         <button type="button" className="btn btn-primary" data-testid="location-continue-sensors" disabled={busy !== '' || mustReload} onClick={() => void changeStep('sensors')}>Continue to sensors</button>
       </footer>
-    </fieldset> : step === 'review' ? <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />
-      : <FutureStep step={step} onBack={() => onStep(step === 'model' ? 'sensors' : 'details')} onReview={() => void changeStep('review')} />}
+    </fieldset> : step === 'sensors' ? <SensorPlacementStep draft={draft} document={document} onUpdate={update} onSave={() => save()}
+      onBack={() => onStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
+      : step === 'review' ? <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />
+        : <FutureStep step={step} onBack={() => onStep('sensors')} onReview={() => void changeStep('review')} />}
   </main>;
 }
 
 /** Private pre-publication summary; publishing is an explicit parent callback and never follows a save implicitly. */
-function Review({ document, draft, dirty, busy, mustReload, onEdit, onSave, onPublish, onBack }: {
+function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCoverage, onSave, onPublish, onBack }: {
   document: LocationDocument; draft: DraftDetail; dirty: boolean; busy: string; mustReload: boolean;
-  onEdit(): void; onSave(): void; onPublish(): void; onBack(): void;
+  onEdit(): void; onEditCoverage(): void; onSave(): void; onPublish(): void; onBack(): void;
 }) {
   return <section className="loc-review">
     <div className="loc-review-header"><div><p className="cx-kicker">Final check</p><h2 tabIndex={-1} data-location-step-heading>Review location</h2></div><button className="btn btn-secondary" type="button" data-testid="location-review-edit-details" disabled={busy !== ''} onClick={onEdit}>Edit details & layout</button></div>
@@ -393,6 +398,7 @@ function Review({ document, draft, dirty, busy, mustReload, onEdit, onSave, onPu
       <h3>Zones</h3><ul>{document.zones.map((zone) => <li key={zone.id}>{zone.name} · {zone.polygon.length} vertices</li>)}</ul>
       <h3>Tables and seats</h3>{document.tables.length ? <ul>{document.tables.map((table) => <li key={table.id}>{table.name} · {table.shape?.type ?? 'legacy rectangle'} · {table.capacity} seats</li>)}</ul> : <p>No tables yet.</p>}
     </div>
+    <SensorCoverageSummary draft={draft} document={document} onEdit={onEditCoverage} />
     <p className="loc-review-note">{draft.visibility === 'public'
       ? 'This draft is private. Students continue to see the current published version until you publish these changes.'
       : 'This draft is private. Publishing applies the console configuration; this location remains hidden from students.'}</p>

@@ -368,7 +368,7 @@ function buildRegistryCore(
       // position nobody has measured.
       .filter((n): n is NodeDef & { pose: NodePose } => n.pose !== null)
       .filter((n) => n.floorId === table.floorId)
-      .filter((n) => table.seats.every((s) => seesWithMargin(n.pose, s.x, s.y)))
+      .filter((n) => table.seats.every((s) => sensorSeesFloorPoint(n.pose, s.x, s.y)))
       .sort((a, b) => dist(a.pose, table) - dist(b.pose, table));
     if (table.owner && !seeing.some((n) => n.uid === table.owner)) {
       throw new ConfigError(`table ${table.id}: its owner ${table.owner} cannot see all of its seats from that pose`);
@@ -589,7 +589,8 @@ function legacySeatKey(tableId: string, seatId: string): string {
   return `${tableId}\u0000${seatId}`;
 }
 
-function seesWithMargin(pose: NodePose, x: number, y: number): boolean {
+/** Uses the same floor projection and pixel-center margin as runtime ownership and fallback coverage. */
+export function sensorSeesFloorPoint(pose: NodePose, x: number, y: number): boolean {
   const px = floorToPixel(pose, x, y);
   return px !== null && px[0] >= 0.5 && px[0] <= GRID_W - 0.5 && px[1] >= 0.5 && px[1] <= GRID_H - 0.5;
 }

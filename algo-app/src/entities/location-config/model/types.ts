@@ -15,6 +15,19 @@ export interface SensorAssignment {
   pose: { x: number; y: number; heightCm: number; yawDeg: number; mirror: boolean };
   owns: string[];
 }
+export interface EligibleSensor {
+  uid: string; label: string; simulated: boolean; rgb: boolean; detector: 'node' | 'edge';
+  /** Live pose is present only for an eligible sensor already assigned to this location. */
+  pose: SensorAssignment['pose'] | null;
+}
+export interface EligibleSensorsResponse { locationId: string; sensors: EligibleSensor[] }
+export interface ProposedSensor { uid: string; pose: SensorAssignment['pose'] }
+export interface SensorSeatCoverageCount { uid: string; coveredSeats: number }
+export interface TableCoverageSuggestion {
+  tableId: string; coveredBy: string[]; suggestedOwner: string | null;
+  seatCoverage: { totalSeats: number; coveredSeats: number; bySensor: SensorSeatCoverageCount[] };
+}
+export interface CoverageSuggestionResponse { locationId: string; suggestions: TableCoverageSuggestion[] }
 export interface ModelTransform {
   scale: { x: number; y: number; z: number };
   rotationDeg: { x: number; y: number; z: number };

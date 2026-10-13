@@ -92,11 +92,52 @@
 .cx .loc-review-card h3 { margin-top: 8px; }
 .cx .loc-review-note { max-width: 900px; padding: 12px 16px; background: var(--layer-01); color: var(--text-secondary); }
 .cx .loc-future-step { min-height: 280px; align-items: flex-start; justify-content: center; }
+.cx .loc-sensor-step { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
+.cx .loc-sensor-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.cx .loc-sensor-heading h2 { margin: 0 0 6px; }
+.cx .loc-sensor-heading p { margin-block: 4px; }
+.cx .loc-sensor-note { margin: 0; padding: 12px 16px; border-left: 3px solid var(--support-warning); background: var(--layer-01); color: var(--text-primary); }
+.cx .loc-sensor-layout { display: grid; grid-template-columns: minmax(190px, .7fr) minmax(380px, 1.7fr) minmax(250px, .9fr); align-items: start; gap: 12px; }
+.cx .loc-sensor-list, .cx .loc-sensor-map, .cx .loc-sensor-inspector, .cx .loc-coverage-section { min-width: 0; }
+.cx .loc-sensor-list h3, .cx .loc-sensor-inspector h3 { margin-top: 0; }
+.cx .loc-sensor-list h4 { margin: 12px 0 4px; color: var(--text-helper); font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; }
+.cx .loc-sensor-choice small, .cx .loc-sensor-stale small { display: block; margin-top: 4px; color: var(--text-helper); font-size: 11px; }
+.cx .loc-sensor-stale { border-left: 3px solid var(--support-warning); }
+.cx .loc-sensor-map { padding: 12px; }
+.cx .loc-sensor-map .loc-canvas { height: clamp(320px, 54vh, 680px); }
+.cx .loc-sensor-marker { fill: var(--interactive); stroke: var(--text-primary); stroke-width: 3; vector-effect: non-scaling-stroke; cursor: grab; }
+.cx .loc-sensor-marker.is-selected { fill: var(--support-warning); stroke-width: 4; }
+.cx .loc-sensor-marker.is-stale { fill: var(--text-helper); stroke-dasharray: 3 2; cursor: not-allowed; }
+.cx .loc-table.is-coverage-none { fill: color-mix(in srgb, var(--support-error) 25%, var(--layer-01)); stroke: var(--support-error); stroke-dasharray: 4 3; }
+.cx .loc-table.is-coverage-partial { fill: color-mix(in srgb, var(--support-warning) 25%, var(--layer-01)); stroke: var(--support-warning); stroke-dasharray: 8 3; }
+.cx .loc-table.is-coverage-full { fill: color-mix(in srgb, var(--support-success) 28%, var(--layer-01)); stroke: var(--support-success); }
+.cx .loc-table.is-coverage-unknown { fill: var(--layer-01); stroke-dasharray: 2 3; }
+.cx .loc-sensor-label { color: var(--text-primary); font-weight: 600; }
+.cx .loc-sensor-warning { color: var(--support-warning); }
+.cx .loc-sensor-mirror { display: flex; min-height: 44px; align-items: center; gap: 10px; color: var(--text-secondary); }
+.cx .loc-sensor-mirror input { width: 18px; height: 18px; accent-color: var(--interactive); }
+.cx .loc-coverage-section { display: flex; flex-direction: column; gap: 12px; }
+.cx .loc-coverage-section h3 { margin: 0; }
+.cx .loc-coverage-table-wrap { overflow-x: auto; }
+.cx .loc-coverage-table { width: 100%; border-collapse: collapse; text-align: left; }
+.cx .loc-coverage-table th, .cx .loc-coverage-table td { min-width: 120px; padding: 10px; border-bottom: 1px solid var(--border-subtle-00); vertical-align: top; }
+.cx .loc-coverage-table thead th { color: var(--text-helper); font-size: 11px; font-weight: 600; }
+.cx .loc-coverage-table tbody th { color: var(--text-primary); font-weight: 600; }
+.cx .loc-coverage-table small { display: block; margin-top: 4px; color: var(--text-helper); font-size: 11px; }
+.cx .loc-coverage-status { display: inline-flex; min-height: 24px; align-items: center; padding: 2px 7px; border-left: 3px solid var(--text-helper); background: var(--layer-01); }
+.cx .loc-coverage-status.is-none { border-color: var(--support-error); }
+.cx .loc-coverage-status.is-partial { border-color: var(--support-warning); }
+.cx .loc-coverage-status.is-full { border-color: var(--support-success); }
+.cx .loc-coverage-status.is-unknown { border-style: dashed; }
+.cx .loc-coverage-row select.input { min-width: 140px; }
 
 @media (max-width: 900px) {
   .cx .loc-editor-grid { grid-template-columns: minmax(0, 1fr); }
   .cx .loc-inspector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .cx .loc-inspector-block:last-child { grid-column: 1 / -1; }
+  .cx .loc-sensor-layout { grid-template-columns: minmax(180px, .7fr) minmax(0, 1.3fr); }
+  .cx .loc-sensor-inspector { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .cx .loc-sensor-inspector h3, .cx .loc-sensor-inspector > p { grid-column: 1 / -1; }
 }
 @media (max-width: 600px) {
   .cx .loc-page { padding: 20px 12px 48px; }
@@ -106,6 +147,9 @@
   .cx .loc-plan-section > .loc-upload { grid-column: auto; }
   .cx .loc-inspector { grid-template-columns: minmax(0, 1fr); }
   .cx .loc-inspector-block:last-child { grid-column: auto; }
+  .cx .loc-sensor-layout { grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-sensor-inspector { grid-column: auto; grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-sensor-inspector h3, .cx .loc-sensor-inspector > p { grid-column: auto; }
   .cx .loc-canvas { height: min(55vh, 520px); min-height: 320px; }
   .cx .loc-footer { margin-inline: -12px; padding-inline: 12px; }
   .cx .loc-footer .btn { min-height: 44px; }

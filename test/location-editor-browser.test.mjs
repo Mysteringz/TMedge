@@ -2,7 +2,7 @@
 // This is a standalone browser harness; it never reads .env or production data.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -27,6 +27,7 @@ mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
 const fixtureRoot = mkdtempSync(join(tempRoot, 'run-'));
 const sitePath = join(fixtureRoot, 'site.json'), nodesPath = join(fixtureRoot, 'nodes.json');
 const dataDir = join(fixtureRoot, 'data'), usersPath = join(fixtureRoot, 'algo-users.json');
+const SENSOR_A = 'aa:bb:cc:dd:ee:21', SENSOR_B = 'aa:bb:cc:dd:ee:22', RGB_SENSOR = 'aa:bb:cc:dd:ee:23';
 const password = randomBytes(24).toString('hex'), sessionSecret = randomBytes(32).toString('hex');
 const previousDataDir = process.env.DATA_DIR;
 process.env.DATA_DIR = dataDir;
@@ -59,7 +60,11 @@ const siteSeed = {
   }],
 };
 writeFileSync(sitePath, JSON.stringify(siteSeed));
-writeFileSync(nodesPath, JSON.stringify({ nodes: [] }));
+writeFileSync(nodesPath, JSON.stringify({ nodes: [
+  { uid: SENSOR_A, label: 'QA Ceiling Sensor A', simulated: false, rgb: false, detector: 'node' },
+  { uid: SENSOR_B, label: 'QA Ceiling Sensor B', simulated: false, rgb: false, detector: 'node' },
+  { uid: RGB_SENSOR, label: 'QA Console RGB', floor: 'qa-legacy-floor', pose: { x: 125.5, y: 160, heightCm: 350, yawDeg: 0, mirror: false }, owns: [], simulated: false, rgb: true, detector: 'node' },
+] }));
 
 const users = new AlgoUsers(usersPath);
 for (const [name, role] of [['qa-admin', 'admin'], ['qa-operator', 'operator'], ['qa-engineer', 'engineer'], ['qa-viewer', 'viewer']]) {
@@ -98,6 +103,12 @@ const assertErrorAssociation = async (page, input, text) => {
   assert.ok(associated.some((count) => count === 1), 'the described error is present in the document');
   assert.match(await page.locator(`[id="${ids[0]}"]`).innerText(), new RegExp(text, 'i'));
   await page.waitForFunction((element) => element === document.activeElement, await input.elementHandle());
+};
+const assertInlineErrorAssociation = async (page, input, text) => {
+  await page.waitForFunction((element) => element.getAttribute('aria-invalid') === 'true', await input.elementHandle());
+  const ids = (await input.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+  assert.ok(ids.length, 'invalid control has an aria-describedby association');
+  assert.match(await page.locator(`[id="${ids.at(-1)}"]`).innerText(), new RegExp(text, 'i'));
 };
 const assertImageDecoded = async (page, image) => {
   const handle = await image.elementHandle();
@@ -320,6 +331,297 @@ async function run() {
   await assertErrorAssociation(page, badZoneVertex, 'vertex 4 X must be inside');
   await badZoneVertex.fill('5.67'); await badZoneVertex.press('Tab');
 
+  // The Sensors step reads the current eligible registry list, but edits only
+  // the private authored document. A public draft never offers the console
+  // RGB sensor that is attached to the seeded console-only legacy floor.
+  await page.getByTestId('location-step-sensors').click();
+  await page.waitForURL(new RegExp(`/locations/${draftId}/sensors$`));
+  await page.getByRole('heading', { name: 'Sensors', exact: true }).waitFor();
+  const eligibleResponse = await adminContext.request.get(`${base}/api/locations/drafts/${encodeURIComponent(draftId)}/sensors`);
+  assert.equal(eligibleResponse.status(), 200);
+  const eligibleResult = await jsonFrom(eligibleResponse);
+  assert.ok(eligibleResult.sensors.some((sensor) => sensor.uid === SENSOR_A && sensor.pose === null));
+  assert.ok(eligibleResult.sensors.some((sensor) => sensor.uid === SENSOR_B && sensor.pose === null));
+  assert.ok(!eligibleResult.sensors.some((sensor) => sensor.uid === RGB_SENSOR), 'public location sensor choices omit RGB sensors');
+  const sensorAButton = page.getByTestId('location-sensor-aa-bb-cc-dd-ee-21');
+  await sensorAButton.click();
+  assert.equal(await page.getByText('Pose not set', { exact: true }).count(), 1, 'an unplaced sensor has no guessed pose');
+  assert.equal(await page.getByLabel('Position X (m)').inputValue(), '');
+  assert.equal(await page.getByLabel('Position Y (m)').inputValue(), '');
+  assert.equal(await page.getByLabel('Height (m)').inputValue(), '', 'mounting height must be entered explicitly');
+  const sensorX = page.getByLabel('Position X (m)'), sensorY = page.getByLabel('Position Y (m)'), sensorHeight = page.getByLabel('Height (m)');
+  await typeSequentially(sensorX, '3.75'); await sensorX.press('Tab');
+  await typeSequentially(sensorY, '2.5'); await sensorY.press('Tab');
+  await typeSequentially(sensorHeight, '1.49'); await sensorHeight.press('Tab');
+  await assertInlineErrorAssociation(page, sensorHeight, 'mounting height from 1.5 m to 15 m');
+  await typeSequentially(sensorHeight, '15.01'); await sensorHeight.press('Tab');
+  await assertInlineErrorAssociation(page, sensorHeight, 'mounting height from 1.5 m to 15 m');
+  await typeSequentially(sensorHeight, '1.5'); await sensorHeight.press('Tab');
+  assert.notEqual(await sensorHeight.getAttribute('aria-invalid'), 'true', 'the minimum mounting height is accepted');
+  await typeSequentially(sensorHeight, '15'); await sensorHeight.press('Tab');
+  assert.notEqual(await sensorHeight.getAttribute('aria-invalid'), 'true', 'the maximum mounting height is accepted');
+  await typeSequentially(sensorHeight, '3.5'); await sensorHeight.press('Tab');
+  const yaw = page.getByLabel('Yaw (°)'); await typeSequentially(yaw, '15.5'); await yaw.press('Tab');
+  await page.getByLabel('Mirror orientation').check();
+  await page.getByTestId('location-sensor-add').click();
+  await page.getByTestId('location-canvas-sensor-aa-bb-cc-dd-ee-21').waitFor();
+  await page.getByText('Available for this location · In this draft').waitFor();
+
+  const sensorBButton = page.getByTestId('location-sensor-aa-bb-cc-dd-ee-22');
+  await sensorBButton.click();
+  const sensorBX = page.getByLabel('Position X (m)'), sensorBY = page.getByLabel('Position Y (m)'), sensorBHeight = page.getByLabel('Height (m)');
+  await typeSequentially(sensorBX, '9.5'); await sensorBX.press('Tab');
+  await typeSequentially(sensorBY, '2.5'); await sensorBY.press('Tab');
+  await typeSequentially(sensorBHeight, '4'); await sensorBHeight.press('Tab');
+  await page.getByTestId('location-sensor-add').click();
+  await page.getByTestId('location-canvas-sensor-aa-bb-cc-dd-ee-22').waitFor();
+
+  // Assigned sensor keyboard movement uses 1 cm arrows and 10 cm with Shift,
+  // and does not alter unrelated pose fields or the other sensor.
+  await sensorAButton.click();
+  await page.waitForFunction((testId) => document.querySelector(`[data-testid="${testId}"]`)?.getAttribute('aria-pressed') === 'true', 'location-sensor-aa-bb-cc-dd-ee-21');
+  const sensorMap = page.getByTestId('location-floor-canvas');
+  await sensorMap.focus();
+  assert.match(await sensorMap.getAttribute('aria-label'), /Use arrow keys to move the selected sensor/);
+  assert.equal(await sensorMap.evaluate((element) => document.activeElement === element), true, 'keyboard focus is on the sensor map');
+  await sensorMap.press('ArrowRight');
+  await page.waitForFunction(() => document.querySelector('[aria-label="Position X (m)"]')?.value === '3.76');
+  assert.equal(await page.getByLabel('Position X (m)').inputValue(), '3.76');
+  assert.equal(await page.getByLabel('Position Y (m)').inputValue(), '2.5', 'ArrowRight changes X only');
+  await sensorMap.press('Shift+ArrowDown');
+  await page.waitForFunction(() => document.querySelector('[aria-label="Position Y (m)"]')?.value === '2.6');
+  assert.equal(await page.getByLabel('Position X (m)').inputValue(), '3.76', 'Shift+ArrowDown leaves X unchanged');
+  assert.equal(await page.getByLabel('Position Y (m)').inputValue(), '2.6', 'Shift+ArrowDown changes Y by 10 cm');
+  assert.equal(await page.getByLabel('Height (m)').inputValue(), '3.5');
+  assert.equal(await page.getByLabel('Yaw (°)').inputValue(), '15.5');
+  assert.equal(await page.getByLabel('Mirror orientation').isChecked(), true);
+
+  const sensorAMarker = page.getByTestId('location-canvas-sensor-aa-bb-cc-dd-ee-21');
+  const markerBox = await sensorAMarker.boundingBox();
+  assert.ok(markerBox);
+  const beforePointer = { x: await page.getByLabel('Position X (m)').inputValue(), y: await page.getByLabel('Position Y (m)').inputValue() };
+  await page.mouse.move(markerBox.x + markerBox.width / 2, markerBox.y + markerBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(markerBox.x + markerBox.width / 2 + 20, markerBox.y + markerBox.height / 2 - 15, { steps: 3 });
+  await page.mouse.up();
+  await page.waitForFunction(({ x, y }) => document.querySelector('[aria-label="Position X (m)"]')?.value !== x
+    && document.querySelector('[aria-label="Position Y (m)"]')?.value !== y, beforePointer);
+  assert.equal(await page.getByLabel('Height (m)').inputValue(), '3.5', 'pointer drag preserves height');
+  assert.equal(await page.getByLabel('Yaw (°)').inputValue(), '15.5', 'pointer drag preserves yaw');
+  assert.equal(await page.getByLabel('Mirror orientation').isChecked(), true, 'pointer drag preserves mirror');
+
+  await sensorBButton.click();
+  assert.equal(await page.getByLabel('Position X (m)').inputValue(), '9.5');
+  assert.equal(await page.getByLabel('Position Y (m)').inputValue(), '2.5');
+  assert.equal(await page.getByLabel('Height (m)').inputValue(), '4');
+  assert.equal(await page.getByLabel('Yaw (°)').inputValue(), '0');
+  assert.equal(await page.getByLabel('Mirror orientation').isChecked(), false);
+
+  const sensorStepDraft = await readDraft(adminContext, base, draftId);
+  const westTable = sensorStepDraft.document.tables.find((table) => table.name === 'West rectangle');
+  const roundTable = sensorStepDraft.document.tables.find((table) => table.name === 'East round table');
+  assert.ok(westTable);
+  assert.ok(roundTable);
+  const westCoverageTestId = `location-table-coverage-${westTable.id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+  const roundCoverageTestId = `location-table-coverage-${roundTable.id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+  await page.getByTestId(westCoverageTestId).waitFor();
+  await page.waitForFunction((testId) => document.querySelector(`[data-testid="${testId}"]`)?.textContent?.includes('seats covered'), westCoverageTestId);
+  const westOwner = page.getByLabel('Assigned owner for West rectangle');
+  await westOwner.selectOption(SENSOR_A);
+  await page.waitForFunction((testId) => {
+    const row = document.querySelector(`[data-testid="${testId}"]`);
+    return row?.textContent?.includes('seats covered') && !row.querySelector('select')?.disabled;
+  }, westCoverageTestId);
+
+  // A stale request can neither keep its old count actionable nor overwrite a newer candidate.
+  let releaseOldCoverage;
+  let markOldCoverageStarted;
+  let markOldCoverageFinished;
+  let markNewCoverageFinished;
+  const oldCoverageStarted = new Promise((done) => { markOldCoverageStarted = done; });
+  const oldCoverageFinished = new Promise((done) => { markOldCoverageFinished = done; });
+  const newCoverageFinished = new Promise((done) => { markNewCoverageFinished = done; });
+  let delayedCoverageRequest, currentCoverageRequest;
+  let interceptedCoverage = 0;
+  await page.route('**/api/locations/drafts/*/coverage-suggestions', async (route) => {
+    const candidate = route.request().postDataJSON();
+    interceptedCoverage += 1;
+    const responseFor = (unionCovered) => ({ data: { locationId: sensorStepDraft.locationId, suggestions: [
+      { tableId: westTable.id, coveredBy: [], suggestedOwner: null, seatCoverage: {
+        totalSeats: westTable.seats.length, coveredSeats: unionCovered,
+        bySensor: [{ uid: SENSOR_A, coveredSeats: 2 }, { uid: SENSOR_B, coveredSeats: 2 }],
+      } },
+      { tableId: roundTable.id, coveredBy: [SENSOR_B], suggestedOwner: SENSOR_B, seatCoverage: {
+        totalSeats: roundTable.seats.length, coveredSeats: roundTable.seats.length,
+        bySensor: [{ uid: SENSOR_A, coveredSeats: 0 }, { uid: SENSOR_B, coveredSeats: roundTable.seats.length }],
+      } },
+    ] } });
+    if (interceptedCoverage === 1) {
+      delayedCoverageRequest = candidate;
+      markOldCoverageStarted();
+      await new Promise((done) => { releaseOldCoverage = done; });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(responseFor(2)) });
+      markOldCoverageFinished();
+      return;
+    }
+    if (interceptedCoverage === 2) {
+      currentCoverageRequest = candidate;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(responseFor(westTable.seats.length)) });
+      markNewCoverageFinished();
+      return;
+    }
+    await route.continue();
+  });
+  const sensorBXRace = page.getByLabel('Position X (m)');
+  await typeSequentially(sensorBXRace, '9.4'); await sensorBXRace.press('Tab');
+  await oldCoverageStarted;
+  assert.equal(await westOwner.isDisabled(), true, 'owner actions stay disabled while counts are stale');
+  await page.getByText('Coverage suggestions are updating; previous counts are not current.').waitFor();
+  assert.equal(await page.getByText('2 / 4 seats covered', { exact: true }).count(), 0, 'old counts are not presented as current');
+  await typeSequentially(sensorBXRace, '9.25'); await sensorBXRace.press('Tab');
+  await newCoverageFinished;
+  await page.getByText('4 / 4 seats covered', { exact: true }).waitFor();
+  assert.deepEqual(delayedCoverageRequest.proposedSensors.map((item) => item.uid).sort(), [SENSOR_A, SENSOR_B].sort(), 'the delayed request includes the complete proposed sensor set');
+  assert.deepEqual(currentCoverageRequest.proposedSensors.map((item) => item.uid).sort(), [SENSOR_A, SENSOR_B].sort(), 'the newest request also includes every current proposal');
+  assert.equal(await westOwner.inputValue(), SENSOR_A, 'the full union does not silently select a sensor owner');
+  const westCoverage = page.getByTestId(westCoverageTestId);
+  assert.equal(await page.getByRole('columnheader', { name: 'Draft status' }).count(), 1,
+    'owner status is identified as private draft state rather than live occupancy');
+  assert.match(await westCoverage.innerText(), /All seats covered/i);
+  assert.match(await westCoverage.innerText(), /Needs attention.*draft owner must cover every seat \(2\/4\)/i,
+    'the selected owner is evaluated separately from union coverage');
+  const roundSuggestion = page.getByTestId(`location-table-use-suggestion-${roundTable.id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`);
+  assert.equal(await roundSuggestion.count(), 1, 'a distinct full-seat suggestion remains explicitly actionable');
+  const reassignmentCoverageResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname.endsWith('/coverage-suggestions'));
+  await roundSuggestion.click();
+  const roundOwner = page.getByLabel('Assigned owner for East round table');
+  await page.waitForFunction((uid) => document.querySelector('[aria-label="Assigned owner for East round table"]')?.value === uid, SENSOR_B);
+  await reassignmentCoverageResponse;
+  await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"] select`)?.disabled, roundCoverageTestId);
+  assert.equal(await roundOwner.inputValue(), SENSOR_B, 'accepting a suggestion explicitly assigns only its table');
+  const latestWestCoverage = await westCoverage.innerText();
+  await releaseOldCoverage();
+  await oldCoverageFinished;
+  assert.equal(await westCoverage.innerText(), latestWestCoverage, 'a late older response cannot replace the latest coverage result');
+  assert.equal(await westOwner.inputValue(), SENSOR_A, 'a late older response cannot overwrite the newest candidate');
+  await page.unroute('**/api/locations/drafts/*/coverage-suggestions');
+  await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"] select`)?.disabled, westCoverageTestId);
+  await westOwner.selectOption(SENSOR_B);
+  assert.equal(await westOwner.inputValue(), SENSOR_B, 'the owner can be changed explicitly after current coverage arrives');
+  await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"] select`)?.disabled, westCoverageTestId);
+  const clearOwnerCoverage = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname.endsWith('/coverage-suggestions'));
+  await roundOwner.selectOption('');
+  await clearOwnerCoverage;
+  await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"] select`)?.disabled, roundCoverageTestId);
+  assert.equal(await roundOwner.inputValue(), '', 'clearing the owner remains an explicit draft choice');
+  assert.match(await page.getByTestId(roundCoverageTestId).innerText(), /Unknown/,
+    'an unowned table remains unknown even when suggestions exist');
+  const reassignRoundCoverage = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname.endsWith('/coverage-suggestions'));
+  await roundOwner.selectOption(SENSOR_B);
+  await reassignRoundCoverage;
+  await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"] select`)?.disabled, roundCoverageTestId);
+
+  let failCoverageOnce = true;
+  await page.route('**/api/locations/drafts/*/coverage-suggestions', async (route) => {
+    if (failCoverageOnce && route.request().method() === 'POST') {
+      failCoverageOnce = false;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_UNAVAILABLE', message: 'Synthetic coverage failure.' } }) });
+      return;
+    }
+    await route.continue();
+  });
+  await sensorAButton.click();
+  const retryPoseX = page.getByLabel('Position X (m)');
+  await typeSequentially(retryPoseX, '3.77'); await retryPoseX.press('Tab');
+  await page.getByRole('alert').filter({ hasText: 'Synthetic coverage failure.' }).waitFor();
+  assert.equal(await retryPoseX.inputValue(), '3.77', 'suggestion failure preserves the unsaved local sensor pose');
+  assert.equal(await page.getByLabel('Mirror orientation').isChecked(), true);
+  await page.getByTestId('location-coverage-retry').click();
+  await page.waitForFunction((testId) => !document.querySelector(`[data-testid="${testId}"] select`)?.disabled, westCoverageTestId);
+  await page.unroute('**/api/locations/drafts/*/coverage-suggestions');
+  assert.equal(await retryPoseX.inputValue(), '3.77', 'Retry refreshes coverage without discarding the local pose');
+  assert.equal(await westOwner.inputValue(), SENSOR_B, 'Retry retains the explicit draft owner');
+  const expectedSensorAPose = {
+    x: Number(await retryPoseX.inputValue()) * 100,
+    y: Math.round(Number(await page.getByLabel('Position Y (m)').inputValue()) * 100 * 100) / 100,
+    heightCm: Number(await page.getByLabel('Height (m)').inputValue()) * 100,
+    yawDeg: Number(await page.getByLabel('Yaw (°)').inputValue()),
+    mirror: await page.getByLabel('Mirror orientation').isChecked(),
+  };
+  await page.screenshot({ path: join(artifacts, 'location-sensors-union-owner-desktop.png'), fullPage: true });
+  await page.getByTestId('location-sensors-save').click();
+  await page.getByText('Draft saved · private', { exact: true }).waitFor();
+  let sensorDraft = await readDraft(adminContext, base, draftId);
+  const savedSensorA = sensorDraft.document.sensorAssignments.find((assignment) => assignment.uid === SENSOR_A);
+  const savedSensorB = sensorDraft.document.sensorAssignments.find((assignment) => assignment.uid === SENSOR_B);
+  assert.deepEqual(savedSensorA.pose, expectedSensorAPose, 'keyboard/pointer pose and preserved mounting fields round-trip exactly');
+  assert.deepEqual(savedSensorA.owns, [], 'changing the table owner removes its previous owner');
+  assert.deepEqual(savedSensorB.pose, { x: 925, y: 250, heightCm: 400, yawDeg: 0, mirror: false });
+  assert.deepEqual(savedSensorB.owns.sort(), [roundTable.id, westTable.id].sort(), 'suggestion acceptance and explicit owner selection assign distinct tables to the same sensor');
+  for (const uid of [SENSOR_A, SENSOR_B]) {
+    const live = persistence.registry.nodes.get(uid);
+    assert.equal(live?.floorId, null, 'private draft edits do not move live sensor assignment');
+    assert.equal(live?.pose, null, 'private draft edits do not change live sensor pose');
+  }
+
+  // A later registry change makes B stale without deleting its authored private
+  // assignment. Suggestions exclude it, and publish rechecks the latest state.
+  const originalNodesFile = readFileSync(nodesPath);
+  const staleNodesConfig = JSON.parse(originalNodesFile.toString('utf8'));
+  const staleNode = staleNodesConfig.nodes.find((node) => node.uid === SENSOR_B);
+  assert.ok(staleNode, 'the synthetic approved sensor exists in the isolated file registry');
+  staleNode.floor = 'qa-legacy-floor';
+  staleNode.pose = { ...savedSensorB.pose };
+  staleNode.owns = [];
+  staleNodesConfig.revision += 1;
+  writeFileSync(nodesPath, JSON.stringify(staleNodesConfig));
+  try {
+    const staleProposalRequest = page.waitForRequest((request) => request.method() === 'POST'
+      && new URL(request.url()).pathname.endsWith('/coverage-suggestions'));
+    await page.reload();
+    await page.getByRole('heading', { name: 'Sensors', exact: true }).waitFor();
+    await page.getByTestId('location-sensor-stale-aa-bb-cc-dd-ee-22').waitFor();
+    await page.getByText(/no longer eligible/i).first().waitFor();
+    const staleProposal = await staleProposalRequest;
+    assert.deepEqual(staleProposal.postDataJSON().proposedSensors.map((item) => item.uid), [SENSOR_A],
+      'the complete proposal retains eligible placements and excludes the stale assignment');
+    const staleDraft = await readDraft(adminContext, base, draftId);
+    assert.deepEqual(staleDraft.document.sensorAssignments.find((item) => item.uid === SENSOR_B)?.owns.sort(),
+      [roundTable.id, westTable.id].sort(), 'reload retains the stale assignment and its table ownership');
+    const activeBeforeStalePublish = await persistence.published.getActive(staleDraft.locationId);
+    const snapshotBeforeStalePublish = await persistence.snapshots.readSnapshot();
+    const stalePublish = await adminContext.request.post(`${base}/api/locations/drafts/${encodeURIComponent(draftId)}/publications`, {
+      data: { expectedDraftRevision: staleDraft.draftRevision, expectedPublishedRevision: null },
+      headers: { 'x-tm-algo': '1', origin: base },
+    });
+    assert.equal(stalePublish.status(), 409, 'publish rejects the now-ineligible saved sensor assignment as a live registry conflict');
+    const stalePublishBody = await stalePublish.json();
+    assert.equal(stalePublishBody.error.code, 'CONFLICT');
+    assert.deepEqual(await persistence.published.getActive(staleDraft.locationId), activeBeforeStalePublish,
+      'stale publication rejection does not advance the active location revision');
+    assert.deepEqual(await persistence.snapshots.readSnapshot(), snapshotBeforeStalePublish,
+      'stale publication rejection does not mutate the live registry snapshot');
+  } finally {
+    writeFileSync(nodesPath, originalNodesFile);
+  }
+  await page.reload();
+  await page.getByRole('heading', { name: 'Sensors', exact: true }).waitFor();
+  await page.getByTestId('location-sensor-aa-bb-cc-dd-ee-22').waitFor();
+  await page.reload();
+  await page.getByRole('heading', { name: 'Sensors', exact: true }).waitFor();
+  await page.getByTestId('location-sensor-aa-bb-cc-dd-ee-22').click();
+  assert.equal(await page.getByLabel('Position X (m)').inputValue(), '9.25', 'sensor pose reloads from the private saved document');
+  assert.equal(await page.getByLabel('Height (m)').inputValue(), '4');
+  assert.equal(await page.getByLabel('Assigned owner for West rectangle').inputValue(), SENSOR_B, 'table owner reloads from the private saved document');
+  assert.equal(await page.getByLabel('Assigned owner for East round table').inputValue(), SENSOR_B, 'the explicitly accepted suggestion reloads with the private draft');
+  await page.getByTestId('location-step-details').click();
+  await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
+  await page.getByRole('button', { name: 'QA partition', exact: true }).click();
+  checks.push('eligible sensor filtering; unplaced pose/height bounds/mirror; Arrow/Shift+Arrow keyboard nudges and pointer drag change only X/Y while preserving height/yaw/mirror; suggestion failure/retry retention; suggestion acceptance and clear-to-Unknown; unique owners; private reload; stale retention/proposal exclusion and publish revalidation with live state unchanged passed');
+
   // A saved plan gives the delayed standalone save a real blank-canvas action
   // to freeze alongside the geometry and metadata inputs.
   await page.getByLabel('Upload floor plan (PNG or JPEG)').setInputFiles(planPng);
@@ -524,6 +826,58 @@ async function run() {
   // Review is read-only and separate; no publication occurs from a save or upload.
   await page.getByRole('navigation', { name: 'Location wizard steps' }).getByRole('button', { name: /Review/ }).click();
   await page.getByRole('heading', { name: 'Review location' }).waitFor();
+  await page.getByRole('heading', { name: 'Sensor coverage summary' }).waitFor();
+  const reviewWestId = `location-review-coverage-${westTable.id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+  const reviewWest = page.getByTestId(reviewWestId);
+  await page.waitForFunction((testId) => {
+    const row = document.querySelector(`[data-testid="${testId}"]`);
+    return row?.textContent?.includes('seats covered by the proposed set')
+      && row.textContent.includes('seats covered by this owner');
+  }, reviewWestId);
+  assert.match(await reviewWest.innerText(), /QA Ceiling Sensor B/, 'Review shows the selected primary owner');
+  assert.match(await reviewWest.innerText(), /\d+ \/ 4 seats covered by the proposed set/, 'Review separates union counts');
+  assert.match(await reviewWest.innerText(), /\d+ \/ 4 seats covered by this owner/, 'Review reports selected-owner counts separately');
+  // Install both endpoints before Sensors mounts; its first eligible-sensor read
+  // starts in the mount effect and could otherwise race the test stub.
+  let emptyEligibleReads = 0;
+  await page.route(`**/api/locations/drafts/${draftId}/sensors`, async (route) => {
+    if (route.request().method() === 'GET') {
+      emptyEligibleReads += 1;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { locationId: detail.locationId, sensors: [] } }) });
+      return;
+    }
+    await route.continue();
+  });
+  let emptyReviewCoverageRequestSeen = false;
+  await page.route(`**/api/locations/drafts/${draftId}/coverage-suggestions`, async (route) => {
+    const request = route.request().postDataJSON();
+    assert.deepEqual(request.proposedSensors, [], 'an empty eligible list produces an empty coverage proposal');
+    if (emptyEligibleReads >= 2) emptyReviewCoverageRequestSeen = true;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: {
+      locationId: detail.locationId,
+      suggestions: detail.document.tables.map((table) => ({
+        tableId: table.id, coveredBy: [], suggestedOwner: null,
+        seatCoverage: { totalSeats: table.seats.length, coveredSeats: 0, bySensor: [] },
+      })),
+    } }) });
+  });
+  await page.getByTestId('location-review-edit-coverage').click();
+  await page.waitForURL(new RegExp(`/locations/${draftId}/sensors$`));
+  await page.getByRole('heading', { name: 'Sensors', exact: true }).waitFor();
+  await page.getByRole('navigation', { name: 'Location wizard steps' }).getByRole('button', { name: /Review/ }).click();
+  await page.getByRole('heading', { name: 'Review location' }).waitFor();
+  await page.getByTestId('location-review-no-eligible-sensors').waitFor();
+  assert.ok(emptyEligibleReads >= 2, 'Sensors and Review both read the stubbed empty eligible list');
+  assert.equal(emptyReviewCoverageRequestSeen, true, 'Review loaded a matching empty coverage result after its eligible-sensor read');
+  assert.match(await page.getByTestId('location-review-no-eligible-sensors').innerText(), /No eligible sensors are available/,
+    'Review explains an empty eligible-sensor result instead of implying counts are available');
+  await page.unroute(`**/api/locations/drafts/${draftId}/coverage-suggestions`);
+  await page.unroute(`**/api/locations/drafts/${draftId}/sensors`);
+  await page.getByTestId('location-review-edit-coverage').click();
+  await page.waitForURL(new RegExp(`/locations/${draftId}/sensors$`));
+  await page.getByRole('navigation', { name: 'Location wizard steps' }).getByRole('button', { name: /Review/ }).click();
+  await page.getByRole('heading', { name: 'Review location' }).waitFor();
+  await page.getByTestId(reviewWestId).waitFor();
   await page.screenshot({ path: join(artifacts, 'location-review-private.png'), fullPage: true });
   let list = await jsonFrom(await adminContext.request.get(`${base}/api/locations`));
   assert.equal(list.published.length, 1, 'draft remains private until the explicit Publish location action');
@@ -555,7 +909,7 @@ async function run() {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '200% browser-like zoom reflows without horizontal overflow');
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: join(artifacts, 'location-editor-desktop-final.png'), fullPage: true });
-  checks.push('rect/circle/polygon, seat, zones, plan privacy, failed/delayed upload, stale conflict, private review and responsive/zoom checks passed');
+  checks.push('rect/circle/polygon, seat, zones, plan privacy, failed/delayed upload, stale conflict, private Review union/owner summary, empty-eligible Review with empty proposal/table rows, and responsive/zoom checks passed');
 
   // Explicit publication is separate from saving/review and returns to the list.
   await page.getByRole('button', { name: 'Back to locations', exact: true }).click();
@@ -671,6 +1025,26 @@ async function run() {
   const legacyDraftId = decodeURIComponent(new URL(operatorPage.url()).pathname.split('/')[2]);
   await operatorPage.getByRole('heading', { name: 'Legacy room', exact: true }).waitFor();
   assert.equal(await operatorPage.getByText('Console-only · not shown to students', { exact: true }).count(), 1);
+  const legacySensorsResponse = await operatorContext.request.get(`${base}/api/locations/drafts/${encodeURIComponent(legacyDraftId)}/sensors`);
+  assert.equal(legacySensorsResponse.status(), 200);
+  const legacySensors = await jsonFrom(legacySensorsResponse);
+  assert.ok(legacySensors.sensors.some((sensor) => sensor.uid === RGB_SENSOR && sensor.rgb), 'RGB is eligible for the inherited console-only location');
+  await operatorPage.getByTestId('location-step-sensors').click();
+  await operatorPage.waitForURL(new RegExp(`/locations/${legacyDraftId}/sensors$`));
+  await operatorPage.getByTestId('location-sensor-aa-bb-cc-dd-ee-23').waitFor();
+  const untouchedSensorX = operatorPage.getByLabel('Position X (m)');
+  assert.equal(await untouchedSensorX.inputValue(), '1.255', 'fractional centimetres display without rounding');
+  await untouchedSensorX.focus(); await untouchedSensorX.press('Tab');
+  assert.match(await operatorPage.locator('.loc-footer').innerText(), /Draft revision \d+ · private · live assignments unchanged/,
+    'focusing and blurring a fractional pose does not dirty the inherited draft');
+  const legacyPoseAfterNoopBlur = await readDraft(operatorContext, base, legacyDraftId);
+  assert.equal(legacyPoseAfterNoopBlur.document.sensorAssignments.find((assignment) => assignment.uid === RGB_SENSOR)?.pose.x, 125.5,
+    'a no-op metre blur preserves the exact 125.5 cm stored coordinate');
+  await operatorPage.waitForFunction(() => document.querySelector('[data-testid="location-table-coverage-qa-legacy-table"]')?.textContent?.includes('1 / 1 seats covered'));
+  assert.match(await operatorPage.getByTestId('location-table-coverage-qa-legacy-table').innerText(), /All seats covered/,
+    'the original legacy perimeter seat is visibly included in exact 1/1 coverage');
+  await operatorPage.getByTestId('location-step-details').click();
+  await operatorPage.waitForURL(new RegExp(`/locations/${legacyDraftId}/details$`));
   await operatorPage.getByLabel('Location name').fill('Legacy room renamed');
   await operatorPage.getByRole('button', { name: 'Save draft', exact: true }).click();
   await operatorPage.getByText(/Draft saved · private/i).waitFor();
@@ -694,7 +1068,7 @@ async function run() {
   assert.equal(legacy.document.tables[0].shape, undefined);
   assert.equal(legacy.document.tables[0].seats[0].x, -35);
   await operatorPage.screenshot({ path: join(artifacts, 'legacy-edit-preserved.png'), fullPage: true });
-  checks.push('real operator signed-session legacy edit, exact 257-point/off-floor preservation, strict changed-seat rejection, and plan round-trip passed');
+  checks.push('real operator legacy edit, exact 257-point/off-floor preservation, strict changed-seat rejection, exact 1/1 legacy coverage, and plan round-trip passed');
   checks.push('admin-uploaded published plan remains privately previewable by a second manager only through the exact owned base draft after save/reload');
 
   // Keep a minimal, sanitized result summary; never include cookies, request bodies, or auth data.
