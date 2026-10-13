@@ -13,9 +13,10 @@
  */
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { DEFAULT_SEGMENT, EdgeDetector } from '../edge/edgedetect.js';
+import { readFileSync } from 'node:fs';
+import { DEFAULT_SEGMENT, EdgeDetector, rawTemps, segment } from '../edge/edgedetect.js';
 import { GRID_SIZE, REPORT_BACKGROUND_READY, REPORT_GLOBAL_SHIFT, TYPE_RAW, type Raw } from '../edge/protocol.js';
-import { DEFAULT_STATIC_BACKGROUND, StaticBackground } from '../edge/staticbg.js';
+import { DEFAULT_STATIC_BACKGROUND, median, StaticBackground } from '../edge/staticbg.js';
 import { listShards, readShard, sensorDir, type ThermalShard } from './thermal-shards.js';
 
 export const REPLAY_VERSION = 1;
@@ -27,7 +28,8 @@ export interface ReplayDay {
   version: number;
   detector: 'edge';
   segment: typeof DEFAULT_SEGMENT;
-  background: typeof DEFAULT_STATIC_BACKGROUND;
+  /** The edge's own background settings, or the fixed reference a test day was scored against. */
+  background: typeof DEFAULT_STATIC_BACKGROUND | { fixed: string };
   sensor: string;
   day: string;
   locked: boolean;
@@ -65,6 +67,42 @@ export function replayDay(detector: EdgeDetector, s: ThermalShard): ReplayDay {
   return out;
 }
 
+/**
+ * One day against a fixed background instead of the edge's learned one.
+ *
+ * The locked test days were recorded in patchy sessions, so the edge's
+ * background would only have been ready for 182 of their 400 labelled frames
+ * (docs/THERMAL_ML.md). They are scored against the rig's empty-room
+ * reference, `rel` (C relative to each frame's median, as staticbg keeps it),
+ * through the same segment() the edge runs.
+ */
+export function replayDayAgainst(s: ThermalShard, rel: Float32Array, source: string): ReplayDay {
+  if (rel.length !== GRID_SIZE) throw new Error(`fixed background has ${rel.length} values, expected ${GRID_SIZE}`);
+  const out: ReplayDay = {
+    version: REPLAY_VERSION, detector: 'edge', segment: DEFAULT_SEGMENT, background: { fixed: source },
+    sensor: s.sensor, day: s.day, locked: s.locked, count: s.count, at: s.at, ready: [], globalShift: [], dets: [],
+  };
+  for (let i = 0; i < s.count; i++) {
+    const temps = rawTemps(rawOf(s, i));
+    const level = median(temps);
+    const bg = new Float32Array(GRID_SIZE);
+    for (let p = 0; p < GRID_SIZE; p++) bg[p] = level + (rel[p] ?? 0);
+    const seg = segment(temps, bg, DEFAULT_SEGMENT);
+    out.ready.push(1);
+    out.globalShift.push(seg.globalShift ? 1 : 0);
+    out.dets.push(seg.detections.map((d) => [r3(d.x), r3(d.y), d.area, r3(d.contrast), r3(d.peak), r3(d.heat)]));
+  }
+  return out;
+}
+
+function writeDay(outRoot: string, day: ReplayDay): void {
+  const file = join(outRoot, ...(day.locked ? ['locked'] : []), sensorDir(day.sensor), `${day.day}.edge.json`);
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(day));
+  renameSync(tmp, file);
+}
+
 /** Replay every shard under `shardsRoot` into `outRoot`; one detector per sensor, days in order. */
 export function replayAll(shardsRoot: string, outRoot: string, onlySensor?: string): ReplayDay[] {
   const refs = listShards(shardsRoot, true).filter((r) => !onlySensor || r.sensor === onlySensor);
@@ -78,11 +116,7 @@ export function replayAll(shardsRoot: string, outRoot: string, onlySensor?: stri
       detectors.set(ref.sensor, det);
     }
     const day = replayDay(det, readShard(ref));
-    const file = join(outRoot, ...(day.locked ? ['locked'] : []), sensorDir(day.sensor), `${day.day}.edge.json`);
-    mkdirSync(dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(day));
-    renameSync(tmp, file);
+    writeDay(outRoot, day);
     days.push(day);
   }
   return days;
@@ -110,8 +144,24 @@ function main(argv: string[]): number {
   const shards = arg('--shards');
   const out = arg('--out');
   if (!shards || !out) {
-    console.error('usage: node dist/src/tools/replay.js --shards <dir> --out <dir> [--sensor uid]');
+    console.error('usage: node dist/src/tools/replay.js --shards <dir> --out <dir> [--sensor uid]\n' +
+      '       ... --fixed-rel <json: 768 numbers> --fixed-day <day>[,<day>]   (score days against a fixed background)');
     return 2;
+  }
+  const fixed = arg('--fixed-rel');
+  if (fixed) {
+    const rel = Float32Array.from(JSON.parse(readFileSync(fixed, 'utf8')) as number[]);
+    const wanted = new Set((arg('--fixed-day') ?? '').split(',').filter(Boolean));
+    if (!wanted.size) {
+      console.error('--fixed-rel needs --fixed-day');
+      return 2;
+    }
+    for (const ref of listShards(shards, true).filter((r) => wanted.has(r.day) && (!arg('--sensor') || r.sensor === arg('--sensor')))) {
+      const day = replayDayAgainst(readShard(ref), rel, fixed);
+      writeDay(out, day);
+      console.log(summarise(day));
+    }
+    return 0;
   }
   for (const d of replayAll(shards, out, arg('--sensor'))) console.log(summarise(d));
   return 0;

@@ -54,6 +54,68 @@ This feeds every shard, in time order and across days, through the real
 the per-frame blobs and whether the background was ready. A new model is
 scored against this on the same frames.
 
+## Scoring the hand-labelled test (decided 2026-10-13, before any scoring)
+
+**Background on the test days.**
+- The edge's own background needs an hour of well-covered history. The
+  September recordings were patchy, so under production rules only 182 of the
+  hand-labelled frames had one, and only 2 of the 35 frames with three people.
+- So the test days are scored against the rig's empty-room background, saved
+  on 19 Sept as `rigs/intern-demo/empty_bg_rel.npy`. It correlates 0.90 and
+  0.93 with the backgrounds the test days produce.
+- It was captured before the test days, so no later frame is used.
+- The production-exact score on the 182 frames is reported beside it.
+
+**Picking the RGB teacher.** This rule is fixed before any detector is scored,
+so it cannot be bent to fit the results.
+
+- **Candidates:**
+  - yolo11s and yolo26s: Ultralytics, imgsz 640, confidence ≥ 0.25, NMS IoU
+    0.7, class person;
+  - Faster R-CNN ResNet50-FPN v2: torchvision COCO weights, score ≥ 0.25, label
+    person;
+  - a weighted-box-fusion ensemble of those three: IoU 0.55; each fused box's
+    confidence is the sum of its members' confidences divided by 3; kept if
+    ≥ 0.25.
+  - `rf-overhead-person` has stored outputs on only 56 of the 400 frames. It is
+    reported there, but it cannot be chosen unless it is run on all 400.
+- **Points:** a box is a person at its centre. Hand boxes and detector boxes
+  are mapped into thermal pixels with the same September RGB→thermal fit (next
+  section).
+- **Matching:** per frame, a Hungarian assignment on thermal distance. A match
+  counts if it is ≤ 2.0 thermal px.
+- **Score:** F1 summed over all 400 frames. Ties go to the lower mean absolute
+  count error.
+- **If the best F1 is below 0.90,** stop and ask before fine-tuning anything.
+
+**RGB→thermal fit.**
+- **Similarity transform, by RANSAC,** with no assumed correspondence: the
+  algorithm of `tools/train_human_location.py`.
+- **Both orientations are tried,** because a similarity cannot mirror and the
+  rig's thermal image was flipped on 6 Oct.
+- **Fitted per period** (September, October) on frames that are **not** among
+  the 400 hand-labelled ones, using consensus detector boxes and warm blobs in
+  the thermal frame. Hand labels are never used for it.
+- **Refused if the RMS is above 3 thermal px.**
+
+**Running it.** The RGB photos, the detectors and the bake-off need the ML
+environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
+
+```bash
+python3 -m tools.thermalml rgb --dump <frames ZIP> --pairs <pairs ZIP> --shards data/ml/shards --out data/ml/rgb
+data/ml/.venv/bin/python -m tools.thermalml.teachers --model yolo11s --rgb data/ml/rgb --out data/ml/teachers --day 2026-09-26 --day 2026-09-29
+data/ml/.venv/bin/python -m tools.thermalml.mapping --name sept --day 2026-09-26 --day 2026-09-29 --background empty --exclude data/ml/handlabels/rgb-ids.txt
+node dist/src/tools/replay.js --shards data/ml/shards --out data/ml/replay-emptybg --fixed-rel <empty_bg_rel as JSON> --fixed-day 2026-09-26,2026-09-29
+data/ml/.venv/bin/python -m tools.thermalml.bakeoff
+```
+
+**Added after the rule was written, before any score was seen.** It affects
+the thermal baselines only, not the choice of teacher. The thermal detectors
+(firmware, edge) see the whole 32x24 view, but the photo, and so the hand
+labels, cover about half of it. So their detections are only scored where the
+mapping puts them inside the photo. Empty frames are reported as false people
+per frame, because F1 has nothing to find there.
+
 ## Tests
 
 ```bash

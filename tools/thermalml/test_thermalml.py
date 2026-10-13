@@ -185,5 +185,46 @@ class Background(unittest.TestCase):
         self.assertTrue(math.isclose(median32(np.array([0.1, 0.2, 0.3], dtype=np.float32)), float(np.float32(0.2))))
 
 
+class Scoring(unittest.TestCase):
+    """The scores everything else is judged by."""
+
+    def test_the_assignment_is_optimal_not_greedy(self) -> None:
+        # Greedy would pair row 0 with column 0 (cost 1) and leave row 1 with 10.
+        from tools.thermalml.metrics import assign
+        self.assertEqual(sorted(assign(np.array([[1.0, 2.0], [2.0, 10.0]]))), [(0, 1), (1, 0)])
+        self.assertEqual(len(assign(np.zeros((2, 5)))), 2)
+        self.assertEqual(len(assign(np.zeros((5, 2)))), 2)
+
+    def test_a_person_counts_as_found_only_within_the_radius_and_only_once(self) -> None:
+        from tools.thermalml.metrics import match
+        tp, fp, fn, d = match([(10, 10), (20, 10)], [(10.5, 10), (10.2, 10.1), (25, 10)], radius=2.0)
+        self.assertEqual((tp, fp, fn), (1, 2, 1))           # two guesses on one person count once
+        self.assertLess(d[0], 0.3)
+
+    def test_matching_prefers_more_pairs_over_shorter_ones(self) -> None:
+        # The closest pair (0 to B, 0.1 px) would block the only pairing of 1;
+        # two matches within the radius beat one very good one.
+        from tools.thermalml.metrics import match
+        tp, _fp, _fn, _d = match([(0, 0), (1.9, 0)], [(0.1, 0), (3.5, 0)], radius=2.0)
+        self.assertEqual(tp, 2)
+
+    def test_f1_is_summed_over_frames_and_empty_frames_still_count_false_people(self) -> None:
+        from tools.thermalml.metrics import Frame, score_frames
+        s = score_frames([Frame(0, 3, 3, 3, 0, 0), Frame(1, 0, 1, 0, 1, 0)])
+        self.assertAlmostEqual(s['f1'], 6 / 7)
+        self.assertEqual(s['countMAE'], 0.5)
+        self.assertEqual(s['exactCount'], 0.5)
+
+    def test_intervals_resample_blocks_of_time_not_frames(self) -> None:
+        from tools.thermalml.metrics import Frame, bootstrap
+        # Two ten-minute blocks: one perfect, one all wrong. Frame-level
+        # resampling of 200 frames would give a tight interval; two blocks cannot.
+        frames = [Frame(i * 1000, 1, 1, 1, 0, 0) for i in range(100)] + \
+                 [Frame(600_000 + i * 1000, 1, 1, 0, 1, 1) for i in range(100)]
+        lo, hi = bootstrap(frames, n=400)['f1']
+        self.assertLessEqual(lo, 0.01)
+        self.assertGreaterEqual(hi, 0.99)
+
+
 if __name__ == '__main__':
     unittest.main()

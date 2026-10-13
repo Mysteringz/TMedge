@@ -14,10 +14,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { DEFAULT_SEGMENT, EdgeDetector, rawTemps } from '../src/edge/edgedetect.js';
+import { DEFAULT_SEGMENT, EdgeDetector, rawTemps, segment } from '../src/edge/edgedetect.js';
 import { GRID_SIZE, TYPE_RAW, type Raw } from '../src/edge/protocol.js';
 import { DEFAULT_STATIC_BACKGROUND, median, StaticBackground, type StaticBackgroundOptions } from '../src/edge/staticbg.js';
-import { replayAll, type ReplayDay } from '../src/tools/replay.js';
+import { replayAll, replayDayAgainst, type ReplayDay } from '../src/tools/replay.js';
 import { listShards, readShard, sensorDir } from '../src/tools/thermal-shards.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -72,10 +72,11 @@ test('the trainer computes the same background as the edge, frame for frame', (t
   const probe = frames.map((_, i) => i).filter((i) => i % 37 === 0 || i === frames.length - 1);
 
   let reference: { i: number; ready: boolean; bg: number[] | null }[];
+  const input = join(mkdtempSync(join(tmpdir(), 'staticbg-')), 'frames.json');
+  writeFileSync(input, JSON.stringify({ opts, probe, frames: frames.map((f) => ({ at: f.at, tMin: f.tMin, step: f.step, pixels: Buffer.from(f.pixels).toString('base64') })) }));
   try {
-    const out = execFileSync('python3', ['-m', 'tools.thermalml.staticbg'], {
-      cwd: REPO, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024,
-      input: JSON.stringify({ opts, probe, frames: frames.map((f) => ({ at: f.at, tMin: f.tMin, step: f.step, pixels: Buffer.from(f.pixels).toString('base64') })) }),
+    const out = execFileSync('python3', ['-m', 'tools.thermalml.staticbg', input], {
+      cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, timeout: 60_000,
     });
     reference = JSON.parse(out) as typeof reference;
   } catch (err) {
@@ -159,4 +160,32 @@ test('the replay baseline finds exactly what the edge detector finds, across day
   const file = JSON.parse(readFileSync(join(out, sensorDir(RIG), '2026-10-07.edge.json'), 'utf8')) as ReplayDay;
   assert.equal(file.count, day2.length);
   assert.deepEqual(file.segment, DEFAULT_SEGMENT);
+});
+
+test('a test day scored against a fixed background runs the edge segmenter against exactly that background', () => {
+  // The locked days are scored against the rig's empty-room reference, not a
+  // re-implementation: every frame must give what segment() gives against
+  // (frame median + reference), and every frame counts as judged.
+  const shards = mkdtempSync(join(tmpdir(), 'shards-'));
+  const rand = rng(9);
+  const frames = [0, 1, 2, 3].map((i) => ({ at: i * 3000, ...wireFrame(rand, i >= 2) }));
+  writeShard(shards, RIG, '2026-09-29', true, frames);
+  const [ref] = listShards(shards, true);
+  assert.ok(ref);
+  const rel = new Float32Array(GRID_SIZE);
+  for (let p = 0; p < GRID_SIZE; p++) {
+    const x = p % W, y = Math.floor(p / W);
+    rel[p] = 0.4 * Math.sin(x / 5) + 0.3 * Math.cos(y / 4) + ((x - 26) ** 2 + (y - 5) ** 2 <= 4 ? 6 : 0);
+  }
+  const day = replayDayAgainst(readShard(ref), rel, 'test');
+  assert.deepEqual(day.ready, [1, 1, 1, 1]);
+  assert.deepEqual(day.background, { fixed: 'test' });
+  frames.forEach((f, i) => {
+    const temps = rawTemps({ tMin: f.tMin, step: f.step, pixels: f.pixels } as Raw);
+    const level = median(temps);
+    const expected = segment(temps, temps.map((_, p) => level + (rel[p] ?? 0)));
+    assert.equal(day.dets[i]?.length, expected.detections.length, `frame ${i}`);
+  });
+  assert.equal(day.dets[0]?.length, 0, 'the always-on heater is in the reference, so an empty room is empty');
+  assert.ok((day.dets[3]?.length ?? 0) >= 1, 'the person is found');
 });

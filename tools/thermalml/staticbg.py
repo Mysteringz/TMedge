@@ -140,12 +140,15 @@ class StaticBackground:
 
 
 def _crosscheck() -> None:
-    """stdin: {opts, frames:[{at, tMin, step, pixels(base64)}], probe:[i]}; stdout: [{i, ready, bg}]."""
+    """argv[1] (a JSON file): {opts, frames:[{at, tMin, step, pixels(base64)}], probe:[i]}; stdout: [{i, ready, bg}]."""
     import base64
     import json
     import sys
 
-    doc = json.load(sys.stdin)
+    # A file rather than stdin: a test that waits on a pipe it cannot see
+    # closing hangs instead of failing.
+    with open(sys.argv[1]) as f:
+        doc = json.load(f)
     o = doc['opts']
     bg = StaticBackground(Options(bucket_ms=o['bucketMs'], window_ms=o['windowMs'], sample_ms=o['sampleMs'],
                                   quantile=o['quantile'], min_buckets=o['minBuckets'],

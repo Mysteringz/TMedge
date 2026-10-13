@@ -42,6 +42,20 @@ def cmd_shards(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rgb(a: argparse.Namespace) -> int:
+    from .rgb import extract, load_pairs, thermal_days
+    t0 = time.time()
+    with open_dump(a.pairs) as stream:
+        pairs = load_pairs(stream)
+    where = thermal_days(a.shards)
+    with open_dump(a.dump) as stream:
+        counts = extract(stream, pairs, where, a.out, set(a.day) if a.day else None)
+    for (uid, day), n in sorted(counts.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        print(f'{uid} {day}{" LOCKED" if days.is_locked(day) else ""}: {n} photos')
+    print(f'{sum(counts.values())} photos from {len(pairs)} pairs, {time.time() - t0:.0f} s', file=sys.stderr)
+    return 0
+
+
 def cmd_summary(a: argparse.Namespace) -> int:
     for uid, day in list_shards(a.root, include_locked=True):
         s = read_shard(a.root, uid, day)
@@ -64,6 +78,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument('--sensor', action='append', help='only this sensor uid (repeatable)')
     s.add_argument('--out', required=True)
     s.set_defaults(fn=cmd_shards)
+    r = sub.add_parser('rgb', help='extract the RGB photos paired with shard frames (for labelling only)')
+    r.add_argument('--dump', required=True, help='export ZIP (or dataset.sql) containing training.frames')
+    r.add_argument('--pairs', required=True, help='export ZIP (or dataset.sql) containing training.pairs')
+    r.add_argument('--shards', required=True)
+    r.add_argument('--day', action='append', help='only this day (repeatable)')
+    r.add_argument('--out', required=True)
+    r.set_defaults(fn=cmd_rgb)
     m = sub.add_parser('summary', help='list shards')
     m.add_argument('--root', required=True)
     m.set_defaults(fn=cmd_summary)
