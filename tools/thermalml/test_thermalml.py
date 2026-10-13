@@ -283,6 +283,13 @@ class TrainingTargets(unittest.TestCase):
             hot = np.unravel_index(int(np.argmax(xa[1])), (24, 32))
             self.assertLess(math.hypot(hot[1] + 0.5 - px, hot[0] + 0.5 - py), 1.5)
 
+    def test_a_model_file_is_json_the_edge_can_parse_even_when_a_metric_is_undefined(self) -> None:
+        # Precision with no predictions is NaN; Python would write it as NaN,
+        # which JSON.parse refuses -- and the edge would refuse the whole model.
+        from tools.thermalml.train import finite
+        doc = finite({'metrics': {'precision': float('nan'), 'f1': 0.5, 'per': [float('inf'), 1.0]}})
+        self.assertEqual(json.loads(json.dumps(doc, allow_nan=False)), {'metrics': {'precision': None, 'f1': 0.5, 'per': [None, 1.0]}})
+
     def test_zoom_keeps_its_centre_still_and_shrinks_distances(self) -> None:
         from tools.thermalml.train import _affine
         x = np.zeros((1, 24, 32), dtype=np.float32)

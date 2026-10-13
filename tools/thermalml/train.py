@@ -213,6 +213,17 @@ def evaluate(model, d: dict, every: int = 3) -> dict[float, dict]:
     return {t: score_frames(f) for t, f in frames.items()}
 
 
+def finite(v):
+    """JSON the edge can parse: NaN and infinity (a precision with no predictions) become null."""
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        return {k: finite(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [finite(x) for x in v]
+    return v
+
+
 def main(argv: list[str] | None = None) -> int:
     import torch
     p = argparse.ArgumentParser(prog='python -m tools.thermalml.train')
@@ -268,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
             loss.backward()
             opt.step()
             sched.step()
-            total += float(loss) * len(xs)
+            total += loss.item() * len(xs)
         scores = evaluate(model, va)
         t_best = max(scores, key=lambda t: (scores[t]['f1'] if not math.isnan(scores[t]['f1']) else -1))
         s = scores[t_best]
@@ -283,11 +294,11 @@ def main(argv: list[str] | None = None) -> int:
     model.load_state_dict(torch.load(os.path.join(a.out, 'best.pt')))
     meta = {'threshold': best['threshold'], 'trainedAt': int(time.time() * 1000), 'trainDays': a.train_day, 'valDays': a.val_day,
             'labels': os.path.basename(os.path.normpath(a.labels)), 'metrics': {'validation': best}, 'seed': a.seed}
-    doc = export(model, meta)
+    doc = finite(export(model, meta))
     with open(os.path.join(a.out, 'model.json'), 'w') as f:
-        json.dump(doc, f, separators=(',', ':'))
+        json.dump(doc, f, separators=(',', ':'), allow_nan=False)
     with open(os.path.join(a.out, 'history.json'), 'w') as f:
-        json.dump(history, f, indent=1)
+        json.dump(finite(history), f, indent=1, allow_nan=False)
     print(f'best epoch {best["epoch"]}: validation F1 {best["f1"]:.3f} at threshold {best["threshold"]}; model {doc["id"]}')
     return 0
 
