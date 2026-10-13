@@ -66,6 +66,34 @@ test('usage: paths are counted under a handful of names, never as typed', () => 
   assert.equal(routeGroup('GET', '/healthz'), 'health');
 });
 
+test('usage: campus activity counters keep identical floor and table IDs separate by site', async () => {
+  const now = Date.UTC(2026, 9, 13, 4, 0, 0);
+  const meter = new UsageMeter({
+    dir: null, timeZone: 'Asia/Hong_Kong', secret: Buffer.alloc(32, 7),
+    live: () => ({ sockets: 0, emails: [] }), now: () => now,
+  });
+  meter.event('space-view', 'succeeded', { siteId: 'north-campus', floorId: 'G' });
+  meter.event('space-view', 'succeeded', { siteId: 'south-campus', floorId: 'G' });
+  meter.event('table-select', 'succeeded', { siteId: 'north-campus', floorId: 'G', tableId: 'T1' });
+  meter.event('table-select', 'succeeded', { siteId: 'south-campus', floorId: 'G', tableId: 'T1' });
+  meter.sample();
+  const report = meter.report('24h', {
+    accountsTotal: 0, accountCreatedTimes: null, accountStorage: 'file',
+    floorName: (siteId, floorId) => `${siteId}:${floorId}`,
+    tableName: (siteId, floorId, tableId) => `${siteId}:${floorId}:${tableId}`,
+    edges: [],
+  });
+  assert.deepEqual(report.topFloors.map(({ siteId, floorId, name, views }) => ({ siteId, floorId, name, views })).sort((a, b) => String(a.siteId).localeCompare(String(b.siteId))), [
+    { siteId: 'north-campus', floorId: 'G', name: 'north-campus:G', views: 1 },
+    { siteId: 'south-campus', floorId: 'G', name: 'south-campus:G', views: 1 },
+  ]);
+  assert.deepEqual(report.topTables.map(({ siteId, floorId, tableId, selects }) => ({ siteId, floorId, tableId, selects })).sort((a, b) => String(a.siteId).localeCompare(String(b.siteId))), [
+    { siteId: 'north-campus', floorId: 'G', tableId: 'T1', selects: 1 },
+    { siteId: 'south-campus', floorId: 'G', tableId: 'T1', selects: 1 },
+  ]);
+  await meter.close();
+});
+
 test('usage: the report answers to the edge token and to nothing a student holds', async (t) => {
   const web = await start(t);
   const cookie = await signup(web.base);
@@ -128,8 +156,8 @@ test('usage: what students do is counted once each, and one student is one activ
   assert.equal(report.totals.failedSignIns, 1);
   assert.equal(report.totals.signIns, 0);
   assert.deepEqual(report.partySizes.filter((p) => p.searches > 0), [{ seats: '2', searches: 1 }, { seats: '6+', searches: 1 }]);
-  assert.deepEqual(report.topFloors, [{ floorId: floor.id, name: floor.name, views: 1 }]);
-  assert.deepEqual(report.topTables, [{ floorId: floor.id, tableId: table.id, name: table.name, selects: 1 }]);
+  assert.deepEqual(report.topFloors, [{ siteId: web.snapshot.site.id, floorId: floor.id, name: floor.name, views: 1 }]);
+  assert.deepEqual(report.topTables, [{ siteId: web.snapshot.site.id, floorId: floor.id, tableId: table.id, name: table.name, selects: 1 }]);
   assert.equal(report.previousTotals, null, 'there is no earlier period to compare with yet, and it does not pretend there is');
   // signup + 2 occupancy + 5 activity posts + 1 login; the edge's push is not student traffic.
   assert.equal(report.totals.requests, 9);

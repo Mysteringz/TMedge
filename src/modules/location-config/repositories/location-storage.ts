@@ -3,6 +3,7 @@ import type { LocationDocument, LocationSensorAssignment } from '../domain/locat
 import type { ValidatedLocationCandidate } from '../domain/location-candidate.js';
 import type { LegacySpatialProvenance } from '../domain/location-candidate.js';
 import type { NodePose } from '../../../shared/types.js';
+import type { LocationModelPresentationDisposition } from '../domain/location-assets.js';
 
 export type CommitDurability = 'confirmed' | 'unconfirmed';
 
@@ -72,7 +73,12 @@ export interface LocationRegistrySnapshotRepository {
 
 /** Runtime adapter builds everything before durable commit, then only swaps an already prepared generation. */
 export interface PreparedLocationRuntime<Prepared> {
-  prepare(snapshot: LocationRegistrySnapshot, candidate: LocationDocument, legacySpatial?: LegacySpatialProvenance | null): Prepared;
+  prepare(
+    snapshot: LocationRegistrySnapshot,
+    candidate: LocationDocument,
+    legacySpatial?: LegacySpatialProvenance | null,
+    modelDisposition?: LocationModelPresentationDisposition,
+  ): Prepared;
   refresh(prepared: Prepared): Prepared;
   activate(prepared: Prepared): void;
   quarantine(reason: unknown): void;

@@ -86,8 +86,12 @@ export interface FloorState {
   outline: Point[];
   zones: ZoneState[];
   tables: TableState[];
-  /** Present only when this floor has a published GLB. */
-  model?: PublishedFloorModel;
+  /**
+   * V2 public model hint: a descriptor selects an uploaded GLB, null suppresses
+   * the legacy static catalog, and absence retains the legacy fallback.
+   * V1 snapshots do not carry this field.
+   */
+  model?: PublishedFloorModel | null;
   totals: FloorTotals;
 }
 
@@ -111,6 +115,10 @@ export interface OccupancySnapshot {
 
 /** What the web tier serves: every floor from every edge, with freshness. */
 export interface CampusFloor extends FloorState {
+  /** Site component of this floor's stable public location identity. */
+  siteId: string;
+  /** Collision-safe serialization of (siteId, id), never publisher authority. */
+  key: string;
   edgeId: string;
   /** When the web tier last heard from this floor's edge, ms since epoch. */
   updatedAt: number;
@@ -125,6 +133,8 @@ export interface CampusView {
 
 /** One suggested place to sit, as returned by the seat search. */
 export interface SeatSuggestion {
+  siteId: string;
+  key: string;
   floorId: string;
   floorName: string;
   building: string;

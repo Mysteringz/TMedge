@@ -16,9 +16,8 @@ Three parts:
 - TMedge, "the edge": the server. It verifies every packet, turns detections
   into occupancy, and publishes an occupancy snapshot. It also hosts this
   console.
-- The student site, hkumyseat.com: a separate web service. It only ever
-  receives occupancy snapshots (seat states and totals), never thermal pixels
-  or detections.
+- The student site (hkumyseat.com) receives public occupancy snapshots and
+  referenced GLBs, never thermal pixels or detections.
 
 Sensors use UDP, a TMWAccess Wi-Fi gateway, or secure WebSocket; all paths
 share checks. TMflash provisions over USB in a Mac app or module 07; saved
@@ -31,8 +30,9 @@ settings and boot counters survive.
   release carries signed viewer modules; GLB bytes stay behind the draft API.
   See docs/location-configuration-storage.md. Stop edge before
   `db:registry:import --apply`; restart afterward; the CLI cannot check service
-  state. Public v2 snapshots add table shapes and optional model transforms;
-  v1 remains supported. Sensor poses and plans stay private.
+  state. Student routes use site+floor IDs; ambiguous bare-floor links prompt a choice.
+  Authored shapes render in 2D. V2 model object=GLB+transform, null=none,
+  absent=legacy fallback; v1 unchanged.
 
 ## How a count is made
 

@@ -81,12 +81,174 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /api/occupancy:
+    get:
+      summary: Read current public campus locations and occupancy
+      description: >-
+        Requires a student browser session or student bearer token. Only the
+        current winning public floor snapshots are returned. Each floor has
+        the composite siteId/key identity. Unknown and stale availability stays
+        null; private plans, draft data, sensor identity/pose, ownership, and
+        model display names are never returned.
+      security:
+        - studentBearer: []
+        - studentCookie: []
+      responses:
+        '200':
+          description: Current public campus view
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampusView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/search:
+    get:
+      summary: Search for adjacent free seats
+      description: >-
+        A legacy floor-only filter is accepted only when the floor ID is unique.
+        `siteId` must be supplied together with `floor`; the pair selects exactly
+        one composite campus location. Ambiguous floor-only filters return 409.
+      security:
+        - studentBearer: []
+        - studentCookie: []
+      parameters:
+        - in: query
+          name: seats
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 30 }
+        - in: query
+          name: floor
+          required: false
+          schema: { type: string, maxLength: 100 }
+        - in: query
+          name: siteId
+          required: false
+          description: Required together with `floor`.
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: Seat suggestions with composite location identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [seats, results]
+                properties:
+                  seats: { type: integer }
+                  results:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: '#/components/schemas/SeatSuggestion' }
+        '400':
+          description: Invalid seat count or siteId/floor pairing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The legacy floor-only identifier matches more than one site
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/activity:
+    post:
+      summary: Record a bounded student location interaction
+      description: >-
+        Requires student authentication, JSON, and `X-TM-Student-Activity: 1`.
+        Browser writes must be same-origin. Location-specific events use the
+        exact siteId/floorId pair; a legacy floor-only reference is accepted
+        only when unique. Actor identity and live result counts are server-owned.
+      security:
+        - studentBearer: []
+        - studentCookie: []
+      parameters:
+        - in: header
+          name: X-TM-Student-Activity
+          required: true
+          schema: { type: string, enum: ['1'] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StudentActivity' }
+      responses:
+        '202':
+          description: Event accepted for best-effort activity logging
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties: { ok: { type: boolean, enum: [true] } }
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Same-origin activity request is required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Activity body must use application/json
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Per-student activity rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/models/{assetId}:
+    get:
+      summary: Read a currently referenced public uploaded GLB
+      description: >-
+        Requires a student session or bearer token. Bytes are served only when
+        the asset is referenced by a current winning public floor descriptor;
+        authorization is checked again after the file read. Private, console-only,
+        losing, withdrawn, static legacy and unreferenced assets return 404.
+      security:
+        - studentBearer: []
+        - studentCookie: []
+      parameters:
+        - in: path
+          name: assetId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Immutable GLB bytes; private and not cacheable
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: ['private, no-store'] }
+            ETag:
+              schema: { type: string }
+            X-Content-Type-Options:
+              schema: { type: string, enum: [nosniff] }
+          content:
+            model/gltf-binary:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Invalid, private, missing or unreferenced asset
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     studentBearer:
       type: http
       scheme: bearer
       description: Short-lived signed TMedge student access token; not a JWT
+    studentCookie:
+      type: apiKey
+      in: cookie
+      name: tm_session
+      description: Existing signed browser student session cookie
   schemas:
     Credentials:
       type: object
@@ -114,6 +276,208 @@ components:
         expires_in:
           type: integer
           enum: [900]
+    CampusView:
+      type: object
+      required: [generatedAt, floors]
+      properties:
+        generatedAt: { type: integer, minimum: 0, description: Server view timestamp in milliseconds since epoch. }
+        floors:
+          type: array
+          items: { $ref: '#/components/schemas/CampusFloor' }
+    CampusFloor:
+      allOf:
+        - $ref: '#/components/schemas/FloorState'
+        - type: object
+          required: [siteId, key, edgeId, updatedAt, stale]
+          properties:
+            siteId: { type: string }
+            key: { type: string, description: 'Collision-safe JSON identity for [siteId, floorId].' }
+            edgeId: { type: string }
+            updatedAt: { type: integer, minimum: 0, description: Last accepted receipt time in milliseconds since epoch. }
+            stale: { type: boolean }
+    FloorState:
+      type: object
+      required: [id, building, name, width, height, outline, zones, tables, totals]
+      properties:
+        id: { type: string, description: Floor ID, retained as the legacy bare identifier. }
+        building: { type: string }
+        name: { type: string }
+        width: { type: number, exclusiveMinimum: 0, description: Floor width in centimeters. }
+        height: { type: number, exclusiveMinimum: 0, description: Floor height in centimeters. }
+        outline: { type: array, items: { $ref: '#/components/schemas/Point' } }
+        zones:
+          type: array
+          items: { $ref: '#/components/schemas/ZoneState' }
+        tables:
+          type: array
+          items: { $ref: '#/components/schemas/TableState' }
+        totals: { $ref: '#/components/schemas/FloorTotals' }
+        model:
+          description: >-
+            V2 uploaded descriptor object selects a GLB; null explicitly suppresses
+            static-catalog fallback; absence retains the legacy static fallback.
+          type: object
+          nullable: true
+          required: [assetId, transform]
+          additionalProperties: false
+          properties:
+            assetId: { type: string, format: uuid }
+            transform: { $ref: '#/components/schemas/ModelTransform' }
+    Point:
+      type: array
+      minItems: 2
+      maxItems: 2
+      items: { type: number }
+    ZoneState:
+      type: object
+      required: [id, name, polygon, people]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        polygon: { type: array, items: { $ref: '#/components/schemas/Point' } }
+        people: { type: integer, minimum: 0, nullable: true, description: null means zone count is unknown. }
+    TableState:
+      type: object
+      required: [id, name, zoneId, rect, capacity, occupied, free, status, seats]
+      properties:
+        id: { type: string, description: Stable authored table ID. }
+        name: { type: string }
+        zoneId: { type: string }
+        rect: { $ref: '#/components/schemas/Rectangle' }
+        shape:
+          description: Present for authored v2 geometry; omitted legacy tables retain rect geometry.
+          oneOf:
+            - $ref: '#/components/schemas/RectShape'
+            - $ref: '#/components/schemas/CircleShape'
+            - $ref: '#/components/schemas/PolygonShape'
+        capacity: { type: integer, minimum: 1 }
+        occupied: { type: integer, minimum: 0, nullable: true }
+        free: { type: integer, minimum: 0, nullable: true }
+        status: { type: string, enum: [ok, fallback, unknown] }
+        seats:
+          type: array
+          items: { $ref: '#/components/schemas/SeatState' }
+    Rectangle:
+      type: object
+      required: [x, y, width, height]
+      properties:
+        x: { type: number }
+        y: { type: number }
+        width: { type: number, exclusiveMinimum: 0 }
+        height: { type: number, exclusiveMinimum: 0 }
+    RectShape:
+      allOf:
+        - $ref: '#/components/schemas/Rectangle'
+        - type: object
+          required: [type]
+          properties: { type: { type: string, enum: [rect] } }
+    CircleShape:
+      type: object
+      required: [type, cx, cy, radius]
+      properties:
+        type: { type: string, enum: [circle] }
+        cx: { type: number }
+        cy: { type: number }
+        radius: { type: number, exclusiveMinimum: 0 }
+    PolygonShape:
+      type: object
+      required: [type, points]
+      properties:
+        type: { type: string, enum: [polygon] }
+        points: { type: array, minItems: 3, items: { $ref: '#/components/schemas/Point' } }
+    SeatState:
+      type: object
+      required: [id, x, y, side, index, occupied, neighbors]
+      properties:
+        id: { type: string }
+        x: { type: number, description: Plan coordinate in centimeters. }
+        y: { type: number, description: Plan coordinate in centimeters. }
+        side: { type: string, enum: [L, R, T, B] }
+        index: { type: integer, minimum: 0 }
+        occupied: { type: boolean, nullable: true }
+        neighbors: { type: array, items: { type: string } }
+    FloorTotals:
+      type: object
+      required: [seats, free, occupied, unknownSeats, tablesFullyFree]
+      properties:
+        seats: { type: integer, minimum: 0 }
+        free: { type: integer, minimum: 0 }
+        occupied: { type: integer, minimum: 0 }
+        unknownSeats: { type: integer, minimum: 0 }
+        tablesFullyFree: { type: integer, minimum: 0 }
+    PublishedFloorModel:
+      type: object
+      required: [assetId, transform]
+      additionalProperties: false
+      properties:
+        assetId: { type: string, format: uuid }
+        transform: { $ref: '#/components/schemas/ModelTransform' }
+    ModelTransform:
+      type: object
+      required: [scale, rotationDeg, positionM]
+      properties:
+        scale: { $ref: '#/components/schemas/Vector3' }
+        rotationDeg: { $ref: '#/components/schemas/Vector3' }
+        positionM: { $ref: '#/components/schemas/Vector3' }
+    Vector3:
+      type: object
+      required: [x, y, z]
+      properties:
+        x: { type: number }
+        y: { type: number }
+        z: { type: number }
+    SeatSuggestion:
+      type: object
+      required: [siteId, key, floorId, floorName, building, tableIds, tableName, seatIds, freeAtTable, capacity, busyness]
+      properties:
+        siteId: { type: string }
+        key: { type: string }
+        floorId: { type: string }
+        floorName: { type: string }
+        building: { type: string }
+        tableIds: { type: array, items: { type: string } }
+        tableName: { type: string }
+        seatIds: { type: array, items: { type: string } }
+        freeAtTable: { type: integer, minimum: 0 }
+        capacity: { type: integer, minimum: 1 }
+        busyness: { type: number, minimum: 0, maximum: 1 }
+    StudentActivity:
+      oneOf:
+        - type: object
+          required: [action, seats]
+          additionalProperties: false
+          properties:
+            action: { type: string, enum: [seat-search] }
+            seats: { type: integer, minimum: 1, maximum: 30 }
+            venueId: { type: string, maxLength: 100 }
+            floorId: { type: string, maxLength: 100 }
+            siteId: { type: string, maxLength: 100, description: Requires floorId. }
+        - type: object
+          required: [action, seats, floorId]
+          additionalProperties: false
+          properties:
+            action: { type: string, enum: [space-view] }
+            seats: { type: integer, minimum: 1, maximum: 30 }
+            floorId: { type: string, maxLength: 100 }
+            siteId: { type: string, maxLength: 100 }
+        - type: object
+          required: [action, seats, floorId, tableId]
+          additionalProperties: false
+          properties:
+            action: { type: string, enum: [table-select] }
+            seats: { type: integer, minimum: 1, maximum: 30 }
+            floorId: { type: string, maxLength: 100 }
+            siteId: { type: string, maxLength: 100 }
+            tableId: { type: string, maxLength: 100 }
+        - type: object
+          required: [action, seats, floorId]
+          additionalProperties: false
+          properties:
+            action: { type: string, enum: [directions-view] }
+            seats: { type: integer, minimum: 1, maximum: 30 }
+            floorId: { type: string, maxLength: 100 }
+            siteId: { type: string, maxLength: 100 }
+            tableId: { type: string, maxLength: 100 }
     Error:
       type: object
       required: [error]

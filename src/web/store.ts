@@ -5,9 +5,10 @@
  * unknown after STALE_MS -- a dead edge must never leave the last good numbers
  * on screen, or students are sent to a floor that filled up an hour ago.
  */
-import type { CampusView, FloorState, OccupancySnapshot, Rect, TableShape, TableState } from '../shared/types.js';
+import type { CampusFloor, CampusView, FloorState, OccupancySnapshot, Rect, TableShape, TableState } from '../shared/types.js';
 import { LOCATION_GEOMETRY_EPSILON, LOCATION_MODEL_TRANSFORM_LIMITS, isValidSimpleBoundedPolygon } from '../shared/location-validation.js';
 import { tableBounds } from '../shared/table-geometry.js';
+import { campusLocationKey } from '../shared/location-identity.js';
 
 export class SnapshotStore {
   private readonly latest = new Map<string, { snap: OccupancySnapshot; receivedAt: number }>();
@@ -23,10 +24,11 @@ export class SnapshotStore {
 
   view(now = Date.now()): CampusView {
     const byFloor = this.currentWinningFloors(now);
-    const floors = [...byFloor.values()].map(({ floor, edgeId, receivedAt, stale }) => ({
-      ...(stale ? blank(floor) : floor), edgeId, updatedAt: receivedAt, stale,
+    const floors: CampusFloor[] = [...byFloor.values()].map(({ floor, siteId, edgeId, receivedAt, stale }) => ({
+      ...(stale ? blank(floor) : floor), siteId, key: campusLocationKey(siteId, floor.id), edgeId, updatedAt: receivedAt, stale,
     }));
-    floors.sort((a, b) => a.building.localeCompare(b.building) || a.name.localeCompare(b.name));
+    floors.sort((a, b) => a.building.localeCompare(b.building) || a.name.localeCompare(b.name)
+      || a.siteId.localeCompare(b.siteId) || a.id.localeCompare(b.id));
     return { generatedAt: now, floors };
   }
 
@@ -38,16 +40,17 @@ export class SnapshotStore {
     return false;
   }
 
-  private currentWinningFloors(now: number): Map<string, { floor: FloorState; edgeId: string; receivedAt: number; stale: boolean }> {
-    const byFloor = new Map<string, { floor: FloorState; edgeId: string; receivedAt: number; stale: boolean }>();
+  private currentWinningFloors(now: number): Map<string, { floor: FloorState; siteId: string; edgeId: string; receivedAt: number; stale: boolean }> {
+    const byFloor = new Map<string, { floor: FloorState; siteId: string; edgeId: string; receivedAt: number; stale: boolean }>();
     for (const { snap, receivedAt } of this.latest.values()) {
       const stale = now - receivedAt > this.staleMs;
       for (const f of snap.floors) {
         // During an edge migration two publishers may name the same floor.
         // Show its newest publication once, rather than double-count its seats.
-        const previous = byFloor.get(f.id);
+        const key = campusLocationKey(snap.site.id, f.id);
+        const previous = byFloor.get(key);
         if (!previous || previous.receivedAt <= receivedAt) {
-          byFloor.set(f.id, { floor: f, edgeId: snap.edgeId, receivedAt, stale });
+          byFloor.set(key, { floor: f, siteId: snap.site.id, edgeId: snap.edgeId, receivedAt, stale });
         }
       }
     }
@@ -145,7 +148,7 @@ function validTable(v: unknown, version: 1 | 2, floorWidth: number, floorHeight:
 function validFloor(v: unknown, version: 1 | 2): boolean {
   if (!record(v, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'totals'], version === 2 ? ['model'] : []) ||
       !text(v.id) || !text(v.building) || !text(v.name) || !finite(v.width) || v.width <= 0 || !finite(v.height) || v.height <= 0 ||
-      !polygon(v.outline) || (Object.hasOwn(v, 'model') && !validPublishedModel(v.model)) ||
+      !polygon(v.outline) || (Object.hasOwn(v, 'model') && v.model !== null && !validPublishedModel(v.model)) ||
       !list(v.zones, 1000) || !unique(v.zones) || !list(v.tables, 1000) || !unique(v.tables) ||
       !record(v.totals, ['seats', 'free', 'occupied', 'unknownSeats', 'tablesFullyFree']) ||
       !Object.values(v.totals).every((n) => count(n))) return false;

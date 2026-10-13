@@ -27,26 +27,29 @@ export class StudentUsageActivity {
         : floors.filter((floor) => !VENUES.some((entry) => entry.floorIds.includes(floor.id)));
       details.venueId = input.venueId;
     } else if (input.floorId) {
-      const floor = floors.find((entry) => entry.id === input.floorId);
-      if (!floor) throw invalid();
+      const matches = floors.filter((entry) => entry.id === input.floorId && (!input.siteId || entry.siteId === input.siteId));
+      if (matches.length !== 1) throw invalid();
+      const floor = matches[0]!;
       selected = [floor];
       details.floorId = floor.id;
+      details.siteId = floor.siteId;
     }
     if ('tableId' in input && input.tableId) {
       if (!selected[0]?.tables.some((table) => table.id === input.tableId)) throw invalid();
       details.tableId = input.tableId;
     }
     details.liveData = hasLiveData(selected);
-    if (input.action === 'seat-search') details.resultCount = searchSeats(selected, input.seats).slice(0, 20).length;
+    if (input.action === 'seat-search') details.resultCount = searchSeats(selected, input.seats, input.floorId, input.siteId).slice(0, 20).length;
     this.usage?.event(input.action, 'succeeded', details);
     if (userId) this.activity?.record(input.action, 'succeeded', userId, requestId, details);
   }
 
   /** Keep the legacy GET search response, logging only recognized identifiers. */
-  recordApiSearch(userId: string | undefined, seats: number, floorId: string | undefined, resultCount: number, requestId: string): void {
-    const floors = this.campus().floors.filter((floor) => floorId === undefined || floor.id === floorId);
+  recordApiSearch(userId: string | undefined, seats: number, floorId: string | undefined, siteId: string | undefined, resultCount: number, requestId: string): void {
+    const floors = this.campus().floors.filter((floor) => (floorId === undefined || floor.id === floorId)
+      && (siteId === undefined || floor.siteId === siteId));
     const recognized = floors.find((floor) => floor.id === floorId && isActivityIdentifier(floor.id));
-    const details = { seats, resultCount, liveData: hasLiveData(floors), ...(recognized ? { floorId: recognized.id } : {}) };
+    const details = { seats, resultCount, liveData: hasLiveData(floors), ...(recognized ? { siteId: recognized.siteId, floorId: recognized.id } : {}) };
     this.usage?.event('seat-search', 'succeeded', details);
     if (userId) this.activity?.record('seat-search', 'succeeded', userId, requestId, details);
   }
@@ -66,14 +69,14 @@ export function parseUsageInput(raw: unknown): StudentUsageInput {
   if (!actions.includes(input.action as StudentUsageAction) || !Number.isInteger(input.seats)
     || (input.seats as number) < 1 || (input.seats as number) > 30) throw invalid();
   const action = input.action as StudentUsageAction;
-  const allowed = action === 'seat-search' ? ['action', 'seats', 'floorId', 'venueId']
-    : action === 'space-view' ? ['action', 'seats', 'floorId'] : ['action', 'seats', 'floorId', 'tableId'];
+  const allowed = action === 'seat-search' ? ['action', 'seats', 'floorId', 'siteId', 'venueId']
+    : action === 'space-view' ? ['action', 'seats', 'floorId', 'siteId'] : ['action', 'seats', 'floorId', 'siteId', 'tableId'];
   if (Object.keys(input).some((key) => !allowed.includes(key))) throw invalid();
-  for (const key of ['floorId', 'venueId', 'tableId']) {
+  for (const key of ['siteId', 'floorId', 'venueId', 'tableId']) {
     if (key in input && !isActivityIdentifier(input[key])) throw invalid();
   }
   if (action === 'seat-search') {
-    if (input.floorId && input.venueId) throw invalid();
+    if ((input.floorId && input.venueId) || (input.siteId && !input.floorId) || (input.siteId && input.venueId)) throw invalid();
   } else if (!input.floorId || (action === 'table-select' && !input.tableId)) throw invalid();
   // The discriminant, required keys and all scalar types have been checked above.
   return { ...input } as StudentUsageInput;

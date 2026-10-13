@@ -125,8 +125,8 @@ export interface StudentUsageReport {
   activity: CounterFrame;
   signIns: CounterFrame;
   partySizes: { seats: string; searches: number }[];
-  topFloors: { floorId: string; name: string; views: number }[];
-  topTables: { floorId: string; tableId: string; name: string; selects: number }[];
+  topFloors: { siteId?: string; floorId: string; name: string; views: number }[];
+  topTables: { siteId?: string; floorId: string; tableId: string; name: string; selects: number }[];
   routeGroups: RouteGroupUsage[];
   online: SeriesFrame;
   requests: SeriesFrame;

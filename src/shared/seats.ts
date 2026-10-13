@@ -12,6 +12,7 @@
  */
 import type { FloorState, Rect, SeatSide, SeatState, SeatSuggestion, TableShape, TableState } from './types.js';
 import { tableBounds, tableSurfaceDistance } from './table-geometry.js';
+import { campusLocationKey } from './location-identity.js';
 
 /** How far a seat's centre sits from the table edge, cm. */
 export const SEAT_OFFSET_CM = 35;
@@ -175,14 +176,19 @@ export function findGroup(table: TableState, n: number): string[] | null {
  * than one table can hold is offered two neighbouring tables in the same zone
  * whose free seats add up, listed after any single-table answer.
  */
-export function searchSeats(floors: FloorState[], n: number, floorId?: string): SeatSuggestion[] {
+export function searchSeats(floors: FloorState[], n: number, floorId?: string, siteId?: string): SeatSuggestion[] {
   const out: SeatSuggestion[] = [];
   for (const floor of floors) {
     if (floorId && floor.id !== floorId) continue;
+    const floorSiteId = (floor as FloorState & { siteId?: string }).siteId ?? '';
+    if (siteId && floorSiteId !== siteId) continue;
+    const key = campusLocationKey(floorSiteId, floor.id);
     for (const table of floor.tables) {
       const group = findGroup(table, n);
       if (!group || table.free === null || table.occupied === null) continue;
       out.push({
+        siteId: floorSiteId,
+        key,
         floorId: floor.id,
         floorName: floor.name,
         building: floor.building,
@@ -201,6 +207,8 @@ export function searchSeats(floors: FloorState[], n: number, floorId?: string): 
         if (a.free + b.free < n) continue;
         const seats = [...a.seats, ...b.seats].filter((s) => s.occupied === false).slice(0, n).map((s) => s.id);
         out.push({
+          siteId: floorSiteId,
+          key,
           floorId: floor.id,
           floorName: floor.name,
           building: floor.building,

@@ -23,6 +23,7 @@ import {
   type AnalyticsRangeId, type CounterFrame, type RouteGroupUsage, type StudentUsageReport, type UsageTotals,
 } from '../../../shared/analytics.js';
 import type { StudentActivityDetails } from '../../../shared/student-activity.js';
+import { campusLocationKey } from '../../../shared/location-identity.js';
 import { BucketLog } from '../../../infrastructure/analytics/bucket-log.js';
 import { CounterLog } from './counter-log.js';
 import { DistinctDays } from './distinct-days.js';
@@ -50,8 +51,8 @@ export interface UsageReportContext {
   /** When each account was created, if the store can say; no identities. */
   accountCreatedTimes: number[] | null;
   accountStorage: 'file' | 'postgres';
-  floorName(floorId: string): string | null;
-  tableName(floorId: string, tableId: string): string | null;
+  floorName(siteId: string | undefined, floorId: string): string | null;
+  tableName(siteId: string | undefined, floorId: string, tableId: string): string | null;
   edges: { edgeId: string; ageMs: number }[];
 }
 
@@ -150,9 +151,13 @@ export class UsageMeter implements UsageEventSink {
       if (details.resultCount === 0) this.counters.add(now, 'search.none');
       if (details.liveData === false) this.counters.add(now, 'search.stale');
     } else if (action === 'space-view' && details.floorId) {
-      this.counters.add(now, `floor.${details.floorId}`);
+      const identity = details.siteId ? campusLocationKey(details.siteId, details.floorId) : details.floorId;
+      this.counters.add(now, `floor.${identity}`);
     } else if (action === 'table-select' && details.floorId && details.tableId) {
-      this.counters.add(now, `table.${details.floorId}/${details.tableId}`);
+      const identity = details.siteId
+        ? JSON.stringify([details.siteId, details.floorId, details.tableId])
+        : `${details.floorId}/${details.tableId}`;
+      this.counters.add(now, `table.${identity}`);
     }
   }
 
@@ -245,10 +250,14 @@ export class UsageMeter implements UsageEventSink {
       ]),
       partySizes: this.partySizes(spec.counterTier, from, end),
       topFloors: top(this.counters.sumByPrefix(spec.counterTier, from, end, 'floor.'), 8)
-        .map(([floorId, views]) => ({ floorId, name: context.floorName(floorId) ?? floorId, views })),
+        .map(([identity, views]) => {
+          const { siteId, floorId } = parseFloorCounterIdentity(identity);
+          return { ...(siteId ? { siteId } : {}), floorId, name: context.floorName(siteId, floorId) ?? floorId, views };
+        }),
       topTables: top(this.counters.sumByPrefix(spec.counterTier, from, end, 'table.'), 8).map(([key, selects]) => {
-        const [floorId = '', tableId = ''] = key.split('/');
-        return { floorId, tableId, name: context.tableName(floorId, tableId) ?? tableId, selects };
+        const parsed = parseTableCounterIdentity(key);
+        return { ...(parsed.siteId ? { siteId: parsed.siteId } : {}), floorId: parsed.floorId, tableId: parsed.tableId,
+          name: context.tableName(parsed.siteId, parsed.floorId, parsed.tableId) ?? parsed.tableId, selects };
       }),
       routeGroups: this.routeGroups(spec.counterTier, from, end),
       online: this.gauges.frame(spec.gaugeTier, from, end, spec.gaugeStepMs, [
@@ -354,4 +363,27 @@ function percentile(sorted: number[], q: number): number | null {
 
 function top(counts: Map<string, number>, limit: number): [string, number][] {
   return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit);
+}
+
+function parseFloorCounterIdentity(value: string): { siteId?: string; floorId: string } {
+  try {
+    const tuple: unknown = JSON.parse(value);
+    if (Array.isArray(tuple) && tuple.length === 2 && tuple.every((part) => typeof part === 'string')) {
+      const [siteId, floorId] = tuple as [string, string];
+      return { siteId, floorId };
+    }
+  } catch { /* pre-composite counters stored a bare floor ID */ }
+  return { floorId: value };
+}
+
+function parseTableCounterIdentity(value: string): { siteId?: string; floorId: string; tableId: string } {
+  try {
+    const tuple: unknown = JSON.parse(value);
+    if (Array.isArray(tuple) && tuple.length === 3 && tuple.every((part) => typeof part === 'string')) {
+      const [siteId, floorId, tableId] = tuple as [string, string, string];
+      return { siteId, floorId, tableId };
+    }
+  } catch { /* pre-composite counters stored floor/table separated by slash */ }
+  const separator = value.lastIndexOf('/');
+  return separator < 0 ? { floorId: value, tableId: '' } : { floorId: value.slice(0, separator), tableId: value.slice(separator + 1) };
 }

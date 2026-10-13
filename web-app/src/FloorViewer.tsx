@@ -1,21 +1,16 @@
 /**
- * React wrapper around <floor-viewer>, the framework-free 3D map.
- *
- * The element is kept alive across re-renders and fed attributes, because
- * reloading a 40 MB-in-memory model every time a sensor reports would be
- * absurd -- and it is also how the map used to go blank.
+ * React boundary for the framework-free Three.js element. Parent: `Spaces`;
+ * legacy venues pass mesh-order labels while published descriptors pass a
+ * stable-ID floor layout and the shared root-transform convention.
  */
 import { useEffect, useRef, useState } from 'react';
+import { modelTransformToWorld, type LocationModelTransformInput, type LocationWorldTransform } from '../../src/shared/location-view.js';
+import type { TableState } from '../../src/shared/types.js';
 
-/**
- * The viewer and three.js are hand-written files outside the bundle, so they
- * keep their names from one deploy to the next -- and a CDN will happily hold
- * last week's copy. The server puts this build's stamp in the shell and mounts
- * the same files under it, so each build asks for a URL nothing has cached.
- */
-function viewerUrl(): string {
+function viewerUrl(retry: number): string {
   const stamp = document.querySelector('meta[name="build"]')?.getAttribute('content');
-  return stamp && /^[0-9a-f]{6,}$/.test(stamp) ? `/vendor/v${stamp}/floor-viewer.js` : '/vendor/floor-viewer.js';
+  const path = stamp && /^[0-9a-f]{6,}$/.test(stamp) ? `/vendor/v${stamp}/floor-viewer.js` : '/vendor/floor-viewer.js';
+  return retry ? `${path}?retry=${retry}` : path;
 }
 
 interface ViewerElement extends HTMLElement {
@@ -23,6 +18,14 @@ interface ViewerElement extends HTMLElement {
   zoomToSeat?: () => void;
   setZoom?: (t: number) => void;
   getZoom?: () => number;
+  retryLoad?: () => void;
+}
+
+export interface AuthoredViewerLayout {
+  width: number;
+  height: number;
+  tables: TableState[];
+  selectedTableId: string | null;
 }
 
 export interface FloorViewerProps {
@@ -30,87 +33,118 @@ export interface FloorViewerProps {
   room: string;
   columns: number;
   rows: number;
-  /** Table names, in the same walk order the plan uses. */
   labels: string[];
-  /** 1-based indices, comma separated. */
   free: string;
   occupied: string;
   dark: string;
-  /** 1-based index of the table the student picked, or 0. */
   selected: number;
   directions: boolean;
   onPick: (index: number) => void;
+  locationLayout?: AuthoredViewerLayout;
+  locationTransform?: LocationModelTransformInput;
+  onPickTable?: (tableId: string) => void;
 }
 
 export default function FloorViewer(props: FloorViewerProps) {
   const host = useRef<HTMLDivElement>(null);
-  const el = useRef<ViewerElement | null>(null);
-  const onPick = useRef(props.onPick);
-  onPick.current = props.onPick;
+  const element = useRef<ViewerElement | null>(null);
+  const propsRef = useRef(props);
+  propsRef.current = props;
   const [zoom, setZoom] = useState(0.5);
+  const [loadError, setLoadError] = useState<'viewer' | 'model' | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    // The custom element is loaded on demand: the 3D map is one screen, and
-    // three.js has no business in the first load of the others.
-    void import(/* @vite-ignore */ viewerUrl()).catch(() => undefined);
-    if (!el.current) {
-      el.current = document.createElement('floor-viewer') as ViewerElement;
-      el.current.style.width = '100%';
-      el.current.style.height = '100%';
-    }
-    const node = el.current;
-    host.current?.appendChild(node);
-    const onPicked = (e: Event) => onPick.current((e as CustomEvent<{ index: number }>).detail.index);
-    node.addEventListener('table-picked', onPicked);
-    return () => { node.removeEventListener('table-picked', onPicked); node.remove(); };
-  }, []);
+    let alive = true;
+    let node: ViewerElement | null = null;
+    const onPicked = (event: Event) => {
+      const detail = (event as CustomEvent<{ index?: number; tableId?: string }>).detail;
+      if (typeof detail.tableId === 'string') propsRef.current.onPickTable?.(detail.tableId);
+      else if (typeof detail.index === 'number') propsRef.current.onPick(detail.index);
+    };
+    const onModelError = () => setLoadError('model');
+    const onModelReady = () => setLoadError(null);
+    void import(/* @vite-ignore */ viewerUrl(retry)).then(() => {
+      if (!alive || !host.current) return;
+      node = document.createElement('floor-viewer') as ViewerElement;
+      node.style.width = '100%';
+      node.style.height = '100%';
+      node.addEventListener('table-picked', onPicked);
+      node.addEventListener('model-error', onModelError);
+      node.addEventListener('model-ready', onModelReady);
+      host.current.appendChild(node);
+      element.current = node;
+      setLoadError(null);
+      syncAttributes(node, propsRef.current);
+    }).catch(() => { if (alive) setLoadError('viewer'); });
+    return () => {
+      alive = false;
+      if (node) {
+        node.removeEventListener('table-picked', onPicked);
+        node.removeEventListener('model-error', onModelError);
+        node.removeEventListener('model-ready', onModelReady);
+        node.remove();
+      }
+      if (element.current === node) element.current = null;
+    };
+  }, [retry]);
 
-  // The camera also moves by wheel, by drag and by the two buttons above the
-  // map, so the slider follows the camera rather than pretending to own it.
+  useEffect(() => {
+    if (element.current) syncAttributes(element.current, props);
+  }, [props.src, props.room, props.columns, props.rows, props.labels, props.free, props.occupied, props.dark,
+    props.selected, props.directions, props.locationLayout, props.locationTransform]);
+
   useEffect(() => {
     const id = setInterval(() => {
-      const now = el.current?.getZoom?.();
-      if (typeof now === 'number' && Number.isFinite(now)) {
-        const clamped = Math.min(1, Math.max(0, now));
-        setZoom((prev) => (Math.abs(prev - clamped) > 0.01 ? clamped : prev));
+      const current = element.current?.getZoom?.();
+      if (typeof current === 'number' && Number.isFinite(current)) {
+        const clamped = Math.min(1, Math.max(0, current));
+        setZoom((prev) => Math.abs(prev - clamped) > 0.01 ? clamped : prev);
       }
     }, 250);
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    const node = el.current;
-    if (!node) return;
-    node.setAttribute('src', props.src);
-    node.setAttribute('room', props.room);
-    node.setAttribute('columns', String(props.columns));
-    node.setAttribute('rows', String(props.rows));
-    node.setAttribute('labels', props.labels.join('|'));
-    node.setAttribute('free', props.free);
-    node.setAttribute('occupied', props.occupied);
-    node.setAttribute('dark', props.dark);
-    node.setAttribute('selected', String(props.selected));
-    node.setAttribute('directions', props.directions ? '1' : '0');
-  }, [props.src, props.room, props.columns, props.rows, props.labels, props.free, props.occupied, props.dark, props.selected, props.directions]);
+  const retryPreview = () => {
+    setLoadError(null);
+    if (loadError === 'viewer' || !element.current) setRetry((value) => value + 1);
+    else element.current.retryLoad?.();
+  };
 
   return (
     <div className="viewer-host">
-      <div className="viewer-canvas" ref={host} />
+      <div data-testid="student-model-viewer-canvas" className="viewer-canvas" ref={host} aria-label="Interactive 3D location model" />
+      {loadError && <div className="viewer-error" role="status">
+        <span>3D view unavailable. Use the floor map below.</span>
+        <button type="button" data-testid="student-model-preview-retry" className="btn btn-secondary" onClick={retryPreview}>Try again</button>
+      </div>}
       <label className="zoom">
         <span className="sr-only">Zoom</span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={zoom}
-          onChange={(e) => {
-            const t = Number(e.target.value);
-            setZoom(t);
-            el.current?.setZoom?.(t);
-          }}
-        />
+        <input data-testid="student-model-zoom-control" type="range" min={0} max={1} step={0.01} value={zoom} onChange={(event) => {
+          const value = Number(event.target.value);
+          setZoom(value);
+          element.current?.setZoom?.(value);
+        }} />
       </label>
     </div>
   );
+}
+
+function syncAttributes(node: ViewerElement, props: FloorViewerProps): void {
+  for (const [name, value] of Object.entries({
+    src: props.src, room: props.room, columns: String(props.columns), rows: String(props.rows),
+    labels: props.labels.join('|'), free: props.free, occupied: props.occupied, dark: props.dark,
+    selected: String(props.selected), directions: props.directions ? '1' : '0',
+  })) node.setAttribute(name, value);
+  if (props.locationLayout && props.locationTransform) {
+    node.setAttribute('location-layout', JSON.stringify(props.locationLayout));
+    node.setAttribute('model-transform', JSON.stringify(toViewerTransform(props.locationTransform)));
+  } else {
+    node.removeAttribute('location-layout');
+    node.removeAttribute('model-transform');
+  }
+}
+
+function toViewerTransform(value: LocationModelTransformInput): LocationWorldTransform {
+  return modelTransformToWorld(value);
 }

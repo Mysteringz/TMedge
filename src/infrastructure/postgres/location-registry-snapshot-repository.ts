@@ -2,6 +2,7 @@ import type { Registry } from '../../edge/registry.js';
 import { buildRegistryFromLocationDocuments } from '../../edge/registry.js';
 import { legacyFloorToBaseline } from '../location-config/legacy-location-mapper.js';
 import { parseLocationDocument } from '../../modules/location-config/domain/location-document.js';
+import { activeLocationModelDispositions } from '../../modules/location-config/domain/location-assets.js';
 import type { LocationRegistrySnapshot, LocationRegistrySnapshotRepository, PublishedLocationRepository } from '../../modules/location-config/repositories/location-storage.js';
 import type { RegistryRepository } from '../../modules/registration/repositories/registry-repository.js';
 
@@ -34,7 +35,8 @@ export class PostgresLocationRegistrySnapshotRepository implements LocationRegis
       const active = state.history.find((item) => item.revision === state.activeRevision);
       return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
     }));
-    const currentRegistry: Registry = buildRegistryFromLocationDocuments(this.siteSeed, nodeInput, authoredDocuments, legacySpatialByLocation);
+    const modelDispositionByLocation = activeLocationModelDispositions(locations);
+    const currentRegistry: Registry = buildRegistryFromLocationDocuments(this.siteSeed, nodeInput, authoredDocuments, legacySpatialByLocation, modelDispositionByLocation);
     const withCurrentLegacyAssignments = locations.map((state) => {
       if (state.activeRevision !== 0) return state;
       const floor = currentRegistry.floors.find((item) => item.id === state.locationId);

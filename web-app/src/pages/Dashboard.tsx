@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { recordStudentActivity } from '../activity.ts';
 import { isDark, knownFree, plural, useLive, useMe, useSeats, useVenues, type VenueSpaces } from '../data.ts';
-import { Chrome, DashboardSkeleton } from '../ui.tsx';
+import { Chrome, DashboardSkeleton, FeedUnavailable, NoStudySpaces } from '../ui.tsx';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -38,9 +38,14 @@ export default function Dashboard() {
 
   const search = () => {
     if (!picked) return;
-    recordStudentActivity({ action: 'seat-search', seats, venueId: picked.venue.id });
     const first = picked.floors[0];
-    navigate(`/dashboard/spaces/${first ? encodeURIComponent(first.id) : ''}?seats=${seats}`);
+    if (first) {
+      recordStudentActivity({ action: 'seat-search', seats, siteId: first.siteId, floorId: first.id });
+      navigate(`/dashboard/spaces/${encodeURIComponent(first.siteId)}/${encodeURIComponent(first.id)}?seats=${seats}`);
+    } else {
+      recordStudentActivity({ action: 'seat-search', seats, venueId: picked.venue.id });
+      navigate(`/dashboard/spaces/?seats=${seats}`);
+    }
   };
 
   return (
@@ -52,7 +57,7 @@ export default function Dashboard() {
         </div>
         <hr className="hr" />
 
-        {live.view === null ? <DashboardSkeleton /> : (
+        {live.view === null && live.feedState === 'loading' ? <DashboardSkeleton /> : live.view === null ? <FeedUnavailable retry={live.retryFeed} /> : live.view.floors.length === 0 ? <NoStudySpaces /> : (
           <div className="master-detail">
             <div className="master">
               <div className="section-label">Location</div>
@@ -70,11 +75,11 @@ export default function Dashboard() {
               <div className="section-label">Seats needed</div>
               <div className="seats-row">
                 <div className="stepper">
-                  <button type="button" aria-label="One fewer seat" onClick={() => setSeats(seats - 1)}>−</button>
+                  <button type="button" data-testid="student-seat-count-decrement" aria-label="One fewer seat" onClick={() => setSeats(seats - 1)}>−</button>
                   <SeatsField seats={seats} onSeats={setSeats} />
-                  <button type="button" aria-label="One more seat" onClick={() => setSeats(seats + 1)}>+</button>
+                  <button type="button" data-testid="student-seat-count-increment" aria-label="One more seat" onClick={() => setSeats(seats + 1)}>+</button>
                 </div>
-                <button type="button" className="btn btn-primary btn-cta" onClick={search} disabled={!picked}>
+                <button type="button" data-testid="student-location-search" className="btn btn-primary btn-cta" onClick={search} disabled={!picked}>
                   Search
                 </button>
               </div>
@@ -117,6 +122,7 @@ function SeatsField({ seats, onSeats }: { seats: number; onSeats: (n: number) =>
       max={16}
       inputMode="numeric"
       value={draft}
+      data-testid="student-seat-count-input"
       aria-label="Seats needed"
       onChange={(e) => {
         setDraft(e.target.value);
@@ -137,6 +143,7 @@ function VenueRow({ entry, selected, onPick }: { entry: VenueSpaces; selected: b
   return (
     <button
       type="button"
+      data-testid={`student-location-card-${encodeURIComponent(entry.venue.id)}`}
       className="venue"
       aria-pressed={selected}
       disabled={!open}

@@ -55,6 +55,27 @@ require JSON and `X-TM-Student-Activity: 1`; their origin, request metadata, bod
 validation, and rate limits remain in force. Native and server-side clients may
 omit browser Origin and Fetch Metadata headers.
 
+### Public location identity and models
+
+`GET /api/occupancy` returns only current published locations. Each floor keeps
+its legacy `id` and adds `siteId` plus a collision-safe `key`; use `(siteId,
+floorId)` as the location identity. Search can be scoped with
+`/api/search?seats=2&floor=main-room&siteId=north-campus`. `siteId` must be sent
+with `floor`. A floor-only filter remains compatible when unique and returns
+409 when the same floor ID is live at multiple sites.
+
+Each search suggestion includes `siteId`, `floorId`, and the same composite
+`key`. Location activity events should also include both `siteId` and `floorId`;
+legacy floor-only events are accepted only when their ID is unique. Server-side
+activity validation supplies the actor identity and live result counts.
+
+An optional public `model` field on a v2 floor is either an uploaded descriptor
+(`assetId` and transform), `null` to suppress the legacy static-model fallback,
+or absent to retain legacy fallback behavior. Student GLB reads use
+`GET /api/models/{assetId}` and return bytes only when that asset is referenced
+by the current winning public snapshot. Plans, draft data, sensor identities and
+poses, upload names, owners, and provenance are not part of student responses.
+
 Bearer access does not authenticate HTML pages or WebSocket upgrades. Tokens in
 URL parameters or request bodies are not used for authentication. Keep browser
 requests on cookies and external HTTP API requests on Authorization headers.

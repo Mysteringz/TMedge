@@ -18,6 +18,7 @@ import { LOCATION_MODEL_TRANSFORM_LIMITS } from '../shared/location-validation.j
 import { nodesArrayForRegistry } from '../modules/location-config/domain/nodes-config.js';
 import { parseLocationDocument, type LocationDocument } from '../modules/location-config/domain/location-document.js';
 import type { LegacySpatialProvenance } from '../modules/location-config/domain/location-candidate.js';
+import type { LocationModelPresentationDisposition } from '../modules/location-config/domain/location-assets.js';
 
 export interface TableDef {
   id: string;
@@ -65,6 +66,8 @@ export interface FloorDef {
   zones: ZoneDef[];
   tables: TableDef[];
   model?: PublishedFloorModel;
+  /** Server-derived v2 hint; never read from site.json or a client document. */
+  modelDisposition?: LocationModelPresentationDisposition;
 }
 
 export interface NodeDef {
@@ -388,6 +391,7 @@ export function buildRegistryFromLocationDocuments(
   nodesJson: unknown,
   documents: readonly LocationDocument[],
   legacySpatialByLocation: ReadonlyMap<string, LegacySpatialProvenance> = new Map(),
+  modelDispositionByLocation: ReadonlyMap<string, LocationModelPresentationDisposition> = new Map(),
 ): Registry {
   const root = obj(siteJson, 'site.json');
   if (!Array.isArray(root.floors)) throw new ConfigError('site.json.floors: expected a non-empty array');
@@ -403,9 +407,11 @@ export function buildRegistryFromLocationDocuments(
     const replacement = replacements.get(str(raw, 'id', `floors[${index}]`));
     if (!replacement) return structuredClone(raw);
     replacements.delete(replacement.locationId);
-    return locationDocumentFloor(replacement, legacySpatialByLocation.get(replacement.locationId));
+    return locationDocumentFloor(replacement, legacySpatialByLocation.get(replacement.locationId), modelDispositionByLocation.get(replacement.locationId));
   });
-  for (const document of replacements.values()) floors.push(locationDocumentFloor(document, legacySpatialByLocation.get(document.locationId)));
+  for (const document of replacements.values()) {
+    floors.push(locationDocumentFloor(document, legacySpatialByLocation.get(document.locationId), modelDispositionByLocation.get(document.locationId)));
+  }
   const trustedLegacySeats = new Map<string, { x: number; y: number }>();
   for (const legacy of legacySpatialByLocation.values()) {
     for (const inherited of legacy.tables) {
@@ -417,11 +423,19 @@ export function buildRegistryFromLocationDocuments(
   // provenance. The registry computes ownership and coverage from the real
   // inherited positions rather than temporary placeholders.
   const registry = buildRegistryCore({ ...root, floors }, nodesJson, trustedLegacySeats);
+  for (const floor of registry.floors) {
+    const disposition = modelDispositionByLocation.get(floor.id);
+    if (disposition) floor.modelDisposition = disposition;
+  }
   registry.snapshotVersion = 2;
   return registry;
 }
 
-function locationDocumentFloor(document: LocationDocument, legacySpatial?: LegacySpatialProvenance): Obj {
+function locationDocumentFloor(
+  document: LocationDocument,
+  legacySpatial?: LegacySpatialProvenance,
+  modelDisposition?: LocationModelPresentationDisposition,
+): Obj {
   const outline = legacySpatial?.outline ?? document.outline;
   const zones = document.zones.map((zone) => ({
     ...zone,
@@ -464,7 +478,7 @@ function locationDocumentFloor(document: LocationDocument, legacySpatial?: Legac
     zones,
     tables,
   };
-  if (document.modelAssetId && document.modelTransform) floor.model = { assetId: document.modelAssetId, transform: document.modelTransform };
+  if (!modelDisposition && document.modelAssetId && document.modelTransform) floor.model = { assetId: document.modelAssetId, transform: document.modelTransform };
   return floor;
 }
 

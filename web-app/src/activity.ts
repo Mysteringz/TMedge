@@ -17,11 +17,12 @@ export function recordStudentActivity(input: StudentUsageInput): void {
 }
 
 /** Counts entered floors while ignoring live updates and StrictMode effect replay. */
-export function useSpaceViewActivity(floorId: string | undefined, seats: number): void {
+export function useSpaceViewActivity(siteId: string | undefined, floorId: string | undefined, seats: number): void {
   const viewedFloor = useRef<string | undefined>(undefined);
+  const identity = floorId ? JSON.stringify([siteId ?? '', floorId]) : undefined;
   useEffect(() => {
-    if (!floorId || viewedFloor.current === floorId) return;
-    viewedFloor.current = floorId;
-    recordStudentActivity({ action: 'space-view', floorId, seats });
-  }, [floorId, seats]);
+    if (!floorId || !identity || viewedFloor.current === identity) return;
+    viewedFloor.current = identity;
+    recordStudentActivity({ action: 'space-view', ...(siteId ? { siteId } : {}), floorId, seats });
+  }, [siteId, floorId, identity, seats]);
 }

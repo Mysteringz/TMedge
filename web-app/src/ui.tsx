@@ -122,3 +122,19 @@ export function ViewerSkeleton() {
 export function Notice({ tone = 'neutral', children }: { tone?: 'neutral' | 'warn'; children: ReactNode }) {
   return <div className={`notice ${tone}`}>{children}</div>;
 }
+
+/** Use on dashboard and Spaces when the first public snapshot cannot be trusted or loaded. */
+export function FeedUnavailable({ retry }: { retry(): void }) {
+  return <section className="feed-unavailable" role="alert" aria-labelledby="feed-unavailable-title">
+    <h2 id="feed-unavailable-title">Location data could not be displayed</h2>
+    <p>Live table counts are hidden until a valid location update arrives.</p>
+    <button type="button" data-testid="student-feed-retry" className="btn btn-primary" onClick={retry}>Retry location data</button>
+  </section>;
+}
+
+/** Empty published state for Dashboard and Spaces; distinct from an unavailable feed. */
+export function NoStudySpaces() {
+  return <section className="feed-unavailable" role="status" data-testid="student-no-study-spaces">
+    <h2>No study spaces are available right now</h2>
+  </section>;
+}

@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { isLocationId, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../../modules/location-config/domain/location-document.js';
 import { revalidateLocationCandidate, type LegacySpatialProvenance } from '../../modules/location-config/domain/location-candidate.js';
-import { legacyStaticModelProvenance, validateLocationAssetProvenanceTransition } from '../../modules/location-config/domain/location-assets.js';
+import { activeLocationModelDispositions, legacyStaticModelProvenance, locationModelPresentationDisposition, validateLocationAssetProvenanceTransition, type LocationModelPresentationDisposition } from '../../modules/location-config/domain/location-assets.js';
 import { legacyFloorToBaseline } from './legacy-location-mapper.js';
 import { parseNodesConfig, type NodesConfigV2 } from '../../modules/location-config/domain/nodes-config.js';
 import { LocationConflictError, type PublishedLocationRevision, type PublishedLocationState } from '../../modules/location-config/domain/location-records.js';
@@ -60,7 +60,7 @@ export function initializeFileLocationPersistence(sitePath: string, nodesPath: s
   const snapshots = new FileLocationRegistrySnapshotRepository(siteJson, nodesPath, seedRegistry, published);
   const initial = snapshots.readSnapshotSync();
   const active = activeDocuments(initial);
-  const registry = buildRegistryFromLocationDocuments(siteJson, nodesConfigFor(initial), active.documents, active.legacySpatialByLocation);
+  const registry = buildRegistryFromLocationDocuments(siteJson, nodesConfigFor(initial), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation);
   return {
     siteSeed: siteJson, registry, coordinator, drafts, published, snapshots, assets: assetStore, assetMetadata: assetStore,
     close: () => coordinator.close(),
@@ -85,7 +85,11 @@ export function buildFileRegistry(siteJson: unknown, nodesJson: unknown): Regist
     if (!active) throw new LocationConflictError(`Published location ${location.locationId} has no active document.`);
     return [active];
   });
-  return buildRegistryFromLocationDocuments(siteJson, parsed.document, active.map((revision) => revision.document), new Map(active.flatMap((revision) => revision.legacySpatial ? [[revision.locationId, revision.legacySpatial] as const] : [])));
+  const modelDispositionByLocation = new Map(active.flatMap((revision) => {
+    const disposition = locationModelPresentationDisposition(revision.document, revision.assetProvenance, revision.revision);
+    return disposition ? [[revision.locationId, disposition] as const] : [];
+  }));
+  return buildRegistryFromLocationDocuments(siteJson, parsed.document, active.map((revision) => revision.document), new Map(active.flatMap((revision) => revision.legacySpatial ? [[revision.locationId, revision.legacySpatial] as const] : [])), modelDispositionByLocation);
 }
 
 export class FilePublishedLocationRepository implements PublishedLocationRepository {
@@ -271,7 +275,8 @@ export class FileLocationRegistrySnapshotRepository implements LocationRegistryS
       const active = state.history.find((revision) => revision.revision === state.activeRevision);
       return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
     }));
-    const current = buildRegistryFromLocationDocuments(this.siteSeed, config, activeOverrides, provenance);
+    const modelDispositionByLocation = activeLocationModelDispositions(states);
+    const current = buildRegistryFromLocationDocuments(this.siteSeed, config, activeOverrides, provenance, modelDispositionByLocation);
     const locations = states.map((state) => {
       if (state.activeRevision !== 0) return state;
       const floor = current.floors.find((item) => item.id === state.locationId);
@@ -295,15 +300,21 @@ function nodesConfigFor(snapshot: LocationRegistrySnapshot): unknown {
   })) };
 }
 
-function activeDocuments(snapshot: LocationRegistrySnapshot): { documents: LocationDocument[]; legacySpatialByLocation: Map<string, LegacySpatialProvenance> } {
+function activeDocuments(snapshot: LocationRegistrySnapshot): {
+  documents: LocationDocument[];
+  legacySpatialByLocation: Map<string, LegacySpatialProvenance>;
+  modelDispositionByLocation: Map<string, LocationModelPresentationDisposition>;
+} {
   const legacySpatialByLocation = new Map<string, LegacySpatialProvenance>();
+  const modelDispositionByLocation = activeLocationModelDispositions(snapshot.locations);
   const documents = snapshot.locations.flatMap((state) => {
-    if (state.activeRevision === 0) return [];
     const active = state.history.find((revision) => revision.revision === state.activeRevision);
-    if (active?.legacySpatial) legacySpatialByLocation.set(active.locationId, active.legacySpatial);
+    if (!active) return [];
+    if (state.activeRevision !== 0 && active.legacySpatial) legacySpatialByLocation.set(active.locationId, active.legacySpatial);
+    if (state.activeRevision === 0) return [];
     return active ? [parseLocationDocument(active.document)] : [];
   });
-  return { documents, legacySpatialByLocation };
+  return { documents, legacySpatialByLocation, modelDispositionByLocation };
 }
 
 function legacyRevision(floor: FloorDef, registry: Registry): PublishedLocationRevision {

@@ -64,6 +64,7 @@ const text = (v: unknown, max = 120): string => (typeof v === 'string' ? v.slice
 const list = (v: unknown, max = MAX_POINTS): unknown[] => (Array.isArray(v) ? v.slice(0, max) : []);
 const object = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {});
 const stamp = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 8_640_000_000_000_000 ? v : null);
+const validIdentifier = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(v);
 
 function seriesFrame(raw: unknown): SeriesFrame {
   const v = object(raw);
@@ -132,8 +133,14 @@ export function sanitizeUsageReport(raw: unknown): StudentUsageReport | null {
     activity: counterFrame(v.activity),
     signIns: counterFrame(v.signIns),
     partySizes: list(v.partySizes, 8).map(object).map((row) => ({ seats: text(row.seats, 4), searches: count(row.searches) })),
-    topFloors: list(v.topFloors, 12).map(object).map((row) => ({ floorId: text(row.floorId), name: text(row.name), views: count(row.views) })),
-    topTables: list(v.topTables, 12).map(object).map((row) => ({ floorId: text(row.floorId), tableId: text(row.tableId), name: text(row.name), selects: count(row.selects) })),
+    topFloors: list(v.topFloors, 12).map(object).map((row) => ({
+      ...(validIdentifier(row.siteId) ? { siteId: row.siteId } : {}),
+      floorId: text(row.floorId), name: text(row.name), views: count(row.views),
+    })),
+    topTables: list(v.topTables, 12).map(object).map((row) => ({
+      ...(validIdentifier(row.siteId) ? { siteId: row.siteId } : {}),
+      floorId: text(row.floorId), tableId: text(row.tableId), name: text(row.name), selects: count(row.selects),
+    })),
     routeGroups: list(v.routeGroups, 16).map(object).map((row) => ({ group: text(row.group, 32), requests: count(row.requests), clientErrors: count(row.clientErrors), serverErrors: count(row.serverErrors) })),
     online: seriesFrame(v.online),
     requests: seriesFrame(v.requests),

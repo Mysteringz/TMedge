@@ -73,6 +73,7 @@ export function createOccupancyRouter(dependencies: OccupancyRouterDependencies)
     try {
       const model = await dependencies.models.read(assetId);
       if (!model) return res.status(404).end();
+      if (!dependencies.store.referencesUploadedModel(assetId.toLowerCase())) return res.status(404).end();
       return res.status(200).type('model/gltf-binary').set({
         'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store',
         'Content-Length': String(model.bytes.byteLength), 'ETag': `"${model.sha256}"`,
@@ -85,9 +86,23 @@ export function createOccupancyRouter(dependencies: OccupancyRouterDependencies)
       return res.status(400).json({ error: 'seats must be a whole number 1..30' });
     }
     const floor = typeof req.query.floor === 'string' ? req.query.floor : undefined;
-    const results = searchSeats(dependencies.store.view().floors, seats, floor).slice(0, 20);
+    const siteId = typeof req.query.siteId === 'string' ? req.query.siteId : undefined;
+    if ((req.query.floor !== undefined && !floor) || (req.query.siteId !== undefined && !siteId)
+      || (siteId !== undefined && floor === undefined)
+      || (floor !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(floor))
+      || (siteId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(siteId))) {
+      return res.status(400).json({ error: 'siteId and floor must be valid identifiers and supplied together' });
+    }
+    const floors = dependencies.store.view().floors;
+    let results;
+    if (floor && !siteId) {
+      const matches = floors.filter((item) => item.id === floor);
+      if (matches.length > 1) return res.status(409).json({ error: 'ambiguous floor; supply siteId' });
+      if (matches.length === 1) results = searchSeats(floors, seats, floor, matches[0]!.siteId).slice(0, 20);
+    }
+    results ??= searchSeats(floors, seats, floor, siteId).slice(0, 20);
     const userId: unknown = res.locals.studentUserId;
-    dependencies.usage?.recordApiSearch(typeof userId === 'string' ? userId : undefined, seats, floor, results.length, randomUUID());
+    dependencies.usage?.recordApiSearch(typeof userId === 'string' ? userId : undefined, seats, floor, siteId, results.length, randomUUID());
     return res.json({ seats, results });
   });
   return router;

@@ -311,6 +311,8 @@ export class OccupancyEngine {
         return { id: z.id, name: z.name, polygon: z.polygon, people: covered && !anyUnknown ? people : null };
       });
       const known = tables.filter((t) => t.status !== 'unknown');
+      const model = floor.modelDisposition === 'legacy-fallback' ? undefined
+        : floor.modelDisposition === 'explicit-none' ? null : floor.model;
       return {
         id: floor.id,
         building: floor.building,
@@ -320,7 +322,7 @@ export class OccupancyEngine {
         outline: floor.outline,
         zones,
         tables,
-        ...(this.reg.snapshotVersion === 2 && floor.model ? { model: floor.model } : {}),
+        ...(this.reg.snapshotVersion === 2 && model !== undefined ? { model } : {}),
         totals: {
           seats: tables.reduce((a, t) => a + t.capacity, 0),
           free: known.reduce((a, t) => a + (t.free ?? 0), 0),

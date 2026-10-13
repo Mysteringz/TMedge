@@ -232,6 +232,37 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
 
 .viewer-host { position: relative; width: 100%; height: 100% }
 .viewer-canvas { position: absolute; inset: 0 }
+.floor-map { display: block; width: 100%; height: auto; max-height: 680px; background: var(--color-neutral-100); border: 1px solid var(--color-divider); }
+.feed-unavailable { border: 2px solid var(--color-text); padding: 20px; background: var(--color-surface); margin: 20px 0; }
+.feed-unavailable h2 { font-family: var(--font-heading); font-size: 20px; margin: 0 0 8px; }
+.feed-unavailable p { margin: 0 0 16px; }
+.plan-list { margin-top: 18px; }
+.plan-list h3 { margin-bottom: 8px; }
+.plan-list ul { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; padding: 0; margin: 0; }
+.plan-list li { min-width: 0; }
+.plan-list-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 48px;
+  text-align: left; padding: 8px 12px; border: 1px solid var(--color-divider); background: var(--color-surface);
+  color: var(--color-text); font: inherit; cursor: pointer;
+}
+.plan-list-item span:last-child { color: var(--color-neutral-700); text-align: right; }
+.plan-list-item[aria-pressed='true'] { border: 2px solid var(--color-accent); background: var(--color-accent-100); }
+.plan-list-item:disabled { cursor: not-allowed; opacity: .72; }
+.floor-outline { fill: var(--color-surface); stroke: var(--color-text); stroke-width: 8; vector-effect: non-scaling-stroke; }
+.floor-zone polygon { fill: color-mix(in srgb, var(--color-accent) 7%, transparent); stroke: color-mix(in srgb, var(--color-accent) 55%, transparent); stroke-width: 5; stroke-dasharray: 12 8; vector-effect: non-scaling-stroke; }
+.floor-zone text { fill: var(--color-neutral-700); font: 600 18px var(--font-body); pointer-events: none; }
+.floor-table { cursor: pointer; outline: none; }
+.floor-table-shape { stroke: var(--color-text); stroke-width: 5; vector-effect: non-scaling-stroke; }
+.floor-table-free .floor-table-shape { fill: color-mix(in srgb, var(--color-accent) 22%, var(--color-bg)); stroke: var(--color-accent); }
+.floor-table-full .floor-table-shape { fill: var(--color-neutral-300); stroke: var(--color-neutral-700); stroke-dasharray: 10 7; }
+.floor-table-unknown .floor-table-shape { fill: transparent; stroke: var(--color-neutral-700); stroke-dasharray: 5 6; }
+.floor-table-selected .floor-table-shape { fill: var(--color-accent); stroke: var(--color-text); stroke-width: 8; }
+.floor-table:focus-visible .floor-table-shape { stroke: var(--color-text); stroke-width: 12; }
+.floor-seat { stroke: var(--color-text); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.floor-seat-free { fill: var(--color-accent); }
+.floor-seat-occupied { fill: var(--color-neutral-700); }
+.floor-seat-unknown { fill: var(--color-bg); stroke-dasharray: 2 2; }
+.floor-table-label { fill: var(--color-text); font: 700 24px var(--font-body); paint-order: stroke; stroke: var(--color-bg); stroke-width: 4px; stroke-linejoin: round; pointer-events: none; }
 .zoom {
   position: absolute; right: 10px; bottom: 10px; display: flex; align-items: center;
   background: color-mix(in srgb, var(--color-bg) 88%, transparent);

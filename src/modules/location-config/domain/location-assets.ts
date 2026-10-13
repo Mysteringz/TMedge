@@ -1,7 +1,8 @@
-import type { LocationAssetPurpose } from './location-records.js';
+import type { LocationAssetPurpose, PublishedLocationState } from './location-records.js';
 import type { LocationDocument, TrustedLegacyLocationBaseline } from './location-document.js';
 
 export type LocationAssetSlot = 'planAssetId' | 'modelAssetId';
+export type LocationModelPresentationDisposition = 'explicit-none' | 'legacy-fallback';
 
 export interface UploadedLocationAssetProvenance {
   kind: 'upload';
@@ -45,6 +46,32 @@ export class InvalidLocationAssetReferenceError extends Error {
 
 type AssetDocument = Pick<LocationDocument | TrustedLegacyLocationBaseline, 'locationId'> &
   Partial<Pick<LocationDocument | TrustedLegacyLocationBaseline, 'planAssetId' | 'modelAssetId'>>;
+
+/** Derives the public snapshot hint without treating a retained seed model as an upload. */
+export function locationModelPresentationDisposition(
+  document: LocationDocument | TrustedLegacyLocationBaseline, provenanceInput: unknown, revision?: number,
+): LocationModelPresentationDisposition | undefined {
+  const provenance = parseLocationAssetProvenance(provenanceInput, document);
+  // Seed revisions retain the old static catalog adapter. A revision-zero
+  // document with no static model has no hint and must remain omitted.
+  if (revision === 0 && provenance.modelAssetId?.kind !== 'legacy-static') return undefined;
+  if (provenance.modelAssetId?.kind === 'legacy-static') return 'legacy-fallback';
+  return document.modelAssetId === undefined ? 'explicit-none' : undefined;
+}
+
+/** Server-only dispositions for active revisions, including trusted revision-zero static baselines. */
+export function activeLocationModelDispositions(
+  locations: readonly Pick<PublishedLocationState, 'locationId' | 'activeRevision' | 'history'>[],
+): Map<string, LocationModelPresentationDisposition> {
+  const result = new Map<string, LocationModelPresentationDisposition>();
+  for (const state of locations) {
+    const active = state.history.find((revision) => revision.revision === state.activeRevision);
+    if (!active) continue;
+    const disposition = locationModelPresentationDisposition(active.document, active.assetProvenance, state.activeRevision);
+    if (disposition) result.set(state.locationId, disposition);
+  }
+  return result;
+}
 
 export function locationAssetReferences(document: AssetDocument): LocationAssetReference[] {
   const references: LocationAssetReference[] = [];

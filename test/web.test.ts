@@ -16,6 +16,7 @@ import { parseCookies, RateLimiter, Sessions, turnstileCheck, UserStore } from '
 import { createWebApp, loadWebConfig, missingAppAssets, safeNext } from '../src/web/main.js';
 import { isSnapshot, SnapshotStore } from '../src/web/store.js';
 import { SnapshotPublishers } from '../src/web/publishers.js';
+import { FilePublishedModelStore } from '../src/web/published-model-store.js';
 import { findGroup, searchSeats } from '../src/shared/seats.js';
 import type { OccupancySnapshot, TableShape, TableState } from '../src/shared/types.js';
 import { tableBounds } from '../src/shared/table-geometry.js';
@@ -168,6 +169,62 @@ test('web: uploaded models are immutable and student reads follow only the curre
   }
 });
 
+test('web: model authorization is rechecked after the asynchronous byte read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'published-model-race-'));
+  const web = createWebApp({
+    port: 0, host: '127.0.0.1', pushToken: TOKEN, sessionSecret: Buffer.from('r'.repeat(40)),
+    usersPath: join(directory, 'users.json'), publishedModelsDir: join(directory, 'published-models'),
+    allowedDomains: ['connect.hku.hk'], signupOpen: true, cookieSecure: false, trustProxy: false, staleMs: 30_000,
+  });
+  await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  const cookie = await signup(base, 'winner-race@connect.hku.hk');
+  const assetId = '00000000-0000-4000-8000-000000000093';
+  const bytes = makeGlb({ asset: { version: '2.0' }, buffers: [] });
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const originalRead = FilePublishedModelStore.prototype.read;
+  let markReadStarted!: () => void;
+  let releaseRead!: () => void;
+  const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve; });
+  const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+  try {
+    const upload = await fetch(`${base}/api/edge/location-assets/iw-maker-a/${assetId}`, {
+      method: 'PUT', headers: {
+        authorization: `Bearer ${TOKEN}`, 'x-tm-edge-id': 'edge-a', 'x-tm-sha256': digest, 'content-type': 'model/gltf-binary',
+      }, body: bytes,
+    });
+    assert.equal(upload.status, 201);
+    const current = version2Snapshot();
+    current.floors[0]!.model = { assetId, transform: current.floors[0]!.model!.transform };
+    assert.equal((await fetch(`${base}/api/edge/snapshot`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(current),
+    })).status, 200);
+    FilePublishedModelStore.prototype.read = async function (requestedId) {
+      assert.equal(requestedId, assetId);
+      markReadStarted();
+      await readGate;
+      return { bytes: Buffer.from(bytes), sha256: digest };
+    };
+    const responsePromise = fetch(`${base}/api/models/${assetId}`, { headers: { cookie } });
+    await readStarted;
+    const withdrawn = structuredClone(current);
+    withdrawn.generatedAt += 1;
+    withdrawn.floors[0]!.model = null;
+    assert.equal((await fetch(`${base}/api/edge/snapshot`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(withdrawn),
+    })).status, 200);
+    releaseRead();
+    assert.equal((await responsePromise).status, 404, 'a descriptor withdrawn while disk bytes were loading is not sent to the student');
+  } finally {
+    FilePublishedModelStore.prototype.read = originalRead;
+    releaseRead?.();
+    web.server.closeAllConnections();
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 async function start() {
   const web = createWebApp({
     port: 0, host: '127.0.0.1', pushToken: TOKEN, sessionSecret: Buffer.from('s'.repeat(40)),
@@ -309,6 +366,50 @@ test('web: an edge that goes quiet turns its whole floor unknown, not "last know
   assert.ok(later.tables.every((x) => x.status === 'unknown' && x.free === null && x.seats.every((s) => s.occupied === null)));
   assert.equal(later.totals.free, 0);
   assert.equal(later.totals.unknownSeats, 60);
+});
+
+test('snapshot store separates same-ID floors by site and preserves latest-receipt handoff semantics', () => {
+  const store = new SnapshotStore(30_000);
+  const first = snapshot('edge-first');
+  first.site = { id: 'site-a', name: 'Site A' };
+  store.put(first, 1_000);
+
+  const olderSameSite = structuredClone(first);
+  olderSameSite.edgeId = 'edge-older';
+  store.put(olderSameSite, 900);
+
+  const otherSite = snapshot('edge-other-site');
+  otherSite.site = { id: 'site-b', name: 'Site B' };
+  store.put(otherSite, 1_100);
+
+  let floors = store.view(1_200).floors;
+  assert.equal(floors.length, 2, 'equal floor IDs at different sites remain separate');
+  assert.equal(floors.find((floor) => floor.siteId === 'site-a')?.edgeId, 'edge-first');
+  assert.equal(floors.find((floor) => floor.siteId === 'site-b')?.edgeId, 'edge-other-site');
+  assert.equal(new Set(floors.map((floor) => floor.key)).size, 2);
+
+  floors = store.view(40_000).floors;
+  const staleWinner = floors.find((floor) => floor.siteId === 'site-a');
+  assert.equal(staleWinner?.edgeId, 'edge-first', 'viewing later does not promote an older stored loser');
+  assert.equal(staleWinner?.stale, true);
+  assert.ok(staleWinner?.tables.every((table) => table.status === 'unknown' && table.free === null));
+
+  const laterHandoff = structuredClone(olderSameSite);
+  laterHandoff.generatedAt += 1;
+  store.put(laterHandoff, 41_000);
+  assert.equal(store.view(41_100).floors.find((floor) => floor.siteId === 'site-a')?.edgeId, 'edge-older',
+    'a newly received snapshot from the previous loser can become the winner');
+});
+
+test('snapshot v2 accepts explicit no-model while v1 still rejects the model extension', () => {
+  const authored2d = version2Snapshot();
+  authored2d.floors[0]!.model = null;
+  assert.equal(isSnapshot(authored2d), true);
+
+  const legacy = snapshot();
+  legacy.version = 1;
+  Object.assign(legacy.floors[0]!, { model: null });
+  assert.equal(isSnapshot(legacy), false);
 });
 
 test('web: sessions expire', () => {
@@ -844,6 +945,33 @@ test('web: personalized API responses and raw shell redirects are never cached',
       assert.equal(response.headers.get('cache-control'), 'no-store', path);
       assert.match(response.headers.get('vary') ?? '', /(?:^|,\s*)Cookie(?:,|$)/, path);
     }
+  } finally { await w.close(); }
+});
+
+test('web: site-scoped seat search requires the floor ID and resolves duplicate floor IDs by site', async () => {
+  const w = await start();
+  try {
+    const cookie = await signup(w.base, 'composite-search@connect.hku.hk');
+    const first = snapshot('edge-search-a');
+    const second = snapshot('edge-search-b');
+    first.site = { id: 'site-a', name: 'Site A' };
+    second.site = { id: 'site-b', name: 'Site B' };
+    first.floors[0]!.id = 'shared-room';
+    second.floors[0]!.id = 'shared-room';
+    assert.equal(w.store.put(first), true);
+    assert.equal(w.store.put(second), true);
+
+    const siteWithoutFloor = await fetch(`${w.base}/api/search?seats=1&siteId=site-a`, { headers: { cookie } });
+    assert.equal(siteWithoutFloor.status, 400);
+    assert.deepEqual(await siteWithoutFloor.json(), { error: 'siteId and floor must be valid identifiers and supplied together' });
+
+    const ambiguous = await fetch(`${w.base}/api/search?seats=1&floor=shared-room`, { headers: { cookie } });
+    assert.equal(ambiguous.status, 409);
+
+    const scoped = await fetch(`${w.base}/api/search?seats=1&floor=shared-room&siteId=site-b`, { headers: { cookie } });
+    assert.equal(scoped.status, 200);
+    const body = await scoped.json() as { results: { siteId: string; floorId: string; key: string }[] };
+    assert.ok(body.results.every((result) => result.siteId === 'site-b' && result.floorId === 'shared-room'));
   } finally { await w.close(); }
 });
 

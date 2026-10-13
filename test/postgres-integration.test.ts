@@ -42,6 +42,7 @@ import {
 import { bootstrapPostgresLegacyLocations } from '../src/infrastructure/postgres/location-storage-bootstrap.js';
 import type { OccupancyHistoryRecord } from '../src/modules/occupancy-history/repositories/occupancy-history-repository.js';
 import { createLocationId, parseLocationDocument } from '../src/modules/location-config/domain/location-document.js';
+import { activeLocationModelDispositions } from '../src/modules/location-config/domain/location-assets.js';
 import { LocationConflictError, LocationStorageUnavailableError, type LocationDraft } from '../src/modules/location-config/domain/location-records.js';
 import { principal } from '../src/modules/algo-admin/domain/permissions.js';
 import { createLocationRouter, type LocationRouterDependencies } from '../src/modules/location-config/routes/location-router.js';
@@ -161,7 +162,7 @@ function emittedLocationSnapshot(site: unknown, snapshot: LocationRegistrySnapsh
     owns: node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector,
   })) };
   return new OccupancyEngine(
-    buildRegistryFromLocationDocuments(site, nodeInput, documents, legacySpatial), edgeId,
+    buildRegistryFromLocationDocuments(site, nodeInput, documents, legacySpatial, activeLocationModelDispositions(snapshot.locations)), edgeId,
   ).snapshot(100);
 }
 
@@ -883,6 +884,18 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const site = siteJson() as { floors: Array<Record<string, unknown> & { id: string; visibility?: 'public' | 'console' }> };
     assert.ok(site.floors[0]);
     site.floors[0].visibility = 'console';
+    const legacyStaticFloor = site.floors[2];
+    assert.ok(legacyStaticFloor, 'the seed includes a public floor independent of the edited legacy bridge');
+    Object.assign(legacyStaticFloor, {
+      model: {
+        assetId: '00000000-0000-4000-8000-000000000067',
+        transform: {
+          scale: { x: 1, y: 1, z: 1 },
+          rotationDeg: { x: 0, y: 0, z: 0 },
+          positionM: { x: 0, y: 0, z: 0 },
+        },
+      },
+    });
     const legacyBridgeFloor = site.floors[1];
     assert.ok(legacyBridgeFloor, 'the seeded site has an independent legacy floor for bridge coverage');
     legacyBridgeFloor.outline = postgresLegacyOutline();
@@ -961,6 +974,11 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
 
     const drafts = new PostgresLocationDraftRepository(runtime);
     const locationSnapshots = new PostgresLocationRegistrySnapshotRepository(site, nodeRepository, published);
+    const initialLegacyModelSnapshot = emittedLocationSnapshot(site, await locationSnapshots.readSnapshot(), 'pg-static-model-initial');
+    const initialLegacyModelFloor = initialLegacyModelSnapshot.floors.find((floor) => floor.id === legacyStaticFloor.id);
+    assert.equal(Object.hasOwn(initialLegacyModelFloor ?? {}, 'model'), false,
+      'revision-zero static model identity stays on the legacy fallback path instead of becoming an uploaded descriptor');
+    assert.equal(isSnapshot(initialLegacyModelSnapshot), true);
     const startLegacyEdit = new StartLocationEditDraftUseCase({
       drafts, snapshots: locationSnapshots, mutationCoordinator, now: () => 20,
       createDraftId: () => '00000000-0000-4000-8000-000000000071',
@@ -1030,8 +1048,12 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
       const reopenedBridge = reopenedSnapshot.locations.find((row) => row.locationId === legacyBridgeFloor.id);
       assert.deepEqual(reopenedBridge?.history.at(-1)?.legacySpatial, bridgeHistory[2]?.legacySpatial);
       assert.equal(reopenedBridge?.history.at(-1)?.document.name, 'PG legacy edit twice');
-      assert.equal(isSnapshot(emittedLocationSnapshot(site, reopenedSnapshot, 'pg-legacy-bridge-reopened')), true,
+      const reopenedLegacyView = emittedLocationSnapshot(site, reopenedSnapshot, 'pg-legacy-bridge-reopened');
+      assert.equal(isSnapshot(reopenedLegacyView), true,
         'a fresh PostgreSQL connection reconstructs the exact spatial baseline and provenance');
+      const reopenedStaticFloor = reopenedLegacyView.floors.find((floor) => floor.id === legacyStaticFloor.id);
+      assert.equal(Object.hasOwn(reopenedStaticFloor ?? {}, 'model'), false,
+        'an unrelated published location and PostgreSQL restart retain the seed static-model fallback');
     } finally { await closePostgres(reopenedRuntime); }
 
     const draftDocument = postgresStorageTestDocument(locationIds[0]!, 'PG-DRAFT-TABLE', 'PG-DRAFT-SEAT');
@@ -1192,6 +1214,8 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const managerPublicSnapshot = emittedLocationSnapshot(site, await locationSnapshots.readSnapshot(), 'pg-model-label-test');
     assert.equal(isSnapshot(managerPublicSnapshot), true);
     assert.equal(JSON.stringify(managerPublicSnapshot).includes('displayName'), false, 'public occupancy snapshots never contain private upload names');
+    assert.equal(managerPublicSnapshot.floors.find((floor) => floor.id === managerAssetLocationId)?.model?.assetId,
+      managerModel.metadata.assetId, 'an uploaded public model becomes the v2 descriptor object');
 
     const managerReopenedRuntime = await openPostgres(config.runtime);
     try {
@@ -1236,6 +1260,26 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     assert.deepEqual(await runtime.query('SELECT table_id FROM public.node_table_owners WHERE uid = $1', [registeredUids[1]]), [{ table_id: 'PG-LOCATION-TABLE' }]);
     assert.equal((await published.getActive(document.locationId))?.activeRevision, 1);
     assert.equal((await published.listActive()).find((state) => state.locationId === document.locationId)?.activeRevision, 1);
+    const explicitNoneView = emittedLocationSnapshot(site, await locationSnapshots.readSnapshot(), 'pg-explicit-none-model');
+    assert.equal(isSnapshot(explicitNoneView), true);
+    assert.equal(explicitNoneView.floors.find((floor) => floor.id === document.locationId)?.model, null,
+      'a published authored location without a model explicitly suppresses static-catalog fallback');
+    const triStateRestartRuntime = await openPostgres(config.runtime);
+    try {
+      const triStateCoordinator = new PostgresRegistryMutationCoordinator(triStateRestartRuntime);
+      const triStateNodes = new PostgresRegistryRepository(triStateRestartRuntime, triStateCoordinator);
+      const triStatePublished = new PostgresPublishedLocationRepository(triStateRestartRuntime, seedIds, triStateCoordinator);
+      const triStateSnapshot = await new PostgresLocationRegistrySnapshotRepository(site, triStateNodes, triStatePublished).readSnapshot();
+      const restartedTriStateView = emittedLocationSnapshot(site, triStateSnapshot, 'pg-model-tristate-restart');
+      assert.equal(isSnapshot(restartedTriStateView), true);
+      assert.equal(restartedTriStateView.floors.find((floor) => floor.id === managerAssetLocationId)?.model?.assetId,
+        managerModel.metadata.assetId, 'the current uploaded descriptor survives PostgreSQL snapshot reconstruction');
+      assert.equal(restartedTriStateView.floors.find((floor) => floor.id === document.locationId)?.model, null,
+        'explicit no-model survives PostgreSQL snapshot reconstruction');
+      const restartedStaticFloor = restartedTriStateView.floors.find((floor) => floor.id === legacyStaticFloor.id);
+      assert.equal(Object.hasOwn(restartedStaticFloor ?? {}, 'model'), false,
+        'trusted revision-zero static fallback stays omitted after PostgreSQL snapshot reconstruction');
+    } finally { await closePostgres(triStateRestartRuntime); }
     await assert.rejects(runtime.query(
       'UPDATE public.location_published_revisions SET created_by = $3 WHERE location_id = $1 AND revision = $2',
       [document.locationId, 1, 'mutated'],

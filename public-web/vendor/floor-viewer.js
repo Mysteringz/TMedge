@@ -59,6 +59,12 @@
   }
   const nums = (s) => (s || '').split(',').filter(Boolean).map(Number);
   const norm = (s) => (s || '').replace(/[^a-z0-9]+/gi, ' ').trim().toLowerCase();
+  function authoredShapeSize(shape) {
+    if (shape.type === 'circle') return { width: shape.radius * 2, height: shape.radius * 2 };
+    if (shape.type === 'rect') return { width: shape.width, height: shape.height };
+    const xs = shape.points.map((point) => point[0]), ys = shape.points.map((point) => point[1]);
+    return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+  }
 
   const FREE = 0x0b8b7a;     // room for your group
   const PICKED = 0x006f62;   // the table you chose
@@ -67,7 +73,7 @@
 
   class FloorViewer extends HTMLElement {
     static get observedAttributes() {
-      return ['src', 'room', 'labels', 'free', 'occupied', 'dark', 'selected', 'directions', 'columns', 'rows'];
+      return ['src', 'room', 'labels', 'free', 'occupied', 'dark', 'selected', 'directions', 'columns', 'rows', 'location-layout', 'model-transform'];
     }
 
     connectedCallback() {
@@ -94,7 +100,14 @@
     attributeChangedCallback(n, o, v) {
       if (!this._ready || o === v) return;
       if (n === 'src' || n === 'room') this.refresh();
-      else if (this._room) this.layoutMarkers();
+      else if (n === 'model-transform') {
+        this.applyModelTransform();
+        this.updateLocationBounds();
+        if (this._room) this.layoutMarkers();
+      } else if (n === 'location-layout') {
+        this.updateLocationBounds();
+        if (this._room) this.layoutMarkers();
+      } else if (this._room) this.layoutMarkers();
     }
 
     disconnectedCallback() {
@@ -115,12 +128,22 @@
 
     async boot() {
       let L;
-      try { L = await lib(); } catch { this._msg.textContent = '3D map unavailable'; return; }
+      try { L = await lib(); } catch {
+        this._msg.textContent = '3D map unavailable';
+        this.dispatchEvent(new CustomEvent('viewer-error'));
+        return;
+      }
       if (this._stopped) return;
       const { THREE, OrbitControls } = L;
       this._L = L;
       const w = this.clientWidth || 800, h = this.clientHeight || 420;
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      let renderer;
+      try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false }); }
+      catch {
+        this._msg.textContent = '3D view unavailable. Use the floor map below.';
+        this.dispatchEvent(new CustomEvent('viewer-error'));
+        return;
+      }
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       renderer.setSize(w, h);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -194,6 +217,8 @@
       const { scene, camera, controls } = this._three;
       const src = this.getAttribute('src');
       if (!src) return;
+      if (this._msg && !this._msg.isConnected) this.appendChild(this._msg);
+      if (this._msg) this._msg.textContent = 'Loading 3D floor…';
       const token = (this._token = Symbol());
       for (const k of ['_model', '_marks', '_path']) {
         if (this[k]) { scene.remove(this[k]); disposeObject(this[k], k !== '_model'); this[k] = null; }
@@ -201,9 +226,15 @@
       this._room = null;
       let model;
       try { model = await loadGLB(this._L.GLTFLoader, src); }
-      catch { this._msg.textContent = 'Could not load floor model'; return; }
+      catch {
+        this._msg.textContent = '3D view unavailable. Use the floor map below.';
+        this.dispatchEvent(new CustomEvent('model-error'));
+        return;
+      }
       if (token !== this._token || this._stopped) { disposeObject(model, false); return; }
       this._msg.remove();
+
+      this.applyModelTransform(model);
 
       model.traverse((o) => {
         if (!o.isMesh) return;
@@ -234,10 +265,12 @@
           o.material = Array.isArray(o.material) ? mats : mats[0];
         });
       }
-      const box = new THREE.Box3().setFromObject(roomNode || model);
+      const box = new THREE.Box3().setFromObject(this.readLocationLayout() ? model : roomNode || model);
+      const locationLayout = this.readLocationLayout();
+      if (locationLayout) box.union(this.authoredFloorBounds(locationLayout));
       const size = box.getSize(new THREE.Vector3());
       const centre = box.getCenter(new THREE.Vector3());
-      this._room = { box, size, centre, spots: this.findTables(model, box) };
+      this._room = { box, size, centre, spots: locationLayout ? null : this.findTables(model, box) };
 
       this.layoutMarkers();
 
@@ -260,6 +293,123 @@
       };
       this.frameRoom();
       this._home = { pos: camera.position.clone(), tgt: controls.target.clone() };
+      this.dispatchEvent(new CustomEvent('model-ready'));
+    }
+
+    readLocationLayout() {
+      try {
+        const layout = JSON.parse(this.getAttribute('location-layout') || 'null');
+        return layout && Number.isFinite(layout.width) && layout.width > 0
+          && Number.isFinite(layout.height) && layout.height > 0 && Array.isArray(layout.tables) ? layout : null;
+      } catch { return null; }
+    }
+
+    authoredFloorBounds(layout) {
+      const { THREE } = this._L;
+      return new THREE.Box3(
+        new THREE.Vector3(0, -0.05, -layout.height / 100),
+        new THREE.Vector3(layout.width / 100, 0.08, 0),
+      );
+    }
+
+    applyModelTransform(model = this._model) {
+      if (!model) return;
+      let transform;
+      try { transform = JSON.parse(this.getAttribute('model-transform') || 'null'); } catch { return; }
+      if (!transform) return;
+      const vectors = [transform.scale, transform.rotationRad, transform.positionM];
+      if (vectors.some((vector) => !vector || !['x', 'y', 'z'].every((key) => Number.isFinite(vector[key])))) return;
+      model.scale.set(transform.scale.x, transform.scale.y, transform.scale.z);
+      model.rotation.order = 'XYZ';
+      model.rotation.set(transform.rotationRad.x, transform.rotationRad.y, transform.rotationRad.z, 'XYZ');
+      model.position.set(transform.positionM.x, transform.positionM.y, transform.positionM.z);
+      model.updateMatrixWorld(true);
+    }
+
+    updateLocationBounds() {
+      if (!this._model || !this._L || !this._three) return;
+      const layout = this.readLocationLayout();
+      if (!layout) return;
+      const { THREE } = this._L;
+      const box = new THREE.Box3().setFromObject(this._model);
+      box.union(this.authoredFloorBounds(layout));
+      this._room = { box, size: box.getSize(new THREE.Vector3()), centre: box.getCenter(new THREE.Vector3()), spots: null };
+    }
+
+    layoutAuthoredMarkers(layout) {
+      const { THREE } = this._L;
+      const { scene } = this._three;
+      const marks = new THREE.Group();
+      const selectedId = typeof layout.selectedTableId === 'string' ? layout.selectedTableId : null;
+      this._pickables = [];
+      this._focus = null;
+      layout.tables.forEach((table) => {
+        const shape = table.shape || { type: 'rect', ...table.rect };
+        const centre = this.authoredShapeCentre(shape);
+        if (!centre) return;
+        const status = table.status === 'unknown' || table.free === null ? 'unknown' : table.free > 0 ? 'free' : 'full';
+        const picked = table.id === selectedId;
+        const color = picked ? PICKED : status === 'free' ? FREE : FULL;
+        const material = new THREE.MeshBasicMaterial({
+          color, transparent: true, opacity: status === 'unknown' ? 0.38 : picked ? 0.82 : status === 'free' ? 0.62 : 0.58,
+          depthTest: false, depthWrite: false,
+        });
+        const plate = new THREE.Mesh(this.authoredShapeGeometry(shape, centre), material);
+        plate.position.set(centre.x / 100, 0.025, -centre.y / 100);
+        plate.renderOrder = 8;
+        plate.userData.tableId = table.id;
+        marks.add(plate);
+        this._pickables.push(plate);
+        this.addAuthoredSeats(marks, table.seats);
+        const dimensions = authoredShapeSize(shape);
+        const label = this.label(table.name, Math.max(0.2, Math.min(dimensions.width, dimensions.height) / 100 * 0.42), picked || status === 'free' ? '#ffffff' : '#201e1d');
+        label.position.set(centre.x / 100, 0.04, -centre.y / 100);
+        label.renderOrder = 9;
+        marks.add(label);
+        if (picked) this._focus = new THREE.Vector3(centre.x / 100, 0.025, -centre.y / 100);
+      });
+      scene.add(marks);
+      this._marks = marks;
+      this._seat = (this._focus || this._room.centre).clone();
+      if (this.getAttribute('directions') === '1' && this._focus) this.drawRoute(this._focus);
+    }
+
+    authoredShapeCentre(shape) {
+      if (shape.type === 'circle') return { x: shape.cx, y: shape.cy };
+      if (shape.type === 'rect') return { x: shape.x + shape.width / 2, y: shape.y + shape.height / 2 };
+      if (shape.type !== 'polygon' || !Array.isArray(shape.points) || shape.points.length < 3) return null;
+      return shape.points.reduce((centre, point) => ({ x: centre.x + point[0] / shape.points.length, y: centre.y + point[1] / shape.points.length }), { x: 0, y: 0 });
+    }
+
+    authoredShapeGeometry(shape, centre) {
+      const { THREE } = this._L;
+      if (shape.type === 'circle') return new THREE.CircleGeometry(shape.radius / 100, 40).rotateX(-Math.PI / 2);
+      if (shape.type === 'rect') return new THREE.PlaneGeometry(shape.width / 100, shape.height / 100).rotateX(-Math.PI / 2);
+      const path = new THREE.Shape();
+      shape.points.forEach((point, index) => {
+        const x = (point[0] - centre.x) / 100, y = (point[1] - centre.y) / 100;
+        if (index === 0) path.moveTo(x, y); else path.lineTo(x, y);
+      });
+      path.closePath();
+      return new THREE.ShapeGeometry(path).rotateX(-Math.PI / 2);
+    }
+
+    addAuthoredSeats(group, seats) {
+      const { THREE } = this._L;
+      if (!Array.isArray(seats)) return;
+      seats.forEach((seat) => {
+        if (!Number.isFinite(seat.x) || !Number.isFinite(seat.y)) return;
+        const known = typeof seat.occupied === 'boolean';
+        const material = new THREE.MeshBasicMaterial({
+          color: known ? seat.occupied ? FULL : FREE : INK,
+          transparent: true, opacity: known ? 0.92 : 0.48, depthTest: false, depthWrite: false,
+        });
+        const marker = new THREE.Mesh(new THREE.CircleGeometry(0.045, 12), material);
+        marker.rotation.x = -Math.PI / 2;
+        marker.position.set(seat.x / 100, 0.05, -seat.y / 100);
+        marker.renderOrder = 10;
+        group.add(marker);
+      });
     }
 
     /**
@@ -405,6 +555,9 @@
       this._focus = null;
       this._pickables = [];
 
+      const authoredLayout = this.readLocationLayout();
+      if (authoredLayout) { this.layoutAuthoredMarkers(authoredLayout); return; }
+
       const free = nums(this.getAttribute('free'));
       const occupied = nums(this.getAttribute('occupied'));
       const dark = nums(this.getAttribute('dark'));
@@ -547,7 +700,9 @@
         -((e.clientY - rect.top) / rect.height) * 2 + 1,
       ), camera);
       const hit = ray.intersectObjects(this._pickables, false)[0];
-      if (hit && hit.object && hit.object.userData.table) {
+      if (hit && hit.object && typeof hit.object.userData.tableId === 'string') {
+        this.dispatchEvent(new CustomEvent('table-picked', { detail: { tableId: hit.object.userData.tableId } }));
+      } else if (hit && hit.object && hit.object.userData.table) {
         this.dispatchEvent(new CustomEvent('table-picked', { detail: { index: hit.object.userData.table } }));
       }
     }
@@ -583,6 +738,12 @@
       const { camera, controls } = this._three;
       const d = camera.position.distanceTo(controls.target);
       return 1 - (d - controls.minDistance) / ((controls.maxDistance - controls.minDistance) || 1);
+    }
+
+    retryLoad() {
+      if (!this._three || !this._L) return;
+      this._token = Symbol();
+      void this.refresh();
     }
   }
   customElements.define('floor-viewer', FloorViewer);

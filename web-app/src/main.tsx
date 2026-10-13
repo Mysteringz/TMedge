@@ -31,6 +31,7 @@ createRoot(root).render(
         <Route path="/dashboard/" element={<Dashboard />} />
         <Route path="/dashboard/spaces" element={<Spaces />} />
         <Route path="/dashboard/spaces/" element={<Spaces />} />
+        <Route path="/dashboard/spaces/:siteId/:floorId" element={<Spaces />} />
         <Route path="/dashboard/spaces/:floorId" element={<Spaces />} />
         {/* The shapes the first version used; old links keep working. */}
         <Route path="/search" element={<Navigate to="/dashboard/" replace />} />

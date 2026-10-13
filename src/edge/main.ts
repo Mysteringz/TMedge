@@ -5,6 +5,7 @@ import { loadEdgeConfig, EnvError } from './config.js';
 import { createEdgeApplication } from './composition-root.js';
 import { buildRegistry, buildRegistryFromLocationDocuments, ConfigError, type Registry } from './registry.js';
 import { parseLocationDocument } from '../modules/location-config/domain/location-document.js';
+import { activeLocationModelDispositions, type LocationModelPresentationDisposition } from '../modules/location-config/domain/location-assets.js';
 import type { ProvisioningRepository } from '../modules/provisioning/repositories/provisioning-repository.js';
 import { PostgresRegistryRepository } from '../infrastructure/postgres/registry-repository.js';
 import { PostgresProvisioningRepository } from '../infrastructure/postgres/provisioning-repository.js';
@@ -116,7 +117,7 @@ async function loadConfiguration(): Promise<{
     const assetMetadata = new PostgresLocationAssetMetadataRepository(source);
     const initialSnapshot = await mutationCoordinator.withMutationLock(() => snapshots.readSnapshot());
     const active = activeDocuments(initialSnapshot);
-    const registry = buildRegistryFromLocationDocuments(site, nodesConfigFor(initialSnapshot), active.documents, active.legacySpatialByLocation);
+    const registry = buildRegistryFromLocationDocuments(site, nodesConfigFor(initialSnapshot), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation);
     const provisioningRepository = new PostgresProvisioningRepository(source);
     return { cfg, registry, source, provisioningRepository,
       registryMutationCoordinator: mutationCoordinator,
@@ -150,16 +151,18 @@ function nodesConfigFor(snapshot: LocationRegistrySnapshot): unknown {
 }
 
 function activeDocuments(snapshot: LocationRegistrySnapshot) {
+  const modelDispositionByLocation = activeLocationModelDispositions(snapshot.locations);
   const legacySpatialByLocation = new Map(snapshot.locations.flatMap((state) => {
     const active = state.history.find((revision) => revision.revision === state.activeRevision);
     return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
   }));
   const documents = snapshot.locations.flatMap((state) => {
-    if (state.activeRevision === 0) return [];
     const active = state.history.find((revision) => revision.revision === state.activeRevision);
-    return active ? [parseLocationDocument(active.document)] : [];
+    if (!active) return [];
+    if (state.activeRevision === 0) return [];
+    return [parseLocationDocument(active.document)];
   });
-  return { documents, legacySpatialByLocation };
+  return { documents, legacySpatialByLocation, modelDispositionByLocation };
 }
 
 function loadEdgePersistenceMode(): boolean {

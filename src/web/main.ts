@@ -258,8 +258,14 @@ export function createWebApp(cfg: WebConfig, options: {
       const floors = store.view().floors;
       return meter.report(range, {
         accountsTotal: accountFacts.total, accountCreatedTimes: accountFacts.created, accountStorage: cfg.studentPersistenceMode ?? 'file',
-        floorName: (id) => floors.find((floor) => floor.id === id)?.name ?? null,
-        tableName: (floorId, tableId) => floors.find((floor) => floor.id === floorId)?.tables.find((table) => table.id === tableId)?.name ?? null,
+        floorName: (siteId, floorId) => {
+          const matches = floors.filter((floor) => floor.id === floorId && (siteId === undefined || floor.siteId === siteId));
+          return matches.length === 1 ? matches[0]!.name : null;
+        },
+        tableName: (siteId, floorId, tableId) => {
+          const matches = floors.filter((floor) => floor.id === floorId && (siteId === undefined || floor.siteId === siteId));
+          return matches.length === 1 ? matches[0]!.tables.find((table) => table.id === tableId)?.name ?? null : null;
+        },
         edges: store.edges(),
       });
     },

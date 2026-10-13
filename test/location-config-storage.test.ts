@@ -88,6 +88,10 @@ test('revision-zero legacy baseline preserves the registry spatial envelope with
     const site = seedSite() as { floors: Array<Record<string, unknown>> };
     site.floors[0]!.zones = [{ id: 'seed-zone', name: 'Seed zone', polygon: [[-10, -10], [410, -10], [400, 300]] }];
     site.floors[0]!.tables = [{ id: 'SEED-TABLE', name: 'Seed table', zone: 'seed-zone', x: 0, y: 100, width: 40, height: 60, capacity: 1 }];
+    site.floors[0]!.model = {
+      assetId: '00000000-0000-4000-8000-000000000071',
+      transform: { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } },
+    };
     writeFileSync(sitePath, `${JSON.stringify(site)}\n`);
     const persistence = initializeFileLocationPersistence(sitePath, nodesPath, join(directory, 'data'));
     try {
@@ -99,7 +103,11 @@ test('revision-zero legacy baseline preserves the registry spatial envelope with
       assert.equal(restored.tables[0]?.shape, undefined, 'legacy rectangles remain untagged');
       assert.deepEqual(restored.tables[0]?.rect, { x: 0, y: 100, width: 40, height: 60 });
       assert.equal(restored.tables[0]?.seats[0]?.x, -35, 'generated perimeter seats retain their legacy off-floor coordinate');
+      assert.equal(restored.modelAssetId, '00000000-0000-4000-8000-000000000071', 'revision-zero baseline retains its static model identity');
       assert.deepEqual(restored, baseline, 'file snapshot reconstruction preserves the same revision-zero values');
+      assert.equal(persistence.registry.floors[0]?.modelDisposition, 'legacy-fallback', 'file bootstrap carries trusted v0 static disposition into the runtime registry');
+      const snapshotFloor = new OccupancyEngine(persistence.registry, 'edge-file-seed').snapshot(1).floors[0]!;
+      assert.equal(Object.hasOwn(snapshotFloor, 'model'), false, 'file runtime keeps a seed model on legacy catalog fallback instead of emitting an uploaded descriptor');
     } finally { persistence.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

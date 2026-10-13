@@ -49,7 +49,7 @@ function floor(free: (number | null)[]): FloorState {
 }
 
 test('a disconnected portal turns every cached free table unknown', () => {
-  const original = { generatedAt: 1000, floors: [{ ...floor([6, 3, null]), edgeId: 'edge-a', updatedAt: 1000, stale: false }] };
+  const original = { generatedAt: 1000, floors: [{ ...floor([6, 3, null]), siteId: 'legacy', key: JSON.stringify(['legacy', 'iw-maker-a']), edgeId: 'edge-a', updatedAt: 1000, stale: false }] };
   const offline = disconnectedView(original);
   assert.equal(offline.floors[0]?.stale, true);
   assert.equal(allocate(offline.floors[0]!, 1), null);

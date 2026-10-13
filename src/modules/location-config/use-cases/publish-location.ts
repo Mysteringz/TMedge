@@ -1,5 +1,6 @@
 import { type LocationSensorAssignment } from '../domain/location-document.js';
 import { revalidateLocationCandidate } from '../domain/location-candidate.js';
+import { locationModelPresentationDisposition } from '../domain/location-assets.js';
 import { LocationConflictError, LocationDraftNotFoundError, UnknownRegistryCommitOutcomeError, RegistryMutationQuarantinedError, type PublishedLocationRevision } from '../domain/location-records.js';
 import { resolveLocationAssetProvenance, sameResolvedLocationAssetProvenance } from './resolve-location-asset-provenance.js';
 import type {
@@ -112,7 +113,8 @@ export class PublishLocationUseCase<Prepared> {
     const runtimeDocument = modelProvenance?.kind === 'legacy-static'
       ? { ...document, modelAssetId: undefined, modelTransform: undefined }
       : document;
-    let prepared = runtime.prepare(snapshot, runtimeDocument, validated.legacySpatial);
+    const modelDisposition = locationModelPresentationDisposition(document, assetProvenance);
+    let prepared = runtime.prepare(snapshot, runtimeDocument, validated.legacySpatial, modelDisposition);
 
     if (document.visibility === 'public' && document.modelAssetId && modelProvenance?.kind === 'upload') {
       const distributor = this.dependencies.modelDistributor;

@@ -10,11 +10,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { disconnectedView } from './live.ts';
 import { allocate, floorIsDark, knownFree, largestTableFree, walkOrder, type Allocation } from '../../src/shared/allocate.js';
-import { spaceInfo, VENUES, type Venue } from '../../src/shared/venues.js';
-import type { CampusFloor, CampusView, TableState } from '../../src/shared/types.js';
+import { spaceInfo, VENUES, type SpaceInfo, type Venue } from '../../src/shared/venues.js';
+import { resolveCampusFloor } from '../../src/shared/location-identity.js';
+import { parseCampusView } from '../../src/shared/campus-view.js';
+import type { CampusFloor, CampusView, PublishedFloorModel, TableState } from '../../src/shared/types.js';
 
 export type { CampusFloor, CampusView, TableState, Allocation, Venue };
-export { allocate, knownFree, largestTableFree, spaceInfo, walkOrder, VENUES };
+export { allocate, knownFree, largestTableFree, resolveCampusFloor, spaceInfo, walkOrder, VENUES };
 
 export interface Me {
   email: string;
@@ -45,6 +47,8 @@ export interface Live {
   view: CampusView | null;
   connection: Connection;
   updatedAt: number;
+  feedState: 'loading' | 'ready' | 'error';
+  retryFeed(): void;
 }
 
 /** The live occupancy feed: a WebSocket, with a fetch to prime it. */
@@ -52,7 +56,15 @@ export function useLive(): Live {
   const [view, setView] = useState<CampusView | null>(null);
   const [connection, setConnection] = useState<Connection>('connecting');
   const [updatedAt, setUpdatedAt] = useState(0);
+  const [feedState, setFeedState] = useState<Live['feedState']>('loading');
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
   const retry = useRef(1000);
+  const retryFeed = useCallback(() => {
+    setView(null);
+    setFeedState('loading');
+    setConnection('connecting');
+    setRefreshGeneration((generation) => generation + 1);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -65,19 +77,37 @@ export function useLive(): Live {
       feedDisconnected = true;
       setConnection('offline');
       setView((current) => current ? disconnectedView(current) : null);
+      if (!latestGeneration) setFeedState('error');
     };
 
-    const accept = (next: CampusView) => {
-      if (!alive || !Number.isFinite(next.generatedAt) || !Array.isArray(next.floors) || next.generatedAt < latestGeneration) return;
+    const failClosed = () => {
+      if (!alive) return;
+      latestGeneration = 0;
+      setView(null);
+      setFeedState('error');
+      setConnection('offline');
+    };
+
+    const accept = (value: unknown): boolean => {
+      const next = parseCampusView(value);
+      if (!next) { failClosed(); return false; }
+      if (!alive || next.generatedAt < latestGeneration) return true;
       latestGeneration = next.generatedAt;
+      setFeedState('ready');
       setView(next);
       setUpdatedAt(Date.now());
+      return true;
     };
 
-    fetch('/api/occupancy')
-      .then((r) => (r.ok ? (r.json() as Promise<CampusView>) : null))
-      .then((v) => v && !feedDisconnected && accept(v))
-      .catch(() => undefined);
+    void fetch('/api/occupancy')
+      .then(async (response) => {
+        if (!response.ok) throw new Error('snapshot request failed');
+        const value: unknown = await response.json();
+        const parsed = parseCampusView(value);
+        if (!parsed) { if (!latestGeneration) failClosed(); return; }
+        if (!feedDisconnected) accept(parsed);
+      })
+      .catch(() => { if (!latestGeneration) failClosed(); });
 
     const open = () => {
       if (!alive) return;
@@ -90,13 +120,12 @@ export function useLive(): Live {
       ws.onmessage = (e) => {
         if (!alive || socket !== ws) return;
         try {
-          const next = JSON.parse(String(e.data)) as CampusView;
-          if (!next || !Number.isFinite(next.generatedAt) || !Array.isArray(next.floors)) return;
+          const next: unknown = JSON.parse(String(e.data));
           lastMessage = Date.now();
           feedDisconnected = false;
-          accept(next);
+          if (!accept(next)) { ws.close(); return; }
           setConnection('live');
-        } catch { /* a broken message cannot establish freshness */ }
+        } catch { failClosed(); ws.close(); }
       };
       ws.onclose = () => {
         if (!alive || socket !== ws) return;
@@ -123,9 +152,9 @@ export function useLive(): Live {
       window.clearInterval(watchdog);
       socket?.close();
     };
-  }, []);
+  }, [refreshGeneration]);
 
-  return { view, connection, updatedAt };
+  return { view, connection, updatedAt, feedState, retryFeed };
 }
 
 export interface VenueSpaces {
@@ -134,35 +163,64 @@ export interface VenueSpaces {
   open: boolean;
 }
 
+export type FloorSpacePresentation = SpaceInfo & { uploadedModel?: PublishedFloorModel };
+
 /** Venues with the floors their edges are actually publishing. */
 export function useVenues(view: CampusView | null): VenueSpaces[] {
   return useMemo(() => {
     const floors = view?.floors ?? [];
+    const counts = new Map<string, number>();
+    for (const floor of floors) counts.set(floor.id, (counts.get(floor.id) ?? 0) + 1);
     const claimed = new Set(VENUES.flatMap((v) => v.floorIds));
     const out: VenueSpaces[] = VENUES.map((venue) => {
-      const mine = floors.filter((f) => venue.floorIds.includes(f.id));
+      // A bare legacy catalog ID is usable only while it names one live
+      // composite location. Duplicate IDs remain separate dynamic spaces.
+      const mine = floors.filter((f) => counts.get(f.id) === 1 && venue.floorIds.includes(f.id));
       return { venue, floors: mine, open: venue.open && mine.length > 0 };
     });
-    const extra = floors.filter((f) => !claimed.has(f.id));
-    if (extra.length > 0) {
+    const extra = floors.filter((f) => counts.get(f.id) !== 1 || !claimed.has(f.id));
+    const groups = new Map<string, CampusFloor[]>();
+    for (const floor of extra) {
+      const groupKey = JSON.stringify([floor.siteId, floor.building]);
+      const group = groups.get(groupKey) ?? [];
+      group.push(floor);
+      groups.set(groupKey, group);
+    }
+    for (const [groupKey, group] of groups) {
+      const building = group[0]?.building || 'Other spaces';
       out.unshift({
         venue: {
-          id: 'other',
-          name: extra[0]?.building ?? 'Other spaces',
-          shortName: extra[0]?.building ?? 'Other spaces',
+          id: `dynamic:${groupKey}`,
+          name: building,
+          shortName: building,
           kicker: 'Campus',
           photo: '',
           caption: '',
-          floorIds: extra.map((f) => f.id),
+          floorIds: group.map((f) => f.id),
           open: true,
           entrance: 'Follow the signs to the study area.',
         },
-        floors: extra,
+        floors: group,
         open: true,
       });
     }
     return out;
   }, [view]);
+}
+
+/** Returns the unique legacy venue adapter or a safe composite-only default. */
+export function floorSpaceInfo(floor: CampusFloor, allFloors: readonly CampusFloor[]): FloorSpacePresentation {
+  const unique = allFloors.filter((item) => item.id === floor.id).length === 1
+    && VENUES.some((venue) => venue.floorIds.includes(floor.id));
+  const legacy = unique ? spaceInfo(floor.id) : spaceInfo('');
+  if (floor.model === null) return { ...legacy, model: null };
+  if (floor.model) return {
+    ...legacy,
+    model: { src: `/api/models/${encodeURIComponent(floor.model.assetId)}`, room: floor.name,
+      columns: Math.max(1, floor.tables.length), rows: 1 },
+    uploadedModel: floor.model,
+  };
+  return { ...legacy, ...(unique ? {} : { model: null }), uploadedModel: undefined };
 }
 
 /** A floor nobody can see right now: stale edge, or every table unknown. */
