@@ -149,6 +149,18 @@ def stage_stage() -> None:
 
 # --- environment: make sure numpy + torch exist, else install and re-run ----
 
+def ensure_pip(py: str) -> None:
+    """pip inside the venv, bootstrapped from PyPA if the venv was made without it (or a run died half-way)."""
+    if subprocess.run([py, '-m', 'pip', '--version'], capture_output=True).returncode == 0:
+        subprocess.run([py, '-m', 'pip', 'install', '--quiet', '--upgrade', 'pip'], check=True)
+        return
+    script = os.path.join(ROOT, 'get-pip.py')
+    log('installing pip into ~/thermalml/venv from bootstrap.pypa.io')
+    with urllib.request.urlopen('https://bootstrap.pypa.io/get-pip.py', timeout=60) as r, open(script, 'wb') as f:
+        f.write(r.read())
+    subprocess.run([py, script, '--quiet'], check=True)
+
+
 def ensure_torch() -> None:
     try:
         import numpy  # noqa: F401
@@ -166,8 +178,13 @@ def ensure_torch() -> None:
         raise SystemExit('PyTorch is still missing inside ~/thermalml/venv; see the install log above')
     if not os.path.exists(py):
         log('PyTorch is not installed here; creating ~/thermalml/venv (needs the nodes to reach pypi.org)')
-        subprocess.run([sys.executable, '-m', 'venv', venv], check=True)
-        subprocess.run([py, '-m', 'pip', 'install', '--quiet', '--upgrade', 'pip'], check=True)
+        if subprocess.run([sys.executable, '-m', 'venv', venv]).returncode != 0:
+            # Ubuntu ships venv without ensurepip unless python3-venv is installed,
+            # which needs an admin. A venv without pip, plus PyPA's own bootstrap, does not.
+            log('python3-venv is not installed; making the venv without pip and bootstrapping pip')
+            shutil.rmtree(venv, ignore_errors=True)
+            subprocess.run([sys.executable, '-m', 'venv', '--without-pip', venv], check=True)
+    ensure_pip(py)
     subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'numpy', 'torch', 'torchvision'], check=True)
     if STAGE == 'full':
         # Ultralytics pulls in opencv-python, whose GUI build needs libGL that a

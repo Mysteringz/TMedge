@@ -169,7 +169,7 @@ def full_zip(out: str) -> str:
               'and create a download key (Download keys for training jobs); save it on iw-g2 with the command shown.', '',
               f'Upload thermalml-full.zip ({size / 1e6:.1f} MB) as a new draft and set:',
               '  entrypoint  hpc_job.py', '  args        --stage full', '  partition   debug',
-              '  CPUs 64  memory 128 GB  GPUs 0  time 1-00:00:00   (GPUs 1 and time 08:00:00 once iw-g2 has been restarted)', '',
+              '  CPUs 56 (the debug partition allows 60)  memory 32 GB  GPUs 0  time 1-00:00:00   (GPUs 1 and time 08:00:00 once iw-g2 has been restarted)', '',
               'Run it. It resumes where it stopped if run again. Paste the end of its log back to Claude.']
     with open(os.path.join(out, 'README.txt'), 'w') as f:
         f.write('\n'.join(readme) + '\n')
@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, size, _stage, what in uploads:
         readme.append(f'     {name:28} {size / 1e6:5.1f} MB  {what}')
     readme += ['', '3. The work (upload code-and-pack-2.zip again as a new job, or reuse that job as a template):',
-               '     args: --stage all        CPUs 48  memory 64 GB  GPUs 0  time 08:00:00',
+               '     args: --stage all        CPUs 48  memory 32 GB  GPUs 0  time 08:00:00',
                '   (GPUs 0 while iw-g2 needs its restart -- nvidia-smi fails there; after the restart use GPUs 1, time 03:00:00)',
                '   It sets up PyTorch if needed, reads the photos with Faster R-CNN, builds the labels, trains the',
                '   thermal model (train ' + ', '.join(TRAIN_DAYS) + '; validate ' + ', '.join(VAL_DAYS) + '), scores it against',
