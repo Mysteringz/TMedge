@@ -40,11 +40,13 @@ MIN_CONF = 0.25
 
 
 def hand_labels(root: str) -> dict[str, list[tuple[float, float]]]:
-    """16-hex name -> person centres in photo pixels, from the Roboflow YOLO export."""
+    """16-hex name -> person centres in photo pixels, from the Roboflow YOLO export.
+
+    Read from the label files alone, so the cluster needs the text, not the photos.
+    """
     out = {}
-    for img in glob.glob(os.path.join(root, '*', 'images', '*.jpg')):
-        name = os.path.basename(img).split('_jpg')[0]
-        lab = img.replace(f'{os.sep}images{os.sep}', f'{os.sep}labels{os.sep}').rsplit('.', 1)[0] + '.txt'
+    for lab in glob.glob(os.path.join(root, '*', 'labels', '*.txt')):
+        name = os.path.basename(lab).split('_jpg')[0]
         pts = []
         for line in open(lab):
             parts = line.split()

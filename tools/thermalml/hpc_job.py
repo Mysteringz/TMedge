@@ -1,7 +1,15 @@
 """
 The thermal people detector's labelling and training, as one SLURM job (module 02 entrypoint).
 
-    hpc_job.py --stage check | stage | label | train | all
+    hpc_job.py --stage check | stage | label | train | all      (uploaded data, 1-in-5 photos)
+    hpc_job.py --stage full                                       (every photo, fetched with a download key)
+
+`full` needs nothing uploaded but this code: it fetches the newest export of
+training.frames and training.pairs from the edge with the download key saved
+in ~/thermalml/download.key (ML Data page -> Download keys), then builds the
+shards, extracts every paired photo, runs all three teachers on every
+October photo, labels, trains, scores against today's edge detector, runs the
+hand-labelled test once, and deletes the photos it extracted.
 
 Uploads come from tools/thermalml/hpc_pack.py; each carries this file, the
 tools/thermalml code and one piece of data. Everything persistent lives under
@@ -146,6 +154,9 @@ def ensure_torch() -> None:
         import numpy  # noqa: F401
         import torch  # noqa: F401
         import torchvision  # noqa: F401
+        if STAGE == 'full':
+            import cv2  # noqa: F401
+            import ultralytics  # noqa: F401
         return
     except ImportError:
         pass
@@ -158,6 +169,12 @@ def ensure_torch() -> None:
         subprocess.run([sys.executable, '-m', 'venv', venv], check=True)
         subprocess.run([py, '-m', 'pip', 'install', '--quiet', '--upgrade', 'pip'], check=True)
     subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'numpy', 'torch', 'torchvision'], check=True)
+    if STAGE == 'full':
+        # Ultralytics pulls in opencv-python, whose GUI build needs libGL that a
+        # server may not have; the headless build is the same library without it.
+        subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'ultralytics'], check=True)
+        subprocess.run([py, '-m', 'pip', 'uninstall', '--quiet', '-y', 'opencv-python'], check=False)
+        subprocess.run([py, '-m', 'pip', 'install', '--quiet', '--force-reinstall', '--no-deps', 'opencv-python-headless'], check=True)
     log('re-running in ~/thermalml/venv')
     os.execv(py, [py, '-u', os.path.abspath(__file__), '--stage', STAGE] + (['--quick'] if QUICK else []))
 
@@ -277,16 +294,143 @@ def stage_train() -> None:
     log(f'model, history and scores are in {p["out"]} (model {model["id"]})')
 
 
+# --- fetch: the newest frames + pairs export, with the download key ----------
+
+EDGE = os.environ.get('THERMALML_EDGE', 'https://algo.hkumyseat.com')
+NEEDED = ('training.frames', 'training.pairs')
+
+
+def keyed(path: str, key: str, extra: dict | None = None):
+    req = urllib.request.Request(EDGE + '/api/ml-data/keyed' + path, headers={'Authorization': 'Bearer ' + key, **(extra or {})})
+    return urllib.request.urlopen(req, timeout=60)
+
+
+def stage_fetch() -> dict[str, str]:
+    """{table: local ZIP} for training.frames and training.pairs, downloaded (resumably) and checksummed."""
+    if os.environ.get('THERMALML_ZIPS'):     # rehearsal: frames=path,pairs=path instead of downloading
+        given = dict(item.split('=', 1) for item in os.environ['THERMALML_ZIPS'].split(','))
+        return {'training.frames': given['frames'], 'training.pairs': given['pairs']}
+    key_file = os.path.join(ROOT, 'download.key')
+    if not os.path.exists(key_file):
+        raise SystemExit('no download key: create one on the ML Data page and save it with the command shown there')
+    key = open(key_file).read().strip()
+    try:
+        with keyed('/exports', key) as r:
+            jobs = json.load(r)['jobs']
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f'the edge refused the download key (HTTP {e.code}): it may have expired or been revoked')
+    done = sorted((j for j in jobs if j['state'] == 'completed'), key=lambda j: -j['createdAt'])
+    picked: dict[str, dict] = {}
+    for table in NEEDED:
+        job = next((j for j in done if table in j['tables']), None)
+        if job is None:
+            raise SystemExit(f'no completed export contains {table}: prepare one on the ML Data page (tick training.frames and training.pairs)')
+        picked[table] = job
+    os.makedirs(os.path.join(ROOT, 'data'), exist_ok=True)
+    out: dict[str, str] = {}
+    for table, job in picked.items():
+        dest = os.path.join(ROOT, 'data', f'ml-data-{job["id"]}.zip')
+        out[table] = dest
+        if os.path.exists(dest) and os.path.getsize(dest) == job['bytes'] and sha256(dest) == job['sha256']:
+            log(f'{table}: export {job["id"]} already here')
+            continue
+        part = dest + '.part'
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        log(f'{table}: downloading export {job["id"]} ({job["bytes"] / 1e9:.2f} GB) from {have / 1e9:.2f} GB')
+        with keyed(f'/exports/{job["id"]}/download', key, {'Range': f'bytes={have}-'} if have else None) as r, open(part, 'ab') as f:
+            last = time.time()
+            for chunk in iter(lambda: r.read(8 << 20), b''):
+                f.write(chunk)
+                have += len(chunk)
+                if time.time() - last > 60:
+                    log(f'  {have / 1e9:.2f} / {job["bytes"] / 1e9:.2f} GB')
+                    last = time.time()
+        if os.path.getsize(part) != job['bytes'] or sha256(part) != job['sha256']:
+            raise SystemExit(f'{table}: the download does not match the export\'s checksum; run the job again to resume')
+        os.replace(part, dest)
+        log(f'{table}: export {job["id"]} downloaded and verified')
+    return out
+
+
+# --- full: every photo, end to end ------------------------------------------
+
+OCT_DAYS = ['2026-10-06', '2026-10-07', '2026-10-09', '2026-10-10', '2026-10-11']
+TRAIN_DAYS = ['2026-10-06', '2026-10-07', '2026-10-11']
+VAL_DAYS = ['2026-10-10']
+
+
+def stage_full() -> None:
+    os.environ.setdefault('YOLO_CONFIG_DIR', os.path.join(ROOT, 'ultralytics'))   # its settings stay under ~/thermalml
+    ensure_torch()
+    sys.path.insert(0, CODE)
+    os.chdir(CODE)                       # assets (rigs/, data/ml/...) are found relative to the code
+    from tools.thermalml import __main__ as tm, dataset, evaluate, handtest, labels, teachers, train
+    zips = stage_fetch()
+    w = os.path.join(ROOT, 'full')
+    d = {k: os.path.join(w, k) for k in ('shards', 'rgb', 'features', 'teachers', 'labels', 'model', 'reports')}
+    for v in d.values():
+        os.makedirs(v, exist_ok=True)
+    if not os.listdir(d['shards']):
+        log('shards: every thermal frame, per sensor per day')
+        tm.main(['shards', '--dump', zips['training.frames'], '--out', d['shards']])
+    labelled = all(os.path.exists(os.path.join(d['labels'], SENSOR, f'{day}.json')) for day in OCT_DAYS)
+    if not labelled and not os.listdir(d['rgb']):
+        log('photos: every one paired with a thermal frame')
+        tm.main(['rgb', '--dump', zips['training.frames'], '--pairs', zips['training.pairs'], '--shards', d['shards'], '--out', d['rgb']])
+    if not os.listdir(d['features']):
+        log('inputs: c0/c1/c2 for every frame')
+        dataset.main(['--shards', d['shards'], '--out', d['features']])
+    dev = device()
+    if not labelled:
+        for model in TEACHER:
+            log(f'teacher {model} on every October photo ({dev})')
+            # Every photo (THERMALML_EVERY is only for rehearsals on a laptop).
+            teachers.main(['--model', model, '--rgb', d['rgb'], '--out', d['teachers'], '--device', dev, '--batch', '16',
+                           '--every', os.environ.get('THERMALML_EVERY', '1')]
+                          + [x for day in OCT_DAYS for x in ('--day', day)])
+        log('labels: fused teacher, lit photos only, unknown outside the photo')
+        labels.main(['--teacher', d['teachers'], '--models', '+'.join(TEACHER), '--mapping', 'data/ml/mapping/2ccf670bc094-oct.json',
+                     '--rgb', d['rgb'], '--out', d['labels']] + [x for day in OCT_DAYS for x in ('--day', day)])
+        # The photos were only ever needed to make labels.
+        shutil.rmtree(d['rgb'], ignore_errors=True)
+        log('photos deleted: the labels are kept')
+    model_json = os.path.join(d['model'], 'model.json')
+    if not os.path.exists(model_json):
+        log(f'training on {TRAIN_DAYS}, validating on {VAL_DAYS} ({dev})')
+        train.main(['--labels', d['labels'], '--features', d['features'], '--shards', d['shards'], '--device', dev, '--out', d['model']]
+                   + (['--epochs', '1', '--samples', '512'] if QUICK else [])
+                   + [x for day in TRAIN_DAYS for x in ('--train-day', day)] + [x for day in VAL_DAYS for x in ('--val-day', day)])
+    log('scoring against today\'s edge detector on the validation days')
+    evaluate.main(['--labels', d['labels'], '--model', model_json, '--features', d['features'], '--shards', d['shards'],
+                   '--replay', 'data/ml/replay', '--out', os.path.join(d['reports'], 'validation.json')]
+                  + [x for day in VAL_DAYS for x in ('--day', day)])
+    handtest.LEDGER = os.path.join(d['reports'], 'handtest-ledger.jsonl')
+    model_id = json.load(open(model_json))['id']
+    if not (os.path.exists(handtest.LEDGER) and model_id in open(handtest.LEDGER).read()):
+        out = handtest.run(model_json, 'first every-photo model on iw-g2', mapping_path='data/ml/mapping/2ccf670bc094-sept.json',
+                           labels_root='data/ml/handlabels/v1', features_root=d['features'], shards_root=d['shards'])
+        with open(os.path.join(d['reports'], 'handtest.json'), 'w') as f:
+            json.dump(train.finite(out), f, indent=1, allow_nan=False)
+        r = out['result']['all']
+        log(f'HAND TEST (400 frames, 19-Sept empty-room background): F1 {r["f1"]:.3f} {out["result"]["ci95"]["f1"]} '
+            f'precision {r["precision"]:.3f} recall {r["recall"]:.3f} count error {r["countMAE"]:.3f}')
+    log(f'everything is in {w}: model/model.json, reports/validation.json, reports/handtest.json')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--stage', required=True, choices=('check', 'stage', 'label', 'train', 'all'))
+    ap.add_argument('--stage', required=True, choices=('check', 'stage', 'label', 'train', 'all', 'fetch', 'full'))
     ap.add_argument('--quick', action='store_true', help='rehearsal: one short training epoch')
     a = ap.parse_args()
     global STAGE, QUICK
     STAGE, QUICK = a.stage, a.quick
     t0 = time.time()
-    if a.stage in ('check', 'all'):
+    if a.stage in ('check', 'all', 'full'):
         stage_check()
+    if a.stage == 'fetch':
+        stage_fetch()
+    if a.stage == 'full':
+        stage_full()
     if a.stage == 'stage':
         stage_stage()
     if a.stage in ('label', 'all'):

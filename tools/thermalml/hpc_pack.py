@@ -21,6 +21,7 @@ Nothing here leaves the team: the zips go only to module 02.
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import io
 import json
@@ -150,6 +151,32 @@ def photo_parts(rgb_root: str, day: str, rids: list[str]) -> list[bytes]:
     return parts
 
 
+def full_zip(out: str) -> str:
+    """The one upload the every-photo run needs: code, mappings, the edge baseline, the hand labels' text."""
+    extra: list[tuple[str, bytes | str]] = [('BUNDLE', b'full')]
+    assets = ['rigs/intern-demo/empty_bg_rel.npy', 'data/ml/mapping/2ccf670bc094-oct.json', 'data/ml/mapping/2ccf670bc094-sept.json']
+    for day in ['2026-10-06', '2026-10-07', '2026-10-09', '2026-10-10', '2026-10-11']:
+        assets.append(f'data/ml/replay/{sensor_dir(UID)}/{day}.edge.json')
+    for rel in assets:
+        extra.append((rel, os.path.join(REPO, rel)))
+    for lab in sorted(glob.glob(os.path.join(REPO, 'data/ml/handlabels/v1/*/labels/*.txt'))):
+        extra.append((os.path.relpath(lab, REPO), lab))
+    os.makedirs(out, exist_ok=True)
+    path = os.path.join(out, 'thermalml-full.zip')
+    size = write_zip(path, extra)
+    readme = ['Every-photo run on iw-g2 (module 02). One upload, one job.', '',
+              'Before: on the ML Data page, prepare an export with training.frames AND training.pairs ticked,',
+              'and create a download key (Download keys for training jobs); save it on iw-g2 with the command shown.', '',
+              f'Upload thermalml-full.zip ({size / 1e6:.1f} MB) as a new draft and set:',
+              '  entrypoint  hpc_job.py', '  args        --stage full', '  partition   debug',
+              '  CPUs 64  memory 128 GB  GPUs 0  time 1-00:00:00   (GPUs 1 and time 08:00:00 once iw-g2 has been restarted)', '',
+              'Run it. It resumes where it stopped if run again. Paste the end of its log back to Claude.']
+    with open(os.path.join(out, 'README.txt'), 'w') as f:
+        f.write('\n'.join(readme) + '\n')
+    print('\n'.join(readme))
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog='python3 -m tools.thermalml.hpc_pack')
     p.add_argument('--out', required=True)
@@ -160,7 +187,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--shards', default='data/ml/shards')
     p.add_argument('--mapping', default='data/ml/mapping/2ccf670bc094-oct.json')
     p.add_argument('--limit', type=int, help='rehearsal bundle: at most this many photos per day to label')
+    p.add_argument('--full', action='store_true', help='the every-photo upload (data fetched with a download key)')
     a = p.parse_args(argv)
+    if a.full:
+        full_zip(a.out)
+        return 0
     bundle = os.path.basename(os.path.normpath(a.out))
     os.makedirs(a.out, exist_ok=True)
     summary = build_pack(a.out, a.rgb, a.teachers, a.replay, a.features, a.shards, a.mapping)
