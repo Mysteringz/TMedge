@@ -2,13 +2,7 @@
 Training labels for the thermal detector: the teacher's people, in thermal pixels.
 
     data/ml/.venv/bin/python -m tools.thermalml.labels --teacher data/ml/teachers/<name> \
-        --mappings data/ml/mapping/days --day 2026-10-06 ... --out data/ml/labels/<name>
-
-Each day is mapped with its own fit (<mappings>/<uid without colons>-<day>.json):
-the rig's camera and thermal sensor shifted by ~2.8 thermal px between 6 and
-10 Oct with nothing recorded, so one mapping for a whole period would move
-every label by more than the 2 px a person is matched within. A day without
-a fit gets no labels -- unlabelled, not mislabelled.
+        --mapping data/ml/mapping/2ccf670bc094-oct.json --day 2026-10-06 ... --out data/ml/labels/<name>
 
 A teacher sees the photo, which covers about half of the thermal view. What
 it cannot see is *unknown* -- never "nobody there" -- so each label file
@@ -22,6 +16,11 @@ under 0.5 confidence) or one cut off at the photo's edge is set aside as
          "frames": {thermal id: {"pts": [[x, y, conf]], "ign": [[x, y]]}}}
 
 Only thermal frames with a paired photo get a label; the rest are unlabelled.
+
+One mapping per period (September, October), fitted on all of it: neither
+camera moved within a period (docs/THERMAL_ML.md), and fits on single days
+are ambiguous because people sit in the same few seats -- they disagreed by
+2-6 px where the cameras themselves had not moved at all.
 """
 from __future__ import annotations
 
@@ -68,16 +67,12 @@ def frame_labels(boxes: list[list[float]], m: dict) -> dict:
     return {'pts': pts, 'ign': ign}
 
 
-def build(teacher_dir: str, mappings: str, rgb_root: str, uid: str, day_list: list[str], out: str) -> list[str]:
+def build(teacher_dir: str, mapping_path: str, rgb_root: str, uid: str, day_list: list[str], out: str) -> list[str]:
+    m = json.load(open(mapping_path))
+    fp = footprint(m)
     lines = []
     for day in day_list:
         days.assert_trainable([day])
-        path = os.path.join(mappings, f'{sensor_dir(uid)}-{day}.json')
-        if not os.path.exists(path):
-            lines.append(f'{uid} {day}: no mapping fitted for this day; left unlabelled')
-            continue
-        m = json.load(open(path))
-        fp = footprint(m)
         doc = json.load(open(os.path.join(teacher_dir, sensor_dir(uid), f'{day}.json')))
         boxes = doc['boxes']
         pairs = read_pairs_index(rgb_root, uid, day)
@@ -98,13 +93,13 @@ def build(teacher_dir: str, mappings: str, rgb_root: str, uid: str, day_list: li
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog='python -m tools.thermalml.labels')
     p.add_argument('--teacher', required=True, help='a teacher output folder, e.g. data/ml/teachers/<name>')
-    p.add_argument('--mappings', required=True, help='folder of per-day fits, <uid without colons>-<day>.json')
+    p.add_argument('--mapping', required=True)
     p.add_argument('--uid', default='2c:cf:67:0b:c0:94')
     p.add_argument('--day', action='append', required=True)
     p.add_argument('--rgb', default='data/ml/rgb')
     p.add_argument('--out', required=True)
     a = p.parse_args(argv)
-    for line in build(a.teacher, a.mappings, a.rgb, a.uid, a.day, a.out):
+    for line in build(a.teacher, a.mapping, a.rgb, a.uid, a.day, a.out):
         print(line)
     return 0
 

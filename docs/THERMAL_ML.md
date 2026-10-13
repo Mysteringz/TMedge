@@ -138,26 +138,31 @@ These settings were fixed before any fine-tuned model was trained:
 - It recovered on its own (mAP50 0.17 by epoch 10). The recipe was left
   unchanged.
 
-## The rig moved in October: one mapping per day
+## One camera-to-thermal fit per period (checked 2026-10-13)
 
-| Fit | Error | Frames | Rotation | Scale (thermal px per photo px) |
-|---|---|---|---|---|
-| September | 1.20 px | 1,072 | −6.6° | 0.0355 |
-| October (one fit) | 1.30 px | 188 | −8.1° | 0.0405 |
+| Period | Error | Frames explained | Other orientation |
+|---|---|---|---|
+| September | 1.20 px | 1,072 | 640 |
+| October (20% photo sample) | 1.33 px | 1,637 of 2,021 | 1,326, with a near-zero scale |
 
-- Within October, 6 Oct fitted alone (1.08 px, 98 of 99 frames) and 10 Oct
-  fitted alone (1.53 px, 83 of 105) put the same photo point **2.8 thermal px
-  apart on average, up to 5.6**.
-- The configured pose (280 cm, mirrored) never changed, so the movement went
-  unrecorded.
-- A single October mapping would move every label by about 1.3–1.6 px, close
-  to the 2 px a person is matched within.
+The two periods differ (4.8 px where October's people sit), so each has its
+own fit.
 
-So:
-- Labels use one fit per day: `mapping --name <day> --out data/ml/mapping/days`.
-- A day that cannot be fitted is left unlabelled.
-- The nightly loop refits each day and reports the change from the day
-  before.
+**Within a period, neither camera moved.** Measured directly, with no people
+involved:
+- **Photo camera:** each day's median photo aligns with the period's first
+  day within 0.0–0.7 px of 640×480, rotation under 0.1°.
+- **Thermal sensor:** each day's background aligns within 0.04 thermal px.
+
+**Correction.** An earlier version of this page said the rig moved between 6
+and 10 Oct, because fits on single days disagreed by 2–6 px. That was wrong.
+People sit in the same few seats, so a fit on one day is pinned down only
+near those seats and is ambiguous elsewhere: even the two halves of one day
+disagreed. The per-day labelling it led to was reverted. Fits use whole
+periods.
+
+The nightly loop still checks this directly with the same two alignments,
+and stops labelling a day if either camera has moved.
 
 ## Splitting the thermal model's data (decided 2026-10-13)
 
