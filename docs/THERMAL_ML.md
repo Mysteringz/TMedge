@@ -138,6 +138,34 @@ These settings were fixed before any fine-tuned model was trained:
 - It recovered on its own (mAP50 0.17 by epoch 10). The recipe was left
   unchanged.
 
+## The teacher that labels October (decided 2026-10-13)
+
+**Fine-tuning made it worse.** Scored two-fold by day, fine-tuned yolo11s
+reached F1 0.529, against 0.782 untuned.
+
+| Fold | Trained on | Scored on | F1 | Precision | Recall |
+|---|---|---|---|---|---|
+| A | 26 Sept, 224 photos | 29 Sept | 0.520 | 0.38 | 0.81 |
+| B | 29 Sept, 96 photos | 26 Sept | 0.533 | 0.48 | 0.61 |
+
+- Each fine-tuned model was nearly perfect on its own evening's held-out
+  frames (mAP50 about 0.98) and invented people on the other evening. It
+  learned the evening, not people seen from above.
+- The yolo26s fine-tune under the same recipe was stopped unfinished, by
+  Kevin's decision, after the yolo11s result.
+
+**The teacher** is therefore the bake-off winner, unchanged: the untuned
+ensemble of yolo11s, yolo26s and Faster R-CNN (F1 0.841).
+
+**How it is applied:**
+- **Every fifth paired October photo.** Faster R-CNN would need 6–12 h for
+  all 108k photos on the Mac, and frames a second apart are near-duplicates.
+- **Only photos at least as bright as the darkest hand-labelled one** (mean
+  grey 105; the hand-labelled range is 105–125). At night (mean grey about
+  26–75) the detectors invent people in the dark; on 9 Oct the two YOLO
+  models never agreed on one of their 618 "people". Too-dark photos are
+  unknown, not empty.
+
 ## One camera-to-thermal fit per period (checked 2026-10-13)
 
 | Period | Error | Frames explained | Other orientation |
