@@ -2,6 +2,18 @@ import { closeSync, existsSync, fsync, fsyncSync, mkdirSync, openSync, readFileS
 import { dirname } from 'node:path';
 
 export interface Cursor { boot: number; seq: number }
+export class ReplayConflictError extends Error {}
+export class ReplayFenceError extends Error {}
+export interface ReplayPersistence {
+  readonly cursors: Map<string, Cursor>;
+  commandSeq: number;
+  accept(uid: string, cursor: Cursor): void;
+  acceptAsync(uid: string, cursor: Cursor, commandSeq?: number): Promise<void>;
+  command(seq: number): void;
+  allocateCommandSeq?(floor: number): Promise<number>;
+  reset(uid: string): boolean;
+  resetAsync?(uid: string): Promise<boolean>;
+}
 const UID = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
 const u32 = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
 const MAX_QUEUED = 10_000;
@@ -14,7 +26,7 @@ interface Pending {
 }
 
 /** Durable write-ahead cursors: restarting the edge must not make old signed packets new. */
-export class ReplayStore {
+export class ReplayStore implements ReplayPersistence {
   readonly cursors = new Map<string, Cursor>();
   commandSeq = 0;
   private records = 0;

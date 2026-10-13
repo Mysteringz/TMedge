@@ -117,3 +117,16 @@ To remove standby routing, disable the load balancer: the retained DNS CNAME
 still points to the AWS tunnel. Then stop the VM's separate connector and
 sync/replication timers. Never start the September connector: its token is
 for the same tunnel as AWS and would split users between different stores.
+
+## Full-site failover preparation
+
+`docs/FAILOVER.md` describes the separate, not-yet-live full-site design. Its
+first implemented control is a PostgreSQL-backed site lease: one origin may
+bind sensor/console listeners and serve student traffic, while a database
+generation fences the other. The lease passed an isolated two-origin expiry
+and takeover rehearsal on the Proxmox PostgreSQL service.
+
+Do not add the failover environment variables to these live units yet. The
+current local-file state and read-only physical replica are not sufficient for
+safe writable failover; the remaining state table in that document and the
+managed cloud database gate must be completed first.

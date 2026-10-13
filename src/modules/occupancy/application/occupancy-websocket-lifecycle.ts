@@ -21,6 +21,7 @@ export class OccupancyWebSocketLifecycle {
     private readonly store: SnapshotStore,
     private readonly sessions: Sessions,
     private readonly accounts: IStudentAccountRepository,
+    private readonly trafficActive?: () => Promise<boolean>,
   ) {
     this.server = new WebSocketServer({ noServer: true, maxPayload: 1024 });
     this.httpServer.on('upgrade', this.onUpgrade);
@@ -71,6 +72,10 @@ export class OccupancyWebSocketLifecycle {
   private async authorizeUpgrade(request: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {
     const timer = setTimeout(() => socket.destroy(), 5000);
     try {
+      if (this.trafficActive && !await this.trafficActive()) {
+        socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n', () => socket.destroy());
+        return;
+      }
       if (!sameOrigin(request)) {
         socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy());
         return;

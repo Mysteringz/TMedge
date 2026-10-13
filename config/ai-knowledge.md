@@ -239,19 +239,22 @@ can move its status (to do, in progress, done) whatever their role.
   code without writing it out, and has no tools: it cannot change anything.
   The model is loaded when the landing page opens.
 
-## Website backup
+## Availability
 
-AWS is the primary student website. Cloudflare uses ordered failover pools:
-all normal traffic goes to AWS; the Proxmox standby serves traffic only when
-the primary fails readiness checks. Each origin has a separate tunnel.
-Readiness checks account storage, not just whether an HTTP process is alive.
-The standby runs the primary's approved release, streams a read-only database
-copy and refreshes private account/session state every minute. Existing
-accounts can sign in; sign-up stays on the primary. Activity writes cannot
-reach the read-only copy. Sensor ingest and console writes remain on AWS.
-AWS sends occupancy snapshots to both websites. If it stops, counts become
-unknown after the usual stale window; the standby never invents live counts.
-Backup operation and recovery are described in deploy/backup/README.md.
+AWS is the primary student website. Cloudflare sends all normal traffic there
+and uses the Proxmox website only after readiness failures. The standby has a
+read-only database copy: existing accounts can sign in, but sign-up, activity,
+sensor ingest and console writes remain on AWS. AWS publishes occupancy to
+both websites; if it stops, counts become unknown, never empty.
+
+A full-site mode is being prepared, but is not live. A PostgreSQL lease
+will authorize one origin for sensor, console and student traffic;
+the old owner closes listeners before takeover, and the standby's
+readiness stays false until it owns the lease. Node and gateway replay plus
+command cursors are fenced. Console/session, artifact and ML state
+must move to shared durable stores, and a managed cloud
+database must pass restore/failover tests before this mode is enabled. See
+docs/FAILOVER.md and deploy/backup/README.md.
 
 ## Where to look for more
 

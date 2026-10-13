@@ -1,8 +1,12 @@
 import { readFileSync, statSync } from 'node:fs';
 import { withPrivateFileLock, writePrivateJson } from '../shared/private-file.js';
 
+export interface HelloReplayPersistence {
+  accept(id: string, nonce: string, expires: number, now: number): boolean | Promise<boolean>;
+}
+
 /** Persist the short HELLO window before establishing a gateway session. */
-export class HelloReplayStore {
+export class HelloReplayStore implements HelloReplayPersistence {
   constructor(private readonly path: string) { this.read(); }
   private read(): { highWater: number; nonces: [string, number][] } {
     try {

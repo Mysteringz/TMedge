@@ -35,6 +35,10 @@ import type { OccupancyHistoryRecord } from '../src/modules/occupancy-history/re
 import { createEdgeApplication } from '../src/edge/composition-root.js';
 import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { assertPostgresBuildLogBoundary } from './postgres-build-log-regression.js';
+import { PostgresSiteLease, PostgresSiteTrafficGuard } from '../src/infrastructure/postgres/site-leadership.js';
+import { PostgresReplayStore, ReplayRejectedError } from '../src/infrastructure/postgres/replay-store.js';
+import { ReplayFenceError } from '../src/edge/replay.js';
+import { PostgresHelloReplayStore } from '../src/infrastructure/postgres/hello-replay-store.js';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const migrations = [
@@ -45,6 +49,9 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791158400000-CreateCommandOutcomePersistence.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791244800000-CreateOccupancyHistory.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791590400000-AddRegistrationDetector.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791676800000-CreateSiteLeadership.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791763200000-CreateIngestReplayCursors.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1791849600000-CreateGatewayHelloReplay.js'),
 ];
 
 async function approveTransaction(
@@ -91,12 +98,80 @@ test('registration schema and provisioning repository enforce persistence invari
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 7, 'foundation, registration, build, rollout, command, occupancy, and detector migrations all run');
+    assert.equal(appliedMigrations, 10, 'foundation, registration, build, rollout, command, occupancy, detector, leadership, replay, and gateway migrations all run');
     await assertPostgresBuildLogBoundary(runtime);
     assert.equal(
       (await migrator.query("SELECT to_regclass('public.tmedge_foundation_probe') AS table_name"))[0].table_name,
       'tmedge_foundation_probe',
     );
+
+    const primaryLease = new PostgresSiteLease(runtime, {
+      siteId: 'integration-site', originId: 'primary', ttlMs: 5_000, renewMs: 1_000,
+    }, '00000000-0000-4000-8000-000000000001');
+    const standbyLease = new PostgresSiteLease(runtime, {
+      siteId: 'integration-site', originId: 'standby', ttlMs: 5_000, renewMs: 1_000,
+    }, '00000000-0000-4000-8000-000000000002');
+    try {
+      assert.equal(await primaryLease.start(() => undefined), true);
+      assert.equal(await standbyLease.start(() => undefined), false, 'a live primary fences the standby');
+      assert.equal(await new PostgresSiteTrafficGuard(runtime, { siteId: 'integration-site', originId: 'primary' }).active(), true);
+      assert.equal(await new PostgresSiteTrafficGuard(runtime, { siteId: 'integration-site', originId: 'standby' }).active(), false);
+      await primaryLease.stop();
+      assert.equal(await standbyLease.start(() => undefined), true, 'a released lease can move immediately');
+      assert.equal(await new PostgresSiteTrafficGuard(runtime, { siteId: 'integration-site', originId: 'primary' }).active(), false);
+      assert.equal(await new PostgresSiteTrafficGuard(runtime, { siteId: 'integration-site', originId: 'standby' }).active(), true);
+      const generations = await runtime.query("SELECT generation::int AS generation FROM public.site_leadership WHERE site_id = 'integration-site'");
+      assert.equal(generations[0].generation, 2, 'every ownership change advances the fencing generation');
+    } finally {
+      await primaryLease.stop();
+      await standbyLease.stop();
+      await runtime.query("DELETE FROM public.site_leadership WHERE site_id = 'integration-site'");
+    }
+
+    const replayUid = '02:00:00:00:00:99';
+    const replayLease = new PostgresSiteLease(runtime, {
+      siteId: 'replay-integration-site', originId: 'primary', ttlMs: 5_000, renewMs: 1_000,
+    }, '00000000-0000-4000-8000-000000000003');
+    try {
+      assert.equal(await replayLease.start(() => undefined), true);
+      const firstReplay = await PostgresReplayStore.open(runtime, () => replayLease.fence());
+      await firstReplay.acceptAsync(replayUid, { boot: 7, seq: 10 }, 100);
+      await assert.rejects(firstReplay.acceptAsync(replayUid, { boot: 7, seq: 10 }), ReplayRejectedError);
+      const successorReplay = await PostgresReplayStore.open(runtime, () => replayLease.fence());
+      assert.deepEqual(successorReplay.cursors.get(replayUid), { boot: 7, seq: 10 });
+      assert.equal(successorReplay.commandSeq, 100);
+      await assert.rejects(successorReplay.acceptAsync(replayUid, { boot: 6, seq: 1000 }), ReplayRejectedError);
+      const allocated = await Promise.all([
+        firstReplay.allocateCommandSeq(50), successorReplay.allocateCommandSeq(50),
+      ]);
+      assert.deepEqual(allocated.sort((a, b) => a - b), [101, 102], 'command sequences are unique across origin pools');
+      assert.equal(await successorReplay.resetAsync(replayUid), true);
+      assert.equal((await PostgresReplayStore.open(runtime)).cursors.has(replayUid), false);
+      await replayLease.stop();
+      await assert.rejects(firstReplay.allocateCommandSeq(50), ReplayFenceError, 'an expired owner cannot commit after takeover');
+    } finally {
+      await replayLease.stop();
+      await runtime.query('DELETE FROM public.ingest_replay_cursors WHERE uid = $1', [replayUid]);
+      await runtime.query('DELETE FROM public.ingest_command_cursor');
+      await runtime.query("DELETE FROM public.site_leadership WHERE site_id = 'replay-integration-site'");
+    }
+
+    const helloLease = new PostgresSiteLease(runtime, {
+      siteId: 'hello-integration-site', originId: 'primary', ttlMs: 5_000, renewMs: 1_000,
+    }, '00000000-0000-4000-8000-000000000004');
+    try {
+      assert.equal(await helloLease.start(() => undefined), true);
+      const hellos = new PostgresHelloReplayStore(runtime, () => helloLease.fence());
+      const now = Date.now();
+      assert.equal(await hellos.accept('integration-gateway', 'nonce-1', now + 60_000, now), true);
+      assert.equal(await hellos.accept('integration-gateway', 'nonce-1', now + 60_000, now), false);
+      await helloLease.stop();
+      await assert.rejects(hellos.accept('integration-gateway', 'nonce-2', now + 60_000, now), ReplayFenceError);
+    } finally {
+      await helloLease.stop();
+      await runtime.query("DELETE FROM public.gateway_hello_replays WHERE gateway_id = 'integration-gateway'");
+      await runtime.query("DELETE FROM public.site_leadership WHERE site_id = 'hello-integration-site'");
+    }
 
     const runner = migrator.createQueryRunner();
     await runner.connect();

@@ -35,7 +35,7 @@
  * fixed command port (TMnode TM_DOWNLINK_PORT, 5201), and only to a node they
  * have heard from at that address -- a gateway is not an open relay.
  */
-import { HelloReplayStore } from './hello-replay.js';
+import { HelloReplayStore, type HelloReplayPersistence } from './hello-replay.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer as createHttpServer, type IncomingMessage } from 'node:http';
 import { createServer, isIP, type Server, type Socket } from 'node:net';
@@ -146,6 +146,7 @@ export interface GatewayServerOptions {
   token: Buffer;
   tokens?: (id: string) => Buffer[];
   helloPath?: string;
+  helloStore?: HelloReplayPersistence;
   allowRawTcp?: boolean;
   edgeId: string;
   allowRemote?: (address: string) => boolean;
@@ -229,14 +230,15 @@ export class GatewayServer {
   private readonly sockets = new Set<Socket>();
   /** A timestamp alone does not prevent reuse during its acceptance window. */
   private readonly hellos = new Map<string, number>();
-  private readonly helloStore: HelloReplayStore | null;
+  private readonly helloStore: HelloReplayPersistence | null;
   private readonly now: () => number;
   private started = false;
   private closePromise: Promise<void> | null = null;
 
   constructor(private readonly opts: GatewayServerOptions) {
     this.now = opts.now ?? Date.now;
-    this.helloStore = opts.helloPath ? new HelloReplayStore(opts.helloPath) : null;
+    if (opts.helloPath && opts.helloStore) throw new Error('configure one gateway HELLO replay store, not both');
+    this.helloStore = opts.helloStore ?? (opts.helloPath ? new HelloReplayStore(opts.helloPath) : null);
     this.server = createServer((s) => this.accept(s));
     this.http.on('upgrade', (req, socket, head) => {
       let path: string;
@@ -374,6 +376,8 @@ export class GatewayServer {
     const reader = new FrameReader();
     let conn: Conn | null = null;
     let denied = false;
+    let authenticating = false;
+    let closed = false;
     // An unauthenticated session gets a few seconds to say HELLO.
     const helloTimer = setTimeout(() => link.destroy(), 5000);
     const deny = (reason: string) => {
@@ -388,6 +392,7 @@ export class GatewayServer {
         reader.push(chunk, (type, payload) => {
           if (denied) return;
           if (!conn) {
+            if (authenticating) return deny('HELLO authentication pending');
             if (type !== T_HELLO) return deny('HELLO expected');
             if (payload.length > 4096) return deny('bad HELLO');
             let h: { v?: number; gatewayId?: string; ts?: number; nonce?: string; mac?: string };
@@ -403,26 +408,38 @@ export class GatewayServer {
               || !/^[A-Za-z0-9._-]{1,128}$/.test(h.nonce) || typeof h.mac !== 'string' || !/^[0-9a-f]{64}$/.test(h.mac)) {
               return deny('bad HELLO');
             }
-            if (Math.abs(this.now() - h.ts) > HELLO_WINDOW_MS) return deny('clock skew or replayed HELLO');
+            const ts = h.ts, nonce = h.nonce;
+            if (Math.abs(this.now() - ts) > HELLO_WINDOW_MS) return deny('clock skew or replayed HELLO');
             const got = Buffer.from(String(h.mac ?? ''));
             const candidates = this.opts.tokens ? this.opts.tokens(id) : [this.opts.token];
-            const authenticated = candidates.find(token => timingSafeEqual(Buffer.from(helloMac(token, id, h.ts!, h.nonce!)), got));
+            const authenticated = candidates.find(token => timingSafeEqual(Buffer.from(helloMac(token, id, ts, nonce)), got));
             if (!authenticated) return deny('bad token');
             const now = this.now();
             for (const [key, expires] of this.hellos) if (expires < now) this.hellos.delete(key);
-            const key = `${id}|${h.nonce}`;
+            const key = `${id}|${nonce}`;
             if (this.hellos.has(key)) return deny('replayed HELLO');
             if (this.hellos.size >= 4096) return deny('HELLO capacity exceeded');
-            try { if (this.helloStore && !this.helloStore.accept(id, h.nonce, h.ts + HELLO_WINDOW_MS, now)) return deny('replayed HELLO or clock rollback'); }
-            catch { return deny('HELLO journal unavailable'); }
-            this.hellos.set(key, h.ts + HELLO_WINDOW_MS);
-            clearTimeout(helloTimer);
-            // A gateway that reconnects (or fails over to its other route) replaces its old session.
-            this.conns.get(id)?.link.destroy();
-            conn = { token: authenticated, link, info: { id, remote: link.remote, transport: link.transport, connectedAt: this.now(), lastSeen: this.now(), uplink: 0, downlink: 0, rttMs: null, stats: null } };
-            this.conns.set(id, conn);
-            link.write(frame(T_WELCOME, Buffer.from(JSON.stringify({ v: TMGW_VERSION, edgeId: this.opts.edgeId }))));
-            this.opts.log?.(`gateway ${id} connected over ${link.transport} from ${link.remote}`);
+            authenticating = true;
+            void (async () => {
+              try {
+                if (this.helloStore && !await this.helloStore.accept(id, nonce, ts + HELLO_WINDOW_MS, now)) {
+                  deny('replayed HELLO or clock rollback');
+                  return;
+                }
+              } catch {
+                deny('HELLO journal unavailable');
+                return;
+              }
+              if (denied || closed) return;
+              this.hellos.set(key, ts + HELLO_WINDOW_MS);
+              clearTimeout(helloTimer);
+              // A gateway that reconnects (or fails over to its other route) replaces its old session.
+              this.conns.get(id)?.link.destroy();
+              conn = { token: authenticated, link, info: { id, remote: link.remote, transport: link.transport, connectedAt: this.now(), lastSeen: this.now(), uplink: 0, downlink: 0, rttMs: null, stats: null } };
+              this.conns.set(id, conn);
+              link.write(frame(T_WELCOME, Buffer.from(JSON.stringify({ v: TMGW_VERSION, edgeId: this.opts.edgeId }))));
+              this.opts.log?.(`gateway ${id} connected over ${link.transport} from ${link.remote}`);
+            })();
             return undefined;
           }
           if (this.opts.tokens && !this.opts.tokens(conn.info.id).some(t => t.length === conn!.token.length && timingSafeEqual(t, conn!.token))) return deny('gateway credential expired or revoked');
@@ -481,6 +498,7 @@ export class GatewayServer {
       if (conn) link.write(frame(T_PING, b));
     }, 10_000);
     link.onClose(() => {
+      closed = true;
       clearTimeout(helloTimer);
       clearInterval(ping);
       if (conn && this.conns.get(conn.info.id) === conn) {

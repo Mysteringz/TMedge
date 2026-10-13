@@ -9,6 +9,12 @@ import { PostgresRegistryRepository } from '../infrastructure/postgres/registry-
 import { PostgresProvisioningRepository } from '../infrastructure/postgres/provisioning-repository.js';
 import { closePostgres, openPostgres } from '../infrastructure/postgres/data-source.js';
 import type { DataSource } from 'typeorm';
+import { PostgresSiteLease } from '../infrastructure/postgres/site-leadership.js';
+import { PostgresReplayStore } from '../infrastructure/postgres/replay-store.js';
+import type { ReplayPersistence } from './replay.js';
+import type { ActiveSiteLease } from '../infrastructure/postgres/site-leadership.js';
+import { PostgresHelloReplayStore } from '../infrastructure/postgres/hello-replay-store.js';
+import type { HelloReplayPersistence } from './hello-replay.js';
 
 function checkNodesWritable(nodesPath: string): void {
   try {
@@ -25,11 +31,14 @@ function checkNodesWritable(nodesPath: string): void {
 async function main(): Promise<void> {
   const loaded = await loadConfiguration();
   if (!loaded) return;
-  const { cfg, registry, source, provisioningService } = loaded;
+  const { cfg, registry, source, provisioningService, replayStore, helloStore, leadership } = loaded;
   const edge = createEdgeApplication(cfg, registry, {
     provisioningService,
     postgres: source ?? undefined,
     closePersistence: source ? () => closePostgres(source) : undefined,
+    leadership,
+    replayStore,
+    helloStore,
   });
   const rejectBudgetTimer = installRuntimeLogs(edge.runtime);
   let shuttingDown = false;  const shutdown = async () => {
@@ -66,6 +75,9 @@ async function loadConfiguration(): Promise<{
   registry: ReturnType<typeof loadRegistry>;
   source: DataSource | null;
   provisioningService: DatabaseProvisioningService | undefined;
+  replayStore: ReplayPersistence | undefined;
+  leadership: ActiveSiteLease | undefined;
+  helloStore: HelloReplayPersistence | undefined;
 } | null> {
   let source: DataSource | null = null;
   try {
@@ -73,7 +85,7 @@ async function loadConfiguration(): Promise<{
     if (cfg.persistenceMode === 'file') {
       const registry = loadRegistry(cfg.sitePath, cfg.nodesPath);
       if (cfg.flashToken) checkNodesWritable(cfg.nodesPath);
-      return { cfg, registry, source: null, provisioningService: undefined };
+      return { cfg, registry, source: null, provisioningService: undefined, replayStore: undefined, helloStore: undefined, leadership: undefined };
     }
     if (!cfg.postgres) throw new EnvError('PostgreSQL runtime configuration is missing');
     source = await openPostgres(cfg.postgres);
@@ -91,7 +103,10 @@ async function loadConfiguration(): Promise<{
       registry,
       { token: cfg.flashToken },
     );
-    return { cfg, registry, source, provisioningService };
+    const leadership = cfg.failover ? new PostgresSiteLease(source, cfg.failover) : undefined;
+    const replayStore = leadership ? await PostgresReplayStore.open(source, () => leadership.fence()) : undefined;
+    const helloStore = leadership ? new PostgresHelloReplayStore(source, () => leadership.fence()) : undefined;
+    return { cfg, registry, source, provisioningService, replayStore, helloStore, leadership };
   } catch (error) {
     if (source) await closePostgres(source).catch(() => undefined);
     if (error instanceof EnvError || error instanceof ConfigError) {

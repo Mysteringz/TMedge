@@ -52,8 +52,8 @@ export function createNodeRouter(dependencies: {
       throw error;
     }
   }));
-  router.post('/:uid/reset-cursor', dependencies.mutating, (req, res) => {
-    return res.json(dependencies.resetCursor.execute(routeParam(req.params, 'uid')));
-  });
+  router.post('/:uid/reset-cursor', dependencies.mutating, asyncHandler(async (req, res) => {
+    return res.json(await dependencies.resetCursor.execute(routeParam(req.params, 'uid')));
+  }));
   return router;
 }
