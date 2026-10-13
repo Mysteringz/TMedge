@@ -1,8 +1,10 @@
 # TMedge on the Proxmox cluster (HomeDataCenter)
 
-> **Superseded on 2026-09-21.** The live system is AWS EC2; see `aws-ec2.md`.
-> This VM keeps its install and data, with its services stopped and disabled,
-> as the rollback described there.
+> **Website standby since 2026-10-13.** AWS remains primary. This VM runs the
+> approved primary release with a separate tunnel, streaming read-only database
+> and private occupancy snapshots. See [backup/README.md](backup/README.md) for
+> current routing, service layout, limitations and recovery. The details below
+> describe the historical September install, preserved in a VM snapshot.
 
 Deployed 2026-09-19.
 
@@ -57,12 +59,10 @@ loopback only, and it sets the session cookie `Secure` on HTTPS requests.
 
 ## Updating
 
-From the dev Mac, run `npm run build && npm test` in this repo, then:
-
-```sh
-rsync -a --delete --exclude node_modules --exclude data --exclude .env --exclude .git ./ tmedge-vm:/opt/tmedge/
-ssh tmedge-vm 'cd /opt/tmedge && npm ci --omit=dev && sudo systemctl restart tmedge-edge tmedge-web tmedge-sim'
-```
+The standby refreshes the approved primary artifact through the normal
+manifest-verifying receiver. Use [backup/README.md](backup/README.md) and
+[pipeline.md](pipeline.md); `/opt/tmedge` is now an immutable release symlink.
+The historical overwrite-in-place rsync update method is retired.
 
 ## Two networks, not one
 

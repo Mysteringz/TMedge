@@ -14,6 +14,8 @@
     "db:registry:export": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/registry-export.js",
     "db:registry:import": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/registry-import.js",
     "db:students": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/student-accounts.js",
+    "failover:rehearse": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/failover-rehearsal.js",
+    "failover:import-replay": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/failover-import-replay.js",
     "students:local:config": "tsc -p tsconfig.json && node dist/src/tools/student-local-config.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck && npm --prefix algo-app run typecheck",
     "pretest": "npm run build:app",

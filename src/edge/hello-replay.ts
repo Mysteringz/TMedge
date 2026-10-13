@@ -1,17 +1,36 @@
 import { readFileSync, statSync } from 'node:fs';
 import { withPrivateFileLock, writePrivateJson } from '../shared/private-file.js';
 
+export interface HelloReplayPersistence {
+  accept(id: string, nonce: string, expires: number, now: number): boolean | Promise<boolean>;
+}
+
+export interface HelloReplaySnapshot {
+  highWater: number;
+  nonces: Array<[string, number]>;
+}
+
+/** Strict, read-only view used by the controlled PostgreSQL cutover import. */
+export function readHelloReplaySnapshot(path: string): HelloReplaySnapshot {
+  if (statSync(path).size > 2 * 1024 * 1024) throw new Error('HELLO journal too large');
+  const value = JSON.parse(readFileSync(path, 'utf8')) as Partial<HelloReplaySnapshot> & { version?: unknown };
+  if (value.version !== 1 || !Number.isSafeInteger(value.highWater) || (value.highWater ?? -1) < 0 ||
+    !Array.isArray(value.nonces) || value.nonces.length > 4096 ||
+    value.nonces.some(entry => !Array.isArray(entry) || entry.length !== 2 ||
+      !/^[A-Za-z0-9._-]{1,64}\|[A-Za-z0-9._-]{1,128}$/.test(entry[0]) ||
+      !Number.isSafeInteger(entry[1]) || entry[1] < 0) ||
+    new Set(value.nonces.map(entry => entry[0])).size !== value.nonces.length) {
+    throw new Error('invalid HELLO journal');
+  }
+  return { highWater: value.highWater as number, nonces: value.nonces };
+}
+
 /** Persist the short HELLO window before establishing a gateway session. */
-export class HelloReplayStore {
+export class HelloReplayStore implements HelloReplayPersistence {
   constructor(private readonly path: string) { this.read(); }
-  private read(): { highWater: number; nonces: [string, number][] } {
+  private read(): HelloReplaySnapshot {
     try {
-      if (statSync(this.path).size > 2 * 1024 * 1024) throw new Error('HELLO journal too large');
-      const v = JSON.parse(readFileSync(this.path, 'utf8')) as { version: number; highWater: number; nonces: [string, number][] };
-      if (v.version !== 1 || !Number.isSafeInteger(v.highWater) || v.highWater < 0 || !Array.isArray(v.nonces) || v.nonces.length > 4096 ||
-        v.nonces.some(e => !Array.isArray(e) || e.length !== 2 || !/^[A-Za-z0-9._-]{1,64}\|[A-Za-z0-9._-]{1,128}$/.test(e[0]) || !Number.isSafeInteger(e[1]) || e[1] < 0) ||
-        new Set(v.nonces.map(e => e[0])).size !== v.nonces.length) throw new Error('invalid HELLO journal');
-      return v;
+      return readHelloReplaySnapshot(this.path);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { highWater: 0, nonces: [] };
       throw err;

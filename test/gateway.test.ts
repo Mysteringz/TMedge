@@ -33,6 +33,28 @@ test('gateway: per-identity tokens and durable HELLO history survive restart', a
   } finally { await second.close(); }
 });
 
+test('gateway: WELCOME waits for shared replay admission and a refusal stays closed', async () => {
+  let decide: (accepted: boolean) => void = () => undefined;
+  let accepted = new Promise<boolean>((resolve) => { decide = resolve; });
+  const helloStore = { accept: () => accepted };
+  const gw = new GatewayServer({
+    port: 0, host: '127.0.0.1', token: TOKEN, edgeId: 'test-edge', onUplink: () => undefined, helloStore,
+  });
+  const port = await gw.listen();
+  try {
+    const first = await client(port, TOKEN, Date.now(), 'shared-one');
+    assert.equal(await first.next(T_WELCOME, 50), null, 'no session opens before the durable decision');
+    decide(true);
+    assert.ok(await first.next(T_WELCOME));
+    first.sock.destroy();
+
+    accepted = Promise.resolve(false);
+    const replay = await client(port, TOKEN, Date.now(), 'shared-two');
+    assert.match(String((await replay.next(T_DENY))?.payload), /replayed HELLO|clock rollback/);
+    replay.sock.destroy();
+  } finally { await gw.close(); }
+});
+
 test('gateway: a listener requiring WSS rejects raw TCP before authentication', async () => {
   const gw = new GatewayServer({ port: 0, host: '127.0.0.1', token: TOKEN, edgeId: 'test', onUplink: () => assert.fail(), allowRawTcp: false });
   const port = await gw.listen();
@@ -131,7 +153,10 @@ test('gateway over WebSocket on the same port: same auth, relay and commands; CF
   ing.on('report', (_p, address) => seen.push(address));
   const { gw, port } = await server((d, src) => ing.handle(d, src));
   try {
-    // A plain HTTP request to the port is not mistaken for TMGW.
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    assert.equal(health.status, 200, 'the bound ingest owner is healthy');
+    assert.equal(health.headers.get('cache-control'), 'no-store');
+    // Other plain HTTP requests to the port are not mistaken for TMGW.
     assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 426);
     const ws = new WebSocket(`ws://127.0.0.1:${port}/tmgw`, { headers: { 'CF-Connecting-IP': '203.0.113.7' } } as unknown as string[]);
     ws.binaryType = 'arraybuffer';

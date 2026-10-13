@@ -255,7 +255,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     },
     executeCommand: new ExecuteNodeCommand((command, authorized, issuer) =>
       rt.commandReceipts.send(command, { issuer: issuer ?? 'legacy:console', authorized: authorized ?? (() => true) })),
-    resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursor(uid)),
+    resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursorAsync(uid)),
     mutating,
   }));
 
