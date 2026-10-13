@@ -3,6 +3,7 @@ import type { AlgoAuth } from '../../../algo/auth.js';
 import { routeParam } from '../../../shared/http.js';
 import type { LocationAssetSlot } from '../domain/location-assets.js';
 import { InvalidLocationAssetReferenceError } from '../domain/location-assets.js';
+import { exposeAuthoredLocationCandidate, revalidateLocationCandidate } from '../domain/location-candidate.js';
 import { InvalidLocationDocumentError, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../domain/location-document.js';
 import type { LocationDraft } from '../domain/location-records.js';
 import {
@@ -67,14 +68,17 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     metadata: dependencies.assetMetadata, assets: dependencies.assets,
   });
 
-  router.use((req, res, next) => {
+  // This router is mounted at `/api`, so keep every middleware and fallback
+  // inside its own namespace. A broad gate here would intercept shell APIs
+  // such as `/api/me` before their normal handlers can run.
+  router.use('/locations', (req, res, next) => {
     const principal = dependencies.auth.principalOf(req);
     if (!principal) return fail(res, 401, 'UNAUTHENTICATED', 'Sign in again.');
     if (!principal.capabilities.includes('locations.manage')) return fail(res, 403, 'FORBIDDEN', 'Location management is unavailable to this account.');
     res.locals.locationActor = principal.name;
     return next();
   });
-  router.use(express.json({ limit: '1mb', strict: true }));
+  router.use('/locations', express.json({ limit: '1mb', strict: true }));
 
   router.get('/locations', asyncRoute(async (req, res) => {
     const creatorId = actor(req);
@@ -97,18 +101,19 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
   router.post('/locations/drafts', writeGuard, asyncRoute(async (req, res) => {
     const body = strictRecord(req.body, ['name', 'building', 'widthCm', 'heightCm']);
     const outcome = await create.execute({ creatorId: actor(req), name: body.name as string, building: body.building as string, widthCm: body.widthCm as number, heightCm: body.heightCm as number });
-    return send(res, 201, draftWriteDto(outcome.draft, outcome.durability));
+    return send(res, 201, await draftWriteDto(outcome.draft, outcome.durability, dependencies));
   }));
 
   router.post('/locations/:locationId/drafts', writeGuard, asyncRoute(async (req, res) => {
     const body = strictRecord(req.body, ['expectedPublishedRevision']);
     if (!Number.isSafeInteger(body.expectedPublishedRevision) || (body.expectedPublishedRevision as number) < 0) throw new TypeError('Expected published revision is invalid.');
     const outcome = await startEdit.execute({ creatorId: actor(req), locationId: routeParam(req.params, 'locationId'), expectedPublishedRevision: body.expectedPublishedRevision as number });
-    return send(res, 201, draftWriteDto(outcome.draft, outcome.durability));
+    return send(res, 201, await draftWriteDto(outcome.draft, outcome.durability, dependencies));
   }));
 
   router.get('/locations/drafts/:draftId', asyncRoute(async (req, res) => {
-    const draft = await requireDraft(dependencies.drafts, actor(req), routeParam(req.params, 'draftId'));
+    const draft = await dependencies.drafts.getDraftForRead(actor(req), routeParam(req.params, 'draftId'));
+    if (!draft) throw new LocationDraftNotFoundError();
     return send(res, 200, await draftDetailDto(draft, dependencies));
   }));
 
@@ -116,9 +121,8 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     const body = strictRecord(req.body, ['expectedDraftRevision', 'document']);
     if (!Number.isSafeInteger(body.expectedDraftRevision) || (body.expectedDraftRevision as number) < 1) throw new TypeError('Expected draft revision is invalid.');
     const draft = await requireDraft(dependencies.drafts, actor(req), routeParam(req.params, 'draftId'));
-    const document = authoredDocument(body.document, draft);
-    const outcome = await save.execute({ creatorId: actor(req), draftId: draft.draftId, expectedDraftRevision: body.expectedDraftRevision as number, document });
-    return send(res, 200, draftWriteDto(outcome.draft, outcome.durability));
+    const outcome = await save.execute({ creatorId: actor(req), draftId: draft.draftId, expectedDraftRevision: body.expectedDraftRevision as number, document: body.document });
+    return send(res, 200, await draftWriteDto(outcome.draft, outcome.durability, dependencies));
   }));
 
   router.get('/locations/drafts/:draftId/sensors', asyncRoute(async (req, res) => {
@@ -188,7 +192,7 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     return send(res, 200, result);
   }));
 
-  router.use((_req, res) => fail(res, 404, 'NOT_FOUND', 'No such location endpoint.'));
+  router.use('/locations', (_req, res) => fail(res, 404, 'NOT_FOUND', 'No such location endpoint.'));
   router.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => handleError(res, error));
   return router;
 }
@@ -264,17 +268,25 @@ function draftSummary(draft: LocationDraft) {
   };
 }
 
-function draftWriteDto(draft: LocationDraft, durability: 'confirmed' | 'unconfirmed') {
+async function draftWriteDto(
+  draft: LocationDraft,
+  durability: 'confirmed' | 'unconfirmed',
+  dependencies: LocationRouterDependencies,
+) {
+  const base = await pinnedBase(draft, dependencies);
+  const candidate = revalidateLocationCandidate(draft.document, draft.legacySpatial, base, draft.basePublishedRevision);
   return {
     draftId: draft.draftId, locationId: draft.locationId,
     draftRevision: draft.draftRevision, basePublishedRevision: draft.basePublishedRevision,
-    durability, document: documentDto(draft.document),
+    visibility: draft.document.visibility,
+    durability,
+    document: exposeAuthoredLocationCandidate(candidate.document, candidate.legacySpatial),
+    legacyBaseAvailable: draft.basePublishedRevision === null || base !== null,
   };
 }
 
 async function draftDetailDto(draft: LocationDraft, dependencies: LocationRouterDependencies) {
-  const state = draft.basePublishedRevision === null ? null : await dependencies.published.getActive(draft.locationId);
-  const base = draft.basePublishedRevision === null ? null : state?.history.find((item) => item.revision === draft.basePublishedRevision) ?? null;
+  const write = await draftWriteDto(draft, 'confirmed', dependencies);
   const capabilities: Partial<Record<LocationAssetSlot, { source: 'upload' | 'legacy-static'; previewAvailable: boolean; alignmentEditable: boolean; replaceWithUpload: boolean }>> = {};
   const refs = [
     ['planAssetId', draft.document.planAssetId], ['modelAssetId', draft.document.modelAssetId],
@@ -295,13 +307,18 @@ async function draftDetailDto(draft: LocationDraft, dependencies: LocationRouter
     };
   }
   return {
-    ...draftWriteDto(draft, 'confirmed'), updatedAt: draft.updatedAt,
+    ...write, updatedAt: draft.updatedAt,
     assetCapabilities: capabilities,
-    legacyBaseAvailable: draft.basePublishedRevision === null || !!base,
   };
 }
 
-function documentDto(document: LocationDocument): LocationDocument { return structuredClone(document); }
+async function pinnedBase(draft: LocationDraft, dependencies: LocationRouterDependencies) {
+  if (draft.basePublishedRevision === null) return null;
+  const state = await dependencies.published.getActive(draft.locationId);
+  const base = state?.history.find((revision) => revision.revision === draft.basePublishedRevision) ?? null;
+  if (!base) throw new LocationConflictError('The pinned base location revision is unavailable.');
+  return base;
+}
 
 function send(res: Response, status: number, data: unknown): Response { return res.status(status).json({ data, error: null }); }
 function fail(res: Response, status: number, code: string, message: string): Response { return res.status(status).json({ data: null, error: { code, message } }); }

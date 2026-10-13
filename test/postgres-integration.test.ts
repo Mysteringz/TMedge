@@ -57,7 +57,7 @@ import { StartLocationEditDraftUseCase } from '../src/modules/location-config/us
 import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
 import { UploadLocationAssetUseCase } from '../src/modules/location-config/use-cases/upload-location-asset.js';
 import { ReadLocationDraftAssetUseCase } from '../src/modules/location-config/use-cases/read-location-draft-asset.js';
-import { exposeLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
+import { exposeAuthoredLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
 import type { LocationRegistrySnapshot } from '../src/modules/location-config/repositories/location-storage.js';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
 import { isSnapshot } from '../src/web/store.js';
@@ -969,7 +969,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const firstLegacyDraft = await startLegacyEdit.execute({
       creatorId: 'pg-legacy-editor', locationId: legacyBridgeFloor.id, expectedPublishedRevision: 0,
     });
-    const firstLegacyCandidate = exposeLocationCandidate(firstLegacyDraft.draft.document, firstLegacyDraft.draft.legacySpatial) as { name: string };
+    const firstLegacyCandidate = exposeAuthoredLocationCandidate(firstLegacyDraft.draft.document, firstLegacyDraft.draft.legacySpatial) as { name: string };
     firstLegacyCandidate.name = 'PG legacy edit';
     const savedLegacyDraft = await saveLegacyEdit.execute({
       creatorId: 'pg-legacy-editor', draftId: firstLegacyDraft.draft.draftId,
@@ -994,7 +994,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     assert.equal(secondLegacyDraft.draft.legacySpatial?.basePublishedRevision, 1);
     assert.deepEqual({ ...secondLegacyDraft.draft.legacySpatial!, basePublishedRevision: 0 }, firstLegacyDraft.draft.legacySpatial,
       'a later editor gets only the prior server-derived spatial values from the exact published base');
-    const secondLegacyCandidate = exposeLocationCandidate(secondLegacyDraft.draft.document, secondLegacyDraft.draft.legacySpatial) as { name: string };
+    const secondLegacyCandidate = exposeAuthoredLocationCandidate(secondLegacyDraft.draft.document, secondLegacyDraft.draft.legacySpatial) as { name: string };
     secondLegacyCandidate.name = 'PG legacy edit twice';
     legacyDraftUpdateTime = 24;
     const savedSecondLegacyDraft = await saveLegacyEdit.execute({
@@ -1075,7 +1075,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     const managerAssetUpload = () => new UploadLocationAssetUseCase({
       drafts, assets: assetStore, saveDraft: managerAssetSave(), now: () => managerAssetClock++,
     });
-    const managerAInitialDocument = structuredClone(managerAInitial.draft.document);
+    const managerAInitialDocument = exposeAuthoredLocationCandidate(managerAInitial.draft.document, managerAInitial.draft.legacySpatial);
     managerAInitialDocument.zones = [{
       id: 'PG-MANAGER-ASSET-ZONE', name: 'Manager asset zone', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]],
     }];
@@ -1142,7 +1142,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     assert.equal(managerBDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
       ? managerBDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
     await assertManagerAssetPreviews('manager-b', managerBDraft.draft.draftId);
-    const managerBCandidate = exposeLocationCandidate(managerBDraft.draft.document, managerBDraft.draft.legacySpatial) as { name: string };
+    const managerBCandidate = exposeAuthoredLocationCandidate(managerBDraft.draft.document, managerBDraft.draft.legacySpatial) as { name: string };
     managerBCandidate.name = 'Edited by manager B';
     const managerBSaved = await managerAssetSave().execute({
       creatorId: 'manager-b', draftId: managerBDraft.draft.draftId, expectedDraftRevision: 1, document: managerBCandidate,
@@ -1158,7 +1158,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
     assert.equal(managerCDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
       ? managerCDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
     await assertManagerAssetPreviews('manager-c', managerCDraft.draft.draftId);
-    const managerCCandidate = exposeLocationCandidate(managerCDraft.draft.document, managerCDraft.draft.legacySpatial) as { name: string };
+    const managerCCandidate = exposeAuthoredLocationCandidate(managerCDraft.draft.document, managerCDraft.draft.legacySpatial) as { name: string };
     managerCCandidate.name = 'Edited by manager C';
     const managerCSaved = await managerAssetSave().execute({
       creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, expectedDraftRevision: 1, document: managerCCandidate,

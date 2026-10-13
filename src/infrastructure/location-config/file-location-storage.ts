@@ -54,7 +54,7 @@ export function initializeFileLocationPersistence(sitePath: string, nodesPath: s
     coordinator.close();
     throw error;
   }
-  const drafts = new FileLocationDraftRepository(dataDir, coordinator);
+  const drafts = new FileLocationDraftRepository(dataDir, coordinator, writeOperations);
   const assetStore = new FileLocationAssetStore(dataDir);
   const published = new FilePublishedLocationRepository(seedRegistry, nodesPath, coordinator, writeOperations);
   const snapshots = new FileLocationRegistrySnapshotRepository(siteJson, nodesPath, seedRegistry, published);

@@ -59,6 +59,14 @@ export class PostgresLocationDraftRepository implements LocationDraftRepository 
     } catch (error) { throw storageError(error); }
   }
 
+  async getDraftForRead(creatorId: string, draftId: string): Promise<LocationDraft | null> {
+    return this.getDraft(creatorId, draftId);
+  }
+
+  async getDraftForReadWithinMutation(creatorId: string, draftId: string): Promise<LocationDraft | null> {
+    return this.getDraft(creatorId, draftId);
+  }
+
   async listDrafts(creatorId: string): Promise<LocationDraft[]> {
     validateCreatorId(creatorId);
     try {

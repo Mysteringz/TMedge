@@ -146,6 +146,7 @@ test('reports received during delayed model acknowledgement survive publication 
   const draft: LocationDraft = {
     draftId: '00000000-0000-4000-8000-000000000010', creatorId: 'operator-a', locationId: document.locationId,
     draftRevision: 1, basePublishedRevision: null, createdAt: 1, updatedAt: 1, document,
+    assetProvenance: { modelAssetId: { kind: 'upload', ownerId: 'operator-a' } },
   };
   const snapshot: LocationRegistrySnapshot = {
     registryRevision: 0,
@@ -164,6 +165,8 @@ test('reports received during delayed model acknowledgement survive publication 
   const drafts: LocationDraftRepository = {
     async createDraft() { throw new Error('unused'); },
     async getDraft(owner, id) { draftFetched = true; return owner === draft.creatorId && id === draft.draftId ? draft : null; },
+    async getDraftForRead(owner, id) { return owner === draft.creatorId && id === draft.draftId ? draft : null; },
+    async getDraftForReadWithinMutation(owner, id) { draftFetched = true; return owner === draft.creatorId && id === draft.draftId ? draft : null; },
     async listDrafts() { return []; }, async saveDraft() { throw new Error('unused'); },
   };
   const snapshots: LocationRegistrySnapshotRepository = { async readSnapshot() { return snapshot; } };
@@ -183,6 +186,14 @@ test('reports received during delayed model acknowledgement survive publication 
   const publication = new PublishLocationUseCase({
     drafts, published, snapshots, mutationCoordinator: coordinator,
     runtime: new EdgeLocationPublicationRuntime(runtime, seed),
+    assetMetadata: {
+      async saveAssetMetadata() { throw new Error('unused'); },
+      async getAssetMetadata(ownerId, assetId) {
+        return ownerId === draft.creatorId && assetId === document.modelAssetId ? {
+          assetId, creatorId: ownerId, purpose: 'model', mediaType: 'model/gltf-binary', sha256: 'a'.repeat(64), byteLength: 20, createdAt: 1,
+        } : null;
+      },
+    },
     modelDistributor: { async acknowledge() { acknowledgeStarted(); await blocked; } },
   });
   const table = registry.tables.get('M3')!;

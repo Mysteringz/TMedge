@@ -30,8 +30,14 @@ export class SaveLocationDraftUseCase {
     const base = draft.basePublishedRevision === null ? null : state?.history.find((revision) => revision.revision === draft.basePublishedRevision) ?? null;
     if (draft.basePublishedRevision !== null && !base) throw new LocationConflictError('The pinned base location revision is unavailable.');
     if (draft.basePublishedRevision === null && state) throw new LocationConflictError('A location was published after this draft was created.');
+    const authored = authoredDocument(input.document);
     const candidate = parseLocationCandidate(
-      input.document,
+      {
+        schemaVersion: 1,
+        locationId: draft.locationId,
+        visibility: draft.document.visibility,
+        ...authored,
+      },
       base ? { revision: base.revision, document: base.document, legacySpatial: base.legacySpatial } : null,
       draft.basePublishedRevision,
     );
@@ -43,4 +49,22 @@ export class SaveLocationDraftUseCase {
       (this.dependencies.now ?? Date.now)(),
     );
   }
+}
+
+const AUTHORED_KEYS = [
+  'name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments',
+  'planAssetId', 'modelAssetId', 'modelTransform',
+];
+const REQUIRED_AUTHORED_KEYS = ['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments'];
+
+function authoredDocument(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('The authored location document must be an object.');
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).some((key) => !AUTHORED_KEYS.includes(key))) {
+    throw new TypeError('The authored location document contains a server-managed or unknown field.');
+  }
+  if (REQUIRED_AUTHORED_KEYS.some((key) => !Object.hasOwn(input, key))) {
+    throw new TypeError('The authored location document is incomplete.');
+  }
+  return input;
 }

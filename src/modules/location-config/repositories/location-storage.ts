@@ -25,6 +25,10 @@ export interface RegistryCommitOutcome {
 export interface LocationDraftRepository {
   createDraft(draft: LocationDraft): Promise<DraftWriteOutcome>;
   getDraft(creatorId: string, draftId: string): Promise<LocationDraft | null>;
+  /** Read an authoritative draft snapshot, reconciling any applied-but-unconfirmed file write first. */
+  getDraftForRead(creatorId: string, draftId: string): Promise<LocationDraft | null>;
+  /** Same reconciliation path for callers that already hold RegistryMutationCoordinator. */
+  getDraftForReadWithinMutation(creatorId: string, draftId: string): Promise<LocationDraft | null>;
   listDrafts(creatorId: string): Promise<LocationDraft[]>;
   saveDraft(creatorId: string, draftId: string, expectedRevision: number, candidate: ValidatedLocationCandidate, updatedAt: number): Promise<DraftWriteOutcome>;
 }

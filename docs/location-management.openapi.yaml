@@ -715,8 +715,17 @@ components:
       items: { $ref: '#/components/schemas/Point' }
     Table:
       type: object
+      description: >-
+        New or changed tables require shape. A shape-less legacy rectangle may
+        be returned and resubmitted with rect only when the server verifies
+        the unchanged value against the exact pinned base revision. The
+        schema cannot grant that compatibility exception; the server's
+        candidate validator is authoritative.
       additionalProperties: false
-      required: [id, name, zoneId, capacity, shape, seats]
+      required: [id, name, zoneId, capacity, seats]
+      oneOf:
+        - required: [shape]
+        - required: [rect]
       properties:
         id: { $ref: '#/components/schemas/StableId' }
         name: { type: string, minLength: 1, maxLength: 160 }
@@ -747,6 +756,16 @@ components:
               properties:
                 type: { type: string, enum: [polygon] }
                 points: { $ref: '#/components/schemas/Polygon' }
+        rect:
+          type: object
+          description: Bounds are accepted only for an exact unchanged legacy rectangle with no shape tag.
+          additionalProperties: false
+          required: [x, y, width, height]
+          properties:
+            x: { type: number }
+            y: { type: number }
+            width: { type: number, minimum: 0, exclusiveMinimum: true }
+            height: { type: number, minimum: 0, exclusiveMinimum: true }
         seats:
           type: array
           description: Must contain exactly capacity seat records with valid symmetric adjacency.

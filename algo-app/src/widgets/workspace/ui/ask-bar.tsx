@@ -108,7 +108,7 @@ export function AskBar({ entries, assistant, answering, onChoose, onAsk, onFocus
       </div>
       <ul id={listId} role="listbox" aria-label="Results" className="ws-ask__results" hidden={!list} data-state={list ?? undefined} inert={list === 'leaving'} aria-hidden={list === 'leaving' ? true : undefined}>
         {(list ? listed : []).map((row, index) => (
-          <li key={row.kind === 'ask' ? 'ask' : row.entry.id} id={`${listId}-${index}`} role="option" aria-selected={row === current}
+          <li key={row.kind === 'ask' ? 'ask' : row.entry.id} id={`${listId}-${index}`} data-testid={row.kind === 'entry' && row.entry.target.type === 'navigate' && row.entry.target.path === '/locations' ? 'location-search-result' : undefined} role="option" aria-selected={row === current}
             className={`ws-ask__row ${row === current ? 'is-on' : ''} ${row.kind === 'ask' ? 'ws-ask__row--ai' : ''}`}
             onMouseEnter={() => setActive(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => take(row)}>
             {row.kind === 'ask' ? (

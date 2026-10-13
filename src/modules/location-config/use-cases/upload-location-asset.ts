@@ -1,4 +1,5 @@
 import { LocationConflictError, LocationDraftNotFoundError } from '../domain/location-records.js';
+import { exposeAuthoredLocationCandidate } from '../domain/location-candidate.js';
 import type { LocationAssetStore, LocationDraftRepository } from '../repositories/location-storage.js';
 import { SaveLocationDraftUseCase } from './save-location-draft.js';
 
@@ -18,7 +19,7 @@ export class UploadLocationAssetUseCase {
     if (!draft) throw new LocationDraftNotFoundError();
     if (draft.draftRevision !== input.expectedDraftRevision) throw new LocationConflictError('The draft changed; reload it before uploading.');
     const metadata = await this.dependencies.assets.put(input.creatorId, input.purpose, input.mediaType, input.bytes, (this.dependencies.now ?? Date.now)());
-    const document = structuredClone(draft.document);
+    const document = exposeAuthoredLocationCandidate(draft.document, draft.legacySpatial);
     if (input.purpose === 'floor-plan') document.planAssetId = metadata.assetId;
     else {
       document.modelAssetId = metadata.assetId;

@@ -15,7 +15,7 @@ import {
   type FeatureRequest, type MessageDraft, type SearchEntry, type SensorSource, type Task,
 } from '../../../entities/workspace/index.ts';
 import { Presence, TabList } from '../../../console/motion.tsx';
-import { MODULES } from '../../../console/parts.tsx';
+import { modulesForCapabilities } from '../../../console/parts.tsx';
 import { navigate } from '../../../console/router.ts';
 import { AskBar } from './ask-bar.tsx';
 import { AssistantPanel, type Exchange } from './assistant-panel.tsx';
@@ -87,9 +87,10 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
   }, []);
 
   const accounts = !!session?.namedAccount && session.capabilities.includes('accounts.manage');
-  const entries = useMemo(() => buildIndex({ modules: MODULES, accounts, snapshot, sensors }), [accounts, snapshot, sensors]);
+  const modules = modulesForCapabilities(session?.capabilities);
+  const entries = useMemo(() => buildIndex({ modules, accounts, snapshot, sensors }), [modules, accounts, snapshot, sensors]);
   // Read once when the page opens: the order should not shuffle under the pointer.
-  const places = useMemo(() => byPersonalUse(MODULES, readVisits(user)), [user]);
+  const places = useMemo(() => byPersonalUse(modules, readVisits(user)), [modules, user]);
   const personal = places.some((place) => place.used);
 
   const reveal = (section: HTMLElement | null) => {
@@ -161,7 +162,7 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
         <nav className="ws-places" aria-label={personal ? 'Suggested for you' : 'Modules'}>
           <span className="ws-places__label">{personal ? 'Suggested for you' : 'Jump to'}</span>
           {places.map(({ item }, index) => (
-            <a key={item.path} href={item.path} className={`ws-place ${index >= SUGGESTED ? 'ws-place--more' : ''}`} title={item.desc}
+            <a key={item.path} href={item.path} data-testid={item.path === '/locations' ? 'location-workspace-place' : undefined} className={`ws-place ${index >= SUGGESTED ? 'ws-place--more' : ''}`} title={item.desc}
               onClick={(event) => { event.preventDefault(); navigate(item.path); }}>{item.title}</a>
           ))}
         </nav>

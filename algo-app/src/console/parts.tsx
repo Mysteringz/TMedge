@@ -27,10 +27,15 @@ export const MODULES = [
   { n: '06', title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
   { n: '07', title: 'TMflash web', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
   { n: '08', title: 'TMflash download', path: '/tmflash-download', group: 'Devices', desc: 'Download the latest self-contained Mac app, with firmware, flashing tools and installation instructions.' },
+  { n: '09', title: 'Locations', path: '/locations', desc: 'Create and review private floor-plan drafts before publishing.', capability: 'locations.manage' },
 ] as const;
 
 type ConsoleModule = typeof MODULES[number];
 const groupOf = (module: ConsoleModule): string | null => 'group' in module ? module.group : null;
+
+export function modulesForCapabilities(capabilities: readonly string[] = []): ConsoleModule[] {
+  return MODULES.filter((module) => !('capability' in module) || capabilities.includes(module.capability));
+}
 
 
 
@@ -62,7 +67,8 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
   const screen = screenOf(path);
 
-  const here = MODULES.find((m) => screenOf(m.path) === screen);
+  const modules = modulesForCapabilities(session?.capabilities);
+  const here = modules.find((m) => screenOf(m.path) === screen);
   const canManageAccounts = Boolean(session?.namedAccount && session.capabilities.includes('accounts.manage'));
 
   return (
@@ -77,15 +83,15 @@ export function Nav({ user, onSignOut, notificationToggle, notificationPanel }: 
 
       </button>
 
-      <MobileNavigation path={path} canManageAccounts={canManageAccounts} />
+      <MobileNavigation path={path} modules={modules} canManageAccounts={canManageAccounts} />
 
       <nav className="cx-header-nav" aria-label="Modules">
 
-        {MODULES.map((m, index) => {
+        {modules.map((m, index) => {
           const group = groupOf(m);
           // A group's dropdown stands where its first module would.
-          if (group) return MODULES.findIndex((other) => groupOf(other) === group) === index ? <GroupMenu key={group} label={group} screen={screen} /> : null;
-          return <a key={m.path} className="cx-header-item" href={m.path} aria-current={here === m ? 'page' : undefined}
+          if (group) return modules.findIndex((other) => groupOf(other) === group) === index ? <GroupMenu key={group} label={group} screen={screen} modules={modules} /> : null;
+          return <a key={m.path} className="cx-header-item" href={m.path} data-testid={m.path === '/locations' ? 'location-nav-desktop' : undefined} aria-current={here === m ? 'page' : undefined}
             onClick={(e) => { e.preventDefault(); navigate(m.path); }}>{m.title}</a>;
         })}
 
@@ -141,7 +147,7 @@ function AccountMenu({ user, path, onSignOut }: { user: string; path: string; on
   </div>;
 }
 
-function MobileNavigation({ path, canManageAccounts }: { path: string; canManageAccounts: boolean }) {
+function MobileNavigation({ path, modules, canManageAccounts }: { path: string; modules: ConsoleModule[]; canManageAccounts: boolean }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -163,7 +169,7 @@ function MobileNavigation({ path, canManageAccounts }: { path: string; canManage
   }, [open]);
   const links = [
     { title: 'Home', path: '/', n: '' },
-    ...MODULES,
+    ...modules,
     ...(canManageAccounts ? [{ title: 'Accounts', path: '/accounts', n: '' }] : []),
   ];
   const menu = usePresence(open);
@@ -175,7 +181,7 @@ function MobileNavigation({ path, canManageAccounts }: { path: string; canManage
       {open ? <XMark /> : <Menu />}
     </button>
     {menu && <nav id={id} className="cx-mobile-dropdown" aria-label="Mobile navigation" data-state={menu} inert={menu === 'leaving'}>
-      {links.map(link => <a key={link.path} href={link.path} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
+      {links.map(link => <a key={link.path} href={link.path} data-testid={link.path === '/locations' ? 'location-nav-mobile' : undefined} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
         onClick={event => { event.preventDefault(); setOpen(false); navigate(link.path); }}>
         <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span>{link.title}
       </a>)}
@@ -225,8 +231,8 @@ export function Toast({ text }: { text: string }) {
 }
 
 /** One header item for a group of modules. There are two: ML (job, data) and Devices (Updates, Adoption, TMflash). */
-function GroupMenu({ label, screen }: { label: string; screen: string }) {
-  const members = MODULES.filter((m) => groupOf(m) === label);
+function GroupMenu({ label, screen, modules }: { label: string; screen: string; modules: ConsoleModule[] }) {
+  const members = modules.filter((m) => groupOf(m) === label);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {

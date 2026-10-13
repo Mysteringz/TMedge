@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -11,7 +11,7 @@ import { FileRegistryMutationCoordinator } from '../src/infrastructure/location-
 import { atomicWriteNodesConfig, readNodesConfig, recoverNodesConfig } from '../src/infrastructure/location-config/file-nodes-config.js';
 import { initializeFileLocationPersistence } from '../src/infrastructure/location-config/file-location-storage.js';
 import { parseTrustedLegacyBaseline } from '../src/infrastructure/location-config/legacy-location-mapper.js';
-import { exposeLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
+import { exposeAuthoredLocationCandidate, parseLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
 import { CreateLocationDraftUseCase } from '../src/modules/location-config/use-cases/create-location-draft.js';
 import { StartLocationEditDraftUseCase } from '../src/modules/location-config/use-cases/start-location-edit-draft.js';
 import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
@@ -132,11 +132,18 @@ test('file legacy edits preserve exact-base geometry through a second publish an
     assert.equal(first.draft.legacySpatial?.zones[0]?.polygon[0]?.[0], -10);
     assert.equal(first.draft.legacySpatial?.tables[0]?.seats[0]?.x, -35);
 
-    const edit = exposeLocationCandidate(first.draft.document, first.draft.legacySpatial);
+    const edit = exposeAuthoredLocationCandidate(first.draft.document, first.draft.legacySpatial);
     assert.equal('legacySpatial' in edit, false, 'server-derived provenance is absent from the edit payload');
     const forged = structuredClone(edit) as Record<string, unknown>;
     forged.legacySpatial = first.draft.legacySpatial;
     await assert.rejects(save.execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: forged }), /server-managed/i);
+    for (const key of ['schemaVersion', 'locationId', 'visibility', 'legacySpatial', 'assetProvenance']) {
+      const clientSetServerField = structuredClone(edit) as Record<string, unknown>;
+      clientSetServerField[key] = key === 'visibility' ? 'public' : {};
+      await assert.rejects(save.execute({
+        creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: 1, document: clientSetServerField,
+      }), /server-managed/i, `the authored draft boundary rejects client-supplied ${key}`);
+    }
 
     const changedOutline = structuredClone(edit) as { outline: number[][] };
     changedOutline.outline[0]![0] = -11;
@@ -182,7 +189,7 @@ test('file legacy edits preserve exact-base geometry through a second publish an
       'the second edit pins provenance to its immediate immutable base revision');
     assert.deepEqual({ ...second.draft.legacySpatial!, basePublishedRevision: 0 }, first.draft.legacySpatial,
       'the second edit retains only the same inherited spatial values');
-    const acceptedSecond = exposeLocationCandidate(second.draft.document, second.draft.legacySpatial) as { name: string };
+    const acceptedSecond = exposeAuthoredLocationCandidate(second.draft.document, second.draft.legacySpatial) as { name: string };
     acceptedSecond.name = 'Legacy floor edited twice';
     draftUpdateTime = 50;
     const savedSecond = await save.execute({ creatorId: 'legacy-editor', draftId: second.draft.draftId, expectedDraftRevision: 1, document: acceptedSecond });
@@ -250,7 +257,7 @@ test('file asset provenance survives manager A upload then B/C exact-base publis
     const upload = () => new UploadLocationAssetUseCase({
       drafts: persistence!.drafts, assets: persistence!.assets, saveDraft: save(), now,
     });
-    const initialDocument = structuredClone(initial.draft.document);
+    const initialDocument = exposeAuthoredLocationCandidate(initial.draft.document, initial.draft.legacySpatial);
     initialDocument.zones = [{
       id: 'ASSET-ROOM-ZONE', name: 'Asset room zone', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]],
     }];
@@ -320,7 +327,7 @@ test('file asset provenance survives manager A upload then B/C exact-base publis
     assert.equal(managerBDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
       ? managerBDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
     await assertInheritedPreviews('manager-b', managerBDraft.draft.draftId);
-    const editB = exposeLocationCandidate(managerBDraft.draft.document, managerBDraft.draft.legacySpatial) as { name: string };
+    const editB = exposeAuthoredLocationCandidate(managerBDraft.draft.document, managerBDraft.draft.legacySpatial) as { name: string };
     editB.name = 'Edited by manager B';
     const savedB = await save().execute({
       creatorId: 'manager-b', draftId: managerBDraft.draft.draftId, expectedDraftRevision: 1, document: editB,
@@ -336,7 +343,7 @@ test('file asset provenance survives manager A upload then B/C exact-base publis
     assert.equal(managerCDraft.draft.assetProvenance?.modelAssetId?.kind === 'upload'
       ? managerCDraft.draft.assetProvenance.modelAssetId.ownerId : undefined, 'manager-a');
     await assertInheritedPreviews('manager-c', managerCDraft.draft.draftId);
-    const editC = exposeLocationCandidate(managerCDraft.draft.document, managerCDraft.draft.legacySpatial) as { name: string };
+    const editC = exposeAuthoredLocationCandidate(managerCDraft.draft.document, managerCDraft.draft.legacySpatial) as { name: string };
     editC.name = 'Edited by manager C';
     const savedC = await save().execute({
       creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, expectedDraftRevision: 1, document: editC,
@@ -876,13 +883,54 @@ test('file draft storage is creator-private and uses compare-and-swap revisions'
     assert.equal(applied.kind, 'committed');
     assert.equal(applied.durability, 'unconfirmed');
     assert.equal(applied.draft.draftRevision, 3);
-    assert.equal((await repository.getDraft('operator-1', draft.draftId))?.draftRevision, 3,
-      'reads report the visible revision even when parent-directory flush failed');
+    const draftFile = join(directory, 'data', 'location-drafts', createHash('sha256').update('operator-1').digest('hex') + '.json');
+    const committedBytes = readFileSync(draftFile);
+    rmSync(draftFile);
+    await assert.rejects(repository.createDraft(draft), LocationStorageUnavailableError,
+      'a missing target cannot discard the exact unconfirmed write and be replaced by another draft');
+    await assert.rejects(repository.getDraftForRead('operator-1', draft.draftId), LocationStorageUnavailableError,
+      'a missing target stays unavailable while an unconfirmed digest is recorded');
+    writeFileSync(draftFile, committedBytes, { mode: 0o600 });
+    const alteredBytes = Buffer.from(committedBytes);
+    alteredBytes[alteredBytes.length - 2] = alteredBytes[alteredBytes.length - 2] === 0x20 ? 0x21 : 0x20;
+    writeFileSync(draftFile, alteredBytes, { mode: 0o600 });
+    await assert.rejects(repository.getDraftForRead('operator-1', draft.draftId), LocationStorageUnavailableError,
+      'corrupt or digest-mismatched file bytes are not accepted as an authoritative read');
+    rmSync(draftFile);
+    mkdirSync(draftFile, { mode: 0o700 });
+    await assert.rejects(repository.getDraftForRead('operator-1', draft.draftId), LocationStorageUnavailableError,
+      'a directory substituted for the expected private file fails closed');
+    rmSync(draftFile, { recursive: true });
+    writeFileSync(draftFile, committedBytes, { mode: 0o600 });
+    const validRows = JSON.parse(committedBytes.toString('utf8')) as Array<Record<string, unknown>>;
+    const invalidSchemaRows = structuredClone(validRows);
+    const schemaDraft = invalidSchemaRows[0] as { document: Record<string, unknown> };
+    schemaDraft.document.schemaVersion = 999;
+    const wrongOwnerRows = structuredClone(validRows);
+    (wrongOwnerRows[0] as { creatorId: string }).creatorId = 'operator-2';
+    const restartRecoveryCases: Array<[string, Buffer]> = [
+      ['unreadable JSON', Buffer.from('{not-json\n')],
+      ['invalid persisted schema', Buffer.from(`${JSON.stringify(invalidSchemaRows)}\n`)],
+      ['wrong persisted creator', Buffer.from(`${JSON.stringify(wrongOwnerRows)}\n`)],
+    ];
+    for (const [label, malformedBytes] of restartRecoveryCases) {
+      writeFileSync(draftFile, malformedBytes, { mode: 0o600 });
+      const restarted = new FileLocationDraftRepository(
+        join(directory, 'data'), new FileRegistryMutationCoordinator(join(directory, 'nodes.json')), operations,
+      );
+      await assert.rejects(restarted.getDraftForRead('operator-1', draft.draftId), LocationStorageUnavailableError,
+        `restart validation fails closed for ${label}`);
+    }
+    writeFileSync(draftFile, committedBytes, { mode: 0o600 });
+    await assert.rejects(repository.getDraftForRead('operator-1', draft.draftId), LocationStorageUnavailableError,
+      'an authoritative reload does not report the visible revision as durable while directory sync keeps failing');
 
     await assert.rejects(repository.saveDraft('operator-1', draft.draftId, 3, { document: updated, legacySpatial: null }, 40), LocationStorageUnavailableError,
       'the same draft writer remains latched while exact revision recovery fails');
     assert.equal((await repository.getDraft('operator-1', draft.draftId))?.draftRevision, 3);
     failDirectorySync = false;
+    const reloaded = await repository.getDraftForRead('operator-1', draft.draftId);
+    assert.equal(reloaded?.draftRevision, 3, 'authoritative reload reconciles the exact visible draft revision');
     const recovered = await repository.saveDraft('operator-1', draft.draftId, 3, { document: updated, legacySpatial: null }, 40);
     assert.equal(recovered.durability, 'confirmed');
     assert.equal(recovered.draft.draftRevision, 4);

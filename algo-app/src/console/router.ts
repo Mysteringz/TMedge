@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 
-export type Screen = 'login' | 'home' | 'flow' | 'train' | 'ml-data' | 'console' | 'updates' | 'analytics' | 'accounts' | 'account' | 'adoption' | 'flash' | 'tmflash-download' | 'tmflash-connect';
+export type Screen = 'login' | 'home' | 'flow' | 'train' | 'ml-data' | 'console' | 'updates' | 'analytics' | 'accounts' | 'account' | 'adoption' | 'flash' | 'tmflash-download' | 'tmflash-connect' | 'locations';
 
 export function screenOf(path: string): Screen {
   if (path.startsWith('/login')) return 'login';
@@ -12,6 +12,7 @@ export function screenOf(path: string): Screen {
   if (path === '/ml-data' || path.startsWith('/ml-data/')) return 'ml-data';
   if (path.startsWith('/train')) return 'train';
   if (path === '/accounts' || path.startsWith('/accounts/')) return 'accounts';
+  if (path === '/locations' || path.startsWith('/locations/')) return 'locations';
   // One person's own settings; /accounts above is the admin's list of everyone.
   if (path === '/account') return 'account';
   if (path === '/console' || path.startsWith('/console/')) return 'console';

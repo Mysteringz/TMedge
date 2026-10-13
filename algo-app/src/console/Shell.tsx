@@ -32,6 +32,7 @@ const Adoption = lazy(() => import('./Adoption.tsx').then((m) => ({ default: m.A
 const Flash = lazy(() => import('./Flash.tsx').then((m) => ({ default: m.Flash })));
 const TMflashDownload = lazy(() => import('./TMflashDownload.tsx').then((m) => ({ default: m.TMflashDownload })));
 const TMflashConnect = lazy(() => import('./TMflashConnect.tsx').then((m) => ({ default: m.TMflashConnect })));
+const LocationWizard = lazy(() => import('../pages/location-wizard/index.tsx').then((m) => ({ default: m.LocationWizard })));
 
 export function Shell() {
   const [session, setSession] = useState<AdminSession | null>(null);
@@ -98,7 +99,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
   // The landing page offers the modules this person opens most; this is where
   // it learns which those are. Analytics' views count as the places they are.
   useEffect(() => {
-    if (!user || !['flow', 'train', 'ml-data', 'console', 'updates', 'analytics', 'adoption', 'flash'].includes(screen)) return;
+    if (!user || !['flow', 'train', 'ml-data', 'console', 'updates', 'analytics', 'adoption', 'flash', 'locations'].includes(screen)) return;
     recordVisit(user, `/${path.split('/')[1] ?? ''}`);
   }, [user, screen, path]);
 
@@ -162,6 +163,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
           : screen === 'flash' ? <Suspense fallback={<main className="cx-train cx-hint">Loading TMflash…</main>}><Flash /></Suspense>
           : screen === 'tmflash-download' ? <Suspense fallback={<main className="cx-train cx-hint">Loading TMflash download…</main>}><TMflashDownload /></Suspense>
           : screen === 'tmflash-connect' ? <Suspense fallback={null}><TMflashConnect user={user} /></Suspense>
+          : screen === 'locations' ? <Suspense fallback={<main className="cx-train cx-hint" aria-busy="true">Loading locations…</main>}><LocationWizard /></Suspense>
           : <Home user={user} flash={flash} />}
     </div>
   );

@@ -59,7 +59,7 @@ export class PublishLocationUseCase<Prepared> {
     const { mutationCoordinator, drafts, published, snapshots, runtime } = this.dependencies;
     mutationCoordinator.assertHealthy();
     const snapshot = await snapshots.readSnapshot();
-    const draft = await drafts.getDraft(input.creatorId, input.draftId);
+    const draft = await drafts.getDraftForReadWithinMutation(input.creatorId, input.draftId);
     if (!draft) throw new LocationDraftNotFoundError();
     if (draft.draftRevision !== input.expectedDraftRevision) throw new LocationConflictError('The draft changed; reload it before publishing.');
     const state = snapshot.locations.find((location) => location.locationId === draft.locationId) ?? null;

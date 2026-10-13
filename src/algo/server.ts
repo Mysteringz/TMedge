@@ -198,7 +198,8 @@ export function startAlgo(
   // the student site.
   const cf = authCfg.turnstile ? ' https://challenges.cloudflare.com' : '';
   // frame-src 'self': module 03 is the debug console in a same-origin frame.
-  const cspWith = (styleNonce?: string) => `default-src 'self'; script-src 'self'${cf}; frame-src 'self'${cf}; img-src 'self' data:; ` +
+  // The location editor previews a user-selected image through a local Blob URL.
+  const cspWith = (styleNonce?: string) => `default-src 'self'; script-src 'self'${cf}; frame-src 'self'${cf}; img-src 'self' data: blob:; ` +
     `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ''} https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; ` +
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
   const csp = cspWith();

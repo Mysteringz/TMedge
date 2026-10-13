@@ -46,6 +46,25 @@ export class FileLocationDraftRepository implements LocationDraftRepository {
     catch (error) { throw draftStorageError(error); }
   }
 
+  async getDraftForRead(creatorId: string, draftId: string): Promise<LocationDraft | null> {
+    validateCreator(creatorId);
+    if (!UUID_RE.test(draftId)) return null;
+    try {
+      return await this.coordinator.withMutationLock(() => this.getDraftForReadWithinMutation(creatorId, draftId));
+    } catch (error) { throw draftStorageError(error); }
+  }
+
+  async getDraftForReadWithinMutation(creatorId: string, draftId: string): Promise<LocationDraft | null> {
+    this.coordinator.assertHealthy();
+    validateCreator(creatorId);
+    if (!UUID_RE.test(draftId)) return null;
+    try {
+      const path = this.pathFor(creatorId);
+      this.recoverCurrent(path, creatorId);
+      return readRows(path, creatorId).find((row) => row.draftId === draftId.toLowerCase()) ?? null;
+    } catch (error) { throw draftStorageError(error); }
+  }
+
   async listDrafts(creatorId: string): Promise<LocationDraft[]> {
     this.coordinator.assertHealthy();
     validateCreator(creatorId);
@@ -89,7 +108,10 @@ export class FileLocationDraftRepository implements LocationDraftRepository {
   }
 
   private recoverCurrent(path: string, ownerId: string): void {
-    if (!existsSync(path)) return;
+    if (!existsSync(path)) {
+      if (this.unconfirmed.has(path)) throw new LocationStorageUnavailableError();
+      return;
+    }
     assertPrivateDirectorySync(dirname(path));
     assertPrivateFileSync(path);
     if (!this.unconfirmed.has(path) && this.verified.has(path)) return;

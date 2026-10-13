@@ -180,6 +180,18 @@ export function exposeLocationCandidate(document: LocationDocument, legacySpatia
   return result;
 }
 
+/** Exposes only the editable document fields; server identity and visibility stay out of requests. */
+export function exposeAuthoredLocationCandidate(
+  document: LocationDocument,
+  legacySpatial: LegacySpatialProvenance | null | undefined,
+): Record<string, unknown> {
+  const result = exposeLocationCandidate(document, legacySpatial);
+  delete result.schemaVersion;
+  delete result.locationId;
+  delete result.visibility;
+  return result;
+}
+
 export function exposePublishedLocationCandidate(base: LocationCandidateBase): Record<string, unknown> {
   if (base.revision === 0) {
     const result = structuredClone(base.document) as unknown as Record<string, unknown>;
