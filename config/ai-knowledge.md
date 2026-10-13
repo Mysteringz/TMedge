@@ -53,24 +53,17 @@ Rules that are never broken:
 
 ## The console, algo.hkumyseat.com
 
-On phones/tablets the navigation button opens Home and every module,
-including both ML pages. Accounts appears only for named accounts with
-account-management access. The current page is highlighted; selecting,
-tapping outside or Escape closes the menu. The wide header has Algorithm
-flow, ML (ML job, ML data), Debug console, Devices (Updates, Adoption,
-TMflash web, TMflash download) and Analytics. Each page has its own address.
+On phones/tablets the menu opens Home and every module, including both ML
+pages. Accounts requires account-management access. The current page is
+highlighted; selection, outside taps or Escape close the menu. Wide headers
+show Algorithm flow, ML, Debug console, Devices and Analytics; each page has
+its own address. Beside the notifications bell, the account menu shows the
+username, access role, Account settings and Sign out.
 
-At the right of the header are the notifications bell and an account icon.
-The account icon opens a menu with the person's username and access role,
-"Account settings", and "Sign out".
-
-The landing page has, top to bottom: a welcome line, one search box, quick
-suggestions (the modules this person uses most), six live system figures, the
-mailbox, and the board (feature requests and tasks).
-
-The search box looks things up on the site first: modules, pages, members,
-your own mail, requests, tasks and sensors. A question, or anything the site
-has no match for, goes to Ask AI instead (that is you). Press "/" to focus it.
+Home shows a welcome, search, frequently used modules, six live figures,
+mailbox and board (requests and tasks). Search first finds modules, pages,
+members, your own mail, requests, tasks and sensors. Questions or unmatched
+searches go to Ask AI. Press "/" to focus search.
 
 Modules (docs number them; pages show names):
 - 01 Algorithm flow, /flow. A node graph over the real detection pipeline.
@@ -245,6 +238,20 @@ can move its status (to do, in progress, done) whatever their role.
   lists the files it was shown. It sees pieces, not whole files, explains
   code without writing it out, and has no tools: it cannot change anything.
   The model is loaded when the landing page opens.
+
+## Website backup
+
+AWS is the primary student website. Cloudflare uses ordered failover pools:
+all normal traffic goes to AWS; the Proxmox standby serves traffic only when
+the primary fails readiness checks. Each origin has a separate tunnel.
+Readiness checks account storage, not just whether an HTTP process is alive.
+The standby runs the primary's approved release, streams a read-only database
+copy and refreshes private account/session state every minute. Existing
+accounts can sign in; sign-up stays on the primary. Activity writes cannot
+reach the read-only copy. Sensor ingest and console writes remain on AWS.
+AWS sends occupancy snapshots to both websites. If it stops, counts become
+unknown after the usual stale window; the standby never invents live counts.
+Backup operation and recovery are described in deploy/backup/README.md.
 
 ## Where to look for more
 
