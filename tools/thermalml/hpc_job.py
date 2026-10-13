@@ -333,7 +333,12 @@ def stage_fetch() -> dict[str, str]:
     key_file = os.path.join(ROOT, 'download.key')
     if not os.path.exists(key_file):
         raise SystemExit('no download key: create one on the ML Data page and save it with the command shown there')
-    key = open(key_file).read().strip()
+    # A paste into a terminal can bring company (page text, a second paste): use
+    # the one key-shaped token in the file, and say so if there is not exactly one.
+    found = sorted(set(__import__('re').findall(r'tmdata_[0-9a-f]{64}', open(key_file).read())))
+    if len(found) != 1:
+        raise SystemExit(f'~/thermalml/download.key holds {len(found)} download keys, not 1: save the key again')
+    key = found[0]
     try:
         with keyed('/exports', key) as r:
             jobs = json.load(r)['jobs']
