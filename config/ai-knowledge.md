@@ -92,8 +92,8 @@ Modules:
   data and sequence values for exports, but cannot advance or change sequences.
   Every signed-in role may query and inspect the schema; Operator, Engineer
   and Admin may prepare exports, each owned by the account that asked. With
-  the private worker, Proxmox stores the ZIP and the edge streams it without a
-  copy; downloads resume and fail on truncation. Preparation runs in the
+  the private worker, Proxmox stores the ZIP and the edge streams it;
+  downloads resume and fail on truncation. Preparation runs in the
   background; ZIPs expire 24 hours after completion, active downloads are kept.
   The worker enforces disk and archive limits. Restarted unfinished exports
   fail and can be generated again. A download key
