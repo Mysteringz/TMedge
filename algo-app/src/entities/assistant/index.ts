@@ -4,8 +4,14 @@
  */
 import { permissionChanged } from '../admin-session/index.tsx';
 
-export interface AssistantStatus { available: boolean; reason: 'not-configured' | 'knowledge-unreadable' | null; model: string | null; knowledgeUpdatedAt: number | null }
+export interface AssistantStatus {
+  available: boolean; reason: 'not-configured' | 'knowledge-unreadable' | null; model: string | null; knowledgeUpdatedAt: number | null;
+  /** How much of the repository it can look things up in; null when the server has no index of it. */
+  code: { files: number; chunks: number } | null;
+}
 export interface Turn { role: 'user' | 'assistant'; content: string }
+/** A piece of the repository an answer was written from. */
+export interface Source { path: string; from: number; to: number; heading?: string }
 export const QUESTION_LIMIT = 1000;
 
 export class AssistantError extends Error {
@@ -21,11 +27,12 @@ export async function assistantStatus(signal?: AbortSignal): Promise<AssistantSt
 }
 
 /**
- * Asks, and hands each piece of the answer to `onText` as it arrives. Resolves
- * when the answer is complete; rejects with the server's own words otherwise.
- * Aborting the signal stops the model working on it.
+ * Asks, and hands each piece of the answer to `onText` as it arrives, and to
+ * `onSources` the files it was shown, which come before its first word.
+ * Resolves when the answer is complete; rejects with the server's own words
+ * otherwise. Aborting the signal stops the model working on it.
  */
-export async function ask(question: string, history: Turn[], signal: AbortSignal, onText: (piece: string) => void): Promise<void> {
+export async function ask(question: string, history: Turn[], signal: AbortSignal, onText: (piece: string) => void, onSources: (sources: Source[]) => void = () => undefined): Promise<void> {
   let response: Response;
   try {
     response = await fetch('/api/assistant/ask', {
@@ -56,9 +63,13 @@ export async function ask(question: string, history: Turn[], signal: AbortSignal
       buffered = buffered.slice(end + 2);
       const event = /^event: (.+)$/m.exec(block)?.[1], data = /^data: (.+)$/m.exec(block)?.[1];
       if (!event || !data) continue;
-      let value: { text?: unknown; message?: unknown };
+      let value: { text?: unknown; message?: unknown; sources?: unknown };
       try { value = JSON.parse(data); } catch { continue; }
       if (event === 'delta' && typeof value.text === 'string') onText(value.text);
+      else if (event === 'sources' && Array.isArray(value.sources)) {
+        onSources((value.sources as Partial<Source>[]).filter((source): source is Source =>
+          !!source && typeof source.path === 'string' && Number.isInteger(source.from) && Number.isInteger(source.to)));
+      }
       else if (event === 'error') throw new AssistantError('CUT_SHORT', typeof value.message === 'string' ? value.message : 'The answer was cut short.');
       else if (event === 'done') finished = true;
     }

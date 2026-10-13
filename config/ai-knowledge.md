@@ -1,7 +1,5 @@
-This is Ask AI's system knowledge, sent before every question. Keep it true
-and update it in the same commit as system changes (CLAUDE.md, "The
-assistant's knowledge base"). Keep it under 16 kB; no secrets, machine
-addresses or information about named people.
+Ask AI's system knowledge. Maintainers: the rules for this file are in
+CLAUDE.md, "The assistant's knowledge base".
 
 ## What the system is
 
@@ -65,8 +63,7 @@ and landing-page card.
 
 At the right of the header are the notifications bell and an account icon.
 The account icon opens a menu with the person's username and access role,
-"Account settings", and "Sign out". The username and role are no longer
-written in the header itself.
+"Account settings", and "Sign out".
 
 The landing page has, top to bottom: a welcome line, one search box, quick
 suggestions (the modules this person uses most), six live system figures, the
@@ -83,7 +80,7 @@ Modules:
   after 15 minutes unless it is committed. Every change is written to an
   audit log with the old value. The preview runs the firmware's own detector
   code compiled for the server, so it cannot drift from the sensor.
-- 02 ML job, /train. The ML menu groups ML job and ML data. ML job is the training page. Write a training script, run it on the university's
+- 02 ML job, /train. The training page. Write a training script, run it on the university's
   HPC cluster through SLURM, watch the job, fetch results. Each person signs
   in to the cluster as themselves; credentials are sealed in the browser,
   used once and never stored.
@@ -242,9 +239,13 @@ can move its status (to do, in progress, done) whatever their role.
 - Training data (thermal and camera frame pairs from the calibration rig) is
   recorded only when recording is switched on, and is stored privately, apart
   from anything students can reach.
-- Ask AI runs on a model hosted on the team's own cluster, not on a public
-  service. It has read this file and a few live figures. It has no tools and
-  cannot change anything.
+- Ask AI runs on a model on the team's own cluster, not a public service. It
+  is given this file, a few live figures and, when a question names something
+  a file can be found by, a few pieces of this repository's source and
+  documents (tests by title only; never configuration or data). Each answer
+  lists the files it was shown. It sees pieces, not whole files, explains
+  code without writing it out, and has no tools: it cannot change anything.
+  The model is loaded when the landing page opens.
 
 ## Where to look for more
 

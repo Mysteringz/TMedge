@@ -33,7 +33,9 @@ algo-app/src/console/motion.css  how every control in the console moves (Bluegri
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
 src/modules/workspace/   the landing page's team side: mailbox, feature requests, tasks (docs/WORKSPACE.md); /api/workspace
-src/modules/assistant/   Ask AI: a model on the team's Proxmox cluster, told config/ai-knowledge.md (docs/ASSISTANT.md); /api/assistant
+src/modules/assistant/   Ask AI: a model on the team's Proxmox cluster, told config/ai-knowledge.md and shown matching source (docs/ASSISTANT.md); /api/assistant
+src/modules/assistant/domain/code-index.ts  how Ask AI reads this repository: what may be indexed, redaction, cutting files into pieces, finding the pieces for a question (BM25)
+src/tools/code-index.ts  builds dist/src/code-index.json during npm run build; it ships in the release
 config/ai-knowledge.md   what Ask AI knows about the system -- UPDATE IT WITH EVERY CHANGE TO THE SYSTEM (rule below)
 algo-app/src/widgets/workspace/  the landing page under the welcome: the search/ask box, suggestions, system figures, mailbox, board
 src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMflash access
@@ -191,10 +193,17 @@ has hidden Linux failures before.
   rest say what somebody works on. No permission check may read them; access
   is the access role and only that.
 - **The assistant answers and never acts.** It is given no tools, and nothing
-  it writes is executed or followed. It is shown the knowledge base and a few
-  figures every member already sees -- never mail, imagery, anything about a
-  student, a machine address or a secret. Its answers are always marked as
-  AI, and a model that is down is said to be down. docs/ASSISTANT.md.
+  it writes is executed or followed. It is shown the knowledge base, a few
+  figures every member already sees, and pieces of this repository's tracked
+  source and documents -- never mail, imagery, anything about a student, a
+  machine address, an email address or a secret. What may be indexed is the
+  allow-list in `domain/code-index.ts` and nothing else: never `config/`,
+  `data/` or a test's fixtures, and addresses are struck out. Its answers are
+  always marked as AI and list the files they were written from, and a model
+  that is down is said to be down. docs/ASSISTANT.md.
+- **This map is how the assistant finds a file.** Each line above is indexed
+  with every piece of the file or folder it names. A new module without a
+  line here is one Ask AI will look for in the wrong place.
 
 ## The assistant's knowledge base -- a rule for every change
 

@@ -4,12 +4,33 @@
  * of record, and the panel says where they came from and that they can be wrong.
  */
 import { useEffect, useRef, type ReactNode } from 'react';
+import type { Source } from '../../../entities/assistant/index.ts';
 import { Stop, XMark } from '../../../console/icons.tsx';
 
 export interface Exchange {
   id: number; question: string; answer: string;
   state: 'waiting' | 'writing' | 'done' | 'stopped' | 'failed';
   error?: string;
+  /** The pieces of the repository this answer was written from, when it was shown any. */
+  sources?: Source[];
+}
+
+/**
+ * Which files an answer was written from: each file once, with the lines it
+ * was shown. It is what was put in front of the model, not what the model
+ * says it used, so it is true whatever the answer goes on to say.
+ */
+function Sources({ sources }: { sources: Source[] }) {
+  const files = new Map<string, string[]>();
+  for (const source of sources) files.set(source.path, [...(files.get(source.path) ?? []), source.from === source.to ? `${source.from}` : `${source.from}–${source.to}`]);
+  return (
+    <div className="ws-answer__sources">
+      <p className="ws-answer__sources-label">Read for this answer</p>
+      <ul>
+        {[...files].map(([path, lines]) => <li key={path}><code>{path}</code><span>lines {lines.join(', ')}</span></li>)}
+      </ul>
+    </div>
+  );
 }
 
 /**
@@ -30,7 +51,7 @@ function formatted(text: string): ReactNode[] {
   return out;
 }
 
-export function AssistantPanel({ exchanges, model, onStop, onClear }: { exchanges: Exchange[]; model: string | null; onStop(): void; onClear(): void }) {
+export function AssistantPanel({ exchanges, model, readsSource, onStop, onClear }: { exchanges: Exchange[]; model: string | null; readsSource: boolean; onStop(): void; onClear(): void }) {
   const live = exchanges.some((exchange) => exchange.state === 'waiting' || exchange.state === 'writing');
   const latest = exchanges[exchanges.length - 1];
   const body = useRef<HTMLDivElement>(null);
@@ -52,14 +73,17 @@ export function AssistantPanel({ exchanges, model, onStop, onClear }: { exchange
           <div className="ws-answer__turn" key={exchange.id}>
             <p className="ws-answer__q">{exchange.question}</p>
             {exchange.answer && <div className="ws-answer__a">{formatted(exchange.answer)}{exchange.state === 'writing' && <span className="ws-answer__cursor" aria-hidden="true" />}</div>}
-            {exchange.state === 'waiting' && <p className="ws-answer__wait">Thinking… the first answer after a quiet spell takes about twenty seconds while the model loads.</p>}
+            {exchange.sources && exchange.sources.length > 0 && <Sources sources={exchange.sources} />}
+            {exchange.state === 'waiting' && <p className="ws-answer__wait">{readsSource
+              ? 'Looking through the source and thinking… usually a few seconds; about half a minute when the model has to be loaded first.'
+              : 'Thinking… the first answer after a quiet spell takes about twenty seconds while the model loads.'}</p>}
             {exchange.state === 'stopped' && <p className="ws-answer__wait">Stopped.</p>}
             {exchange.state === 'failed' && <p className="cx-hint is-err" role="alert">{exchange.error}</p>}
           </div>
         ))}
       </div>
       <p className="ws-answer__foot">
-        Written by a model on the team's own server from the system's knowledge base and a few live figures. It cannot see mail or change anything, and it can be wrong: check what you will act on.
+        Written by a model on the team's own server from the system's knowledge base, a few live figures{readsSource ? ' and the pieces of this repository that match the question' : ''}. It cannot see mail or change anything, and it can be wrong{readsSource ? ', about code especially: open the file before you rely on it' : ': check what you will act on'}.
         {latest?.state === 'done' && ' Ask a follow-up in the box above.'}
       </p>
       <p className="ws-sr" role="status" aria-live="polite">{latest?.state === 'done' ? 'Answer ready.' : latest?.state === 'failed' ? 'The assistant could not answer.' : ''}</p>

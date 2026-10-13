@@ -444,10 +444,13 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
 
         // With a model: a stand-in that answers, and remembers what it was asked.
         const asked = [];
-        await page.route('**/api/assistant', route => route.fulfill({ json: { data: { available: true, reason: null, model: 'test-model:1b', knowledgeUpdatedAt: Date.now() }, error: null } }));
+        await page.route('**/api/assistant', route => route.fulfill({ json: { data: { available: true, reason: null, model: 'test-model:1b', knowledgeUpdatedAt: Date.now(), code: { files: 569, chunks: 2620 } }, error: null } }));
+        // The first answer was written from three pieces of two files; the follow-up from none.
+        const read = [{ path: 'src/edge/occupancy.ts', from: 1, to: 31 }, { path: 'src/edge/occupancy.ts', from: 319, to: 361 }, { path: 'docs/a/long/folder/of/documents/THE_AUTHORITY_OF_A_SENSOR_OVER_A_TABLE.md', from: 12, to: 12, heading: 'Who counts' }];
         await page.route('**/api/assistant/ask', route => {
           asked.push(route.request().postDataJSON());
-          return route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: delta\ndata: {"text":"Each table has **one** authority sensor."}\n\nevent: done\ndata: {}\n\n' });
+          const sources = asked.length === 1 ? `event: sources\ndata: ${JSON.stringify({ sources: read })}\n\n` : '';
+          return route.fulfill({ status: 200, contentType: 'text/event-stream', body: `${sources}event: delta\ndata: {"text":"Each table has **one** authority sensor."}\n\nevent: done\ndata: {}\n\n` });
         });
         await home();
         // The name of something on the site is looked up on the site, and Enter opens it.
@@ -472,11 +475,19 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         assert.deepEqual(asked[0], { question: 'why is a table unknown?', history: [] });
         await page.locator('.ws-ai-label').waitFor();
         await page.getByText('it can be wrong', { exact: false }).waitFor();
+        // Which files it was written from, each file once with the lines it was shown: what an engineer opens to check it.
+        const sources = page.locator('.ws-answer__sources li');
+        assert.deepEqual(await sources.evaluateAll(items => items.map(item => [item.querySelector('code').textContent, item.querySelector('span').textContent])), [
+          ['src/edge/occupancy.ts', 'lines 1–31, 319–361'], ['docs/a/long/folder/of/documents/THE_AUTHORITY_OF_A_SENSOR_OVER_A_TABLE.md', 'lines 12'],
+        ]);
+        await page.getByText('about code especially', { exact: false }).waitFor();
         await fits(page, 390);
+        if (process.env.ALGO_UI_SCREENSHOTS) await shot(page, engine, 'home-answer-sources');
         // A follow-up carries what was just said, so "it" means something.
         await box.fill('and when is it not?');
         await box.press('Enter');
         await page.waitForFunction(() => document.querySelectorAll('.ws-answer__turn').length === 2);
+        assert.equal(await page.locator('.ws-answer__sources').count(), 1, 'an answer written from no source lists none');
         assert.deepEqual(asked[1].history, [{ role: 'user', content: 'why is a table unknown?' }, { role: 'assistant', content: 'Each table has **one** authority sensor.' }]);
         await page.getByRole('button', { name: 'Close answers' }).tap();
         assert.equal(await page.locator('.ws-answer').count(), 0);

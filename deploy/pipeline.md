@@ -54,7 +54,10 @@ A successful **runtime push CI run on main** stores `release-<full commit SHA>` 
 30 days. It contains the compiled runtime, static assets, configuration,
 lockfile, `RELEASE.json`, file SHA-256 manifest, and archive checksum. It never
 contains `.env`, private keys, recordings, local data or a copy of the firmware
-implementation. Runtime dependencies are installed from the lockfile on the
+implementation. `dist/src/code-index.json` is in it too: the text of this
+repository's tracked source and documents, built by `npm run build` from the
+same commit, with machine addresses struck out, for Ask AI to look things up
+in (docs/ASSISTANT.md). Runtime dependencies are installed from the lockfile on the
 server with lifecycle scripts disabled, or reused when the lockfile matches.
 
 `Deploy production` validates the source run, repository, event, workflow and
