@@ -221,8 +221,21 @@ function wsLink(ws: WebSocket, req: IncomingMessage): Link {
 
 export class GatewayServer {
   private readonly server: Server;
-  private readonly http = createHttpServer((_req, res) => {
-    res.writeHead(426, { 'content-type': 'text/plain' });
+  private readonly http = createHttpServer((req, res) => {
+    let path: string;
+    try { path = new URL(req.url ?? '/', 'http://x').pathname; } catch {
+      res.writeHead(400, { 'cache-control': 'no-store', 'content-type': 'text/plain' });
+      res.end('bad request\n');
+      return;
+    }
+    // In failover mode this server is bound only by the lease owner, so this
+    // probe lets routing follow the same fence as gateway ingest.
+    if (req.method === 'GET' && path === '/healthz') {
+      res.writeHead(200, { 'cache-control': 'no-store', 'content-type': 'text/plain' });
+      res.end('ok\n');
+      return;
+    }
+    res.writeHead(426, { 'cache-control': 'no-store', 'content-type': 'text/plain' });
     res.end('TMGW: connect with a WebSocket to /tmgw\n');
   });
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });

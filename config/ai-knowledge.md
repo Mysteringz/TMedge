@@ -77,28 +77,17 @@ Modules (docs number them; pages show names):
   in to the cluster as themselves; credentials are sealed in the browser,
   used once and never stored.
 - 02 ML data, /ml-data. Query the private PostgreSQL training database with a
-  SELECT or WITH statement, inspect table definitions and a SchemaSpy report,
-  and download selected tables as a ZIP containing a SQL dump and a manifest.
-  The console shows at most 200 rows, bounds result sizes and query time, and
-  summarizes binary values as byte counts. Queries cannot change the database. The dedicated reader can read table
-  data and sequence values for exports, but cannot advance or change sequences.
-  Every signed-in role may query and inspect the schema; Operator, Engineer
-  and Admin may prepare exports, each owned by the account that asked. With
-  the private worker, Proxmox stores the ZIP and the edge streams it;
-  downloads resume and fail on truncation. Preparation runs in the
-  background; ZIPs expire 24 hours after completion, active downloads are kept.
-  The worker enforces disk and archive limits. Restarted unfinished exports
-  fail and can be generated again. A download key
-  (Download data tab; 1 h, 24 h or 7 days; revocable; shown once) lets a
-  training job on the cluster list and download its owner's exports and
-  nothing else; it ends when the owner's password changes. The table browser reads the live
-  database; the SchemaSpy report is a separately generated snapshot. SchemaSpy generation
-  runs on Proxmox; the console serves its static output.
-  A Graphviz diagram sits beside the tools, below them on phones. A watcher
-  checks schema and row-write counters every 30 seconds between jobs and
-  regenerates SchemaSpy on Proxmox; changes during generation trigger the
-  next check. The edge privately synchronizes completed snapshots and the
-  page polls every 15 seconds. Failures retain the last diagram and timestamp.
+  read-only SELECT or WITH statement, inspect its schema and download selected
+  tables as an owner-only ZIP. Results are capped at 200 rows, by bytes and by
+  time; binary values appear only as byte counts. Every role may query;
+  Operator, Engineer and Admin may export. Proxmox prepares bounded ZIPs and
+  the edge streams resumable, truncation-checked downloads; jobs run in the
+  background, interrupted jobs fail, and completed ZIPs expire after 24 hours.
+  A revocable, one-time-shown download key lasting 1 hour, 24 hours or 7 days
+  lets a training job list and fetch only its owner's exports, and ends after
+  a password change. The table browser is live. SchemaSpy and its Graphviz
+  diagram are snapshots generated on Proxmox, synchronized to the edge and
+  refreshed after schema or row-write changes; failures keep the last result.
 - 03 Debug console, /console. Live thermal frames, the floor with fused
   occupancy, per-sensor health, and commands to a sensor (set a parameter,
   reset its background, identify, save, reboot).
@@ -241,20 +230,16 @@ can move its status (to do, in progress, done) whatever their role.
 
 ## Availability
 
-AWS is the primary student website. Cloudflare sends all normal traffic there
-and uses the Proxmox website only after readiness failures. The standby has a
-read-only database copy: existing accounts can sign in, but sign-up, activity,
-sensor ingest and console writes remain on AWS. AWS publishes occupancy to
-both websites; if it stops, counts become unknown, never empty.
+Cloudflare normally sends students to AWS and uses the Proxmox website after
+readiness failures. Its database copy is read-only: accounts can sign in, but
+sign-up, activity, sensor and console writes stay on AWS. Occupancy is mirrored
+to both sites; AWS loss makes it unknown, never empty.
 
-A full-site mode is being prepared, but is not live. A PostgreSQL lease
-will authorize one origin for sensor, console and student traffic;
-the old owner closes listeners before takeover, and the standby's
-readiness stays false until it owns the lease. Node/gateway replay and command
-cursors are fenced and importable. Console/session, artifact and ML state
-must move to shared stores, and a managed cloud
-database must pass restore/failover tests before this mode is enabled. See
-docs/FAILOVER.md and deploy/backup/README.md.
+Full-site mode is not live. A PostgreSQL lease will authorize one origin for
+sensor, console and student traffic; only its listeners, readiness and input
+health remain active. Replay and command cursors are fenced. Shared console,
+artifact and ML state plus a managed database restore/failover rehearsal are
+required before enabling it. See docs/FAILOVER.md and deploy/backup/README.md.
 
 ## Where to look for more
 

@@ -153,7 +153,10 @@ test('gateway over WebSocket on the same port: same auth, relay and commands; CF
   ing.on('report', (_p, address) => seen.push(address));
   const { gw, port } = await server((d, src) => ing.handle(d, src));
   try {
-    // A plain HTTP request to the port is not mistaken for TMGW.
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    assert.equal(health.status, 200, 'the bound ingest owner is healthy');
+    assert.equal(health.headers.get('cache-control'), 'no-store');
+    // Other plain HTTP requests to the port are not mistaken for TMGW.
     assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 426);
     const ws = new WebSocket(`ws://127.0.0.1:${port}/tmgw`, { headers: { 'CF-Connecting-IP': '203.0.113.7' } } as unknown as string[]);
     ws.binaryType = 'arraybuffer';

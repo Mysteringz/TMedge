@@ -25,7 +25,10 @@ is the fencing epoch. With failover enabled:
 - the student tier checks the same row for `/readyz`, ordinary HTTP traffic
   and new WebSocket upgrades, returning 503 when its origin is not leader;
 - Cloudflare health checks can therefore route every public hostname to the
-  origin that the database has authorized.
+  origin that the database has authorized. The gateway listener exposes
+  `/healthz`, and the direct-node listener already exposes `/healthz`; because
+  neither listener binds before lease acquisition, only the active input
+  origin can answer successfully.
 - node replay cursors and the global command sequence commit in PostgreSQL
   before an ACK or downlink; their statements lock and verify the same lease
   row, so an expired generation cannot finish a late write after takeover.
