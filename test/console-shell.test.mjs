@@ -3,7 +3,8 @@
  * Three things a person meets before any module: the Devices menu (Updates,
  * Adoption, TMflash), the account icon (who they are, their settings, the way
  * out), and the settings page behind it. And one thing they should never
- * meet: a page an ad blocker has emptied.
+ * meet: a page an ad blocker has emptied. Before all of it, the tab itself:
+ * its icon, and that a place is called by its name and not by a number.
  *
  * Run npm run build and npx playwright install chromium webkit first; it
  * runs with npm run test:algo-mobile.
@@ -150,6 +151,60 @@ test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is st
     assert.equal(await modules.locator('.cx-group-dropdown').count(), 1);
     assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['Updates', 'Adoption', 'TMflash web', 'TMflash download']);
     assert.deepEqual(errors, []);
+  } finally { await context.close(); await browser.close(); }
+});
+
+test('chromium: every place is called by its name; no page, and not the phone menu, shows a module number', { timeout: 90_000 }, async () => {
+  const browser = await chromium.launch({ headless: true });
+  const { context, page, errors } = await open(browser, 'engineer', '/');
+  try {
+    // The numbers are the documents' and the comments' way of referring to a module (docs/ALGO_DASHBOARD.md).
+    const places = [
+      ['/flow', 'Algorithm flow', () => page.locator('.react-flow').first()],
+      ['/train', 'ML job', () => page.getByRole('heading', { name: 'ML job', exact: true })],
+      ['/ml-data', 'ML data', () => page.getByRole('heading', { name: 'ML database', exact: true })],
+      ['/console', 'Debug console', () => page.locator('iframe[title="Debug console"]')],
+      ['/updates', 'Updates', () => page.getByRole('heading', { name: 'Updates', exact: true, level: 1 })],
+      ['/analytics', 'Analytics', () => page.getByRole('heading', { name: 'Analytics', exact: true, level: 1 })],
+      ['/adoption', 'Adoption', () => page.getByRole('heading', { name: 'Adoption', exact: true, level: 1 })],
+      ['/flash', 'TMflash web', () => page.getByRole('heading', { name: 'TMflash web', exact: true, level: 1 })],
+      ['/tmflash-download', 'TMflash download', () => page.getByRole('heading', { name: 'TMflash download', exact: true, level: 1 })],
+    ];
+    for (const [path, , drawn] of places) {
+      await page.goto(`${base}${path}`);
+      await drawn().waitFor();
+      assert.doesNotMatch(await page.locator('body').innerText(), /\bmodule\s+\d/i, `${path} names no module number`);
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('button', { name: 'Navigation menu', exact: true }).click();
+    // The whole text of each row: a number beside the name would be part of it.
+    assert.deepEqual(await page.getByRole('navigation', { name: 'Mobile navigation', exact: true }).getByRole('link').allTextContents(),
+      ['Home', ...places.map(([, name]) => name)]);
+    await shot(page, 'phone-menu-390');
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); await browser.close(); }
+});
+
+test('chromium: the tab shows the console’s own mark, on the sign-in page too', { timeout: 60_000 }, async () => {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  try {
+    // Nobody is signed in: the icon is asked for before the form is filled.
+    const page = await context.newPage();
+    await page.goto(`${base}/login`);
+    const icons = await page.locator('link[rel="icon"]').evaluateAll((links) => links.map((link) => link.getAttribute('href')));
+    assert.deepEqual(icons, ['/favicon.ico', '/favicon.svg'], 'pixels for a browser that draws no SVG icon, then the SVG');
+    for (const href of icons) {
+      const response = await context.request.get(`${base}${href}`);
+      assert.equal(response.status(), 200, `${href} is served without a session`);
+      assert.match(response.headers()['content-type'], /^image\//);
+      // Fetched and decoded by the page itself, so its own content policy has let it through.
+      const size = await page.evaluate(async (source) => { const image = new Image(); image.src = source; await image.decode(); return image.naturalWidth; }, href);
+      assert.ok(size > 0, `${href} is a picture a browser can draw`);
+    }
+    // What a browser asks for by itself where a document names no icon: it is the same file.
+    assert.deepEqual([...(await (await context.request.get(`${base}/favicon.ico`)).body()).subarray(0, 4)], [0, 0, 1, 0], 'an .ico');
   } finally { await context.close(); await browser.close(); }
 });
 

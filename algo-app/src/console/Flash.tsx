@@ -328,7 +328,7 @@ export function Flash() {
 
   if (!supported) {
     return <main className="cx-adoption cx-flash">
-      <Heading />
+      <h1>TMflash web</h1>
       <section className="dv-panel">
         <h2>This browser cannot reach USB devices</h2>
         <p>Flashing from the web uses Web Serial, which Chrome and Edge have on a computer. Safari, Firefox and phone browsers do not.</p>
@@ -338,7 +338,7 @@ export function Flash() {
   }
 
   return <main className="cx-adoption cx-flash">
-    <Heading />
+    <h1>TMflash web</h1>
     {!canCommission && <p className="dv-hint" role="status">Read-only access. Engineer or Admin access is required to flash and commission devices.</p>}
     <p className="dv-lead">Plug a TMsense board into this computer, choose it, and set it up. The firmware is the latest TMsense release from GitHub. The Wi-Fi password and the signing key go from this page to the board’s USB port, and are never sent to the server.</p>
 
@@ -479,10 +479,6 @@ export function Flash() {
       </details>}
     </section>
   </main>;
-}
-
-function Heading() {
-  return <><p className="cx-eyebrow">Module 07 · Flash over USB</p><h1>TMflash web</h1></>;
 }
 
 function Choice({ legend, value, options, disabled, onChange }: { legend: string; value: string; options: [string, string][]; disabled: boolean; onChange(value: string): void }): ReactNode {

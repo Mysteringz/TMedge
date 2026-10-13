@@ -334,11 +334,12 @@ test('assistant: inside the real console it is shown the board and the sensors, 
 
 test('the knowledge base names every module the console has, fits the model, and holds nothing it should not', () => {
   const text = readFileSync(KNOWLEDGE, 'utf8');
-  const modules = [...readFileSync(join(ROOT, 'algo-app', 'src', 'console', 'parts.tsx'), 'utf8').matchAll(/\{ n: '(\d\d)', title: '([^']+)', path: '(\/[a-z-]+)'/g)];
+  const modules = [...readFileSync(join(ROOT, 'algo-app', 'src', 'console', 'parts.tsx'), 'utf8').matchAll(/\{ title: '([^']+)', path: '(\/[a-z-]+)',(?: group: '[^']+',)? desc: /g)];
   assert.ok(modules.length >= 6, 'the module list was found');
-  for (const [, n, title, path] of modules) {
+  for (const [, title, path] of modules) {
     // A module added to the console without a word here is a module the assistant will deny exists.
-    assert.ok(text.includes(`${n} ${title}, ${path}`), `config/ai-knowledge.md must describe module ${n} ${title} (${path})`);
+    // Its number is kept here and in the documents, not on any page: the source the assistant is shown says "module 04".
+    assert.ok(new RegExp(`^- \\d\\d ${title}, ${path}\\.`, 'm').test(text), `config/ai-knowledge.md must describe ${title} (${path}) under its module number`);
   }
   assert.ok(Buffer.byteLength(text) <= LIMITS.knowledgeBytes, 'it has to leave the model room to answer');
   assert.doesNotMatch(text, /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/, 'no machine addresses');

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The console's mark (BrandMark, src/console/parts.tsx): the accent square with the "a" of IBM Plex Sans
+       SemiBold. The letter is its outline, because an icon cannot load a web font, and it is larger than in the
+       header so that it still reads at 16 px. -->
+  <rect width="32" height="32" fill="#ff832b"/>
+  <path fill="#161616" transform="translate(6.38 24.87) scale(.034)" d="M529 0H458Q429 0 406.5 -13.5Q384 -27 372 -53Q363 -70 361 -90H355Q342 -40 301.5 -14Q261 12 203 12Q123 12 80 -30.5Q37 -73 37 -142Q37 -196 63.5 -231Q90 -266 140 -284Q190 -302 260 -302H349V-340Q349 -383 326 -407.5Q303 -432 252 -432Q207 -432 179.5 -412.5Q152 -393 133 -366L57 -434Q86 -479 134 -506.5Q182 -534 261 -534Q366 -534 421.5 -485.5Q477 -437 477 -348V-102H529ZM349 -225H267Q217 -225 192 -208.5Q167 -192 167 -161V-144Q167 -113 188 -97Q209 -81 246 -81Q275 -81 298 -89.5Q321 -98 335 -115Q349 -132 349 -156Z"/>
+</svg>

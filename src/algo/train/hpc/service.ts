@@ -58,7 +58,7 @@ export function userMessage(err: unknown): { code: string; message: string } {
   // Ours, not the person's: say so on the server, where the operator looks.
   // Exceptions from fs, net and child_process carry paths and codes, never
   // what was typed.
-  console.warn(`[algo] module 02: unexpected ${(err as Error)?.name ?? 'error'}: ${(err as Error)?.message ?? String(err)}`);
+  console.warn(`[algo] ML training: unexpected ${(err as Error)?.name ?? 'error'}: ${(err as Error)?.message ?? String(err)}`);
   return { code: 'internal', message: 'Something went wrong on the dashboard; nothing more was sent to HKU.' };
 }
 

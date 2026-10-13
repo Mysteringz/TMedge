@@ -106,7 +106,7 @@ export class JobStore {
       if (!Array.isArray(list) || !list.every(looksLikeJob)) throw new Error('not a list of jobs');
       this.jobs = new Map(list.map((j) => [j.id, normalise(j)]));
     } catch (err) {
-      this.error = `${this.file} is unreadable (${(err as Error).message}); module 02 is read-only until it is repaired`;
+      this.error = `${this.file} is unreadable (${(err as Error).message}); ML training is read-only until it is repaired`;
     }
   }
 
@@ -214,7 +214,7 @@ export class JobStore {
       appendFileSync(join(this.root, 'audit.jsonl'),
         `${JSON.stringify({ at: new Date().toISOString(), ...entry, userAgent: entry.userAgent?.slice(0, 200) })}\n`, { mode: 0o600 });
     } catch (err) {
-      console.warn(`[algo] module 02 audit write failed: ${(err as Error).message}`);
+      console.warn(`[algo] ML training audit write failed: ${(err as Error).message}`);
     }
   }
 }

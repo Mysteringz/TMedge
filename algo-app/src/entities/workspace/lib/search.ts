@@ -40,7 +40,7 @@ export const KIND_LABEL: Record<SearchKind, string> = {
 /** Places before things, and things you act on before things you read. */
 const KIND_ORDER: SearchKind[] = ['module', 'page', 'action', 'person', 'request', 'task', 'message', 'sensor'];
 
-export interface SiteModule { n: string; title: string; path: string; desc: string }
+export interface SiteModule { title: string; path: string; desc: string }
 export interface SensorSource { uid: string; label: string; floorId: string | null; online: boolean; simulated: boolean }
 
 /** Screens inside a module that have an address of their own. */
@@ -52,7 +52,7 @@ const PAGES: { title: string; path: string; detail: string; keywords: string }[]
 export function buildIndex(input: { modules: readonly SiteModule[]; accounts: boolean; snapshot: WorkspaceSnapshot | null; sensors: SensorSource[] }): SearchEntry[] {
   const { snapshot } = input;
   const entries: SearchEntry[] = input.modules.map((m) => ({
-    id: `module:${m.path}`, kind: 'module', title: m.title, detail: m.desc, hint: m.path, keywords: `${m.n} module`, target: { type: 'navigate', path: m.path },
+    id: `module:${m.path}`, kind: 'module', title: m.title, detail: m.desc, hint: m.path, keywords: 'module', target: { type: 'navigate', path: m.path },
   }));
   if (input.accounts) entries.push({ id: 'module:/accounts', kind: 'module', title: 'Accounts', detail: 'Create accounts, change roles, reset passwords and revoke sessions.', hint: '/accounts', keywords: 'users roles admin password members team', target: { type: 'navigate', path: '/accounts' } });
   for (const page of PAGES) entries.push({ id: `page:${page.path}`, kind: 'page', title: page.title, detail: page.detail, hint: page.path, keywords: page.keywords, target: { type: 'navigate', path: page.path } });

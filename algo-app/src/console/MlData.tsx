@@ -88,7 +88,7 @@ export function MlData() {
   };
   return <main className="cx-train cx-data">
     <div className="cx-data-heading">
-      <div><div className="cx-kicker">Module 02 · ML</div><h1 className="cx-h2">ML database</h1>
+      <div><h1 className="cx-h2">ML database</h1>
         <p className="cx-data-lede">Explore the recordings behind the models. Query, understand the schema, and take a dataset with you.</p></div>
       <span className={`tag ${schema?.available ? 'cx-data-online' : 'tag-neutral'}`}>{schema?.available ? 'Database connected' : schema || schemaError ? 'Database unavailable' : 'Connecting…'}</span>
     </div>
