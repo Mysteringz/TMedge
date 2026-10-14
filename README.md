@@ -86,7 +86,9 @@ TMedge/
 │           └── workspace/ui/
 ├── ci/
 ├── config/
-├── deploy/training/
+├── deploy/
+│   ├── backup/
+│   └── training/
 ├── docker/
 │   ├── postgres-local/init/
 │   └── postgres-test/init/
