@@ -29,11 +29,11 @@ settings and boot counters survive.
   signed viewer modules; draft GLBs stay behind its API. Stop edge for
   `db:registry:import --apply`; restart after.
   Student URLs need site/floor; ambiguous floors prompt.
-  V2 `model`: object=GLB+transform, null=none, absent=legacy fallback;
-  `proceduralRoom="simple-rectangle-v1"` selects generated geometry; v1 rejects it.
-  Room view previews private drafts beside Details/Sensors. Edit in 2D; valid
-  edits render live, invalid inputs keep last-valid. Generated rooms use fixed
-  fixed 3 m walls/0.75 m tables, no asset I/O; drafts private until publish.
+  V2 model: object=GLB+transform; null=2D; absent=legacy.
+  `proceduralRoom="simple-rectangle-v1"` plus absent model selects generated;
+  v1 rejects it. Students see public layout/status only; generated rooms fetch
+  no assets. Preview sits beside Details/Sensors; valid 2D edits render live,
+  invalid edits keep last-valid. Generated rooms use 3 m walls, 0.75 m tables.
 
 ## How a count is made
 

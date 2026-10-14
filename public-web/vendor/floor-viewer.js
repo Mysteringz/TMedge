@@ -17,13 +17,34 @@
 (function () {
   if (customElements.get('floor-viewer')) return;
   let libP = null;
+  let gltfP = null;
+  let libRetry = 0;
+  let gltfRetry = 0;
+  const retryQuery = (attempt) => attempt ? `?floor-viewer-retry=${attempt}` : '';
   function lib() {
-    if (!libP) libP = Promise.all([
-      import('./three/three.module.js'),
-      import('./three/OrbitControls.js'),
-      import('./three/GLTFLoader.js')
-    ]).then(([T, oc, gl]) => ({ THREE: T, OrbitControls: oc.OrbitControls, GLTFLoader: gl.GLTFLoader }));
+    if (!libP) {
+      const attempt = libRetry;
+      libP = Promise.all([
+        import(`./three/three.module.js${retryQuery(attempt)}`),
+        import(`./three/OrbitControls.js${retryQuery(attempt)}`)
+      ]).then(([T, oc]) => ({ THREE: T, OrbitControls: oc.OrbitControls })).catch((error) => {
+        libP = null;
+        libRetry = attempt + 1;
+        throw error;
+      });
+    }
     return libP;
+  }
+  function gltfLoader() {
+    if (!gltfP) {
+      const attempt = gltfRetry;
+      gltfP = import(`./three/GLTFLoader.js${retryQuery(attempt)}`).then((gl) => gl.GLTFLoader).catch((error) => {
+        gltfP = null;
+        gltfRetry = attempt + 1;
+        throw error;
+      });
+    }
+    return gltfP;
   }
   const cache = new Map();
   function loadGLB(GLTFLoader, src) {
@@ -59,21 +80,17 @@
   }
   const nums = (s) => (s || '').split(',').filter(Boolean).map(Number);
   const norm = (s) => (s || '').replace(/[^a-z0-9]+/gi, ' ').trim().toLowerCase();
-  function authoredShapeSize(shape) {
-    if (shape.type === 'circle') return { width: shape.radius * 2, height: shape.radius * 2 };
-    if (shape.type === 'rect') return { width: shape.width, height: shape.height };
-    const xs = shape.points.map((point) => point[0]), ys = shape.points.map((point) => point[1]);
-    return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
-  }
-
   const FREE = 0x0b8b7a;     // room for your group
   const PICKED = 0x006f62;   // the table you chose
   const FULL = 0x9b9797;
   const INK = 0x201e1d;
+  const SIMPLE_ROOM_SOURCE = 'simple-rectangle-v1';
+  const SIMPLE_ROOM_WALL_HEIGHT_M = 3;
+  const SIMPLE_ROOM_TABLE_HEIGHT_M = 0.75;
 
   class FloorViewer extends HTMLElement {
     static get observedAttributes() {
-      return ['src', 'room', 'labels', 'free', 'occupied', 'dark', 'selected', 'directions', 'columns', 'rows', 'location-layout', 'model-transform'];
+      return ['src', 'room', 'labels', 'free', 'occupied', 'dark', 'selected', 'directions', 'columns', 'rows', 'location-layout', 'model-transform', 'procedural-room'];
     }
 
     connectedCallback() {
@@ -99,14 +116,23 @@
 
     attributeChangedCallback(n, o, v) {
       if (!this._ready || o === v) return;
-      if (n === 'src' || n === 'room') this.refresh();
+      if (n === 'procedural-room') this.refresh();
+      else if (n === 'src' || n === 'room') {
+        if (this.getAttribute('procedural-room') !== SIMPLE_ROOM_SOURCE) this.refresh();
+      }
       else if (n === 'model-transform') {
         this.applyModelTransform();
         this.updateLocationBounds();
         if (this._room) this.layoutMarkers();
       } else if (n === 'location-layout') {
+        if (this.getAttribute('procedural-room') === SIMPLE_ROOM_SOURCE) {
+          this.updateGeneratedRoom(this.readLocationLayout());
+          return;
+        }
         this.updateLocationBounds();
         if (this._room) this.layoutMarkers();
+      } else if (this._room && this.getAttribute('procedural-room') === SIMPLE_ROOM_SOURCE) {
+        this.updateGeneratedRoom(this.readLocationLayout());
       } else if (this._room) this.layoutMarkers();
     }
 
@@ -120,7 +146,11 @@
         cancelAnimationFrame(this._animation);
         if (this._ro) this._ro.disconnect();
         if (this._three) this._three.controls.dispose();
-        for (const k of ['_model', '_marks', '_path']) { disposeObject(this[k], k !== '_model'); this[k] = null; }
+        for (const k of ['_model', '_marks', '_path', '_generatedShell', '_generatedTables']) {
+          disposeObject(this[k], k !== '_model'); this[k] = null;
+        }
+        this._generatedTableRecords?.clear();
+        this._authoredTableRecords?.clear();
         this._room = null;
         if (this._renderer) this._renderer.dispose();
       }, 0);
@@ -172,6 +202,8 @@
       fill.position.set(-6, 5, -4);
       scene.add(fill);
       this._three = { renderer, scene, camera, controls };
+      this._wallVisibilityHandler = () => this.updateWallVisibility();
+      controls.addEventListener('change', this._wallVisibilityHandler);
       this._ready = true;
 
       this._ro = new ResizeObserver(() => {
@@ -215,18 +247,31 @@
     async refresh() {
       const { THREE } = this._L;
       const { scene, camera, controls } = this._three;
+      const token = (this._token = Symbol());
+      if (this.getAttribute('procedural-room') === SIMPLE_ROOM_SOURCE) {
+        this.clearSceneObjects();
+        const layout = this.readLocationLayout();
+        if (!layout) {
+          this._msg.textContent = '3D view unavailable. Use the floor map below.';
+          this.dispatchEvent(new CustomEvent('viewer-error'));
+          return;
+        }
+        this.updateGeneratedRoom(layout, true);
+        return;
+      }
       const src = this.getAttribute('src');
-      if (!src) return;
+      if (!src) { this.clearSceneObjects(); return; }
       if (this._msg && !this._msg.isConnected) this.appendChild(this._msg);
       if (this._msg) this._msg.textContent = 'Loading 3D floor…';
-      const token = (this._token = Symbol());
-      for (const k of ['_model', '_marks', '_path']) {
-        if (this[k]) { scene.remove(this[k]); disposeObject(this[k], k !== '_model'); this[k] = null; }
-      }
-      this._room = null;
+      this.clearSceneObjects();
       let model;
-      try { model = await loadGLB(this._L.GLTFLoader, src); }
+      try {
+        const GLTFLoader = await gltfLoader();
+        if (token !== this._token || this._stopped) return;
+        model = await loadGLB(GLTFLoader, src);
+      }
       catch {
+        if (token !== this._token || this._stopped) return;
         this._msg.textContent = '3D view unavailable. Use the floor map below.';
         this.dispatchEvent(new CustomEvent('model-error'));
         return;
@@ -299,16 +344,37 @@
     readLocationLayout() {
       try {
         const layout = JSON.parse(this.getAttribute('location-layout') || 'null');
-        return layout && Number.isFinite(layout.width) && layout.width > 0
-          && Number.isFinite(layout.height) && layout.height > 0 && Array.isArray(layout.tables) ? layout : null;
+        return layout && Number.isFinite(layout.widthM) && layout.widthM > 0
+          && Number.isFinite(layout.depthM) && layout.depthM > 0 && Array.isArray(layout.tables) ? layout : null;
       } catch { return null; }
+    }
+
+    clearSceneObjects() {
+      if (!this._three) return;
+      const { scene } = this._three;
+      for (const key of ['_model', '_marks', '_path', '_generatedShell', '_generatedTables']) {
+        if (!this[key]) continue;
+        scene.remove(this[key]);
+        disposeObject(this[key], key !== '_model');
+        this[key] = null;
+      }
+      this._generatedTableRecords?.clear();
+      this._authoredTableRecords?.clear();
+      this._room = null;
+      this._focus = null;
+      this._seat = null;
+      this._pickables = [];
+      this._generatedDimensions = null;
+      this._walls = null;
+      this._home = null;
+      this._view = null;
     }
 
     authoredFloorBounds(layout) {
       const { THREE } = this._L;
       return new THREE.Box3(
-        new THREE.Vector3(0, -0.05, -layout.height / 100),
-        new THREE.Vector3(layout.width / 100, 0.08, 0),
+        new THREE.Vector3(0, -0.05, -layout.depthM),
+        new THREE.Vector3(layout.widthM, 0.08, 0),
       );
     }
 
@@ -339,77 +405,298 @@
     layoutAuthoredMarkers(layout) {
       const { THREE } = this._L;
       const { scene } = this._three;
-      const marks = new THREE.Group();
+      if (!this._marks) { this._marks = new THREE.Group(); scene.add(this._marks); }
+      const previous = this._authoredTableRecords || new Map();
+      const next = new Map();
       const selectedId = typeof layout.selectedTableId === 'string' ? layout.selectedTableId : null;
       this._pickables = [];
       this._focus = null;
-      layout.tables.forEach((table) => {
-        const shape = table.shape || { type: 'rect', ...table.rect };
-        const centre = this.authoredShapeCentre(shape);
-        if (!centre) return;
-        const status = table.status === 'unknown' || table.free === null ? 'unknown' : table.free > 0 ? 'free' : 'full';
-        const picked = table.id === selectedId;
-        const color = picked ? PICKED : status === 'free' ? FREE : FULL;
-        const material = new THREE.MeshBasicMaterial({
-          color, transparent: true, opacity: status === 'unknown' ? 0.38 : picked ? 0.82 : status === 'free' ? 0.62 : 0.58,
-          depthTest: false, depthWrite: false,
-        });
-        const plate = new THREE.Mesh(this.authoredShapeGeometry(shape, centre), material);
-        plate.position.set(centre.x / 100, 0.025, -centre.y / 100);
-        plate.renderOrder = 8;
-        plate.userData.tableId = table.id;
-        marks.add(plate);
-        this._pickables.push(plate);
-        this.addAuthoredSeats(marks, table.seats);
-        const dimensions = authoredShapeSize(shape);
-        const label = this.label(table.name, Math.max(0.2, Math.min(dimensions.width, dimensions.height) / 100 * 0.42), picked || status === 'free' ? '#ffffff' : '#201e1d');
-        label.position.set(centre.x / 100, 0.04, -centre.y / 100);
-        label.renderOrder = 9;
-        marks.add(label);
-        if (picked) this._focus = new THREE.Vector3(centre.x / 100, 0.025, -centre.y / 100);
-      });
-      scene.add(marks);
-      this._marks = marks;
+      for (const table of layout.tables) {
+        const centre = this.footprintCentre(table.footprint);
+        if (!centre) continue;
+        const signature = this.tableGeometrySignature(table);
+        let record = previous.get(table.id);
+        if (!record || record.signature !== signature) {
+          if (record) { this._marks.remove(record.group); disposeObject(record.group); }
+          record = this.createAuthoredTableRecord(table, centre, signature);
+          this._marks.add(record.group);
+        } else if (record.name !== table.name) {
+          record.group.remove(record.label);
+          disposeObject(record.label);
+          record.label = this.createTableLabel(table.name, table.footprint, centre, 0.04);
+          record.group.add(record.label);
+          record.name = table.name;
+        }
+        this.updateAuthoredTableRecord(record, table, selectedId === table.id);
+        next.set(table.id, record);
+        this._pickables.push(record.plate);
+        if (selectedId === table.id) this._focus = new THREE.Vector3(centre.x, 0.025, centre.z);
+      }
+      for (const [id, record] of previous) {
+        if (next.has(id)) continue;
+        this._marks.remove(record.group);
+        disposeObject(record.group);
+      }
+      this._authoredTableRecords = next;
+      this.clearPath();
       this._seat = (this._focus || this._room.centre).clone();
       if (this.getAttribute('directions') === '1' && this._focus) this.drawRoute(this._focus);
     }
 
-    authoredShapeCentre(shape) {
-      if (shape.type === 'circle') return { x: shape.cx, y: shape.cy };
-      if (shape.type === 'rect') return { x: shape.x + shape.width / 2, y: shape.y + shape.height / 2 };
-      if (shape.type !== 'polygon' || !Array.isArray(shape.points) || shape.points.length < 3) return null;
-      return shape.points.reduce((centre, point) => ({ x: centre.x + point[0] / shape.points.length, y: centre.y + point[1] / shape.points.length }), { x: 0, y: 0 });
+    footprintCentre(footprint) {
+      if (!footprint) return null;
+      if (footprint.type === 'circle') return { x: footprint.center.x, z: footprint.center.z };
+      if (!Array.isArray(footprint.points) || footprint.points.length < 3) return null;
+      const xs = footprint.points.map((point) => point.x), zs = footprint.points.map((point) => point.z);
+      return { x: (Math.min(...xs) + Math.max(...xs)) / 2, z: (Math.min(...zs) + Math.max(...zs)) / 2 };
     }
 
-    authoredShapeGeometry(shape, centre) {
+    footprintSize(footprint) {
+      if (footprint.type === 'circle') return { width: footprint.radiusM * 2, depth: footprint.radiusM * 2 };
+      const xs = footprint.points.map((point) => point.x), zs = footprint.points.map((point) => point.z);
+      return { width: Math.max(...xs) - Math.min(...xs), depth: Math.max(...zs) - Math.min(...zs) };
+    }
+
+    footprintShape(footprint, centre) {
       const { THREE } = this._L;
-      if (shape.type === 'circle') return new THREE.CircleGeometry(shape.radius / 100, 40).rotateX(-Math.PI / 2);
-      if (shape.type === 'rect') return new THREE.PlaneGeometry(shape.width / 100, shape.height / 100).rotateX(-Math.PI / 2);
-      const path = new THREE.Shape();
-      shape.points.forEach((point, index) => {
-        const x = (point[0] - centre.x) / 100, y = (point[1] - centre.y) / 100;
-        if (index === 0) path.moveTo(x, y); else path.lineTo(x, y);
+      const shape = new THREE.Shape();
+      if (footprint.type === 'circle') {
+        shape.absarc(0, 0, footprint.radiusM, 0, Math.PI * 2, false);
+        return shape;
+      }
+      footprint.points.forEach((point, index) => {
+        const x = point.x - centre.x;
+        const y = centre.z - point.z;
+        if (index === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
       });
-      path.closePath();
-      return new THREE.ShapeGeometry(path).rotateX(-Math.PI / 2);
+      shape.closePath();
+      return shape;
     }
 
-    addAuthoredSeats(group, seats) {
+    authoredShapeGeometry(footprint, centre) {
       const { THREE } = this._L;
-      if (!Array.isArray(seats)) return;
-      seats.forEach((seat) => {
-        if (!Number.isFinite(seat.x) || !Number.isFinite(seat.y)) return;
-        const known = typeof seat.occupied === 'boolean';
-        const material = new THREE.MeshBasicMaterial({
-          color: known ? seat.occupied ? FULL : FREE : INK,
-          transparent: true, opacity: known ? 0.92 : 0.48, depthTest: false, depthWrite: false,
-        });
-        const marker = new THREE.Mesh(new THREE.CircleGeometry(0.045, 12), material);
+      return new THREE.ShapeGeometry(this.footprintShape(footprint, centre)).rotateX(-Math.PI / 2);
+    }
+
+    tableGeometrySignature(table) {
+      return JSON.stringify([table.footprint, table.seats.map((seat) => [seat.id, seat.x, seat.z, seat.side])]);
+    }
+
+    createTableLabel(name, footprint, centre, y) {
+      const size = this.footprintSize(footprint);
+      const label = this.label(name, Math.max(0.2, Math.min(size.width, size.depth) * 0.42), '#ffffff');
+      label.position.set(centre.x, y, centre.z);
+      label.renderOrder = 9;
+      return label;
+    }
+
+    createAuthoredTableRecord(table, centre, signature) {
+      const { THREE } = this._L;
+      const group = new THREE.Group();
+      const material = new THREE.MeshBasicMaterial({ color: INK, transparent: true, opacity: 0.48, depthTest: false, depthWrite: false });
+      const plate = new THREE.Mesh(this.authoredShapeGeometry(table.footprint, centre), material);
+      plate.position.set(centre.x, 0.025, centre.z);
+      plate.renderOrder = 8;
+      plate.userData.tableId = table.id;
+      group.add(plate);
+      const seats = new Map();
+      for (const seat of table.seats) {
+        const marker = new THREE.Mesh(new THREE.CircleGeometry(0.045, 12), new THREE.MeshBasicMaterial({ color: INK, transparent: true, opacity: 0.48, depthTest: false, depthWrite: false }));
         marker.rotation.x = -Math.PI / 2;
-        marker.position.set(seat.x / 100, 0.05, -seat.y / 100);
+        marker.position.set(seat.x, 0.05, seat.z);
         marker.renderOrder = 10;
         group.add(marker);
-      });
+        seats.set(seat.id, marker);
+      }
+      const label = this.createTableLabel(table.name, table.footprint, centre, 0.04);
+      group.add(label);
+      return { group, plate, label, seats, signature, name: table.name };
+    }
+
+    updateAuthoredTableRecord(record, table, picked) {
+      const status = table.status;
+      const color = picked ? PICKED : status === 'free' ? FREE : status === 'full' ? FULL : INK;
+      record.plate.material.color.setHex(color);
+      record.plate.material.opacity = status === 'unknown' ? 0.38 : picked ? 0.82 : status === 'free' ? 0.62 : 0.58;
+      record.label.material.color.setHex(picked || status === 'free' ? 0xffffff : INK);
+      for (const seat of table.seats) {
+        const marker = record.seats.get(seat.id);
+        if (!marker) continue;
+        const known = typeof seat.occupied === 'boolean';
+        marker.material.color.setHex(known ? seat.occupied ? FULL : FREE : INK);
+        marker.material.opacity = known ? 0.92 : 0.48;
+      }
+    }
+
+    updateGeneratedRoom(layout, resetCamera = false) {
+      if (!this._three || !this._L || !layout) return;
+      const { THREE } = this._L;
+      const { scene, camera, controls } = this._three;
+      const dimensionsChanged = !this._generatedDimensions
+        || this._generatedDimensions.widthM !== layout.widthM || this._generatedDimensions.depthM !== layout.depthM;
+      if (dimensionsChanged) {
+        if (this._generatedShell) { scene.remove(this._generatedShell); disposeObject(this._generatedShell); }
+        this._generatedShell = this.createGeneratedShell(layout.widthM, layout.depthM);
+        scene.add(this._generatedShell);
+        this._generatedDimensions = { widthM: layout.widthM, depthM: layout.depthM };
+        if (!this._generatedTables) { this._generatedTables = new THREE.Group(); scene.add(this._generatedTables); }
+      }
+      const box = new THREE.Box3(new THREE.Vector3(0, -0.05, -layout.depthM),
+        new THREE.Vector3(layout.widthM, SIMPLE_ROOM_WALL_HEIGHT_M, 0));
+      this._room = { box, size: box.getSize(new THREE.Vector3()), centre: box.getCenter(new THREE.Vector3()), spots: null };
+      this._view = this._view || {
+        dir: (layout.widthM >= layout.depthM
+          ? new THREE.Vector3(0.24, 0.78, 0.9)
+          : new THREE.Vector3(0.9, 0.78, 0.24)).normalize(),
+        target: new THREE.Vector3(layout.widthM / 2, 0.2, -layout.depthM / 2),
+      };
+      this.reconcileGeneratedTables(layout);
+      this.updateWallVisibility();
+      if (resetCamera || !this._home) {
+        const radius = Math.max(layout.widthM, layout.depthM, 1) * 0.5;
+        camera.near = radius / 400; camera.far = radius * 80; camera.updateProjectionMatrix();
+        controls.minDistance = radius * 0.25;
+        controls.maxDistance = radius * 8;
+        this.frameRoom();
+        this._home = { pos: camera.position.clone(), tgt: controls.target.clone() };
+      }
+      if (this._msg) this._msg.remove();
+      this.dispatchEvent(new CustomEvent('viewer-ready'));
+    }
+
+    createGeneratedShell(widthM, depthM) {
+      const { THREE } = this._L;
+      const shell = new THREE.Group();
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(widthM, depthM), new THREE.MeshStandardMaterial({ color: 0xe8ece9, roughness: 0.92 }));
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.set(widthM / 2, -0.01, -depthM / 2);
+      floor.userData.roomPart = 'floor';
+      shell.add(floor);
+      const walls = new THREE.Group();
+      const material = new THREE.MeshStandardMaterial({ color: 0xd5d2cf, roughness: 0.86, side: THREE.DoubleSide });
+      const thickness = 0.1;
+      for (const [side, x, z, wallWidth, wallDepth] of [
+        ['west', 0, -depthM / 2, thickness, depthM + thickness],
+        ['east', widthM, -depthM / 2, thickness, depthM + thickness],
+        ['south', widthM / 2, 0, widthM + thickness, thickness],
+        ['north', widthM / 2, -depthM, widthM + thickness, thickness],
+      ]) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(wallWidth, SIMPLE_ROOM_WALL_HEIGHT_M, wallDepth), material);
+        wall.position.set(x, SIMPLE_ROOM_WALL_HEIGHT_M / 2, z);
+        wall.userData.roomWall = side;
+        walls.add(wall);
+      }
+      shell.add(walls);
+      this._walls = Object.fromEntries(walls.children.map((wall) => [wall.userData.roomWall, wall]));
+      return shell;
+    }
+
+    updateWallVisibility() {
+      if (!this._walls || !this._three || !this._room) return;
+      const { camera } = this._three;
+      const centreX = (this._room.box.min.x + this._room.box.max.x) / 2;
+      const centreZ = (this._room.box.min.z + this._room.box.max.z) / 2;
+      const dx = camera.position.x - centreX, dz = camera.position.z - centreZ;
+      const magnitude = Math.hypot(dx, dz) || 1;
+      const xFacing = Math.abs(dx / magnitude) > 0.45;
+      const zFacing = Math.abs(dz / magnitude) > 0.45;
+      if (this._walls.east) this._walls.east.visible = !(xFacing && dx > 0);
+      if (this._walls.west) this._walls.west.visible = !(xFacing && dx < 0);
+      if (this._walls.south) this._walls.south.visible = !(zFacing && dz > 0);
+      if (this._walls.north) this._walls.north.visible = !(zFacing && dz < 0);
+    }
+
+    reconcileGeneratedTables(layout) {
+      const { THREE } = this._L;
+      const previous = this._generatedTableRecords || new Map();
+      const next = new Map();
+      this._pickables = [];
+      this._focus = null;
+      const selectedId = typeof layout.selectedTableId === 'string' ? layout.selectedTableId : null;
+      for (const table of layout.tables) {
+        const centre = this.footprintCentre(table.footprint);
+        if (!centre) continue;
+        const signature = this.tableGeometrySignature(table);
+        let record = previous.get(table.id);
+        if (!record || record.signature !== signature) {
+          if (record) { this._generatedTables.remove(record.group); disposeObject(record.group); }
+          record = this.createGeneratedTableRecord(table, centre, signature);
+          this._generatedTables.add(record.group);
+        } else if (record.name !== table.name) {
+          record.group.remove(record.label);
+          disposeObject(record.label);
+          record.label = this.createTableLabel(table.name, table.footprint, centre, SIMPLE_ROOM_TABLE_HEIGHT_M + 0.015);
+          record.group.add(record.label);
+          record.name = table.name;
+        }
+        this.updateGeneratedTableRecord(record, table, selectedId === table.id);
+        next.set(table.id, record);
+        this._pickables.push(record.plate);
+        if (selectedId === table.id) this._focus = new THREE.Vector3(centre.x, SIMPLE_ROOM_TABLE_HEIGHT_M, centre.z);
+      }
+      for (const [id, record] of previous) {
+        if (next.has(id)) continue;
+        this._generatedTables.remove(record.group);
+        disposeObject(record.group);
+      }
+      this._generatedTableRecords = next;
+      this.clearPath();
+      this._seat = (this._focus || this._room.centre).clone();
+      if (this.getAttribute('directions') === '1' && this._focus) this.drawRoute(this._focus);
+    }
+
+    createGeneratedTableRecord(table, centre, signature) {
+      const { THREE } = this._L;
+      const group = new THREE.Group();
+      const geometry = new THREE.ExtrudeGeometry(this.footprintShape(table.footprint, centre), { depth: SIMPLE_ROOM_TABLE_HEIGHT_M, bevelEnabled: false, curveSegments: 32 });
+      geometry.rotateX(-Math.PI / 2);
+      const material = new THREE.MeshStandardMaterial({ color: INK, roughness: 0.78, transparent: true, opacity: 0.68 });
+      const plate = new THREE.Mesh(geometry, material);
+      plate.position.set(centre.x, 0, centre.z);
+      plate.userData.tableId = table.id;
+      group.add(plate);
+      const seats = new Map();
+      const chairGeometry = table.footprint.type === 'circle'
+        ? null
+        : new THREE.BoxGeometry(0.24, 0.2, 0.2);
+      for (const seat of table.seats) {
+        const shape = table.footprint.type === 'circle'
+          ? new THREE.CylinderGeometry(0.105, 0.105, 0.2, 16)
+          : chairGeometry.clone();
+        const seatMaterial = new THREE.MeshStandardMaterial({ color: INK, roughness: 0.82, transparent: true, opacity: 0.52 });
+        const chair = new THREE.Mesh(shape, seatMaterial);
+        chair.position.set(seat.x, 0.1, seat.z);
+        chair.rotation.y = seat.side === 'L' ? Math.PI / 2 : seat.side === 'R' ? -Math.PI / 2 : seat.side === 'T' ? Math.PI : 0;
+        chair.userData.seatId = seat.id;
+        group.add(chair);
+        seats.set(seat.id, chair);
+      }
+      if (chairGeometry) chairGeometry.dispose();
+      const label = this.createTableLabel(table.name, table.footprint, centre, SIMPLE_ROOM_TABLE_HEIGHT_M + 0.015);
+      group.add(label);
+      return { group, plate, label, seats, signature, name: table.name };
+    }
+
+    updateGeneratedTableRecord(record, table, picked) {
+      const status = table.status;
+      const color = picked ? PICKED : status === 'free' ? FREE : status === 'full' ? FULL : INK;
+      record.plate.material.color.setHex(color);
+      record.plate.material.opacity = status === 'unknown' ? 0.62 : picked ? 0.96 : status === 'free' ? 0.9 : 0.82;
+      record.label.material.color.setHex(picked || status === 'free' ? 0xffffff : INK);
+      for (const seat of table.seats) {
+        const chair = record.seats.get(seat.id);
+        if (!chair) continue;
+        const known = typeof seat.occupied === 'boolean';
+        chair.material.color.setHex(known ? seat.occupied ? FULL : FREE : INK);
+        chair.material.opacity = known ? 0.98 : 0.58;
+      }
+    }
+
+    clearPath() {
+      if (!this._path || !this._three) return;
+      this._three.scene.remove(this._path);
+      disposeObject(this._path);
+      this._path = null;
     }
 
     /**
@@ -550,13 +837,14 @@
     layoutMarkers() {
       const { THREE } = this._L;
       const { scene } = this._three;
-      if (this._marks) { scene.remove(this._marks); disposeObject(this._marks); this._marks = null; }
-      if (this._path) { scene.remove(this._path); disposeObject(this._path); this._path = null; }
-      this._focus = null;
-      this._pickables = [];
-
       const authoredLayout = this.readLocationLayout();
       if (authoredLayout) { this.layoutAuthoredMarkers(authoredLayout); return; }
+
+      if (this._marks) { scene.remove(this._marks); disposeObject(this._marks); this._marks = null; }
+      this._authoredTableRecords = null;
+      this.clearPath();
+      this._focus = null;
+      this._pickables = [];
 
       const free = nums(this.getAttribute('free'));
       const occupied = nums(this.getAttribute('occupied'));

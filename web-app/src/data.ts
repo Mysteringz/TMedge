@@ -13,6 +13,7 @@ import { allocate, floorIsDark, knownFree, largestTableFree, walkOrder, type All
 import { spaceInfo, VENUES, type SpaceInfo, type Venue } from '../../src/shared/venues.js';
 import { resolveCampusFloor } from '../../src/shared/location-identity.js';
 import { parseCampusView } from '../../src/shared/campus-view.js';
+import { SIMPLE_ROOM_SOURCE } from '../../src/shared/simple-room-geometry.js';
 import type { CampusFloor, CampusView, PublishedFloorModel, TableState } from '../../src/shared/types.js';
 
 export type { CampusFloor, CampusView, TableState, Allocation, Venue };
@@ -163,7 +164,12 @@ export interface VenueSpaces {
   open: boolean;
 }
 
-export type FloorSpacePresentation = SpaceInfo & { uploadedModel?: PublishedFloorModel };
+export type FloorSpaceSource = 'generated' | 'custom' | '2d' | 'legacy' | 'none';
+export type FloorSpacePresentation = Omit<SpaceInfo, 'model'> & {
+  model: SpaceInfo['model'];
+  source: FloorSpaceSource;
+  uploadedModel?: PublishedFloorModel;
+};
 
 /** Venues with the floors their edges are actually publishing. */
 export function useVenues(view: CampusView | null): VenueSpaces[] {
@@ -213,14 +219,23 @@ export function floorSpaceInfo(floor: CampusFloor, allFloors: readonly CampusFlo
   const unique = allFloors.filter((item) => item.id === floor.id).length === 1
     && VENUES.some((venue) => venue.floorIds.includes(floor.id));
   const legacy = unique ? spaceInfo(floor.id) : spaceInfo('');
-  if (floor.model === null) return { ...legacy, model: null };
+  // The exact v2 discriminator selects the room before the old venue catalog
+  // can supply a static model for the same bare floor ID.
+  if (floor.proceduralRoom === SIMPLE_ROOM_SOURCE) return { ...legacy, model: null, source: 'generated' };
+  if (floor.model === null) return { ...legacy, model: null, source: '2d' };
   if (floor.model) return {
     ...legacy,
     model: { src: `/api/models/${encodeURIComponent(floor.model.assetId)}`, room: floor.name,
       columns: Math.max(1, floor.tables.length), rows: 1 },
+    source: 'custom',
     uploadedModel: floor.model,
   };
-  return { ...legacy, ...(unique ? {} : { model: null }), uploadedModel: undefined };
+  return {
+    ...legacy,
+    model: unique ? legacy.model : null,
+    source: unique && legacy.model ? 'legacy' : 'none',
+    uploadedModel: undefined,
+  };
 }
 
 /** A floor nobody can see right now: stale edge, or every table unknown. */

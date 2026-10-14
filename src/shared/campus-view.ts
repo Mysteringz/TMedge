@@ -1,5 +1,6 @@
 import type { CampusFloor, CampusView, CoverageStatus, PublishedFloorModel, Point, SeatSide, TableShape } from './types.js';
 import { isValidSimpleBoundedPolygon, LOCATION_MODEL_TRANSFORM_LIMITS } from './location-validation.js';
+import { isSimpleRoomRectangleOutline, SIMPLE_ROOM_SOURCE } from './simple-room-geometry.js';
 
 interface Vector3 { x: number; y: number; z: number }
 
@@ -41,7 +42,11 @@ function parseFloor(value: unknown): CampusFloor | null {
   })) return null;
   const totals = parseTotals(value.totals);
   const model = parseModel(value);
-  if (!totals || model === invalidModel) return null;
+  const hasProceduralRoom = Object.hasOwn(value, 'proceduralRoom');
+  if (!totals || model === invalidModel || (hasProceduralRoom && (
+    value.proceduralRoom !== SIMPLE_ROOM_SOURCE || Object.hasOwn(value, 'model') ||
+    !isSimpleRoomRectangleOutline(value.outline as Point[], value.width as number, value.height as number)
+  ))) return null;
   const known = parsedTables.filter((table) => table.status !== 'unknown');
   const expectedTotals = {
     seats: parsedTables.reduce((sum, table) => sum + table.capacity, 0),
@@ -58,6 +63,7 @@ function parseFloor(value: unknown): CampusFloor | null {
     outline: value.outline as Point[], zones: parsedZones,
     tables: parsedTables, totals, updatedAt: value.updatedAt, stale: value.stale,
     ...(model === undefined ? {} : { model }),
+    ...(hasProceduralRoom ? { proceduralRoom: SIMPLE_ROOM_SOURCE } : {}),
   };
 }
 

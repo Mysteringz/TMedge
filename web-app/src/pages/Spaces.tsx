@@ -2,7 +2,7 @@
  * Available spaces, with a composite campus-location identity in every route.
  * Old floor-only links work only while the ID is unambiguous.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { recordStudentActivity, useSpaceViewActivity } from '../activity.ts';
 import {
@@ -43,6 +43,10 @@ export default function Spaces() {
     });
     setDirections(!directions);
   };
+  const clearRemovedSelection = useCallback(() => {
+    setTable(null);
+    setDirections(false);
+  }, []);
 
   useEffect(() => { document.title = `${entry?.venue.shortName ?? 'Spaces'} - HKUMySeat`; }, [entry]);
   useEffect(() => { setTable(null); setDirections(false); }, [floor?.key]);
@@ -84,7 +88,7 @@ export default function Spaces() {
               ))}
             </div>
             <LiveView floor={floor} allFloors={floors} seats={seats} table={table} onTable={pickTable}
-              directions={directions} onDirections={toggleDirections} />
+              directions={directions} onDirections={toggleDirections} onSelectionRemoved={clearRemovedSelection} />
           </>
         )}
       </div>
@@ -123,7 +127,7 @@ function SpaceBlock({ floor, allFloors, seats, selected, onOpen, testId }: {
   );
 }
 
-function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirections }: {
+function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirections, onSelectionRemoved }: {
   floor: CampusFloor;
   allFloors: readonly CampusFloor[];
   seats: number;
@@ -131,9 +135,12 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
   onTable: (id: string | null) => void;
   directions: boolean;
   onDirections: () => void;
+  onSelectionRemoved: () => void;
 }) {
   const [announcement, setAnnouncement] = useState('');
   const lastAnnouncement = useRef('');
+  const lastFloorKey = useRef(floor.key);
+  const removedSelection = useRef<string | null>(null);
   const info = floorSpaceInfo(floor, allFloors);
   const ordered = walkOrder(floor.tables);
   const dark = isDark(floor);
@@ -148,22 +155,35 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
     ? `${selectedTable.name}: live availability is unknown`
     : `${selectedTable.name}: ${selectedTable.free === 0 ? 'full' : `${selectedTable.free} of ${selectedTable.capacity} seats free`}`;
   useEffect(() => {
+    if (lastFloorKey.current !== floor.key) {
+      lastFloorKey.current = floor.key;
+      removedSelection.current = null;
+      lastAnnouncement.current = '';
+      setAnnouncement('');
+      return;
+    }
+    if (table && !selectedTable) {
+      const removalKey = `${floor.key}\u0000${table}`;
+      if (removedSelection.current !== removalKey) {
+        removedSelection.current = removalKey;
+        lastAnnouncement.current = removalKey;
+        setAnnouncement('The selected table was removed from this location.');
+        onSelectionRemoved();
+      }
+      return;
+    }
     if (selectedStatus && selectedStatus !== lastAnnouncement.current) {
+      removedSelection.current = null;
       lastAnnouncement.current = selectedStatus;
       setAnnouncement(selectedStatus);
-    } else if (!selectedStatus) {
+    } else if (!selectedStatus && !removedSelection.current) {
       lastAnnouncement.current = '';
       setAnnouncement('');
     }
-  }, [selectedStatus, lastAnnouncement]);
+  }, [floor.key, table, selectedTable, selectedStatus, onSelectionRemoved]);
   const list = (pick: (t: (typeof ordered)[number]) => boolean) =>
     ordered.map((t, i) => (pick(t) ? i + 1 : 0)).filter(Boolean).join(',');
-  const authoredLayout = info.uploadedModel ? {
-    width: floor.width,
-    height: floor.height,
-    tables: floor.tables,
-    selectedTableId: table,
-  } : undefined;
+  const sceneFloor = info.source === 'generated' || info.source === 'custom' ? floor : undefined;
 
   return (
     <>
@@ -171,8 +191,8 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
       {!dark && unknown.length > 0 && <Notice>{plural(unknown.length, 'table')} here have no working sensor. They are never counted as free.</Notice>}
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
-      {info.model && <div className="panel panel-3d">
-        <div className="panel-title">3D map - drag to rotate, scroll or pinch to zoom</div>
+      {(info.source === 'generated' || info.model) && <div className="panel panel-3d">
+        <div className="panel-title">{info.source === 'generated' ? 'Built-in 3D room' : '3D map'} - drag to rotate, scroll or pinch to zoom</div>
         <div className="panel-tools">
           <button type="button" data-testid="student-directions-toggle" className={`btn ${directions ? 'btn-primary' : 'btn-secondary'}`} onClick={onDirections}>
             {directions ? 'Hide directions' : 'Get directions'}
@@ -183,12 +203,13 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
         <div className="viewport">
           {(
             <FloorViewer
-              src={info.model.src} room={info.model.room} columns={info.model.columns} rows={info.model.rows}
+              src={info.model?.src ?? null} source={info.source} room={info.model?.room ?? floor.name}
+              columns={info.model?.columns ?? Math.max(1, floor.tables.length)} rows={info.model?.rows ?? 1}
               labels={ordered.map((item) => item.name)} free={list(fits)}
               occupied={list((item) => item.status !== 'unknown' && (item.free ?? 0) === 0)}
               dark={list((item) => item.status === 'unknown' || item.free === null)} selected={table ? index(table) : 0}
               directions={directions} onPick={(n) => { const picked = ordered[n - 1]; if (picked && fits(picked)) onTable(picked.id); }}
-              locationLayout={authoredLayout} locationTransform={info.uploadedModel?.transform}
+              floor={sceneFloor} selectedTableId={table} locationTransform={info.uploadedModel?.transform}
               onPickTable={(id) => { const picked = floor.tables.find((item) => item.id === id); if (picked && fits(picked)) onTable(id); }}
             />
           )}

@@ -58,6 +58,37 @@ test('public campus parser preserves the legacy spatial envelope for untagged ta
   assert.deepEqual(parsed.floors[0]!.zones[0]!.polygon[0], [-20, -15]);
 });
 
+test('public campus parser retains only the canonical generated source without any model key', () => {
+  const generated = validView();
+  generated.floors[0]!.proceduralRoom = 'simple-rectangle-v1';
+  const parsed = parseCampusView(generated);
+  assert.ok(parsed);
+  assert.equal(parsed.floors[0]!.proceduralRoom, 'simple-rectangle-v1');
+  assert.equal(Object.hasOwn(parsed.floors[0]!, 'model'), false);
+
+  const withModelDescriptor = validView();
+  withModelDescriptor.floors[0]!.proceduralRoom = 'simple-rectangle-v1';
+  withModelDescriptor.floors[0]!.model = {
+    assetId: '00000000-0000-4000-8000-000000000001',
+    transform: { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } },
+  };
+  const withExplicit2d = validView();
+  withExplicit2d.floors[0]!.proceduralRoom = 'simple-rectangle-v1';
+  withExplicit2d.floors[0]!.model = null;
+  const unknownLiteral = validView();
+  unknownLiteral.floors[0]!.proceduralRoom = 'simple-rectangle-v2' as 'simple-rectangle-v1';
+  const reorderedOutline = validView();
+  reorderedOutline.floors[0]!.proceduralRoom = 'simple-rectangle-v1';
+  reorderedOutline.floors[0]!.outline = [p(500, 0), p(500, 400), p(0, 400), p(0, 0)];
+  const mismatchedDimensions = validView();
+  mismatchedDimensions.floors[0]!.proceduralRoom = 'simple-rectangle-v1';
+  mismatchedDimensions.floors[0]!.width = 501;
+
+  for (const invalid of [withModelDescriptor, withExplicit2d, unknownLiteral, reorderedOutline, mismatchedDimensions]) {
+    assert.equal(parseCampusView(invalid), null);
+  }
+});
+
 test('public campus parser keeps model tri-state and rejects malformed geometry, references, status and counts', () => {
   const none = validView();
   none.floors[0]!.model = null;

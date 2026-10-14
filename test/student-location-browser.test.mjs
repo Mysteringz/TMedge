@@ -14,7 +14,7 @@ const MODEL_TRANSFORM = {
   rotationDeg: { x: 10, y: 22, z: -5 },
   positionM: { x: 1.25, y: 0.5, z: -0.75 },
 };
-const ARTIFACT_DIR = process.env.TASK_4_1_ARTIFACTS;
+const ARTIFACT_DIR = process.env.TASK_2_3_ARTIFACTS;
 
 test('signed student browser renders composite locations, aligned models, live status and recovery', { timeout: 120_000 }, async () => {
   const temporary = mkdtempSync(join(tmpdir(), 'tmedge-student-locations-'));
@@ -24,6 +24,7 @@ test('signed student browser renders composite locations, aligned models, live s
   const context = await browser.newContext({ viewport: { width: 1365, height: 900 } });
   const errors = [];
   const network = [];
+  let moduleRetryEvidence = null;
   let traceStarted = false;
   let tracePath = null;
   try {
@@ -100,7 +101,7 @@ test('signed student browser renders composite locations, aligned models, live s
     await screenshot(page, 'student-composite-model-and-map');
     const modelState = await page.evaluate(() => {
       const viewer = document.querySelector('floor-viewer');
-      const plate = viewer._marks.children.find((child) => child.userData.tableId === 'rect-table');
+      const plate = viewer._authoredTableRecords.get('rect-table').plate;
       return {
         scale: [viewer._model.scale.x, viewer._model.scale.y, viewer._model.scale.z],
         rotationOrder: viewer._model.rotation.order,
@@ -115,7 +116,8 @@ test('signed student browser renders composite locations, aligned models, live s
     assert.ok(Math.abs(modelState.rotation[1] - 22 * Math.PI / 180) < 1e-10);
     assert.ok(Math.abs(modelState.rotation[2] + 5 * Math.PI / 180) < 1e-10);
     assert.deepEqual(modelState.position, [1.25, 0.5, -0.75]);
-    assert.deepEqual(modelState.overlay, [0.9, 0.025, -0.7], 'the table overlay stays in authored floor coordinates while the GLB root is transformed');
+    assert.ok(modelState.overlay.every((value, index) => Math.abs(value - [0.9, 0.025, -0.7][index]) < 1e-12),
+      'the table overlay stays in authored floor coordinates while the GLB root is transformed');
 
     const rectRow = page.getByTestId('student-table-list-rect-table');
     await rectRow.focus();
@@ -162,6 +164,218 @@ test('signed student browser renders composite locations, aligned models, live s
     await exerciseTouchPinch(context, page);
     await screenshot(page, 'student-mobile-location');
 
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      floorId: 'iw-maker-a', proceduralRoom: true,
+    }));
+    const modelRequestCountBeforeGenerated = network.filter((item) => item.kind === 'request' && item.path.startsWith('/api/models/')).length;
+    await page.goto(`${web.base}/dashboard/spaces/generated-site/iw-maker-a`);
+    try { await page.getByTestId('student-simple-room-viewer').waitFor({ timeout: 8000 }); }
+    catch {
+      const pageText = await page.locator('body').innerText();
+      throw new Error(`generated floor did not select its viewer; body=${pageText}; browserErrors=${errors.join(' | ')}; paths=${network.map((item) => item.path).join(',')}`);
+    }
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return Boolean(viewer?._generatedShell && viewer?._generatedTableRecords?.size === 3 && viewer?._three);
+    });
+    assert.match(await page.locator('.panel-3d .panel-title').innerText(), /Built-in 3D room/i);
+    assert.equal(await page.getByTestId('student-table-list-poly-table').count(), 1);
+    await screenshot(page, 'student-generated-room-and-map');
+    const generatedState = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      const THREE = viewer._L.THREE;
+      const rect = viewer._generatedTableRecords.get('rect-table');
+      const round = viewer._generatedTableRecords.get('round-table');
+      const polygon = viewer._generatedTableRecords.get('poly-table');
+      const bounds = (mesh) => {
+        const box = new THREE.Box3().setFromObject(mesh);
+        return { min: [box.min.x, box.min.y, box.min.z], max: [box.max.x, box.max.y, box.max.z] };
+      };
+      const polygonPoints = [
+        [3.4025, -0.305], [4.6025, -0.305], [4.6025, -0.505],
+        [4.0025, -0.505], [4.0025, -1.005], [3.4025, -1.005],
+      ];
+      const positions = polygon.plate.geometry.attributes.position;
+      const topVertices = Array.from({ length: positions.count }, (_, index) => [
+        positions.getX(index) + polygon.plate.position.x,
+        positions.getY(index) + polygon.plate.position.y,
+        positions.getZ(index) + polygon.plate.position.z,
+      ]);
+      const polygonVertices = polygonPoints.map(([x, z]) => topVertices.some((point) =>
+        Math.abs(point[0] - x) < 1e-6 && Math.abs(point[1] - 0.75) < 1e-6 && Math.abs(point[2] - z) < 1e-6));
+      const seat = rect.seats.get('rect-table-seat-1');
+      const sidesAt = (x, z) => {
+        const centreX = 3, centreZ = -2;
+        viewer._three.camera.position.set(x, 4, z);
+        viewer._three.controls.target.set(centreX, 0.2, centreZ);
+        viewer._three.controls.dispatchEvent({ type: 'change' });
+        return Object.fromEntries(Object.entries(viewer._walls).map(([side, wall]) => [side, wall.visible]));
+      };
+      return {
+        source: viewer.getAttribute('procedural-room'),
+        attributes: viewer.getAttributeNames(),
+        shellParts: viewer._generatedShell.children.length,
+        wallCount: Object.keys(viewer._walls).length,
+        wallBounds: Object.fromEntries(Object.entries(viewer._walls).map(([side, wall]) => [side, bounds(wall)])),
+        rect: bounds(rect.plate),
+        round: bounds(round.plate),
+        polygon: bounds(polygon.plate),
+        polygonVertices,
+        chairShapeTypes: [seat.geometry.type, round.seats.get('round-table-seat-1').geometry.type],
+        seatPosition: [seat.position.x, seat.position.y, seat.position.z],
+        cardinal: sidesAt(8, -2),
+        diagonal: sidesAt(7, -6),
+        otherCardinal: sidesAt(3, 4),
+      };
+    });
+    assert.equal(generatedState.source, 'simple-rectangle-v1');
+    assert.equal(generatedState.attributes.includes('src'), false, 'generated rooms never carry a model URL attribute');
+    assert.equal(generatedState.shellParts, 2, 'generated shell has floor and walls, without a roof');
+    assert.equal(generatedState.wallCount, 4);
+    for (const wall of Object.values(generatedState.wallBounds)) {
+      assert.ok(Math.abs(wall.min[1]) < 1e-8 && Math.abs(wall.max[1] - 3) < 1e-8, 'each generated wall is exactly 3 m high');
+    }
+    const rounded = (value) => { const result = Number(value.toFixed(6)); return result === 0 ? 0 : result; };
+    assert.deepEqual(generatedState.rect.min.map(rounded), [0.4025, 0, -1.01]);
+    assert.deepEqual(generatedState.rect.max.map(rounded), [1.405, 0.75, -0.405]);
+    assert.deepEqual(generatedState.round.min.map(rounded), [1.85, 0, -1.3575]);
+    assert.deepEqual(generatedState.round.max.map(rounded), [2.56, 0.75, -0.6475]);
+    assert.deepEqual(generatedState.polygon.min.map(rounded), [3.4025, 0, -1.005]);
+    assert.deepEqual(generatedState.polygon.max.map(rounded), [4.6025, 0.75, -0.305]);
+    assert.deepEqual(generatedState.polygonVertices, [true, true, true, true, true, true], 'the concave authored vertices survive projection without rounding');
+    assert.deepEqual(generatedState.chairShapeTypes, ['BoxGeometry', 'CylinderGeometry']);
+    assert.deepEqual(generatedState.seatPosition, [0.6025, 0.1, -0.705], 'chair proxies stay at the exact public seat coordinate');
+    assert.deepEqual(Object.entries(generatedState.cardinal).filter(([, visible]) => !visible).map(([side]) => side), ['east']);
+    assert.deepEqual(Object.entries(generatedState.diagonal).filter(([, visible]) => !visible).map(([side]) => side).sort(), ['east', 'north']);
+    assert.deepEqual(Object.entries(generatedState.otherCardinal).filter(([, visible]) => !visible).map(([side]) => side), ['south']);
+    assert.equal(network.filter((item) => item.kind === 'request' && item.path.startsWith('/api/models/')).length,
+      modelRequestCountBeforeGenerated, 'generated floors do not request a model asset');
+    assert.equal(await page.locator('floor-viewer[src]').count(), 0);
+
+    const generatedRow = page.getByTestId('student-table-list-rect-table');
+    await generatedRow.click();
+    assert.equal(await generatedRow.getAttribute('aria-pressed'), 'true');
+    await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      viewer._three.controls.target.set(3, 0.2, -2);
+      viewer._three.camera.position.set(6.5, 5, -5.5);
+      viewer._three.controls.dispatchEvent({ type: 'change' });
+      const record = viewer._generatedTableRecords.get('rect-table');
+      window.__studentGeneratedBefore = {
+        record, geometry: record.plate.geometry,
+        camera: [viewer._three.camera.position.x, viewer._three.camera.position.y, viewer._three.camera.position.z],
+      };
+    });
+    await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      floorId: 'iw-maker-a', proceduralRoom: true, rectFree: 0,
+    }));
+    await page.getByTestId('student-table-list-rect-table').getByText('Full').waitFor();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true', 'selected identity survives an occupancy-only update');
+    assert.match(await page.locator('[role="status"][aria-live="polite"]').innerText(), /Rectangle table: full/);
+    const generatedUpdate = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      const record = viewer._generatedTableRecords.get('rect-table');
+      return {
+        sameRecord: record === window.__studentGeneratedBefore.record,
+        sameGeometry: record.plate.geometry === window.__studentGeneratedBefore.geometry,
+        camera: [viewer._three.camera.position.x, viewer._three.camera.position.y, viewer._three.camera.position.z],
+        beforeCamera: window.__studentGeneratedBefore.camera,
+        selected: viewer._generatedTableRecords.get('rect-table').plate.material.color.getHex(),
+      };
+    });
+    assert.equal(generatedUpdate.sameRecord, true, 'status-only changes keep the table scene record mounted');
+    assert.equal(generatedUpdate.sameGeometry, true, 'status-only changes keep table mesh geometry');
+    assert.ok(generatedUpdate.beforeCamera.every((value, index) => Math.abs(value - generatedUpdate.camera[index]) < 1e-9),
+      'status-only changes retain orbit and zoom');
+
+    await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      const record = viewer._generatedTableRecords.get('rect-table');
+      window.__studentGeometryBefore = {
+        record, x: record.plate.position.x,
+        camera: [viewer._three.camera.position.x, viewer._three.camera.position.y, viewer._three.camera.position.z],
+      };
+    });
+    await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      floorId: 'iw-maker-a', proceduralRoom: true, rectFree: 0, rectXOffsetCm: 40,
+    }));
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return viewer?._generatedTableRecords.get('rect-table')?.plate.position.x > window.__studentGeometryBefore.x + 0.3;
+    });
+    assert.equal(await generatedRow.getAttribute('aria-pressed'), 'true', 'an extant selected table survives a geometry update');
+    const geometryUpdate = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      const record = viewer._generatedTableRecords.get('rect-table');
+      return {
+        replacedRecord: record !== window.__studentGeometryBefore.record,
+        camera: [viewer._three.camera.position.x, viewer._three.camera.position.y, viewer._three.camera.position.z],
+        beforeCamera: window.__studentGeometryBefore.camera,
+      };
+    });
+    assert.equal(geometryUpdate.replacedRecord, true, 'the changed table footprint replaces its scene record');
+    assert.ok(geometryUpdate.beforeCamera.every((value, index) => Math.abs(value - geometryUpdate.camera[index]) < 1e-9),
+      'geometry updates retain the orbit camera');
+
+    moduleRetryEvidence = await assertViewerModuleRetry(browser, web);
+
+    await page.getByTestId('student-directions-toggle').click();
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Hide directions');
+    await page.evaluate(() => {
+      const status = document.querySelector('[role="status"][aria-live="polite"]');
+      window.__studentRemovalAnnouncementCount = 0;
+      window.__studentRemovalAnnouncementObserver = new MutationObserver(() => {
+        if (status.textContent.trim() === 'The selected table was removed from this location.') {
+          window.__studentRemovalAnnouncementCount += 1;
+        }
+      });
+      window.__studentRemovalAnnouncementObserver.observe(status, { childList: true, subtree: true, characterData: true });
+    });
+    await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      floorId: 'iw-maker-a', proceduralRoom: true, rectFree: 0, removeTableId: 'rect-table',
+    }));
+    const removalMessage = 'The selected table was removed from this location.';
+    await page.waitForFunction((message) =>
+      document.querySelector('[role="status"][aria-live="polite"]')?.textContent.trim() === message, removalMessage);
+    await page.getByTestId('student-table-list-rect-table').waitFor({ state: 'detached' });
+    await page.getByTestId('student-map-table-generated-site-iw-maker-a-rect-table').waitFor({ state: 'detached' });
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Get directions', 'removal clears directions');
+    assert.equal(await page.getByTestId('student-table-list-round-table').getAttribute('aria-pressed'), 'false', 'removal clears table selection');
+    const removalState = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      const layout = JSON.parse(viewer.getAttribute('location-layout'));
+      const announcementCount = window.__studentRemovalAnnouncementCount;
+      window.__studentRemovalAnnouncementObserver.disconnect();
+      return { selectedTableId: layout.selectedTableId, announcementCount };
+    });
+    assert.equal(removalState.selectedTableId, null, 'the generated viewer receives the cleared selection');
+    assert.equal(removalState.announcementCount, 1, 'the polite removal message is announced once');
+    await screenshot(page, 'student-generated-table-removed');
+
+    const firstFloor = makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      floorId: 'iw-maker-a', proceduralRoom: true,
+    }).floors[0];
+    const secondFloor = makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Second Room', {
+      floorId: 'iw-maker-b', proceduralRoom: true,
+    }).floors[0];
+    await pushSnapshot(web.base, {
+      version: 2, edgeId: 'edge-generated', site: { id: 'generated-site', name: 'generated-site' },
+      generatedAt: Date.now(), floors: [firstFloor, secondFloor],
+    });
+    const secondFloorCard = page.getByTestId('student-space-card-generated-site-iw-maker-b');
+    await secondFloorCard.waitFor();
+    await page.getByTestId('student-table-list-rect-table').click();
+    await page.getByTestId('student-directions-toggle').click();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Hide directions');
+    await secondFloorCard.click();
+    await page.waitForFunction(() => location.pathname.endsWith('/iw-maker-b'));
+    await page.waitForFunction(() => document.querySelector('[data-testid="student-table-list-rect-table"]')?.getAttribute('aria-pressed') === 'false');
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Get directions', 'composite floor changes keep the existing reset behavior');
+
+    await pushSnapshot(web.base, { version: 2, edgeId: 'edge-generated', site: { id: 'generated-site', name: 'generated-site' }, generatedAt: Date.now(), floors: [] });
+
     await page.route('**/assets/floors/makerspace-floor.glb', (route) => route.fulfill({
       status: 200, contentType: 'model/gltf-binary', body: bytes,
     }));
@@ -179,7 +393,7 @@ test('signed student browser renders composite locations, aligned models, live s
 
     await assertEmptyAndRetry(browser, emptyWeb);
     assert.deepEqual(errors, [], `browser console/page errors: ${errors.join('; ')}`);
-    await storeArtifacts({ errors, network });
+    await storeArtifacts({ errors, network, moduleRetry: moduleRetryEvidence });
   } finally {
     if (traceStarted && tracePath) await context.tracing.stop({ path: tracePath }).catch(() => {});
     await context.close().catch(() => {});
@@ -189,6 +403,85 @@ test('signed student browser renders composite locations, aligned models, live s
     rmSync(temporary, { recursive: true, force: true });
   }
 });
+
+async function assertViewerModuleRetry(browser, web) {
+  const cookie = await signup(web.base, 'student-module-retry@connect.hku.hk');
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.addCookies([{ name: 'tm_session', value: cookie, url: web.base }]);
+  await context.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  await context.route('https://fonts.gstatic.com/**', (route) => route.fulfill({ status: 200, body: '' }));
+  const page = await context.newPage();
+  const moduleRequests = [];
+  const moduleResponses = [];
+  const modelRequests = [];
+  const unexpectedErrors = [];
+  let injectedFailures = 0;
+  let expectedFailureConsoleEvents = 0;
+  let failedUrl = null;
+  page.on('pageerror', (error) => unexpectedErrors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() !== 'error') return;
+    const location = message.location().url;
+    let sameFailedModule = false;
+    try { sameFailedModule = failedUrl !== null && new URL(location).href === failedUrl; } catch { /* no source URL */ }
+    if (sameFailedModule && /^Failed to load resource: the server responded with a status of 503\b/.test(message.text())) {
+      expectedFailureConsoleEvents += 1;
+      return;
+    }
+    unexpectedErrors.push(message.text());
+  });
+  page.on('response', (response) => {
+    const url = new URL(response.url());
+    if (url.pathname.endsWith('/three/OrbitControls.js')) moduleResponses.push({ url: url.href, status: response.status() });
+  });
+  await page.route(/\/vendor\/(?:v[0-9a-f]+\/)?three\/OrbitControls\.js(?:\?.*)?$/, async (route) => {
+    const url = route.request().url();
+    moduleRequests.push(url);
+    if (injectedFailures === 0) {
+      injectedFailures += 1;
+      failedUrl = url;
+      await route.fulfill({ status: 503, contentType: 'text/javascript', body: '// synthetic one-shot module load failure' });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route('**/api/models/**', async (route) => {
+    modelRequests.push(route.request().url());
+    await route.continue();
+  });
+  try {
+    await page.goto(`${web.base}/dashboard/spaces/generated-site/iw-maker-a`);
+    const unavailable = page.locator('.viewer-error[role="status"]');
+    await unavailable.waitFor();
+    assert.match(await unavailable.innerText(), /3D view unavailable\. Use the floor map below\./);
+    assert.equal(await page.getByTestId('student-map-table-generated-site-iw-maker-a-rect-table').count(), 1,
+      'the accessible floor map remains usable while the 3D module is unavailable');
+    assert.equal(injectedFailures, 1, 'the harness injects exactly one failed module response');
+    assert.equal(moduleRequests.length, 1, 'the initial renderer construction makes one OrbitControls module request');
+    assert.equal(moduleResponses.length, 1);
+    assert.equal(moduleResponses[0].status, 503);
+    await screenshot(page, 'student-module-retry-unavailable');
+
+    await page.getByTestId('student-model-preview-retry').click();
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return Boolean(viewer?._three && viewer?._generatedShell && viewer?._generatedTableRecords?.size === 3);
+    });
+    assert.equal(await page.locator('.viewer-error[role="status"]').count(), 0);
+    assert.equal(moduleRequests.length, 2, 'retry uses a fresh module URL after the rejected import');
+    assert.notEqual(moduleRequests[0], moduleRequests[1]);
+    assert.deepEqual(moduleResponses.map((response) => response.status), [503, 200]);
+    assert.equal(expectedFailureConsoleEvents, 1,
+      'only the console event for the exact injected 503 OrbitControls request is consumed');
+    assert.deepEqual(unexpectedErrors, [], `unexpected module retry errors: ${unexpectedErrors.join('; ')}`);
+    assert.equal(modelRequests.length, 0, 'generated module recovery does not request a model asset');
+    assert.equal(await page.locator('floor-viewer[src]').count(), 0);
+    await screenshot(page, 'student-module-retry-recovered');
+    return { injectedFailures, moduleRequests, moduleResponses, expectedFailureConsoleEvents, unexpectedErrors, modelRequests };
+  } finally {
+    await context.close();
+  }
+}
 
 async function assertEmptyAndRetry(browser, web) {
   const cookie = await signup(web.base, 'student-empty@connect.hku.hk');
@@ -270,14 +563,20 @@ async function pushSnapshot(base, value) {
 function makeSnapshot(edgeId, siteId, building, name, options = {}) {
   const floorId = options.floorId ?? 'shared-room';
   const rectFree = options.rectFree ?? 2;
-  const rectSeats = seatPair('rect-table', rectFree);
-  const roundSeats = seatPair('round-table', 0);
-  const polygonSeats = seatPair('poly-table', null);
+  const generated = options.proceduralRoom === true;
+  const rectSeats = seatPair('rect-table', rectFree, generated);
+  const roundSeats = seatPair('round-table', 0, generated);
+  const polygonSeats = seatPair('poly-table', null, generated);
+  const rectX = (generated ? 40.25 : 40) + (options.rectXOffsetCm ?? 0);
   const tables = [
-    table('rect-table', 'Rectangle table', 'zone-west', { type: 'rect', x: 40, y: 40, width: 100, height: 60 }, rectSeats, rectFree),
-    table('round-table', 'Round table', 'zone-west', { type: 'circle', cx: 220, cy: 100, radius: 35 }, roundSeats, 0),
-    table('poly-table', 'Polygon table', 'zone-east', { type: 'polygon', points: [[340, 30], [460, 30], [450, 100], [340, 90]] }, polygonSeats, null),
+    table('rect-table', 'Rectangle table', 'zone-west', { type: 'rect', x: rectX, y: generated ? 40.5 : 40, width: generated ? 100.25 : 100, height: generated ? 60.5 : 60 }, rectSeats, rectFree),
+    table('round-table', 'Round table', 'zone-west', { type: 'circle', cx: generated ? 220.5 : 220, cy: generated ? 100.25 : 100, radius: generated ? 35.5 : 35 }, roundSeats, 0),
+    table('poly-table', 'Polygon table', 'zone-east', { type: 'polygon', points: generated
+      ? [[340.25, 30.5], [460.25, 30.5], [460.25, 50.5], [400.25, 50.5], [400.25, 100.5], [340.25, 100.5]]
+      : [[340, 30], [460, 30], [450, 100], [340, 90]] }, polygonSeats, null),
   ];
+  const visibleTables = tables.filter((item) => item.id !== options.removeTableId);
+  const knownTables = visibleTables.filter((item) => item.status !== 'unknown');
   const floor = {
     id: floorId, building, name, width: 600, height: 400,
     outline: [[0, 0], [600, 0], [600, 400], [0, 400]],
@@ -285,13 +584,17 @@ function makeSnapshot(edgeId, siteId, building, name, options = {}) {
       { id: 'zone-west', name: 'West study zone', polygon: [[0, 0], [300, 0], [300, 400], [0, 400]], people: 3 },
       { id: 'zone-east', name: 'East study zone', polygon: [[300, 0], [600, 0], [600, 400], [300, 400]], people: 1 },
     ],
-    tables,
+    tables: visibleTables,
     totals: {
-      seats: 6, free: rectFree ?? 0, occupied: (rectFree === null ? 0 : 2 - rectFree) + 2,
-      unknownSeats: 2, tablesFullyFree: rectFree === 2 ? 1 : 0,
+      seats: visibleTables.reduce((sum, item) => sum + item.capacity, 0),
+      free: knownTables.reduce((sum, item) => sum + (item.free ?? 0), 0),
+      occupied: knownTables.reduce((sum, item) => sum + (item.occupied ?? 0), 0),
+      unknownSeats: visibleTables.filter((item) => item.status === 'unknown').reduce((sum, item) => sum + item.capacity, 0),
+      tablesFullyFree: knownTables.filter((item) => item.occupied === 0).length,
     },
   };
-  if (!options.omitModel) floor.model = options.model ?? null;
+  if (generated) floor.proceduralRoom = 'simple-rectangle-v1';
+  else if (!options.omitModel) floor.model = options.model ?? null;
   return { version: 2, edgeId, site: { id: siteId, name: siteId }, generatedAt: Date.now(), floors: [floor] };
 }
 
@@ -299,7 +602,9 @@ function table(id, name, zoneId, shape, seats, free) {
   const rect = shape.type === 'circle'
     ? { x: shape.cx - shape.radius, y: shape.cy - shape.radius, width: shape.radius * 2, height: shape.radius * 2 }
     : shape.type === 'polygon'
-      ? { x: 340, y: 30, width: 120, height: 70 }
+      ? { x: Math.min(...shape.points.map((point) => point[0])), y: Math.min(...shape.points.map((point) => point[1])),
+        width: Math.max(...shape.points.map((point) => point[0])) - Math.min(...shape.points.map((point) => point[0])),
+        height: Math.max(...shape.points.map((point) => point[1])) - Math.min(...shape.points.map((point) => point[1])) }
       : { x: shape.x, y: shape.y, width: shape.width, height: shape.height };
   const unknown = free === null;
   return {
@@ -309,10 +614,10 @@ function table(id, name, zoneId, shape, seats, free) {
   };
 }
 
-function seatPair(tableId, free) {
+function seatPair(tableId, free, fractional = false) {
   const status = free === null ? [null, null] : [0, 1].map((index) => index >= free);
   return [0, 1].map((index) => ({
-    id: `${tableId}-seat-${index + 1}`, x: 60 + index * 35, y: 70,
+    id: `${tableId}-seat-${index + 1}`, x: (fractional ? 60.25 : 60) + index * 35, y: fractional ? 70.5 : 70,
     side: 'T', index, occupied: status[index],
     neighbors: [`${tableId}-seat-${index === 0 ? 2 : 1}`],
   }));
