@@ -9,13 +9,27 @@ import { createWebApp } from '../dist/src/web/main.js';
 
 const PUSH_TOKEN = 'student-location-browser-edge-token';
 const ASSET_ID = '4a0c1020-54cb-4a39-8d73-9f27fd1b7a01';
+const TABLE_ASSET_ID = '4a0c1020-54cb-4a39-8d73-9f27fd1b7a02';
+const CHAIR_ASSET_ID = '4a0c1020-54cb-4a39-8d73-9f27fd1b7a03';
+const TABLE_OVERRIDE_ASSET_ID = '4a0c1020-54cb-4a39-8d73-9f27fd1b7a04';
+const STALE_ASSET_ID = '4a0c1020-54cb-4a39-8d73-9f27fd1b7a05';
+const STUDENT_FURNITURE = {
+  version: 3,
+  furnitureDefaults: {
+    table: { assetId: TABLE_ASSET_ID, scale: 0.75, yawDeg: 15, elevationM: 0.2 },
+    chair: { assetId: CHAIR_ASSET_ID, scale: 0.5, yawDeg: -10, elevationM: 0.05 },
+  },
+  furnitureOverrides: {
+    'rect-table': { table: { assetId: TABLE_OVERRIDE_ASSET_ID, scale: 1.25, yawDeg: 30, elevationM: 0.3 } },
+  },
+};
 const MODEL_TRANSFORM = {
   scale: { x: 1.25, y: 0.9, z: 1.1 },
   rotationDeg: { x: 10, y: 22, z: -5 },
   positionM: { x: 1.25, y: 0.5, z: -0.75 },
 };
 const ROOM_VIEW_MODE_KEY = 'hkumyseat.student.room-view-mode.v1';
-const ARTIFACT_DIR = process.env.TASK_2_3_ARTIFACTS;
+const ARTIFACT_DIR = process.env.TASK_3D_ARTIFACTS || process.env.TASK_2_3_ARTIFACTS;
 
 test('signed student browser renders composite locations, aligned models, live status and recovery', { timeout: 120_000 }, async () => {
   const temporary = mkdtempSync(join(tmpdir(), 'tmedge-student-locations-'));
@@ -26,6 +40,7 @@ test('signed student browser renders composite locations, aligned models, live s
   const errors = [];
   const network = [];
   let moduleRetryEvidence = null;
+  let furnitureRetryEvidence = null;
   let traceStarted = false;
   let tracePath = null;
   try {
@@ -53,10 +68,15 @@ test('signed student browser renders composite locations, aligned models, live s
 
     const bytes = makeTriangleGlb();
     await uploadModel(web.base, bytes, 'site-a', 'edge-a');
+    await uploadModel(web.base, bytes, 'site-a', 'edge-a', TABLE_ASSET_ID);
+    await uploadModel(web.base, bytes, 'site-a', 'edge-a', CHAIR_ASSET_ID);
+    await uploadModel(web.base, bytes, 'site-a', 'edge-a', TABLE_OVERRIDE_ASSET_ID);
     await pushSnapshot(web.base, makeSnapshot('edge-a', 'site-a', 'Building A', 'Site A study room', {
-      model: { assetId: ASSET_ID, transform: MODEL_TRANSFORM },
+      ...STUDENT_FURNITURE, model: { assetId: ASSET_ID, transform: MODEL_TRANSFORM }, concavePolygon: true,
     }));
-    await pushSnapshot(web.base, makeSnapshot('edge-b', 'site-b', 'Building B', 'Site B study room', { model: null }));
+    await pushSnapshot(web.base, makeSnapshot('edge-b', 'site-b', 'Building B', 'Site B study room', {
+      ...STUDENT_FURNITURE, model: null,
+    }));
     await pushSnapshot(web.base, makeSnapshot('edge-legacy', 'legacy-campus', 'Haking Wong Building', 'Makerspace A', {
       floorId: 'iw-maker-a', omitModel: true,
     }));
@@ -88,7 +108,7 @@ test('signed student browser renders composite locations, aligned models, live s
     const mapId = 'student-floor-map-site-a-shared-room';
     await page.waitForFunction(() => {
       const viewer = document.querySelector('floor-viewer');
-      return Boolean(viewer?._model && viewer?._marks && viewer?._three);
+      return Boolean(viewer?._model && viewer?._marks && viewer?._three && viewer?._furnitureInstances?.size === 9);
     });
     await assertSingleRenderer(page, '3d');
     assert.equal(await page.getByRole('radio', { name: '3D view' }).isChecked(), true,
@@ -101,6 +121,68 @@ test('signed student browser renders composite locations, aligned models, live s
     assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d',
       'deliberately choosing the already active default view stores that preference');
     await screenshot(page, 'student-composite-model-3d');
+    for (const assetId of [ASSET_ID, TABLE_ASSET_ID, CHAIR_ASSET_ID, TABLE_OVERRIDE_ASSET_ID]) {
+      assert.equal(network.filter((item) => item.kind === 'request' && item.path === `/api/models/${assetId}`).length, 1,
+        `the custom room and repeated furniture assignments request ${assetId} exactly once`);
+    }
+    const customFurniture = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return [...viewer._furnitureInstances.entries()].map(([key, object]) => ({
+        key,
+        assetId: object.userData.assetId,
+        tableId: object.userData.tableId,
+        slot: object.userData.slot,
+        seatId: object.userData.seatId ?? null,
+        position: [object.position.x, object.position.y, object.position.z],
+        scale: [object.scale.x, object.scale.y, object.scale.z],
+        yaw: object.rotation.y,
+      }));
+    });
+    assert.equal(customFurniture.length, 9, 'three tables and six chairs render as separately keyed instances');
+    assert.equal(customFurniture.filter((item) => item.assetId === CHAIR_ASSET_ID).length, 6,
+      'the inherited chair default produces one model per authored seat');
+    assert.ok(customFurniture.filter((item) => item.assetId === TABLE_ASSET_ID).every((item) => item.slot === 'table'),
+      'unoverridden table slots inherit the complete room default');
+    assert.deepEqual(customFurniture.filter((item) => item.tableId === 'rect-table' && item.slot === 'table').map((item) => item.assetId),
+      [TABLE_OVERRIDE_ASSET_ID], 'the complete table override replaces the default for that table only');
+    const projectedFurniture = await page.evaluate(() => Object.fromEntries(
+      JSON.parse(document.querySelector('floor-viewer').getAttribute('location-layout')).tables
+        .map((table) => [table.id, table.furniture]),
+    ));
+    assert.deepEqual(projectedFurniture['rect-table'], {
+      table: STUDENT_FURNITURE.furnitureOverrides['rect-table'].table,
+      chair: STUDENT_FURNITURE.furnitureDefaults.chair,
+    }, 'the bridge sends the complete table override and inherits the missing chair slot');
+    assert.deepEqual(projectedFurniture['round-table'], STUDENT_FURNITURE.furnitureDefaults,
+      'the bridge sends room defaults for an unoverridden table');
+    const concaveTable = customFurniture.find((item) => item.tableId === 'poly-table' && item.slot === 'table');
+    const expectedConcaveCenter = { x: 3.8333333333333335, z: -0.5944444444444443 };
+    assert.ok(concaveTable.position.every((value, index) => Math.abs(value - [expectedConcaveCenter.x, 0.2, expectedConcaveCenter.z][index]) < 1e-8),
+      'a nonrectangular table uses the console shoelace centroid for its furniture anchor');
+    const rectTable = customFurniture.find((item) => item.tableId === 'rect-table' && item.slot === 'table');
+    assert.ok(rectTable.position.every((value, index) => Math.abs(value - [0.9, 0.3, -0.7][index]) < 1e-8),
+      'rectangular table furniture uses the footprint center and authored elevation');
+    assert.deepEqual(rectTable.scale, [1.25, 1.25, 1.25], 'the model uses its authored uniform scale');
+    assert.ok(Math.abs(rectTable.yaw - Math.PI / 6) < 1e-10, 'table yaw is applied in world Y');
+    const roundTable = customFurniture.find((item) => item.tableId === 'round-table' && item.slot === 'table');
+    assert.ok(roundTable.position.every((value, index) => Math.abs(value - [2.2, 0.2, -1][index]) < 1e-8),
+      'circle table furniture uses its authored center');
+    const rectChair = customFurniture.find((item) => item.tableId === 'rect-table' && item.slot === 'chair');
+    assert.ok(Math.abs(rectChair.yaw - (Math.PI - Math.PI / 18)) < 1e-10,
+      'chair assignment yaw composes with the canonical T-side orientation');
+    assert.ok(customFurniture.filter((item) => item.tableId === 'rect-table' && item.slot === 'chair')[0].position
+      .every((value, index) => Math.abs(value - [0.6, 0.05, -0.7][index]) < 1e-8),
+      'chair bases stay on the projected authored seat coordinate plus elevation');
+    const furnitureOverlayInWorld = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      let parent = viewer._furnitureInstances.values().next().value?.parent;
+      while (parent) {
+        if (parent === viewer._model) return false;
+        parent = parent.parent;
+      }
+      return true;
+    });
+    assert.equal(furnitureOverlayInWorld, true, 'custom furniture anchors stay in floor coordinates outside the room GLB transform');
     const modelState = await page.evaluate(() => {
       const viewer = document.querySelector('floor-viewer');
       const plate = viewer._authoredTableRecords.get('rect-table').plate;
@@ -118,8 +200,8 @@ test('signed student browser renders composite locations, aligned models, live s
     assert.ok(Math.abs(modelState.rotation[1] - 22 * Math.PI / 180) < 1e-10);
     assert.ok(Math.abs(modelState.rotation[2] + 5 * Math.PI / 180) < 1e-10);
     assert.deepEqual(modelState.position, [1.25, 0.5, -0.75]);
-    assert.ok(modelState.overlay.every((value, index) => Math.abs(value - [0.9, 0.025, -0.7][index]) < 1e-12),
-      'the table overlay stays in authored floor coordinates while the GLB root is transformed');
+    assert.ok(modelState.overlay.every((value, index) => Math.abs(value - [0.9, 0.325, -0.7][index]) < 1e-12),
+      'the table status overlay follows the assigned model height in authored floor coordinates');
 
     const initialViewer = await page.evaluate(() => {
       const viewer = document.querySelector('floor-viewer');
@@ -203,7 +285,7 @@ test('signed student browser renders composite locations, aligned models, live s
     });
     const requestsBeforeLiveUpdate = network.filter((item) => item.kind === 'request' && item.path === `/api/models/${ASSET_ID}`).length;
     await pushSnapshot(web.base, makeSnapshot('edge-a', 'site-a', 'Building A', 'Site A study room', {
-      model: { assetId: ASSET_ID, transform: MODEL_TRANSFORM }, rectFree: 0,
+      ...STUDENT_FURNITURE, model: { assetId: ASSET_ID, transform: MODEL_TRANSFORM }, rectFree: 0, concavePolygon: true,
     }));
     await page.getByTestId('student-table-list-rect-table').getByText('Full').waitFor();
     assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true', 'selection stays on the stable table ID after it becomes full');
@@ -317,7 +399,7 @@ test('signed student browser renders composite locations, aligned models, live s
     assert.deepEqual(Object.entries(generatedState.diagonal).filter(([, visible]) => !visible).map(([side]) => side).sort(), ['east', 'north']);
     assert.deepEqual(Object.entries(generatedState.otherCardinal).filter(([, visible]) => !visible).map(([side]) => side), ['south']);
     assert.equal(network.filter((item) => item.kind === 'request' && item.path.startsWith('/api/models/')).length,
-      modelRequestCountBeforeGenerated, 'generated floors do not request a model asset');
+      modelRequestCountBeforeGenerated, 'unassigned generated floors do not request model assets');
     assert.equal(await page.locator('floor-viewer[src]').count(), 0);
 
     const generatedRow = page.getByTestId('student-table-list-rect-table');
@@ -390,8 +472,13 @@ test('signed student browser renders composite locations, aligned models, live s
     }));
     moduleRetryEvidence = await assertViewerModuleRetry(browser, web);
 
+    const furnitureRequestsBefore2dOnly = network.filter((item) => item.kind === 'request'
+      && [TABLE_ASSET_ID, CHAIR_ASSET_ID, TABLE_OVERRIDE_ASSET_ID].some((assetId) => item.path === `/api/models/${assetId}`)).length;
     await page.goto(`${web.base}/dashboard/spaces/site-b/shared-room`);
     await assertSingleRenderer(page, '2d');
+    assert.equal(network.filter((item) => item.kind === 'request'
+      && [TABLE_ASSET_ID, CHAIR_ASSET_ID, TABLE_OVERRIDE_ASSET_ID].some((assetId) => item.path === `/api/models/${assetId}`)).length,
+    furnitureRequestsBefore2dOnly, 'v3 assignments on an explicit 2D-only source do not fetch furniture');
     assert.equal(await page.getByRole('radio', { name: '3D view' }).isDisabled(), true,
       'a valid 2D-only floor disables 3D with an explanation');
     assert.equal(await page.getByText('3D view is not available for this location.').count(), 1);
@@ -465,8 +552,13 @@ test('signed student browser renders composite locations, aligned models, live s
     await page.route('**/assets/floors/makerspace-floor.glb', (route) => route.fulfill({
       status: 200, contentType: 'model/gltf-binary', body: bytes,
     }));
+    const furnitureRequestsBeforeLegacy = network.filter((item) => item.kind === 'request'
+      && [TABLE_ASSET_ID, CHAIR_ASSET_ID, TABLE_OVERRIDE_ASSET_ID].some((assetId) => item.path === `/api/models/${assetId}`)).length;
     await page.goto(`${web.base}/dashboard/spaces/legacy-campus/iw-maker-a`);
     await page.waitForFunction(() => document.querySelector('floor-viewer')?._model);
+    assert.equal(network.filter((item) => item.kind === 'request'
+      && [TABLE_ASSET_ID, CHAIR_ASSET_ID, TABLE_OVERRIDE_ASSET_ID].some((assetId) => item.path === `/api/models/${assetId}`)).length,
+    furnitureRequestsBeforeLegacy, 'legacy catalog rooms do not fetch unsupported furniture assignments');
     const legacySrc = await page.locator('floor-viewer').getAttribute('src');
     assert.equal(legacySrc, '/assets/floors/makerspace-floor.glb', 'a unique legacy floor keeps its existing catalog model fallback');
 
@@ -481,10 +573,11 @@ test('signed student browser renders composite locations, aligned models, live s
       'explicit 2D-only fallback retains the saved 3D preference for a later supported floor');
     await screenshot(page, 'student-explicit-2d-location');
 
+    furnitureRetryEvidence = await assertGeneratedFurnitureRetry(browser, web);
     const storageFailureEvidence = await assertStorageUnavailable(browser, web);
     await assertEmptyAndRetry(browser, emptyWeb);
     assert.deepEqual(errors, [], `browser console/page errors: ${errors.join('; ')}`);
-    await storeArtifacts({ errors, network, moduleRetry: moduleRetryEvidence, storageFailure: storageFailureEvidence });
+    await storeArtifacts({ errors, network, moduleRetry: moduleRetryEvidence, furnitureRetry: furnitureRetryEvidence, storageFailure: storageFailureEvidence });
   } finally {
     if (traceStarted && tracePath) await context.tracing.stop({ path: tracePath }).catch(() => {});
     await context.close().catch(() => {});
@@ -581,6 +674,199 @@ async function assertViewerModuleRetry(browser, web) {
     await screenshot(page, 'student-module-retry-recovered');
     return { injectedFailures, moduleRequests, moduleResponses, expectedFailureConsoleEvents, unexpectedErrors, modelRequests };
   } finally {
+    await context.close();
+  }
+}
+
+async function assertGeneratedFurnitureRetry(browser, web) {
+  const bytes = makeTriangleGlb();
+  for (const assetId of [TABLE_ASSET_ID, CHAIR_ASSET_ID, TABLE_OVERRIDE_ASSET_ID]) {
+    await uploadModel(web.base, bytes, 'generated-site', 'edge-generated', assetId);
+  }
+  await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+    ...STUDENT_FURNITURE, floorId: 'iw-maker-a', proceduralRoom: true,
+  }));
+  const cookie = await signup(web.base, 'student-furniture-retry@connect.hku.hk');
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.addCookies([{ name: 'tm_session', value: cookie, url: web.base }]);
+  await context.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  await context.route('https://fonts.gstatic.com/**', (route) => route.fulfill({ status: 200, body: '' }));
+  const page = await context.newPage();
+  await page.addInitScript((key) => localStorage.setItem(key, '3d'), ROOM_VIEW_MODE_KEY);
+  const modelRequests = [];
+  const errors = [];
+  let injectedFurnitureFailure = 0;
+  let releaseFurnitureFailure;
+  let markFurnitureRequestStarted;
+  const furnitureFailureGate = new Promise((resolve) => { releaseFurnitureFailure = resolve; });
+  const furnitureRequestStarted = new Promise((resolve) => { markFurnitureRequestStarted = resolve; });
+  let releaseStaleResponse;
+  let markStaleRequestStarted;
+  const staleResponseGate = new Promise((resolve) => { releaseStaleResponse = resolve; });
+  const staleRequestStarted = new Promise((resolve) => { markStaleRequestStarted = resolve; });
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/models/')) modelRequests.push(url.pathname);
+  });
+  await page.route(`**/api/models/${CHAIR_ASSET_ID}`, async (route) => {
+    if (injectedFurnitureFailure === 0) {
+      injectedFurnitureFailure += 1;
+      markFurnitureRequestStarted();
+      await furnitureFailureGate;
+      await route.fulfill({ status: 503, contentType: 'application/octet-stream', body: 'temporary model failure' });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route(`**/api/models/${STALE_ASSET_ID}`, async (route) => {
+    markStaleRequestStarted();
+    await staleResponseGate;
+    await route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: bytes }).catch(() => {});
+  });
+  try {
+    await page.goto(`${web.base}/dashboard/spaces/generated-site/iw-maker-a`);
+    await furnitureRequestStarted;
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return Boolean(viewer?._three && viewer?._generatedShell
+        && viewer?._furnitureLoads?.get('4a0c1020-54cb-4a39-8d73-9f27fd1b7a03')?.status === 'loading');
+    });
+    await assertSingleRenderer(page, '3d');
+    await page.getByTestId('student-table-list-rect-table').click();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true');
+    await page.getByTestId('student-directions-toggle').click();
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Hide directions');
+    releaseFurnitureFailure();
+    await page.getByTestId('student-3d-fallback').waitFor();
+    await assertSingleRenderer(page, '2d');
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d',
+      'a failed furniture asset does not replace the saved view preference');
+    assert.equal(await page.getByTestId('student-table-list-rect-table').count(), 1,
+      'the stable table list remains available while the 3D scene falls back');
+    assert.equal(injectedFurnitureFailure, 1, 'the harness fails only the first chair asset request');
+    const initialFailureState = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return {
+        failed: viewer?._furnitureHadFailure,
+        failedAssets: [...(viewer?._furnitureLoads || [])]
+          .filter(([, entry]) => entry.status === 'error').map(([assetId]) => assetId),
+      };
+    });
+    assert.deepEqual(initialFailureState, { failed: true, failedAssets: [CHAIR_ASSET_ID] },
+      'the fallback is caused by the expected unresolved chair asset');
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true',
+      'table selection survives automatic fallback');
+    assert.equal(await page.evaluate(() => document.querySelector('floor-viewer')?.getAttribute('directions')), '1',
+      'the enabled directions state survives automatic fallback');
+    await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      window.__studentFurnitureLifecycle = [];
+      for (const type of ['viewer-ready', 'model-ready', 'model-error']) {
+        viewer.addEventListener(type, () => window.__studentFurnitureLifecycle.push({
+          type,
+          furnitureFailure: viewer._furnitureHadFailure,
+          failedAssets: [...(viewer._furnitureLoads || [])]
+            .filter(([, entry]) => entry.status === 'error').map(([assetId]) => assetId),
+        }));
+      }
+    });
+    await page.getByTestId('student-table-list-rect-table').click();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.getByTestId('student-3d-fallback').count(), 1,
+      'table selection cannot clear the 3D fallback while furniture remains failed');
+    await page.getByTestId('student-table-list-rect-table').click();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.getByTestId('student-3d-fallback').count(), 1,
+      'reselecting a table cannot clear the 3D fallback while furniture remains failed');
+    const updateLifecycle = await page.evaluate(() => window.__studentFurnitureLifecycle);
+    assert.equal(updateLifecycle.some((event) => event.type === 'viewer-ready'), false,
+      'routine selection updates do not emit a false recovery event');
+    await page.getByTestId('student-view-retry-3d').click();
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return Boolean(viewer?._three && viewer?._generatedShell && viewer?._furnitureInstances?.size === 9);
+    });
+    await page.getByTestId('student-3d-fallback').waitFor({ state: 'detached' });
+    await assertSingleRenderer(page, '3d');
+    assert.equal(await page.getByTestId('student-3d-fallback').count(), 0);
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true',
+      'furniture retry retains the selected logical table');
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Hide directions',
+      'furniture retry retains the directions state');
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d');
+    const recoveredLifecycle = await page.evaluate(() => window.__studentFurnitureLifecycle);
+    assert.equal(recoveredLifecycle.filter((event) => event.type === 'viewer-ready').length, 1,
+      'an explicit retry emits one recovery event after the failed asset loads');
+    assert.deepEqual(recoveredLifecycle.find((event) => event.type === 'viewer-ready'), {
+      type: 'viewer-ready', furnitureFailure: false, failedAssets: [],
+    });
+    assert.equal(modelRequests.filter((path) => path === `/api/models/${TABLE_ASSET_ID}`).length, 1,
+      'retry keeps the successful default table asset loaded');
+    assert.equal(modelRequests.filter((path) => path === `/api/models/${TABLE_OVERRIDE_ASSET_ID}`).length, 1,
+      'retry keeps the successful overridden table asset loaded');
+    assert.equal(modelRequests.filter((path) => path === `/api/models/${CHAIR_ASSET_ID}`).length, 2,
+      'retry requests only the failed chair asset again');
+    assert.equal(modelRequests.includes(`/api/models/${ASSET_ID}`), false,
+      'generated furniture does not request a custom whole-room model');
+    const furniture = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return [...viewer._furnitureInstances.values()].map((object) => ({
+        assetId: object.userData.assetId, tableId: object.userData.tableId, slot: object.userData.slot,
+        position: [object.position.x, object.position.y, object.position.z],
+      }));
+    });
+    const polygonTable = furniture.find((item) => item.tableId === 'poly-table' && item.slot === 'table');
+    const expected = { x: 3.835833333333331, z: -0.5994444444444443 };
+    assert.ok(polygonTable.position.every((value, index) => Math.abs(value - [expected.x, 0.2, expected.z][index]) < 1e-8),
+      'generated-room furniture uses the exact centroid of a concave projected footprint');
+    const proxyAndCueState = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return [...viewer._generatedTableRecords].map(([tableId, record]) => ({
+        tableId,
+        tableProxies: record.tableFallback.children.length,
+        chairProxies: record.chairFallback.children.length,
+        hasStatusOverlay: Boolean(record.tableStatus?.material && record.tableStatus.parent === record.group),
+      }));
+    });
+    assert.ok(proxyAndCueState.every((record) => record.tableProxies === 0 && record.chairProxies === 0),
+      'assigned generated table and chair GLBs replace every corresponding primitive proxy');
+    assert.ok(proxyAndCueState.every((record) => record.hasStatusOverlay),
+      'status overlays remain mounted separately from generated furniture models');
+
+    await uploadModel(web.base, bytes, 'generated-site', 'edge-generated', STALE_ASSET_ID);
+    await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      version: 3, floorId: 'iw-maker-a', proceduralRoom: true,
+      furnitureDefaults: {
+        table: { assetId: STALE_ASSET_ID, scale: 0.8, yawDeg: 0, elevationM: 0 },
+        chair: STUDENT_FURNITURE.furnitureDefaults.chair,
+      },
+      furnitureOverrides: STUDENT_FURNITURE.furnitureOverrides,
+    }));
+    await staleRequestStarted;
+    await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      version: 3, floorId: 'iw-maker-a', proceduralRoom: true,
+    }));
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('floor-viewer');
+      const layout = JSON.parse(viewer?.getAttribute('location-layout') || 'null');
+      return Boolean(layout && layout.tables.every((table) => !table.furniture)
+        && !viewer._furnitureLoads?.has('4a0c1020-54cb-4a39-8d73-9f27fd1b7a05')
+        && viewer._furnitureInstances?.size === 0);
+    });
+    releaseStaleResponse();
+    await page.waitForTimeout(100);
+    const staleAssetAdded = await page.evaluate((assetId) => {
+      const viewer = document.querySelector('floor-viewer');
+      return [...(viewer?._furnitureInstances?.values() || [])].some((object) => object.userData.assetId === assetId);
+    }, STALE_ASSET_ID);
+    assert.equal(staleAssetAdded, false, 'a delayed response for a removed assignment cannot re-enter the current scene');
+    await screenshot(page, 'student-generated-furniture-retry-recovered');
+    assert.deepEqual(errors, [], `furniture fetch failure and retry do not create browser exceptions: ${errors.join('; ')}`);
+    return { injectedFurnitureFailure, modelRequests, errors, recoveredInstances: furniture.length };
+  } finally {
+    releaseFurnitureFailure();
+    releaseStaleResponse();
     await context.close();
   }
 }
@@ -695,15 +981,15 @@ async function signup(base, email) {
   return cookie.slice('tm_session='.length);
 }
 
-async function uploadModel(base, bytes, locationId, edgeId) {
+async function uploadModel(base, bytes, locationId, edgeId, assetId = ASSET_ID) {
   const sha256 = createHash('sha256').update(bytes).digest('hex');
-  const response = await fetch(`${base}/api/edge/location-assets/${locationId}/${ASSET_ID}`, {
+  const response = await fetch(`${base}/api/edge/location-assets/${locationId}/${assetId}`, {
     method: 'PUT', headers: {
       authorization: `Bearer ${PUSH_TOKEN}`, 'x-tm-edge-id': edgeId,
       'x-tm-sha256': sha256, 'content-type': 'model/gltf-binary',
     }, body: bytes,
   });
-  assert.equal(response.status, 201);
+  assert.ok([200, 201].includes(response.status), `public test asset upload succeeds (status ${response.status})`);
 }
 
 async function pushSnapshot(base, value) {
@@ -725,9 +1011,11 @@ function makeSnapshot(edgeId, siteId, building, name, options = {}) {
   const tables = [
     table('rect-table', 'Rectangle table', 'zone-west', { type: 'rect', x: rectX, y: generated ? 40.5 : 40, width: generated ? 100.25 : 100, height: generated ? 60.5 : 60 }, rectSeats, rectFree),
     table('round-table', 'Round table', 'zone-west', { type: 'circle', cx: generated ? 220.5 : 220, cy: generated ? 100.25 : 100, radius: generated ? 35.5 : 35 }, roundSeats, 0),
-    table('poly-table', 'Polygon table', 'zone-east', { type: 'polygon', points: generated
-      ? [[340.25, 30.5], [460.25, 30.5], [460.25, 50.5], [400.25, 50.5], [400.25, 100.5], [340.25, 100.5]]
-      : [[340, 30], [460, 30], [450, 100], [340, 90]] }, polygonSeats, null),
+    table('poly-table', 'Polygon table', 'zone-east', { type: 'polygon', points: options.concavePolygon
+      ? [[340, 30], [460, 30], [460, 50], [400, 50], [400, 100], [340, 100]]
+      : generated
+        ? [[340.25, 30.5], [460.25, 30.5], [460.25, 50.5], [400.25, 50.5], [400.25, 100.5], [340.25, 100.5]]
+        : [[340, 30], [460, 30], [450, 100], [340, 90]] }, polygonSeats, null),
   ];
   const visibleTables = tables.filter((item) => item.id !== options.removeTableId);
   const knownTables = visibleTables.filter((item) => item.status !== 'unknown');
@@ -747,9 +1035,16 @@ function makeSnapshot(edgeId, siteId, building, name, options = {}) {
       tablesFullyFree: knownTables.filter((item) => item.occupied === 0).length,
     },
   };
+  if (options.furnitureDefaults !== undefined) floor.furnitureDefaults = options.furnitureDefaults;
+  if (options.furnitureOverrides) {
+    for (const [tableId, furnitureOverrides] of Object.entries(options.furnitureOverrides)) {
+      const target = tables.find((item) => item.id === tableId);
+      if (target) target.furnitureOverrides = furnitureOverrides;
+    }
+  }
   if (generated) floor.proceduralRoom = 'simple-rectangle-v1';
   else if (!options.omitModel) floor.model = options.model ?? null;
-  return { version: 2, edgeId, site: { id: siteId, name: siteId }, generatedAt: Date.now(), floors: [floor] };
+  return { version: options.version ?? 2, edgeId, site: { id: siteId, name: siteId }, generatedAt: Date.now(), floors: [floor] };
 }
 
 function table(id, name, zoneId, shape, seats, free) {

@@ -87,6 +87,52 @@
   const SIMPLE_ROOM_SOURCE = 'simple-rectangle-v1';
   const SIMPLE_ROOM_WALL_HEIGHT_M = 3;
   const SIMPLE_ROOM_TABLE_HEIGHT_M = 0.75;
+  const FURNITURE_ID = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
+
+  function validFurnitureAssignment(value) {
+    return !!value && typeof value.assetId === 'string' && FURNITURE_ID.test(value.assetId)
+      && Number.isFinite(value.scale) && value.scale >= 0.01 && value.scale <= 100
+      && Number.isFinite(value.yawDeg) && value.yawDeg >= -360 && value.yawDeg <= 360
+      && Number.isFinite(value.elevationM) && value.elevationM >= 0 && value.elevationM <= 10;
+  }
+
+  function furnitureFootprintCentre(footprint) {
+    if (!footprint) return null;
+    if (footprint.type === 'circle') {
+      const centre = { x: footprint.center?.x, z: footprint.center?.z };
+      return Number.isFinite(centre.x) && Number.isFinite(centre.z) ? centre : null;
+    }
+    const points = footprint.points;
+    if (!Array.isArray(points) || points.length < 3
+      || points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.z))) return null;
+    let crossSum = 0, xSum = 0, zSum = 0;
+    for (let index = 0; index < points.length; index += 1) {
+      const current = points[index], next = points[(index + 1) % points.length];
+      const cross = current.x * next.z - next.x * current.z;
+      crossSum += cross;
+      xSum += (current.x + next.x) * cross;
+      zSum += (current.z + next.z) * cross;
+    }
+    if (Math.abs(crossSum) < 1e-9) {
+      const total = points.reduce((centre, point) => ({ x: centre.x + point.x, z: centre.z + point.z }), { x: 0, z: 0 });
+      return { x: total.x / points.length, z: total.z / points.length };
+    }
+    return { x: xSum / (3 * crossSum), z: zSum / (3 * crossSum) };
+  }
+
+  function normalizeFurniture(THREE, scene) {
+    const template = new THREE.Group();
+    template.add(scene);
+    template.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(template);
+    if ([bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z]
+      .some((value) => !Number.isFinite(value))) throw new Error('Invalid furniture bounds.');
+    const centre = bounds.getCenter(new THREE.Vector3());
+    template.position.set(-centre.x, -bounds.min.y, -centre.z);
+    template.updateMatrixWorld(true);
+    const normalized = new THREE.Box3().setFromObject(template);
+    return { template, heightM: normalized.max.y };
+  }
 
   class FloorViewer extends HTMLElement {
     static get observedAttributes() {
@@ -149,6 +195,7 @@
         for (const k of ['_model', '_marks', '_path', '_generatedShell', '_generatedTables']) {
           disposeObject(this[k], k !== '_model'); this[k] = null;
         }
+        this.clearFurnitureAssets();
         this._generatedTableRecords?.clear();
         this._authoredTableRecords?.clear();
         this._room = null;
@@ -358,6 +405,7 @@
         disposeObject(this[key], key !== '_model');
         this[key] = null;
       }
+      this.clearFurnitureAssets();
       this._generatedTableRecords?.clear();
       this._authoredTableRecords?.clear();
       this._room = null;
@@ -368,6 +416,191 @@
       this._walls = null;
       this._home = null;
       this._view = null;
+    }
+
+    clearFurnitureAssets() {
+      const { scene } = this._three || {};
+      if (this._furnitureGroup && scene) scene.remove(this._furnitureGroup);
+      this._furnitureInstances?.clear();
+      this._furnitureInstances = new Map();
+      for (const entry of this._furnitureLoads?.values() || []) {
+        entry.controller?.abort();
+        if (entry.template) disposeObject(entry.template);
+      }
+      this._furnitureLoads = new Map();
+      this._furnitureGroup = null;
+      this._furnitureAssetIds = new Set();
+      this._furnitureLayout = null;
+      this._furnitureGenerated = false;
+      this._furnitureHadFailure = false;
+    }
+
+    loadedFurniture(assignment) {
+      if (!validFurnitureAssignment(assignment)) return null;
+      const entry = this._furnitureLoads?.get(assignment.assetId);
+      return entry?.status === 'loaded' ? entry : null;
+    }
+
+    reconcileFurniture(layout, generated) {
+      if (!this._three || !layout) return;
+      if (!this._furnitureGroup) {
+        this._furnitureGroup = new this._L.THREE.Group();
+        this._three.scene.add(this._furnitureGroup);
+      }
+      if (!this._furnitureInstances) this._furnitureInstances = new Map();
+      if (!this._furnitureLoads) this._furnitureLoads = new Map();
+      this._furnitureLayout = layout;
+      this._furnitureGenerated = generated;
+      const needed = new Set();
+      for (const table of layout.tables) {
+        for (const assignment of [table.furniture?.table, table.furniture?.chair]) {
+          if (validFurnitureAssignment(assignment)) needed.add(assignment.assetId);
+        }
+      }
+      this._furnitureAssetIds = needed;
+      const stale = [];
+      for (const [assetId, entry] of this._furnitureLoads) {
+        if (needed.has(assetId)) continue;
+        this._furnitureLoads.delete(assetId);
+        entry.controller?.abort();
+        stale.push(entry);
+      }
+      this.reconcileFurnitureInstances(layout);
+      for (const entry of stale) if (entry.template) disposeObject(entry.template);
+      for (const assetId of needed) {
+        if (!this._furnitureLoads.has(assetId)) this.startFurnitureLoad(assetId);
+      }
+      this.refreshFurniturePresentation(layout, generated);
+      this.reportFurnitureRecoveryIfResolved();
+    }
+
+    startFurnitureLoad(assetId) {
+      const entry = { status: 'loading', controller: new AbortController(), template: null, heightM: 0 };
+      this._furnitureLoads.set(assetId, entry);
+      void this.loadFurnitureAsset(assetId, entry);
+    }
+
+    async loadFurnitureAsset(assetId, entry) {
+      let candidate = null;
+      try {
+        const response = await fetch(`/api/models/${encodeURIComponent(assetId)}`, { signal: entry.controller.signal });
+        if (!response.ok) throw new Error('Furniture request failed.');
+        const bytes = await response.arrayBuffer();
+        const GLTFLoader = await gltfLoader();
+        if (!this.isCurrentFurnitureLoad(assetId, entry)) return;
+        const result = await new GLTFLoader().parseAsync(bytes, '');
+        candidate = result.scene;
+        if (!this.isCurrentFurnitureLoad(assetId, entry)) {
+          disposeObject(candidate);
+          return;
+        }
+        const normalized = normalizeFurniture(this._L.THREE, candidate);
+        if (!Number.isFinite(normalized.heightM) || normalized.heightM < 0) throw new Error('Invalid furniture height.');
+        entry.template = normalized.template;
+        entry.heightM = normalized.heightM;
+        entry.status = 'loaded';
+        candidate = null;
+        this.reconcileFurnitureInstances(this._furnitureLayout);
+        this.refreshFurniturePresentation(this._furnitureLayout, this._furnitureGenerated);
+        this.reportFurnitureRecoveryIfResolved();
+      } catch {
+        if (candidate) disposeObject(candidate);
+        if (!this.isCurrentFurnitureLoad(assetId, entry)) return;
+        entry.status = 'error';
+        this.refreshFurniturePresentation(this._furnitureLayout, this._furnitureGenerated);
+        this._furnitureHadFailure = true;
+        this.dispatchEvent(new CustomEvent('model-error'));
+      }
+    }
+
+    isCurrentFurnitureLoad(assetId, entry) {
+      return !this._stopped && this._furnitureLoads?.get(assetId) === entry;
+    }
+
+    reconcileFurnitureInstances(layout) {
+      if (!this._furnitureGroup || !layout) return;
+      const desired = new Map();
+      for (const table of layout.tables) {
+        const tableAssignment = table.furniture?.table;
+        const tableEntry = this.loadedFurniture(tableAssignment);
+        const tableAnchor = tableEntry ? furnitureFootprintCentre(table.footprint) : null;
+        if (tableEntry && tableAnchor) {
+          desired.set(`table:${table.id}:table`, {
+            assetId: tableAssignment.assetId, assignment: tableAssignment, tableId: table.id,
+            slot: 'table', seatId: null, anchor: tableAnchor, canonicalYaw: 0,
+          });
+        }
+        const chairAssignment = table.furniture?.chair;
+        if (!this.loadedFurniture(chairAssignment)) continue;
+        for (const seat of table.seats) {
+          if (!Number.isFinite(seat.x) || !Number.isFinite(seat.z)
+            || !['L', 'R', 'T', 'B'].includes(seat.side)) continue;
+          const canonicalYaw = seat.side === 'L' ? Math.PI / 2 : seat.side === 'R' ? -Math.PI / 2 : seat.side === 'T' ? Math.PI : 0;
+          desired.set(`table:${table.id}:chair:${seat.id}`, {
+            assetId: chairAssignment.assetId, assignment: chairAssignment, tableId: table.id,
+            slot: 'chair', seatId: seat.id, anchor: { x: seat.x, z: seat.z }, canonicalYaw,
+          });
+        }
+      }
+      for (const [key, instance] of this._furnitureInstances) {
+        const spec = desired.get(key);
+        if (spec && instance._furnitureSignature === this.furnitureInstanceSignature(spec)) continue;
+        this._furnitureGroup.remove(instance);
+        this._furnitureInstances.delete(key);
+      }
+      for (const [key, spec] of desired) {
+        if (this._furnitureInstances.has(key)) continue;
+        const entry = this._furnitureLoads.get(spec.assetId);
+        if (!entry?.template) continue;
+        const root = new this._L.THREE.Group();
+        root.add(entry.template.clone(true));
+        root.scale.setScalar(spec.assignment.scale);
+        root.rotation.y = spec.canonicalYaw + spec.assignment.yawDeg * Math.PI / 180;
+        root.position.set(spec.anchor.x, spec.assignment.elevationM, spec.anchor.z);
+        root.name = `furniture-${spec.slot}-${spec.tableId}${spec.seatId ? `-${spec.seatId}` : ''}`;
+        root.userData = {
+          assetId: spec.assetId, tableId: spec.tableId, slot: spec.slot,
+          ...(spec.seatId ? { seatId: spec.seatId } : {}),
+        };
+        root._furnitureSignature = this.furnitureInstanceSignature(spec);
+        this._furnitureGroup.add(root);
+        this._furnitureInstances.set(key, root);
+      }
+    }
+
+    furnitureInstanceSignature(spec) {
+      return JSON.stringify([spec.assetId, spec.assignment.scale, spec.assignment.yawDeg,
+        spec.assignment.elevationM, spec.anchor.x, spec.anchor.z, spec.canonicalYaw]);
+    }
+
+    refreshFurniturePresentation(layout, generated) {
+      if (!layout) return;
+      this._pickables = [];
+      const selectedId = typeof layout.selectedTableId === 'string' ? layout.selectedTableId : null;
+      for (const table of layout.tables) {
+        if (generated) {
+          const record = this._generatedTableRecords?.get(table.id);
+          if (!record) continue;
+          this.updateGeneratedTableRecord(record, table, selectedId === table.id);
+          const pickable = record.tableStatus.visible ? record.tableStatus : record.plate;
+          if (pickable) this._pickables.push(pickable);
+        } else {
+          const record = this._authoredTableRecords?.get(table.id);
+          if (!record) continue;
+          this.updateAuthoredTableRecord(record, table, selectedId === table.id);
+          this._pickables.push(record.plate);
+        }
+      }
+    }
+
+    reportFurnitureRecoveryIfResolved() {
+      if (!this._furnitureHadFailure) return;
+      for (const assetId of this._furnitureAssetIds || []) {
+        if (this._furnitureLoads.get(assetId)?.status !== 'loaded') return;
+      }
+      this._furnitureHadFailure = false;
+      const eventName = this._furnitureGenerated ? 'viewer-ready' : 'model-ready';
+      this.dispatchEvent(new CustomEvent(eventName));
     }
 
     authoredFloorBounds(layout) {
@@ -438,6 +671,7 @@
         disposeObject(record.group);
       }
       this._authoredTableRecords = next;
+      this.reconcileFurniture(layout, false);
       this.clearPath();
       this._seat = (this._focus || this._room.centre).clone();
       if (this.getAttribute('directions') === '1' && this._focus) this.drawRoute(this._focus);
@@ -516,13 +750,27 @@
     updateAuthoredTableRecord(record, table, picked) {
       const status = table.status;
       const color = picked ? PICKED : status === 'free' ? FREE : status === 'full' ? FULL : INK;
+      const tableModel = furnitureFootprintCentre(table.footprint)
+        ? this.loadedFurniture(table.furniture?.table) : null;
+      record.plate.position.y = tableModel
+        ? tableModel.heightM * table.furniture.table.scale + table.furniture.table.elevationM + 0.025
+        : 0.025;
+      record.label.position.y = tableModel
+        ? tableModel.heightM * table.furniture.table.scale + table.furniture.table.elevationM + 0.04
+        : 0.04;
       record.plate.material.color.setHex(color);
       record.plate.material.opacity = status === 'unknown' ? 0.38 : picked ? 0.82 : status === 'free' ? 0.62 : 0.58;
       record.label.material.color.setHex(picked || status === 'free' ? 0xffffff : INK);
+      const chairModel = this.loadedFurniture(table.furniture?.chair);
       for (const seat of table.seats) {
         const marker = record.seats.get(seat.id);
         if (!marker) continue;
         const known = typeof seat.occupied === 'boolean';
+        const validSeatAnchor = Number.isFinite(seat.x) && Number.isFinite(seat.z)
+          && ['L', 'R', 'T', 'B'].includes(seat.side);
+        marker.position.y = chairModel && validSeatAnchor
+          ? chairModel.heightM * table.furniture.chair.scale + table.furniture.chair.elevationM + 0.05
+          : 0.05;
         marker.material.color.setHex(known ? seat.occupied ? FULL : FREE : INK);
         marker.material.opacity = known ? 0.92 : 0.48;
       }
@@ -561,7 +809,11 @@
         this._home = { pos: camera.position.clone(), tgt: controls.target.clone() };
       }
       if (this._msg) this._msg.remove();
-      this.dispatchEvent(new CustomEvent('viewer-ready'));
+      // Selection, live availability, and directions updates all refresh the
+      // generated scene. Do not let one of those routine updates clear the
+      // student's failure fallback while an assigned furniture asset still
+      // needs an explicit retry.
+      if (!this._furnitureHadFailure) this.dispatchEvent(new CustomEvent('viewer-ready'));
     }
 
     createGeneratedShell(widthM, depthM) {
@@ -631,7 +883,8 @@
         }
         this.updateGeneratedTableRecord(record, table, selectedId === table.id);
         next.set(table.id, record);
-        this._pickables.push(record.plate);
+        const pickable = record.tableStatus.visible ? record.tableStatus : record.plate;
+        if (pickable) this._pickables.push(pickable);
         if (selectedId === table.id) this._focus = new THREE.Vector3(centre.x, SIMPLE_ROOM_TABLE_HEIGHT_M, centre.z);
       }
       for (const [id, record] of previous) {
@@ -640,6 +893,7 @@
         disposeObject(record.group);
       }
       this._generatedTableRecords = next;
+      this.reconcileFurniture(layout, true);
       this.clearPath();
       this._seat = (this._focus || this._room.centre).clone();
       if (this.getAttribute('directions') === '1' && this._focus) this.drawRoute(this._focus);
@@ -648,47 +902,114 @@
     createGeneratedTableRecord(table, centre, signature) {
       const { THREE } = this._L;
       const group = new THREE.Group();
+      const tableFallback = new THREE.Group();
+      tableFallback.userData = { tableId: table.id, slot: 'table' };
+      const chairFallback = new THREE.Group();
+      chairFallback.userData = { tableId: table.id, slot: 'chair' };
       const geometry = new THREE.ExtrudeGeometry(this.footprintShape(table.footprint, centre), { depth: SIMPLE_ROOM_TABLE_HEIGHT_M, bevelEnabled: false, curveSegments: 32 });
       geometry.rotateX(-Math.PI / 2);
       const material = new THREE.MeshStandardMaterial({ color: INK, roughness: 0.78, transparent: true, opacity: 0.68 });
       const plate = new THREE.Mesh(geometry, material);
       plate.position.set(centre.x, 0, centre.z);
       plate.userData.tableId = table.id;
-      group.add(plate);
+      tableFallback.add(plate);
+      const tableStatus = new THREE.Mesh(this.authoredShapeGeometry(table.footprint, centre),
+        new THREE.MeshBasicMaterial({ color: INK, transparent: true, opacity: 0.28, depthTest: false, depthWrite: false }));
+      tableStatus.position.set(centre.x, SIMPLE_ROOM_TABLE_HEIGHT_M + 0.012, centre.z);
+      tableStatus.renderOrder = 8;
+      tableStatus.userData.tableId = table.id;
+      tableStatus.visible = false;
       const seats = new Map();
-      const chairGeometry = table.footprint.type === 'circle'
-        ? null
-        : new THREE.BoxGeometry(0.24, 0.2, 0.2);
+      const seatIndicators = new Map();
       for (const seat of table.seats) {
-        const shape = table.footprint.type === 'circle'
-          ? new THREE.CylinderGeometry(0.105, 0.105, 0.2, 16)
-          : chairGeometry.clone();
+        const shape = table.footprint.type === 'circle' ? new THREE.CylinderGeometry(0.105, 0.105, 0.2, 16) : new THREE.BoxGeometry(0.24, 0.2, 0.2);
         const seatMaterial = new THREE.MeshStandardMaterial({ color: INK, roughness: 0.82, transparent: true, opacity: 0.52 });
         const chair = new THREE.Mesh(shape, seatMaterial);
         chair.position.set(seat.x, 0.1, seat.z);
         chair.rotation.y = seat.side === 'L' ? Math.PI / 2 : seat.side === 'R' ? -Math.PI / 2 : seat.side === 'T' ? Math.PI : 0;
         chair.userData.seatId = seat.id;
-        group.add(chair);
+        chairFallback.add(chair);
         seats.set(seat.id, chair);
+        const indicator = new THREE.Mesh(new THREE.RingGeometry(0.105, 0.14, 16),
+          new THREE.MeshBasicMaterial({ color: INK, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthTest: false, depthWrite: false }));
+        indicator.rotation.x = -Math.PI / 2;
+        indicator.position.set(seat.x, 0.022, seat.z);
+        indicator.renderOrder = 7;
+        indicator.userData.seatId = seat.id;
+        indicator.visible = false;
+        group.add(indicator);
+        seatIndicators.set(seat.id, indicator);
       }
-      if (chairGeometry) chairGeometry.dispose();
       const label = this.createTableLabel(table.name, table.footprint, centre, SIMPLE_ROOM_TABLE_HEIGHT_M + 0.015);
+      group.add(tableFallback, chairFallback, tableStatus);
       group.add(label);
-      return { group, plate, label, seats, signature, name: table.name };
+      return { group, tableFallback, chairFallback, plate, tableStatus, label, seats, seatIndicators, signature, name: table.name };
     }
 
     updateGeneratedTableRecord(record, table, picked) {
+      const { THREE } = this._L;
       const status = table.status;
       const color = picked ? PICKED : status === 'free' ? FREE : status === 'full' ? FULL : INK;
-      record.plate.material.color.setHex(color);
-      record.plate.material.opacity = status === 'unknown' ? 0.62 : picked ? 0.96 : status === 'free' ? 0.9 : 0.82;
+      const tableModel = furnitureFootprintCentre(table.footprint)
+        ? this.loadedFurniture(table.furniture?.table) : null;
+      if (tableModel && record.plate) {
+        record.tableFallback.remove(record.plate);
+        disposeObject(record.plate);
+        record.plate = null;
+      } else if (!tableModel && !record.plate) {
+        const centre = this.footprintCentre(table.footprint);
+        const geometry = new THREE.ExtrudeGeometry(this.footprintShape(table.footprint, centre), { depth: SIMPLE_ROOM_TABLE_HEIGHT_M, bevelEnabled: false, curveSegments: 32 });
+        geometry.rotateX(-Math.PI / 2);
+        record.plate = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: INK, roughness: 0.78, transparent: true, opacity: 0.68 }));
+        record.plate.position.set(centre.x, 0, centre.z);
+        record.plate.userData.tableId = table.id;
+        record.tableFallback.add(record.plate);
+      }
+      record.tableStatus.visible = !!tableModel;
+      if (tableModel) {
+        record.tableStatus.position.y = tableModel.heightM * table.furniture.table.scale + table.furniture.table.elevationM + 0.012;
+        record.tableStatus.material.color.setHex(color);
+        record.tableStatus.material.opacity = status === 'unknown' ? 0.18 : picked ? 0.4 : status === 'free' ? 0.32 : 0.28;
+        record.label.position.y = record.tableStatus.position.y + 0.012;
+      } else if (record.plate) {
+        record.plate.material.color.setHex(color);
+        record.plate.material.opacity = status === 'unknown' ? 0.62 : picked ? 0.96 : status === 'free' ? 0.9 : 0.82;
+        record.label.position.y = SIMPLE_ROOM_TABLE_HEIGHT_M + 0.015;
+      }
       record.label.material.color.setHex(picked || status === 'free' ? 0xffffff : INK);
+      const chairModel = this.loadedFurniture(table.furniture?.chair);
       for (const seat of table.seats) {
+        const validSeatAnchor = Number.isFinite(seat.x) && Number.isFinite(seat.z)
+          && ['L', 'R', 'T', 'B'].includes(seat.side);
+        const seatModel = validSeatAnchor ? chairModel : null;
         const chair = record.seats.get(seat.id);
-        if (!chair) continue;
+        if (seatModel && chair) {
+          record.chairFallback.remove(chair);
+          disposeObject(chair);
+          record.seats.delete(seat.id);
+        } else if (!seatModel && !chair) {
+          const shape = table.footprint.type === 'circle' ? new THREE.CylinderGeometry(0.105, 0.105, 0.2, 16) : new THREE.BoxGeometry(0.24, 0.2, 0.2);
+          const proxy = new THREE.Mesh(shape, new THREE.MeshStandardMaterial({ color: INK, roughness: 0.82, transparent: true, opacity: 0.52 }));
+          proxy.position.set(seat.x, 0.1, seat.z);
+          proxy.rotation.y = seat.side === 'L' ? Math.PI / 2 : seat.side === 'R' ? -Math.PI / 2 : seat.side === 'T' ? Math.PI : 0;
+          proxy.userData.seatId = seat.id;
+          record.chairFallback.add(proxy);
+          record.seats.set(seat.id, proxy);
+        }
+        const currentChair = record.seats.get(seat.id);
+        const indicator = record.seatIndicators.get(seat.id);
+        indicator.visible = !!seatModel;
+        indicator.position.y = seatModel
+          ? seatModel.heightM * table.furniture.chair.scale + table.furniture.chair.elevationM + 0.04
+          : 0.022;
         const known = typeof seat.occupied === 'boolean';
-        chair.material.color.setHex(known ? seat.occupied ? FULL : FREE : INK);
-        chair.material.opacity = known ? 0.98 : 0.58;
+        const seatColor = known ? seat.occupied ? FULL : FREE : INK;
+        if (currentChair) {
+          currentChair.material.color.setHex(seatColor);
+          currentChair.material.opacity = known ? 0.98 : 0.58;
+        }
+        indicator.material.color.setHex(seatColor);
+        indicator.material.opacity = known ? 0.98 : 0.58;
       }
     }
 
@@ -840,6 +1161,7 @@
       const authoredLayout = this.readLocationLayout();
       if (authoredLayout) { this.layoutAuthoredMarkers(authoredLayout); return; }
 
+      this.clearFurnitureAssets();
       if (this._marks) { scene.remove(this._marks); disposeObject(this._marks); this._marks = null; }
       this._authoredTableRecords = null;
       this.clearPath();
@@ -1030,6 +1352,13 @@
 
     retryLoad() {
       if (!this._three || !this._L) return;
+      if (this._furnitureHadFailure) {
+        for (const assetId of this._furnitureAssetIds || []) {
+          if (this._furnitureLoads.get(assetId)?.status === 'error') this.startFurnitureLoad(assetId);
+        }
+        this.reportFurnitureRecoveryIfResolved();
+        return;
+      }
       this._token = Symbol();
       void this.refresh();
     }

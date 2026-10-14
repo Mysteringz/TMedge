@@ -12,7 +12,7 @@ import {
   SIMPLE_ROOM_SOURCE,
   type SimpleRoomTableFootprint,
 } from '../../src/shared/simple-room-geometry.js';
-import type { CampusFloor, SeatSide } from '../../src/shared/types.js';
+import type { CampusFloor, FurnitureAssignment, SeatSide } from '../../src/shared/types.js';
 
 function viewerUrl(retry: number): string {
   const stamp = document.querySelector('meta[name="build"]')?.getAttribute('content');
@@ -64,6 +64,10 @@ interface ProjectedTable {
   footprint: SimpleRoomTableFootprint;
   status: 'free' | 'full' | 'unknown';
   seats: ProjectedSeat[];
+  furniture?: {
+    table?: FurnitureAssignment;
+    chair?: FurnitureAssignment;
+  };
 }
 
 interface ProjectedStudentLayout {
@@ -220,17 +224,25 @@ function projectStudentLayout(floor: CampusFloor, selectedTableId: string | null
     depthM: Math.abs(roomCorner.z),
     stale: floor.stale,
     selectedTableId,
-    tables: floor.tables.map((table) => ({
-      id: table.id,
-      name: table.name,
-      footprint: projectSimpleRoomTable({ shape: table.shape, rect: table.rect }),
-      status: floor.stale || table.status === 'unknown' || table.free === null
-        ? 'unknown'
-        : table.free > 0 ? 'free' : 'full',
-      seats: table.seats.map((seat) => {
-        const point = projectSimpleRoomSeat(seat);
-        return { id: seat.id, x: point.x, z: point.z, side: seat.side, occupied: floor.stale ? null : seat.occupied };
-      }),
-    })),
+    tables: floor.tables.map((table) => {
+      const tableFurniture = table.furnitureOverrides?.table ?? floor.furnitureDefaults?.table;
+      const chairFurniture = table.furnitureOverrides?.chair ?? floor.furnitureDefaults?.chair;
+      const furniture = tableFurniture || chairFurniture
+        ? { ...(tableFurniture ? { table: tableFurniture } : {}), ...(chairFurniture ? { chair: chairFurniture } : {}) }
+        : undefined;
+      return {
+        id: table.id,
+        name: table.name,
+        footprint: projectSimpleRoomTable({ shape: table.shape, rect: table.rect }),
+        status: floor.stale || table.status === 'unknown' || table.free === null
+          ? 'unknown'
+          : table.free > 0 ? 'free' : 'full',
+        seats: table.seats.map((seat) => {
+          const point = projectSimpleRoomSeat(seat);
+          return { id: seat.id, x: point.x, z: point.z, side: seat.side, occupied: floor.stale ? null : seat.occupied };
+        }),
+        ...(furniture ? { furniture } : {}),
+      };
+    }),
   };
 }
