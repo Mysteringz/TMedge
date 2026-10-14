@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { floorToPixel, GRID_H, GRID_W } from '../shared/geometry.js';
 import { generateSeats, type SeatSpec } from '../shared/seats.js';
-import type { NodePose, Point, Rect, TableShape, PublishedFloorModel } from '../shared/types.js';
+import type { NodePose, Point, Rect, TableShape, PublishedFloorModel, ProceduralRoom } from '../shared/types.js';
 import { tableBounds } from '../shared/table-geometry.js';
 import { LOCATION_MODEL_TRANSFORM_LIMITS } from '../shared/location-validation.js';
 import { nodesArrayForRegistry } from '../modules/location-config/domain/nodes-config.js';
@@ -66,6 +66,7 @@ export interface FloorDef {
   zones: ZoneDef[];
   tables: TableDef[];
   model?: PublishedFloorModel;
+  proceduralRoom?: ProceduralRoom;
   /** Server-derived v2 hint; never read from site.json or a client document. */
   modelDisposition?: LocationModelPresentationDisposition;
 }
@@ -396,10 +397,12 @@ export function buildRegistryFromLocationDocuments(
   const root = obj(siteJson, 'site.json');
   if (!Array.isArray(root.floors)) throw new ConfigError('site.json.floors: expected a non-empty array');
   const replacements = new Map<string, LocationDocument>();
+  const proceduralRooms = new Map<string, ProceduralRoom>();
   for (const input of documents) {
     const document = parseLocationDocument(input);
     if (replacements.has(document.locationId)) throw new ConfigError(`duplicate published location "${document.locationId}"`);
     replacements.set(document.locationId, document);
+    if (document.proceduralRoom) proceduralRooms.set(document.locationId, document.proceduralRoom);
   }
   const seedIds = new Set(root.floors.map((floor, index) => str(obj(floor, `floors[${index}]`), 'id', `floors[${index}]`)));
   const floors = (root.floors as unknown[]).map((floor, index) => {
@@ -424,6 +427,8 @@ export function buildRegistryFromLocationDocuments(
   // inherited positions rather than temporary placeholders.
   const registry = buildRegistryCore({ ...root, floors }, nodesJson, trustedLegacySeats);
   for (const floor of registry.floors) {
+    const proceduralRoom = proceduralRooms.get(floor.id);
+    if (proceduralRoom) floor.proceduralRoom = proceduralRoom;
     const disposition = modelDispositionByLocation.get(floor.id);
     if (disposition) floor.modelDisposition = disposition;
   }

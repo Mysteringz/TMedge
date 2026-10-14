@@ -39,7 +39,7 @@ export interface LocationRouterDependencies {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const DOC_KEYS = ['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform'];
+const DOC_KEYS = ['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom'];
 
 export function createLocationRouter(dependencies: LocationRouterDependencies): Router {
   const router = Router();

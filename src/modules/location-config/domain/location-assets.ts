@@ -52,6 +52,7 @@ export function locationModelPresentationDisposition(
   document: LocationDocument | TrustedLegacyLocationBaseline, provenanceInput: unknown, revision?: number,
 ): LocationModelPresentationDisposition | undefined {
   const provenance = parseLocationAssetProvenance(provenanceInput, document);
+  if (document.proceduralRoom !== undefined) return undefined;
   // Seed revisions retain the old static catalog adapter. A revision-zero
   // document with no static model has no hint and must remain omitted.
   if (revision === 0 && provenance.modelAssetId?.kind !== 'legacy-static') return undefined;
@@ -141,7 +142,8 @@ export function validateLocationAssetProvenanceTransition(
 ): LocationAssetProvenance {
   const provenance = parseLocationAssetProvenance(provenanceInput, document);
   const baseProvenance = base ? parseLocationAssetProvenance(base.assetProvenance, base.document) : {};
-  if (baseProvenance.modelAssetId?.kind === 'legacy-static' && document.modelAssetId === undefined) {
+  if (baseProvenance.modelAssetId?.kind === 'legacy-static' && document.modelAssetId === undefined
+    && document.proceduralRoom === undefined) {
     throw new InvalidLocationAssetReferenceError('A legacy static model must be retained unchanged or replaced with an uploaded GLB.');
   }
   for (const reference of locationAssetReferences(document)) {

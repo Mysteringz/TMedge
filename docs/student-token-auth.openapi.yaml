@@ -285,19 +285,15 @@ components:
           type: array
           items: { $ref: '#/components/schemas/CampusFloor' }
     CampusFloor:
-      allOf:
-        - $ref: '#/components/schemas/FloorState'
-        - type: object
-          required: [siteId, key, edgeId, updatedAt, stale]
-          properties:
-            siteId: { type: string }
-            key: { type: string, description: 'Collision-safe JSON identity for [siteId, floorId].' }
-            edgeId: { type: string }
-            updatedAt: { type: integer, minimum: 0, description: Last accepted receipt time in milliseconds since epoch. }
-            stale: { type: boolean }
-    FloorState:
       type: object
-      required: [id, building, name, width, height, outline, zones, tables, totals]
+      description: >-
+        A closed public floor view. Campus metadata is listed with the floor
+        fields so strict property validation accepts the composite view while
+        rejecting private or unknown fields.
+      required: [id, building, name, width, height, outline, zones, tables, totals, siteId, key, edgeId, updatedAt, stale]
+      not:
+        required: [model, proceduralRoom]
+      additionalProperties: false
       properties:
         id: { type: string, description: Floor ID, retained as the legacy bare identifier. }
         building: { type: string }
@@ -315,7 +311,9 @@ components:
         model:
           description: >-
             V2 uploaded descriptor object selects a GLB; null explicitly suppresses
-            static-catalog fallback; absence retains the legacy static fallback.
+            static-catalog fallback; absence retains the legacy static fallback
+            unless proceduralRoom explicitly selects generated geometry. The
+            model key cannot coexist with proceduralRoom.
           type: object
           nullable: true
           required: [assetId, transform]
@@ -323,6 +321,18 @@ components:
           properties:
             assetId: { type: string, format: uuid }
             transform: { $ref: '#/components/schemas/ModelTransform' }
+        proceduralRoom:
+          type: string
+          enum: [simple-rectangle-v1]
+          description: >-
+            V2 only. Selects the fixed 3 m rectangular room and 0.75 m table
+            presentation generated from the validated floor/table/seat data.
+            This field is mutually exclusive with model. V1 snapshots reject it.
+        siteId: { type: string }
+        key: { type: string, description: 'Collision-safe JSON identity for [siteId, floorId].' }
+        edgeId: { type: string }
+        updatedAt: { type: integer, minimum: 0, description: Last accepted receipt time in milliseconds since epoch. }
+        stale: { type: boolean }
     Point:
       type: array
       minItems: 2

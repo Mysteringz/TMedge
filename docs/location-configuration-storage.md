@@ -1,8 +1,14 @@
 # Location configuration storage
 
-This guide covers durable location drafts, published revisions, source assets and public GLB delivery. Task 2.1 supplies persistence; Task 2.2 assembles and activates a complete live runtime generation on publish; Task 2.3 adds the authenticated Algo location API and split edge/web asset flow. The editor is delivered by later tasks.
+This guide covers durable location drafts, published revisions, source assets and public GLB delivery. The authenticated Algo location API stores authored documents in file or PostgreSQL JSON; publication prepares a complete runtime generation before commit and activates it afterward.
 
 The current HTTP contract, including console routes, edge GLB ingress, authentication, revision checks, payload limits and student model reads, is documented in [location-management.openapi.yaml](location-management.openapi.yaml).
+
+## Generated rectangular room source
+
+New rectangular drafts use the explicit `proceduralRoom: "simple-rectangle-v1"` source. Existing documents without the field keep their current source. The optional field is stored in the same draft and published JSON documents and revision history; it adds no relational column or database migration. Its outline must exactly match the authored floor dimensions. It cannot coexist with model asset references or a public `model` key. A generated room uses fixed 3 m walls and 0.75 m tables derived at the viewers from validated floor, table, and seat data; it creates no GLB and transfers no room bytes. Custom public GLBs still require acknowledgement from every configured web target before publication.
+
+Deploy compatible student validators and viewers to every configured web target before allowing the edge to publish this discriminator. Existing strict v2 web validators reject the new floor key. If restoring an older student build after publication, first republish affected locations using supported custom GLB or explicit 2D sources and verify the current snapshots no longer carry `proceduralRoom`. Retain edge builds that can parse stored drafts and history containing the field.
 
 ## Storage ownership
 

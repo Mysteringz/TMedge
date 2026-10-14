@@ -20,7 +20,8 @@ export async function resolveLocationAssetProvenance(
   metadata: LocationAssetMetadataRepository | undefined,
 ): Promise<LocationAssetProvenance> {
   const inherited = base ? parseLocationAssetProvenance(base.assetProvenance, base.document) : {};
-  if (inherited.modelAssetId?.kind === 'legacy-static' && document.modelAssetId === undefined) {
+  if (inherited.modelAssetId?.kind === 'legacy-static' && document.modelAssetId === undefined
+    && document.proceduralRoom === undefined) {
     throw new InvalidLocationAssetReferenceError('A legacy static model must be retained unchanged or replaced with an uploaded GLB.');
   }
   const result: LocationAssetProvenance = {};

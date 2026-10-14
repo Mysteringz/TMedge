@@ -24,6 +24,7 @@ export class UploadLocationAssetUseCase {
     const document = exposeAuthoredLocationCandidate(draft.document, draft.legacySpatial);
     if (input.purpose === 'floor-plan') document.planAssetId = metadata.assetId;
     else {
+      delete document.proceduralRoom;
       document.modelAssetId = metadata.assetId;
       document.modelTransform ??= {
         scale: { x: 1, y: 1, z: 1 },

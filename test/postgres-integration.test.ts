@@ -1620,14 +1620,30 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
         body: JSON.stringify({ name: 'PostgreSQL route location', building: 'Test building', widthCm: 400, heightCm: 300 }),
       });
       assert.equal(createdDraftResponse.status, 201);
-      const createdDraft = (await createdDraftResponse.json() as { data: { draftId: string; locationId: string; draftRevision: number } }).data;
+      const createdDraft = (await createdDraftResponse.json() as { data: { draftId: string; locationId: string; draftRevision: number; document: Record<string, unknown> } }).data;
+      assert.equal(createdDraft.document.proceduralRoom, 'simple-rectangle-v1', 'new PostgreSQL-backed drafts default to the generated source');
+      const geometryResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}`, {
+        method: 'PUT', headers: apiOwnerHeaders,
+        body: JSON.stringify({
+          expectedDraftRevision: createdDraft.draftRevision,
+          document: {
+            ...createdDraft.document,
+            zones: [{ id: 'pg-route-zone', name: 'Test zone', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]] }],
+          },
+        }),
+      });
+      assert.equal(geometryResponse.status, 200, await geometryResponse.clone().text());
+      const geometryDraft = (await geometryResponse.json() as { data: { draftRevision: number; document: Record<string, unknown> } }).data;
+      assert.equal(geometryDraft.document.proceduralRoom, 'simple-rectangle-v1', 'saving a room zone keeps the selected generated source');
       const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       const uploadResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}/assets/floor-plan`, {
-        method: 'PUT', headers: { cookie: 'tm_algo=pg-owner', origin: apiBase, 'x-tm-algo': '1', 'content-type': 'image/png', 'if-match': String(createdDraft.draftRevision) },
+        method: 'PUT', headers: { cookie: 'tm_algo=pg-owner', origin: apiBase, 'x-tm-algo': '1', 'content-type': 'image/png', 'if-match': String(geometryDraft.draftRevision) },
         body: png,
       });
       assert.equal(uploadResponse.status, 200);
       const uploaded = (await uploadResponse.json() as { data: { assetId: string; draftRevision: number } }).data;
+      assert.equal((await drafts.getDraft('pg-route-owner', createdDraft.draftId))?.document.proceduralRoom,
+        'simple-rectangle-v1', 'PostgreSQL floor-plan upload preserves the selected room source');
       const foreignDraftResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}`, { headers: { cookie: 'tm_algo=pg-other' } });
       assert.equal(foreignDraftResponse.status, 404, 'PostgreSQL route reads remain creator-private');
       const previewResponse = await fetch(`${apiBase}/api/locations/drafts/${createdDraft.draftId}/assets/${uploaded.assetId}`, { headers: { cookie: 'tm_algo=pg-owner' } });
@@ -1640,9 +1656,30 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
       assert.equal(publicationResponse.status, 200);
       assert.equal((await published.getActive(createdDraft.locationId))?.activeRevision, 1,
         'the HTTP publication route commits its draft through PostgreSQL and survives repository readback');
+      assert.equal((await published.getActive(createdDraft.locationId))?.history.at(-1)?.document.proceduralRoom,
+        'simple-rectangle-v1', 'the published PostgreSQL JSON keeps the explicit room source');
       const persistedApiDraft = await drafts.getDraft('pg-route-owner', createdDraft.draftId);
       assert.equal(persistedApiDraft?.assetProvenance?.planAssetId?.kind, 'upload');
       assert.equal(persistedApiDraft?.assetProvenance?.planAssetId?.ownerId, 'pg-route-owner');
+
+      const routeRestartRuntime = await openPostgres(config.runtime);
+      try {
+        const routeRestartCoordinator = new PostgresRegistryMutationCoordinator(routeRestartRuntime);
+        const routeRestartPublished = new PostgresPublishedLocationRepository(routeRestartRuntime, seedIds, routeRestartCoordinator);
+        const routeRestartDrafts = new PostgresLocationDraftRepository(routeRestartRuntime);
+        const reopenedLocation = await routeRestartPublished.getActive(createdDraft.locationId);
+        const reopenedActive = reopenedLocation?.history.find((row) => row.revision === reopenedLocation.activeRevision);
+        assert.equal(reopenedActive?.document.proceduralRoom, 'simple-rectangle-v1', 'published room source survives a fresh PostgreSQL connection');
+        assert.equal((await routeRestartDrafts.getDraft('pg-route-owner', createdDraft.draftId))?.document.proceduralRoom,
+          'simple-rectangle-v1', 'private draft source survives a fresh PostgreSQL connection');
+        if (!reopenedActive) throw new Error('Generated location history did not reopen.');
+        const reopenedRegistry = buildRegistryFromLocationDocuments(site, { nodes: [] }, [parseLocationDocument(reopenedActive.document)]);
+        assert.equal(reopenedRegistry.floors.find((floor) => floor.id === createdDraft.locationId)?.proceduralRoom,
+          'simple-rectangle-v1', 'restart bootstrap maps persisted JSON into the active registry');
+        const reopenedSnapshot = new OccupancyEngine(reopenedRegistry, 'pg-restart-check').snapshot(1);
+        assert.equal(reopenedSnapshot.floors.find((floor) => floor.id === createdDraft.locationId)?.proceduralRoom, 'simple-rectangle-v1');
+        assert.equal(isSnapshot(reopenedSnapshot), true, 'reopened generated registry emits a valid public v2 snapshot');
+      } finally { await closePostgres(routeRestartRuntime); }
     } finally {
       apiServer.closeAllConnections();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));

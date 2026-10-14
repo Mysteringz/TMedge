@@ -12,7 +12,7 @@ import type {
 const draftId = '00000000-0000-4000-8000-000000000001';
 const modelId = '00000000-0000-4000-8000-000000000002';
 
-function document(withModel = false, visibility: 'public' | 'console' = 'public') {
+function document(withModel = false, visibility: 'public' | 'console' = 'public', generatedRoom = false) {
   return parseLocationDocument({
     schemaVersion: 1,
     locationId: 'location_edge-test_00000000-0000-4000-8000-000000000003',
@@ -29,11 +29,13 @@ function document(withModel = false, visibility: 'public' | 'console' = 'public'
       modelAssetId: modelId,
       modelTransform: { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } },
     } : {}),
+    ...(generatedRoom ? { proceduralRoom: 'simple-rectangle-v1' } : {}),
   });
 }
 
 function harness(options: {
   withModel?: boolean;
+  generatedReplacement?: boolean;
   visibility?: 'public' | 'console';
   legacyStatic?: boolean;
   existingBase?: boolean;
@@ -43,8 +45,8 @@ function harness(options: {
 } = {}) {
   let locked = false;
   const events: string[] = [];
-  const location = document(options.withModel, options.visibility);
-  const baseDocument = options.legacyStatic ? location : options.existingBase ? document(false, options.visibility) : null;
+  const location = document(options.withModel, options.visibility, options.generatedReplacement);
+  const baseDocument = options.legacyStatic ? document(true, options.visibility) : options.existingBase ? document(false, options.visibility) : null;
   const activeRevision = options.legacyStatic ? 0 : options.existingBase ? 1 : null;
   const baseProvenance = options.legacyStatic ? {
     modelAssetId: { kind: 'legacy-static' as const, basePublishedRevision: 0 as const, locationId: location.locationId, assetId: modelId },
@@ -53,14 +55,20 @@ function harness(options: {
     locationId: location.locationId, revision: activeRevision, createdBy: 'seed', createdAt: 1,
     document: baseDocument, legacySpatial: null, assetProvenance: baseProvenance,
   } : null;
-  const draftCandidate = options.legacyStatic && base ? parseLocationCandidate(
-    exposePublishedLocationCandidate({ revision: 0, document: base.document, legacySpatial: null }),
-    { revision: 0, document: base.document, legacySpatial: null }, 0,
+  const exposedBase = options.legacyStatic && base
+    ? exposePublishedLocationCandidate({ revision: 0, document: base.document, legacySpatial: null }) : null;
+  if (exposedBase && options.generatedReplacement) {
+    delete exposedBase.modelAssetId;
+    delete exposedBase.modelTransform;
+    exposedBase.proceduralRoom = 'simple-rectangle-v1';
+  }
+  const draftCandidate = options.legacyStatic && base && exposedBase ? parseLocationCandidate(
+    exposedBase, { revision: 0, document: base.document, legacySpatial: null }, 0,
   ) : { document: location, legacySpatial: null };
   const state: PublishedLocationState | null = base ? {
     locationId: location.locationId, activeRevision: activeRevision!, history: [base],
   } : null;
-  const inheritedProvenance = options.legacyStatic ? baseProvenance : {};
+  const inheritedProvenance = options.legacyStatic && !options.generatedReplacement ? baseProvenance : {};
   const uploadedProvenance = options.withModel && !options.legacyStatic
     ? { modelAssetId: { kind: 'upload' as const, ownerId: 'operator-a' } }
     : inheritedProvenance;
@@ -173,6 +181,16 @@ test('revision-zero static models remain on the legacy fallback without a transf
   assert.equal(result.publishedRevision, 1);
   assert.ok(!source.events.includes('model-ack'));
   assert.ok(source.events.includes('activate'));
+  assert.equal(source.preparedDocument?.modelAssetId, undefined);
+  assert.equal(source.preparedDocument?.modelTransform, undefined);
+});
+
+test('an explicit generated room replaces revision-zero static source without transferring or retaining the model', async () => {
+  const source = harness({ legacyStatic: true, generatedReplacement: true });
+  const result = await source.useCase.execute({ creatorId: 'operator-a', draftId, expectedDraftRevision: 2, expectedPublishedRevision: 0 });
+  assert.equal(result.publishedRevision, 1);
+  assert.ok(!source.events.includes('model-ack'));
+  assert.equal(source.preparedDocument?.proceduralRoom, 'simple-rectangle-v1');
   assert.equal(source.preparedDocument?.modelAssetId, undefined);
   assert.equal(source.preparedDocument?.modelTransform, undefined);
 });

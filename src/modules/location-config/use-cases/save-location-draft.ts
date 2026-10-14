@@ -53,7 +53,7 @@ export class SaveLocationDraftUseCase {
 
 const AUTHORED_KEYS = [
   'name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments',
-  'planAssetId', 'modelAssetId', 'modelTransform',
+  'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom',
 ];
 const REQUIRED_AUTHORED_KEYS = ['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments'];
 

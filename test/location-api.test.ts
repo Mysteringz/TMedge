@@ -11,7 +11,7 @@ import { FileLocationAssetStore } from '../src/infrastructure/location-config/fi
 import { computeLocationCoverageSuggestions } from '../src/infrastructure/location-config/location-coverage.js';
 import type { LocationDraft, PublishedLocationState } from '../src/modules/location-config/domain/location-records.js';
 import { LocationConflictError } from '../src/modules/location-config/domain/location-records.js';
-import { parseLocationDocument } from '../src/modules/location-config/domain/location-document.js';
+import { parseLocationDocument, type LocationDocument } from '../src/modules/location-config/domain/location-document.js';
 import type {
   LocationDraftRepository, LocationRegistrySnapshot, LocationRegistrySnapshotRepository,
   PreparedLocationRuntime, PublishedLocationRepository, RegistryMutationCoordinator,
@@ -19,6 +19,9 @@ import type {
 import { createLocationRouter } from '../src/modules/location-config/routes/location-router.js';
 import type { ValidatedLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
 import { parseTrustedLegacyBaseline } from '../src/infrastructure/location-config/legacy-location-mapper.js';
+import { buildRegistryFromLocationDocuments } from '../src/edge/registry.js';
+import { OccupancyEngine } from '../src/edge/occupancy.js';
+import { isSnapshot } from '../src/web/store.js';
 import { siteJson } from './fixtures.js';
 
 const GLB = makeGlb({ asset: { version: '2.0' }, buffers: [] });
@@ -87,6 +90,7 @@ test('location routes enforce capability, write guard, ownership and immutable u
     assert.equal(createdBody.data.basePublishedRevision, null);
     assert.equal(createdBody.data.visibility, 'public', 'visibility remains safe read-only draft metadata');
     assert.equal(Object.hasOwn(createdBody.data.document, 'visibility'), false, 'authored requests and document DTOs omit server-managed visibility');
+    assert.equal(createdBody.data.document.proceduralRoom, 'simple-rectangle-v1', 'new rectangular drafts start with the built-in source');
     assert.equal((await fetch(`${base}/api/locations/drafts/${draftId}`, { headers: { cookie: secondOperatorCookie } })).status, 404);
     const secondList = await json('GET', '/api/locations', undefined, secondOperatorCookie);
     assert.equal(((await secondList.json()) as { data: { drafts: unknown[] } }).data.drafts.length, 0,
@@ -158,6 +162,13 @@ test('location routes enforce capability, write guard, ownership and immutable u
     assert.equal(planUpload.status, 200);
     const planBody = await planUpload.json() as { data: { assetId: string; draftRevision: number } };
     assert.equal(planBody.data.draftRevision, 2);
+    const afterPlanUpload = await json('GET', `/api/locations/drafts/${draftId}`);
+    const planSource = (await afterPlanUpload.json() as { data: { document: Record<string, unknown> } }).data.document;
+    assert.equal(planSource.proceduralRoom, 'simple-rectangle-v1', 'a plan upload does not switch the room source');
+    const invalidModelUpload = await fetch(`${base}/api/locations/drafts/${draftId}/assets/model`, {
+      method: 'PUT', headers: { cookie: operatorCookie, origin: base, 'x-tm-algo': '1', 'content-type': 'model/gltf-binary', 'if-match': '2' }, body: Buffer.from('not a GLB'),
+    });
+    assert.equal(invalidModelUpload.status, 422, 'invalid GLB validation rejects the upload before the source switch');
     const planPreview = await fetch(`${base}/api/locations/drafts/${draftId}/assets/${planBody.data.assetId}`, { headers: { cookie: operatorCookie } });
     assert.equal(planPreview.status, 200);
     assert.equal(planPreview.headers.get('cache-control'), 'private, no-store');
@@ -169,6 +180,9 @@ test('location routes enforce capability, write guard, ownership and immutable u
       method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'model/gltf-binary', 'if-match': '2', 'x-asset-display-name': '%E0%A4%A' }, body: GLB,
     });
     assert.equal(malformedDisplayName.status, 422, 'malformed display-name percent escapes are rejected before writing');
+    const afterFailedModelUpload = await json('GET', `/api/locations/drafts/${draftId}`);
+    assert.equal(((await afterFailedModelUpload.json() as { data: { document: Record<string, unknown> } }).data.document).proceduralRoom,
+      'simple-rectangle-v1', 'a rejected model upload leaves the generated source in the draft');
     const planDisplayName = await fetch(`${base}/api/locations/drafts/${draftId}/assets/floor-plan`, {
       method: 'PUT', headers: { cookie: operatorCookie, 'x-tm-algo': '1', origin: base, 'content-type': 'image/png', 'if-match': '2', 'x-asset-display-name': 'plan.png' }, body: PNG,
     });
@@ -182,7 +196,8 @@ test('location routes enforce capability, write guard, ownership and immutable u
     assert.equal(modelBody.data.draftRevision, 3);
     assert.equal(modelBody.data.displayName, 'model one.glb', 'upload returns only a normalized basename');
     const detail = await json('GET', `/api/locations/drafts/${draftId}`);
-    const detailBody = await detail.json() as { data: { assetCapabilities: Record<string, { previewAvailable: boolean; alignmentEditable: boolean; fromPublishedBase: boolean; displayName?: string }>; assetProvenance?: unknown } };
+    const detailBody = await detail.json() as { data: { document: Record<string, unknown>; assetCapabilities: Record<string, { previewAvailable: boolean; alignmentEditable: boolean; fromPublishedBase: boolean; displayName?: string }>; assetProvenance?: unknown } };
+    assert.equal(Object.hasOwn(detailBody.data.document, 'proceduralRoom'), false, 'a successful model upload explicitly switches to the custom GLB source');
     assert.equal(detailBody.data.assetCapabilities.planAssetId?.previewAvailable, true);
     assert.equal(detailBody.data.assetCapabilities.modelAssetId?.alignmentEditable, true);
     assert.equal(detailBody.data.assetCapabilities.modelAssetId?.fromPublishedBase, false, 'new draft uploads are not mislabeled as inherited');
@@ -191,6 +206,16 @@ test('location routes enforce capability, write guard, ownership and immutable u
     const modelPreview = await fetch(`${base}/api/locations/drafts/${draftId}/assets/${modelBody.data.assetId}`, { headers: { cookie: operatorCookie } });
     assert.equal(modelPreview.status, 200);
     assert.deepEqual(Buffer.from(await modelPreview.arrayBuffer()), GLB);
+
+    const customDocument = { ...detailBody.data.document };
+    delete customDocument.modelAssetId;
+    delete customDocument.modelTransform;
+    const switchedTo2d = await json('PUT', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 3, document: customDocument });
+    assert.equal(switchedTo2d.status, 200, await switchedTo2d.clone().text());
+    const after2dSwitch = await json('GET', `/api/locations/drafts/${draftId}`);
+    const twoDDocument = (await after2dSwitch.json() as { data: { document: Record<string, unknown> } }).data.document;
+    assert.equal(Object.hasOwn(twoDDocument, 'proceduralRoom'), false);
+    assert.equal(Object.hasOwn(twoDDocument, 'modelAssetId'), false, '2D source removes the active GLB reference without stashing it');
 
     const baseModel = await persistence.assets.put('original-model-owner', 'model', 'model/gltf-binary', GLB, 120, 'venue/published-base.glb');
     const baseDocument = parseLocationDocument({
@@ -241,6 +266,123 @@ test('location routes enforce capability, write guard, ownership and immutable u
     assert.notEqual(replacedDto.document.modelAssetId, baseModel.assetId);
     assert.equal(replacedDto.assetCapabilities.modelAssetId?.fromPublishedBase, false, 'replacement upload is distinguishable after reload');
     assert.equal(replacedDto.assetCapabilities.modelAssetId?.displayName, 'replacement.glb', 'replacement display metadata follows the exact new asset reference');
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy-static revision zero can switch to generated through start, save and publish routes', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'location-generated-transition-'));
+  const app = express();
+  const persistence = makePersistence(directory);
+  const locationId = 'legacy-static-room';
+  const assetId = '00000000-0000-4000-8000-000000000041';
+  const modelTransform = {
+    scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 },
+  };
+  const legacyDocument = parseTrustedLegacyBaseline({
+    schemaVersion: 1, locationId, name: 'Legacy static room', building: 'North', visibility: 'public',
+    widthCm: 400, heightCm: 300, outline: [[0, 0], [400, 0], [400, 300], [0, 300]],
+    zones: [{ id: 'legacy-zone', name: 'Room', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]] }],
+    tables: [], sensorAssignments: [], modelAssetId: assetId, modelTransform,
+  });
+  const originalRevision: PublishedLocationState = {
+    locationId, activeRevision: 0,
+    history: [{
+      locationId, revision: 0, createdBy: 'seed', createdAt: 1, document: legacyDocument,
+      assetProvenance: { modelAssetId: { kind: 'legacy-static', basePublishedRevision: 0, locationId, assetId } },
+    }],
+  };
+  persistence.setPublishedLocation(originalRevision);
+  const siteSeed = {
+    site: { id: 'test-site', name: 'Test site' },
+    floors: [{
+      id: locationId, visibility: 'public', building: legacyDocument.building, name: legacyDocument.name,
+      width: 400, height: 300, outline: legacyDocument.outline,
+      zones: [{ id: 'legacy-zone', name: 'Room', polygon: legacyDocument.zones[0]!.polygon }],
+      tables: [], model: { assetId, transform: modelTransform },
+    }],
+  };
+  const users = new AlgoUsers(join(directory, 'algo-users.json'));
+  await users.add('source-operator', 'correct horse battery', 'operator');
+  const auth = createAlgoAuth(loadAlgoAuthConfig({ SESSION_SECRET: 'g'.repeat(40), ALGO_USERS_FILE: users.path }, 'test-admin-password'));
+  let distributorCalls = 0;
+  app.use('/api', createLocationRouter({
+    auth, edgeId: 'edge-generated-transition', siteSeed, ...persistence,
+    assets: persistence.assets, assetMetadata: persistence.assets,
+    runtime: fakeRuntime as unknown as import('../src/modules/location-config/routes/location-router.js').LocationRouterDependencies['runtime'],
+    modelDistributor: { async acknowledge() { distributorCalls += 1; } },
+    suggestCoverage: computeLocationCoverageSuggestions, now: () => 300,
+  }));
+  app.use(auth.router);
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const login = await fetch(`${base}/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'source-operator', password: 'correct horse battery' }),
+    });
+    assert.equal(login.status, 200);
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    const json = (method: string, path: string, body?: unknown) => fetch(`${base}${path}`, {
+      method, headers: { cookie, 'content-type': 'application/json', 'x-tm-algo': '1', origin: base },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+
+    const start = await json('POST', `/api/locations/${locationId}/drafts`, { expectedPublishedRevision: 0 });
+    assert.equal(start.status, 201, await start.clone().text());
+    const started = (await start.json() as { data: { draftId: string; document: Record<string, unknown> } }).data;
+    assert.equal(started.document.modelAssetId, assetId);
+    assert.deepEqual(started.document.modelTransform, modelTransform);
+    assert.equal(Object.hasOwn(started.document, 'proceduralRoom'), false, 'editing keeps the inherited static source until an explicit switch');
+
+    const generatedDocument = structuredClone(started.document);
+    delete generatedDocument.modelAssetId;
+    delete generatedDocument.modelTransform;
+    generatedDocument.proceduralRoom = 'simple-rectangle-v1';
+    const save = await json('PUT', `/api/locations/drafts/${started.draftId}`, {
+      expectedDraftRevision: 1, document: generatedDocument,
+    });
+    assert.equal(save.status, 200, await save.clone().text());
+    const saved = (await save.json() as { data: { draftRevision: number; document: Record<string, unknown> } }).data;
+    assert.equal(saved.draftRevision, 2);
+    assert.equal(saved.document.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(Object.hasOwn(saved.document, 'modelAssetId'), false);
+    assert.equal(Object.hasOwn(saved.document, 'modelTransform'), false);
+
+    const forged = await json('PUT', `/api/locations/drafts/${started.draftId}`, {
+      expectedDraftRevision: 2, document: { ...generatedDocument, assetProvenance: {} },
+    });
+    assert.equal(forged.status, 422, 'client-supplied server provenance is rejected at the authored request boundary');
+    const stillOriginal = await persistence.published.getActive(locationId);
+    assert.equal(stillOriginal?.activeRevision, 0, 'a saved generated draft does not replace the active publication');
+    const stillOriginalDocument = stillOriginal?.history.find((revision) => revision.revision === 0)?.document;
+    assert.equal(stillOriginalDocument?.modelAssetId, assetId, 'the prior static model stays active until an explicit publish');
+    assert.deepEqual(stillOriginalDocument?.modelTransform, modelTransform);
+
+    const publish = await json('POST', `/api/locations/drafts/${started.draftId}/publications`, {
+      expectedDraftRevision: 2, expectedPublishedRevision: 0,
+    });
+    assert.equal(publish.status, 200, await publish.clone().text());
+    assert.equal(distributorCalls, 0, 'generated publication does not require or call the GLB distributor');
+    const committed = await persistence.published.getActive(locationId);
+    assert.equal(committed?.activeRevision, 1);
+    assert.equal(committed?.history.length, 2);
+    assert.equal(committed?.history[0]?.document.modelAssetId, assetId, 'immutable revision zero retains the original static asset');
+    const generated = committed?.history.find((revision) => revision.revision === 1)?.document;
+    assert.equal(generated?.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(Object.hasOwn(generated ?? {}, 'modelAssetId'), false);
+    assert.equal(Object.hasOwn(generated ?? {}, 'modelTransform'), false);
+
+    const registry = buildRegistryFromLocationDocuments(siteSeed, { nodes: [] }, [generated as LocationDocument]);
+    const publicSnapshot = new OccupancyEngine(registry, 'edge-generated-transition').snapshot(301);
+    assert.equal(isSnapshot(publicSnapshot), true);
+    const publicFloor = publicSnapshot.floors.find((floor) => floor.id === locationId);
+    assert.equal(publicFloor?.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(Object.hasOwn(publicFloor ?? {}, 'model'), false, 'the public generated v2 floor has no model key');
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -381,6 +523,7 @@ function makePersistence(directory: string) {
   const draftsById = new Map<string, LocationDraft>();
   const locationsById = new Map<string, PublishedLocationState>();
   let snapshotNodes: LocationRegistrySnapshot['nodes'] = [];
+  let registryRevision = 0;
   let lockHeld = false;
   const coordinator: RegistryMutationCoordinator = {
     async withMutationLock(operation) {
@@ -419,7 +562,7 @@ function makePersistence(directory: string) {
   };
   const snapshots: LocationRegistrySnapshotRepository = {
     async readSnapshot() {
-      return { registryRevision: 0, nodes: snapshotNodes, locations: [...locationsById.values()].map((state) => structuredClone(state)) } satisfies LocationRegistrySnapshot;
+      return { registryRevision, nodes: snapshotNodes, locations: [...locationsById.values()].map((state) => structuredClone(state)) } satisfies LocationRegistrySnapshot;
     },
   };
   const published: PublishedLocationRepository = {
@@ -427,7 +570,23 @@ function makePersistence(directory: string) {
     async getActive(locationId) { const state = locationsById.get(locationId); return state ? structuredClone(state) : null; },
     async listActive() { return [...locationsById.values()].map((state) => structuredClone(state)); },
     async listHistory(locationId) { return structuredClone(locationsById.get(locationId)?.history ?? []); },
-    async commitWithinMutation() { throw new Error('unused'); }, async registryRevision() { return 0; },
+    async commitWithinMutation(input) {
+      if (input.expectedRegistryRevision !== registryRevision) throw new LocationConflictError('The registry revision changed.');
+      const current = locationsById.get(input.revision.locationId) ?? null;
+      if ((current?.activeRevision ?? null) !== input.expectedPublishedRevision) throw new LocationConflictError();
+      const committed: PublishedLocationState = {
+        locationId: input.revision.locationId,
+        activeRevision: input.revision.revision,
+        history: [...(current?.history ?? []), structuredClone(input.revision)],
+      };
+      locationsById.set(committed.locationId, committed);
+      registryRevision += 1;
+      return {
+        kind: 'committed', durability: 'confirmed', acknowledgement: 'received',
+        registryRevision, activeRevision: committed.activeRevision,
+      };
+    },
+    async registryRevision() { return registryRevision; },
   };
   return {
     coordinator, drafts, snapshots, published, assets: assetStore,

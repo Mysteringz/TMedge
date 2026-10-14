@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { SIMPLE_ROOM_SOURCE } from '../../../shared/simple-room-geometry.js';
 import { createLocationId, parseLocationDocument } from '../domain/location-document.js';
 import { LocationConflictError } from '../domain/location-records.js';
 import type { LocationDraftRepository, LocationRegistrySnapshotRepository, PublishedLocationRepository, RegistryMutationCoordinator } from '../repositories/location-storage.js';
@@ -43,6 +44,7 @@ export class CreateLocationDraftUseCase {
       zones: [],
       tables: [],
       sensorAssignments: [],
+      proceduralRoom: SIMPLE_ROOM_SOURCE,
     });
     return this.dependencies.drafts.createDraft({
       draftId: randomUUID(), creatorId: input.creatorId, locationId,

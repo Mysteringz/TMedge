@@ -8,6 +8,7 @@ import { activeLocationModelDispositions, locationModelPresentationDisposition, 
 import type { PublishedLocationState } from '../src/modules/location-config/domain/location-records.js';
 import { generateSeats } from '../src/shared/seats.js';
 import { tableBounds, tableSurfaceDistance } from '../src/shared/table-geometry.js';
+import { isSnapshot } from '../src/web/store.js';
 
 test('circle and polygon seat generation gives every seat a stable symmetric perimeter graph', () => {
   for (const shape of [
@@ -193,6 +194,51 @@ test('v2 model disposition distinguishes authored 2D-only, retained legacy-stati
   const uploaded = parseLocationDocument({ ...base, modelAssetId: '00000000-0000-4000-8000-000000000004', modelTransform: transform });
   const uploadedSnapshot = new OccupancyEngine(buildRegistryFromLocationDocuments(site, { nodes: [] }, [uploaded]), 'edge-a').snapshot(1);
   assert.deepEqual(uploadedSnapshot.floors[0]?.model, { assetId: uploaded.modelAssetId, transform });
+});
+
+test('generated source activates in the registry and emits only the strict v2 room discriminator', () => {
+  const site = { site: { id: 'test', name: 'Test' }, floors: [] };
+  const generated = parseLocationDocument({ ...baseDoc('location_test_00000000-0000-4000-8000-000000000024'), proceduralRoom: 'simple-rectangle-v1' });
+  const registry = buildRegistryFromLocationDocuments(site, { nodes: [] }, [generated]);
+  assert.equal(registry.floors[0]?.proceduralRoom, 'simple-rectangle-v1');
+  assert.equal(registry.floors[0]?.model, undefined);
+  assert.equal(locationModelPresentationDisposition(generated, {}), undefined, 'generated geometry has no GLB or explicit-none model disposition');
+
+  const snapshot = new OccupancyEngine(registry, 'edge-a').snapshot(1);
+  assert.equal(snapshot.version, 2);
+  assert.equal(snapshot.floors[0]?.proceduralRoom, 'simple-rectangle-v1');
+  assert.equal(Object.hasOwn(snapshot.floors[0]!, 'model'), false);
+  assert.equal(isSnapshot(snapshot), true);
+
+  const modelConflict = structuredClone(snapshot);
+  modelConflict.floors[0]!.model = null;
+  assert.equal(isSnapshot(modelConflict), false, 'procedural and model source keys cannot coexist');
+  const unknownVersion = structuredClone(snapshot);
+  unknownVersion.floors[0]!.proceduralRoom = 'simple-rectangle-v2' as 'simple-rectangle-v1';
+  assert.equal(isSnapshot(unknownVersion), false, 'unknown room versions reject');
+
+  const mismatchedDimensions = structuredClone(snapshot);
+  mismatchedDimensions.floors[0]!.width += 1;
+  assert.equal(isSnapshot(mismatchedDimensions), false, 'generated outlines must match the declared dimensions');
+  const reorderedCorners = structuredClone(snapshot);
+  reorderedCorners.floors[0]!.outline = [[0, 0], [400, 300], [400, 0], [0, 300]];
+  assert.equal(isSnapshot(reorderedCorners), false, 'generated outlines must use the canonical top-left clockwise corner order');
+  const nonRectangular = structuredClone(snapshot);
+  nonRectangular.floors[0]!.outline = [[0, 0], [400, 0], [200, 300]];
+  assert.equal(isSnapshot(nonRectangular), false, 'generated outlines reject non-rectangular polygons');
+
+  const legacyNonRectangular = structuredClone(snapshot);
+  delete legacyNonRectangular.floors[0]!.proceduralRoom;
+  legacyNonRectangular.floors[0]!.outline = [[0, 0], [400, 0], [200, 300]];
+  assert.equal(isSnapshot(legacyNonRectangular), true, 'marker-absent legacy v2 outlines keep their prior polygon envelope');
+
+  const v1 = structuredClone(snapshot);
+  v1.version = 1;
+  delete v1.floors[0]!.proceduralRoom;
+  for (const table of v1.floors[0]!.tables) delete table.shape;
+  assert.equal(isSnapshot(v1), true, 'the existing v1 shape envelope stays valid');
+  v1.floors[0]!.proceduralRoom = 'simple-rectangle-v1';
+  assert.equal(isSnapshot(v1), false, 'v1 rejects the new floor key');
 });
 
 test('unrelated publication preparation preserves revision-zero static fallback and restart omits its uploaded hint', () => {

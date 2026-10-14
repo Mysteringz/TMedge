@@ -496,6 +496,21 @@ test('location documents enforce shape, zone, seat and legacy sensor-pose bounds
   assert.throws(() => parseLocationDocument({ ...valid, name: 'x'.repeat(MAX_LOCATION_DOCUMENT_BYTES) }), /document exceeds/);
 });
 
+test('procedural room source accepts only the exact versioned rectangle without a model reference', () => {
+  const base = locationDocument();
+  const generated = parseLocationDocument({ ...base, proceduralRoom: 'simple-rectangle-v1' });
+  assert.equal(generated.proceduralRoom, 'simple-rectangle-v1');
+  assert.equal(base.proceduralRoom, undefined, 'legacy documents without the optional marker retain their old meaning');
+  assert.throws(() => parseLocationDocument({ ...base, proceduralRoom: 'simple-rectangle-v2' }), /expected simple-rectangle-v1/);
+  assert.throws(() => parseLocationDocument({
+    ...base, outline: [[0, 0], [400, 0], [350, 300], [0, 300]], proceduralRoom: 'simple-rectangle-v1',
+  }), /outline must match the location rectangle/);
+  assert.throws(() => parseLocationDocument({
+    ...base, proceduralRoom: 'simple-rectangle-v1', modelAssetId: '00000000-0000-4000-8000-000000000099',
+    modelTransform: { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } },
+  }), /cannot be combined with modelAssetId or modelTransform/);
+});
+
 test('rectangular, circular and polygon table shapes accept valid bounds and reject invalid geometry', () => {
   const base = locationDocument();
   const seat = { id: 'shape-seat', x: 40, y: 40, neighbors: [] };
@@ -760,7 +775,7 @@ test('file drafts, published history, registry and immutable asset bytes survive
   const directory = tempDirectory();
   const siteAndNodes = writeConfigFiles(directory);
   const dataDir = join(directory, 'persistent-data');
-  const document = locationDocument();
+  const document = parseLocationDocument({ ...locationDocument(), proceduralRoom: 'simple-rectangle-v1' });
   const draftId = '00000000-0000-4000-8000-000000000030';
   const assetBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   let persistence = initializeFileLocationPersistence(siteAndNodes.sitePath, siteAndNodes.nodesPath, dataDir);
@@ -795,12 +810,17 @@ test('file drafts, published history, registry and immutable asset bytes survive
     const reopenedDraft = await persistence.drafts.getDraft('operator-restart', draftId);
     assert.equal(reopenedDraft?.draftRevision, 2);
     assert.equal(reopenedDraft?.document.name, 'Saved before restart');
+    assert.equal(reopenedDraft?.document.proceduralRoom, 'simple-rectangle-v1');
     const reopenedHistory = await persistence.published.listHistory(document.locationId);
     assert.deepEqual(reopenedHistory.map((item) => item.revision), [1, 2]);
+    assert.equal(reopenedHistory[1]?.document.proceduralRoom, 'simple-rectangle-v1');
     assert.equal((await persistence.published.getActive(document.locationId))?.history.at(-1)?.document.name, 'Second published revision');
     const registryDocument = readNodesConfig(siteAndNodes.nodesPath);
     assert.equal(registryDocument.revision, 2);
     assert.deepEqual(registryDocument.nodes, [{ uid: 'aa:bb:cc:dd:ee:01', label: 'Existing sensor' }]);
+    const durableLocation = registryDocument.publishedLocations.find((item) => item.locationId === document.locationId);
+    assert.equal(durableLocation?.revisions.at(-1)?.document.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(persistence.registry.floors.find((floor) => floor.id === document.locationId)?.proceduralRoom, 'simple-rectangle-v1');
     assert.equal((await persistence.assetMetadata.getAssetMetadata('operator-restart', assetId))?.byteLength, assetBytes.length);
     assert.deepEqual((await persistence.assets.read('operator-restart', assetId))?.bytes, assetBytes);
   } finally {

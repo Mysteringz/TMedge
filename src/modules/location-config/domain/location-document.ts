@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { hasUniquePolygonVertices, LOCATION_GEOMETRY_EPSILON, LOCATION_MODEL_TRANSFORM_LIMITS, MAX_LOCATION_POLYGON_POINTS, polygonHasNonzeroArea, polygonHasSelfIntersection } from '../../../shared/location-validation.js';
+import { isSimpleRoomRectangleOutline, SIMPLE_ROOM_SOURCE, type ProceduralRoom } from '../../../shared/simple-room-geometry.js';
 import type { Rect, TableShape as SharedTableShape } from '../../../shared/types.js';
 
 export type FloorPoint = [number, number];
@@ -62,6 +63,7 @@ export interface LocationDocument {
   planAssetId?: string;
   modelAssetId?: string;
   modelTransform?: LocationModelTransform;
+  proceduralRoom?: ProceduralRoom;
 }
 
 /**
@@ -101,7 +103,7 @@ export function parseLocationDocument(value: unknown): LocationDocument {
     fail(`location: document exceeds the ${MAX_LOCATION_DOCUMENT_BYTES}-byte limit`);
   }
   const root = record(value, 'location');
-  only(root, 'location', ['schemaVersion', 'locationId', 'name', 'building', 'visibility', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform']);
+  only(root, 'location', ['schemaVersion', 'locationId', 'name', 'building', 'visibility', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom']);
   if (root.schemaVersion !== 1) fail('location.schemaVersion: expected 1');
   const visibility = root.visibility === undefined ? 'public' : root.visibility;
   if (visibility !== 'public' && visibility !== 'console') fail('location.visibility: expected public or console');
@@ -125,6 +127,7 @@ export function parseLocationDocument(value: unknown): LocationDocument {
     widthCm, heightCm, outline, zones, tables, sensorAssignments,
   };
   addAssetFields(root, result);
+  addProceduralRoom(root, result);
   return result;
 }
 
@@ -235,6 +238,18 @@ function addAssetFields(input: Record<string, unknown>, result: LocationDocument
   }
   if (input.modelTransform !== undefined) result.modelTransform = parseModelTransform(input.modelTransform);
   if ((result.modelAssetId === undefined) !== (result.modelTransform === undefined)) fail('location.modelAssetId and modelTransform must be supplied together');
+}
+
+function addProceduralRoom(input: Record<string, unknown>, result: LocationDocument): void {
+  if (input.proceduralRoom === undefined) return;
+  if (input.proceduralRoom !== SIMPLE_ROOM_SOURCE) fail(`location.proceduralRoom: expected ${SIMPLE_ROOM_SOURCE}`);
+  if (!isSimpleRoomRectangleOutline(result.outline, result.widthCm, result.heightCm)) {
+    fail('location.proceduralRoom: outline must match the location rectangle');
+  }
+  if (result.modelAssetId !== undefined || result.modelTransform !== undefined) {
+    fail('location.proceduralRoom cannot be combined with modelAssetId or modelTransform');
+  }
+  result.proceduralRoom = input.proceduralRoom;
 }
 
 function parseModelTransform(value: unknown): LocationModelTransform {

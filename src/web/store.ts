@@ -9,6 +9,7 @@ import type { CampusFloor, CampusView, FloorState, OccupancySnapshot, Rect, Tabl
 import { LOCATION_GEOMETRY_EPSILON, LOCATION_MODEL_TRANSFORM_LIMITS, isValidSimpleBoundedPolygon } from '../shared/location-validation.js';
 import { tableBounds } from '../shared/table-geometry.js';
 import { campusLocationKey } from '../shared/location-identity.js';
+import { isSimpleRoomRectangleOutline } from '../shared/simple-room-geometry.js';
 
 export class SnapshotStore {
   private readonly latest = new Map<string, { snap: OccupancySnapshot; receivedAt: number }>();
@@ -146,9 +147,13 @@ function validTable(v: unknown, version: 1 | 2, floorWidth: number, floorHeight:
     t.seats.filter((s) => s.occupied).length === t.occupied;
 }
 function validFloor(v: unknown, version: 1 | 2): boolean {
-  if (!record(v, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'totals'], version === 2 ? ['model'] : []) ||
+  const optionalV2Keys = version === 2 ? ['model', 'proceduralRoom'] : [];
+  const hasProceduralRoom = !!v && typeof v === 'object' && !Array.isArray(v) && Object.hasOwn(v, 'proceduralRoom');
+  if (!record(v, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'totals'], optionalV2Keys) ||
       !text(v.id) || !text(v.building) || !text(v.name) || !finite(v.width) || v.width <= 0 || !finite(v.height) || v.height <= 0 ||
       !polygon(v.outline) || (Object.hasOwn(v, 'model') && v.model !== null && !validPublishedModel(v.model)) ||
+      (hasProceduralRoom && (version !== 2 || v.proceduralRoom !== 'simple-rectangle-v1' || Object.hasOwn(v, 'model'))) ||
+      (hasProceduralRoom && !isSimpleRoomRectangleOutline(v.outline as [number, number][], v.width, v.height)) ||
       !list(v.zones, 1000) || !unique(v.zones) || !list(v.tables, 1000) || !unique(v.tables) ||
       !record(v.totals, ['seats', 'free', 'occupied', 'unknownSeats', 'tablesFullyFree']) ||
       !Object.values(v.totals).every((n) => count(n))) return false;

@@ -323,6 +323,7 @@ export class OccupancyEngine {
         zones,
         tables,
         ...(this.reg.snapshotVersion === 2 && model !== undefined ? { model } : {}),
+        ...(this.reg.snapshotVersion === 2 && floor.proceduralRoom ? { proceduralRoom: floor.proceduralRoom } : {}),
         totals: {
           seats: tables.reduce((a, t) => a + t.capacity, 0),
           free: known.reduce((a, t) => a + (t.free ?? 0), 0),

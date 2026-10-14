@@ -3,9 +3,10 @@ info:
   title: TMedge location management and model assets
   version: 1.0.0
   description: >-
-    Task 2.3 API for private console drafts, publishing, immutable asset
-    transfer, and student delivery of a model referenced by the current public
-    snapshot. Every console route requires the signed Algo session and the
+    API for private console drafts, publishing, immutable asset transfer, and
+    student delivery of a model referenced by the current public snapshot.
+    Draft documents may explicitly select the built-in rectangular room source.
+    Every console route requires the signed Algo session and the
     locations.manage capability (named Admin or Operator only). The document
     describes the current routes; it does not add a second authentication or
     publication mechanism.
@@ -43,7 +44,8 @@ paths:
       summary: Create a private location draft
       description: >-
         Creates a new location and draft; it never replaces an existing
-        location. The server generates both IDs and sets visibility to public.
+        location. The server generates both IDs, sets visibility to public, and
+        starts the rectangular draft with proceduralRoom simple-rectangle-v1.
         JSON request bodies are limited to 1 MiB. Mutations require both the
         same-origin Origin header and X-TM-Algo: 1.
       security:
@@ -584,7 +586,18 @@ components:
         ranges follow the location document validator. Newly authored or
         changed geometry must satisfy strict geometry limits. Exact unchanged
         revision-zero legacy geometry may be retained only when the server
-        proves the pinned base and unchanged floor dimensions.
+        proves the pinned base and unchanged floor dimensions. The optional
+        proceduralRoom literal selects generated simple-rectangle-v1 geometry;
+        it requires the exact dimension-matching rectangle and excludes
+        modelAssetId/modelTransform. Existing drafts without the field retain
+        their existing source until an explicit switch. A successful model
+        upload clears the discriminator before strict save; failed model
+        validation or upload leaves the generated source unchanged. A
+        floor-plan upload preserves the selected source.
+      not:
+        anyOf:
+          - required: [proceduralRoom, modelAssetId]
+          - required: [proceduralRoom, modelTransform]
       additionalProperties: false
       required: [name, building, widthCm, heightCm, outline, zones, tables, sensorAssignments]
       properties:
@@ -613,6 +626,13 @@ components:
         planAssetId: { type: string, format: uuid }
         modelAssetId: { type: string, format: uuid, description: Must be supplied together with modelTransform. }
         modelTransform: { $ref: '#/components/schemas/ModelTransform' }
+        proceduralRoom:
+          type: string
+          enum: [simple-rectangle-v1]
+          description: >-
+            Explicit built-in rectangular room source. Requires outline
+            [[0,0],[widthCm,0],[widthCm,heightCm],[0,heightCm]] and forbids
+            modelAssetId/modelTransform. No room geometry or asset is uploaded.
     LocationDocumentView:
       type: object
       description: >-
@@ -644,6 +664,10 @@ components:
         planAssetId: { type: string, format: uuid }
         modelAssetId: { type: string, format: uuid }
         modelTransform: { $ref: '#/components/schemas/ModelTransform' }
+        proceduralRoom:
+          type: string
+          enum: [simple-rectangle-v1]
+          description: Present only when this revision explicitly uses the generated rectangular room source.
     Zone:
       type: object
       additionalProperties: false

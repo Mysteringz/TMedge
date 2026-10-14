@@ -31,8 +31,8 @@ settings and boot counters survive.
   See docs/location-configuration-storage.md. Stop edge before
   `db:registry:import --apply`; restart afterward; the CLI cannot check service
   state. Student routes use site+floor IDs; ambiguous bare-floor links prompt a choice.
-  Authored shapes render in 2D. V2 model object=GLB+transform, null=none,
-  absent=legacy fallback; v1 unchanged.
+  V2 model object=GLB+transform, null=none, absent=legacy fallback unless
+  proceduralRoom="simple-rectangle-v1" selects generated geometry; v1 rejects it.
 
 ## How a count is made
 

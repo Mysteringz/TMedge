@@ -22,6 +22,8 @@ export type TableShape =
   | { type: 'circle'; cx: number; cy: number; radius: number }
   | { type: 'polygon'; points: Point[] };
 
+export type ProceduralRoom = 'simple-rectangle-v1';
+
 export type SeatSide = 'L' | 'R' | 'T' | 'B';
 
 export interface SeatState {
@@ -88,10 +90,12 @@ export interface FloorState {
   tables: TableState[];
   /**
    * V2 public model hint: a descriptor selects an uploaded GLB, null suppresses
-   * the legacy static catalog, and absence retains the legacy fallback.
-   * V1 snapshots do not carry this field.
+   * the legacy static catalog, and absence retains the legacy fallback unless
+   * `proceduralRoom` explicitly selects generated geometry. V1 stays unchanged.
    */
   model?: PublishedFloorModel | null;
+  /** V2 generated-room renderer contract; mutually exclusive with `model`. */
+  proceduralRoom?: ProceduralRoom;
   totals: FloorTotals;
 }
 
