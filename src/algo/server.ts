@@ -295,6 +295,12 @@ export function startAlgo(
   // TMflash is a machine, with its own scoped credential. Mount only its
   // provisioning API before the human sign-in; no imagery or admin writes.
   if (consoleCore) app.use('/api/provision', express.json({ limit: '4kb' }), consoleCore.provisioningTool);
+  // ML data (module 02's ML Data page). A training job on the cluster is a
+  // machine too: its download key may list and fetch its owner's exports and
+  // nothing else (src/algo/ml-data/download-keys.ts), so only that door is
+  // mounted before the human sign-in.
+  const mlData = createMlData(auth, { env: process.env, dataDir });
+  app.use('/api/ml-data/keyed', mlData.keyed);
   app.get(['/login', '/login/'], (req, res) => {
     if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
     return sendShell(res);
@@ -365,7 +371,6 @@ export function startAlgo(
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
-  const mlData = createMlData(auth, { env: process.env, dataDir });
   app.use('/api/ml-data', mlData.router);
   app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
   const notificationQueries = new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth });

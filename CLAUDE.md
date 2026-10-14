@@ -25,7 +25,7 @@ src/algo/                algo console: node-graph over the real pipeline (docs/A
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
 src/modules/algo-admin/  accounts (admins, /api/admin/accounts) and each person's own account (/api/account: address, password, sessions; docs/algo-admin-roles.md)
 src/infrastructure/email/  Amazon SES sender: SigV4 by hand, the EC2 instance role's keys, EMAIL_* config (docs/EMAIL.md)
-src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports (docs/ML_DATA.md)
+src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports, download keys for training jobs (docs/ML_DATA.md)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
 algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, Devices dropdown (04 /updates, 06 /adoption, 07 /flash, 08 /tmflash-download), 05 /analytics; account icon -> /account. The numbers are for documents and comments: no page shows one

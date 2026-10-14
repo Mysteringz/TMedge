@@ -30,6 +30,9 @@ import { PostgresRolloutRepository } from '../infrastructure/postgres/rollout-re
 import { DurableRolloutService } from '../modules/rollouts/application/durable-rollout-service.js';
 import type { RolloutRepository } from '../modules/rollouts/repositories/rollout-repository.js';
 import { postgresAvailability } from '../infrastructure/postgres/data-source.js';
+import type { ActiveSiteLease } from '../infrastructure/postgres/site-leadership.js';
+import type { ReplayPersistence } from './replay.js';
+import type { HelloReplayPersistence } from './hello-replay.js';
 
 /** Persistence adapters are optional in legacy file mode. */
 export interface EdgeRuntimePersistenceOptions {
@@ -37,6 +40,8 @@ export interface EdgeRuntimePersistenceOptions {
   commandOutcomeRepository?: PostgresCommandOutcomeRepository;
   rolloutRepository?: RolloutRepository;
   persistenceAvailable?: () => Promise<boolean>;
+  replayStore?: ReplayPersistence;
+  helloStore?: HelloReplayPersistence;
 }
 
 /** Creates the runtime with its infrastructure dependencies wired at the edge boundary. */
@@ -56,7 +61,8 @@ export function createEdgeRuntime(
     port: cfg.udpPort,
     host: cfg.udpHost,
     verify: { keys: cfg.keys, allowUnsigned: cfg.allowUnsigned, devices: cfg.devices },
-    cursorPath: join(cfg.dataDir, 'replay.jsonl'),
+    cursorPath: persistence.replayStore ? undefined : join(cfg.dataDir, 'replay.jsonl'),
+    replayStore: persistence.replayStore,
     commandKey: cfg.keys[0] ?? null,
     routeViaGateway: (address, bytes) => gateways?.sendDownlink(address, bytes) ?? false,
   });
@@ -81,7 +87,8 @@ export function createEdgeRuntime(
     gateways = new GatewayServer({
       port: cfg.gatewayPort, host: '0.0.0.0', token: cfg.gatewayToken ?? Buffer.alloc(0), edgeId: cfg.edgeId,
       tokens: cfg.gatewayKeys ? (id) => cfg.gatewayKeys!.tokens(id) : undefined,
-      helloPath: join(cfg.dataDir, 'gateway-hellos.json'),
+      helloPath: persistence.helloStore ? undefined : join(cfg.dataDir, 'gateway-hellos.json'),
+      helloStore: persistence.helloStore,
       allowRawTcp: cfg.gatewayAllowRawTcp ?? false,
       onUplink: (datagram, source) => ingest.handleDurable(datagram, source),
       onImageReady: (gatewayId, result) => rollouts.onImageReady(gatewayId, result),
@@ -121,6 +128,9 @@ export interface EdgeApplicationOptions {
   postgres?: DataSource;
   closePersistence?: () => Promise<void>;
   occupancyHistory?: BoundedOccupancyHistorySink;
+  leadership?: ActiveSiteLease;
+  replayStore?: ReplayPersistence;
+  helloStore?: HelloReplayPersistence;
 }
 
 export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: EdgeApplicationOptions = {}): EdgeApplication {
@@ -129,6 +139,8 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
     commandOutcomeRepository: options.postgres ? new PostgresCommandOutcomeRepository(options.postgres) : undefined,
     rolloutRepository: options.postgres ? new PostgresRolloutRepository(options.postgres) : undefined,
     persistenceAvailable: options.postgres ? async () => (await postgresAvailability(options.postgres!)).available : undefined,
+    replayStore: options.replayStore,
+    helloStore: options.helloStore,
   });
   const builds = options.firmwareBuildJobs ?? (options.postgres ? createDurableFirmwareBuildJobs(runtime, options.postgres) : createFirmwareBuildJobs(runtime));
   // Both listeners share the injected services and the same live feed.
@@ -146,7 +158,7 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
       if (builds instanceof DurableFirmwareBuildJobService) await builds.initialize();
       await runtime.commandOutcomes?.initialize();
       await runtime.rolloutService.initialize?.();
-    });
+    }, options.leadership);
 }
 
 function createFirmwareBuildJobs(runtime: EdgeRuntime): FirmwareBuildJobs {
@@ -177,12 +189,18 @@ export class EdgeApplication {
     private readonly config: EdgeConfig,
     private readonly closePersistence?: () => Promise<void>,
     private readonly initializePersistence?: () => Promise<void>,
+    private readonly leadership?: ActiveSiteLease,
   ) {}
 
   /** Binds every configured listener before starting periodic runtime work. */
   async start(): Promise<void> {
     if (this.state !== 'new') throw new Error(`edge application cannot start from state ${this.state}`);
     try {
+      if (this.leadership && !await this.leadership.start(() => this.leadershipLost())) {
+        throw new Error('another origin holds the site leadership lease');
+      }
+      // Recovery may reconcile durable jobs and commands, so it is a writer
+      // and must happen only after this origin is fenced in as the leader.
       await this.initializePersistence?.();
       await this.runtime.ingest.start();
       await this.runtime.gateways?.listen();
@@ -215,10 +233,19 @@ export class EdgeApplication {
     const cleanupResults = await Promise.allSettled(cleanup);
     const closeResults = await Promise.allSettled(closeServers);
     const runtimeResult = await Promise.allSettled([this.runtime.stop()]);
+    const leadershipResult = this.leadership ? await Promise.allSettled([this.leadership.stop()]) : [];
     const persistenceResult = this.closePersistence ? await Promise.allSettled([this.closePersistence()]) : [];
-    const failure = [...cleanupResults, ...closeResults, ...runtimeResult, ...persistenceResult]
+    const failure = [...cleanupResults, ...closeResults, ...runtimeResult, ...leadershipResult, ...persistenceResult]
       .find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failure) throw failure.reason;
+  }
+
+  private leadershipLost(): void {
+    console.error('[edge] site leadership lease lost; stopping every stateful listener');
+    void this.stop().catch((error: unknown) => {
+      console.error(`[edge] leadership-loss shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    });
   }
 }
 
