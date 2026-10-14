@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { AssetUploadResult, DraftDetail, LocationDocument, ModelTransform } from '../../../entities/location-config/index.ts';
+import type { AssetUploadResult, DraftDetail, FurnitureLibraryItem, FurnitureSlots, FurnitureType, LocationDocument, ModelTransform } from '../../../entities/location-config/index.ts';
 import { locationRoomSource, canSelectGeneratedRoom } from '../../../features/location-room-source/index.ts';
 import { LOCATION_MODEL_TRANSFORM_LIMITS } from '../../../../../src/shared/location-validation.ts';
 import { validateLocationModelBuffer } from '../model-viewer-loader.ts';
+import { RoomFurnitureDefaults } from '../../../features/location-furniture-models/index.ts';
 
 export interface ModelUploadOutcome extends Pick<AssetUploadResult, 'assetId' | 'draftRevision' | 'durability' | 'displayName'> {
   /** False when the attachment committed but authoritative draft details could not yet be reloaded. */
@@ -12,13 +13,14 @@ export interface ModelUploadOutcome extends Pick<AssetUploadResult, 'assetId' | 
 /** Optional model editor; the parent owns draft persistence/publication and passes only safe asset capability data.
  * @example <ModelAlignmentStep draft={draft} document={document} onUpload={uploadModel} onUpdate={update} />
  */
-export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate, onSelectSource, onUpload, onSave, onBack, onContinue, onPreflightBlockedChange }: {
+export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate, onSelectSource, onUpload, onSave, onBack, onContinue, onPreflightBlockedChange, furnitureItems, onOpenFurnitureLibrary }: {
   draft: DraftDetail; document: LocationDocument; busy: string; mustReload: boolean;
   onUpdate(change: (current: LocationDocument) => LocationDocument): void;
   onSelectSource(source: 'generated' | '2d'): void;
   onUpload(file: File): Promise<ModelUploadOutcome | null>;
   onSave(): void; onBack(): void; onContinue(): void;
   onPreflightBlockedChange(blocked: boolean): void;
+  furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; onOpenFurnitureLibrary(type: FurnitureType): void;
 }) {
   const capability = draft.assetCapabilities?.modelAssetId;
   const source = locationRoomSource(document, capability);
@@ -98,7 +100,7 @@ export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate
       <label className="loc-room-source-choice">
         <input type="radio" name="location-room-source" data-testid="location-room-source-generated" checked={source === 'generated'}
           disabled={!canSelectGeneratedRoom(document)} onChange={() => chooseSource('generated')} />
-        <span><b>Built-in room</b><small>Exact rectangular outline · fixed 3.0 m walls and 0.75 m table tops.</small></span>
+        <span><b>Built-in room</b><small>Exact rectangular outline · 3.0 m walls. Unassigned tables use a 0.75 m generated fallback.</small></span>
       </label>
       {!canSelectGeneratedRoom(document) && <p className="loc-room-source-help" id="location-room-source-generated-help">Built-in room needs a floor outline that matches the rectangular floor dimensions. Edit the outline or choose another source.</p>}
       <label className="loc-room-source-choice">
@@ -118,13 +120,20 @@ export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate
       </p>
     </fieldset>
 
+    <RoomFurnitureDefaults value={document.furnitureDefaults} items={furnitureItems} source={source === 'generated' ? 'generated' : source === 'custom' ? 'custom' : 'other'} disabled={busy !== '' || mustReload || preflighting}
+      onOpenLibrary={onOpenFurnitureLibrary} onChange={(value: FurnitureSlots | undefined) => onUpdate((current) => {
+        const next = { ...current };
+        if (value) next.furnitureDefaults = value; else delete next.furnitureDefaults;
+        return next;
+      })} />
+
     {legacyStatic ? <section className="loc-model-legacy" aria-labelledby="loc-model-legacy-title">
       <h3 id="loc-model-legacy-title">Existing venue model · read-only</h3>
       <p>The existing venue model is retained from the published base. Its preview is unavailable in this console. Choose the eligible built-in room or upload a GLB to replace it.</p>
       <ReadOnlyTransform transform={transform} />
     </section> : source === 'generated' ? <section className="loc-model-empty" aria-label="Built-in room source">
       <p>The built-in room is selected. Its live preview follows valid 2D layout and sensor edits without saving.</p>
-      <p>Room height · 3.0 m · Table height · 0.75 m</p>
+      <p>Room walls · 3.0 m. Assigned table GLBs use their fitted dimensions; unassigned tables use the 0.75 m generated fallback.</p>
     </section> : source === '2d' ? <section className="loc-model-empty" aria-label="2D source">
       <p>{draft.visibility === 'public' ? '2D floor map selected. Students will use the floor map after this draft is published.' : '2D view selected for this console-only location.'}</p>
     </section> : !editable && hasModel ? <section className="loc-model-empty" aria-label="Model preview status">
@@ -195,7 +204,7 @@ export function ModelReviewSummary({ draft, document, onEdit }: { draft: DraftDe
   const transform = document.modelTransform ?? defaultTransform();
   if (document.proceduralRoom === 'simple-rectangle-v1') return <section className="card loc-model-review" aria-labelledby="loc-model-review-title">
     <h3 id="loc-model-review-title">Room view · built-in room</h3>
-    <p>Fixed room height · 3.0 m · Table height · 0.75 m</p>
+    <p>Room walls · 3.0 m. Unassigned table slots use the 0.75 m generated fallback; assigned GLBs use their fitted dimensions.</p>
     <p>{draft.visibility === 'public' ? 'This source stays private until you publish this draft. Students continue to see the current published revision.' : 'This console-only source remains hidden from students.'}</p>
     <button type="button" className="btn btn-secondary" data-testid="location-review-adjust-model" onClick={onEdit}>Change room view</button>
   </section>;

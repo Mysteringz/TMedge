@@ -1,20 +1,25 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { getEligibleDraftSensors, getLocationDraft, LocationApiError, publishLocationDraft, readDraftPlan, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
-import type { DraftDetail, LocationDocument, Point, Table, TableShape } from '../../../entities/location-config/model/types.ts';
+import { getEligibleDraftSensors, getLocationDraft, listFurnitureLibrary, LocationApiError, publishLocationDraft, readDraftPlan, readFurnitureLibraryItem, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
+import type { DraftDetail, FurnitureLibraryItem, FurnitureSlots, FurnitureType, LocationDocument, Point, Table, TableShape } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
-import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, modelSceneFromDocument, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue, type ModelSceneDocument } from '../../../features/location-editor/index.ts';
+import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, modelSceneFromDocument, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue } from '../../../features/location-editor/index.ts';
 import { canSelectGeneratedRoom, locationRoomSource, requiresModelClearConfirmation, selectGeneratedRoom, selectTwoDimensional } from '../../../features/location-room-source/index.ts';
 import { EditorCanvas, type DragStart, type Drawing, type Selection } from './editor-canvas.tsx';
 import { EditorInspector } from './editor-inspector.tsx';
 import { SensorPlacementStep } from './sensor-placement-step.tsx';
 import { SensorCoverageSummary } from './sensor-coverage-summary.tsx';
 import { ModelAlignmentStep, ModelReviewSummary, type ModelUploadOutcome } from './model-alignment-step.tsx';
-import { ModelPreview } from './model-preview.tsx';
+import { ModelPreview, type FurniturePreviewScene } from './model-preview.tsx';
+import { FurnitureLibraryDialog, FurnitureReviewSummary, effectiveFurniture, replaceAssignmentAsset } from '../../../features/location-furniture-models/index.ts';
+import { validateLocationModelBuffer } from '../model-viewer-loader.ts';
 import { SIMPLE_ROOM_TABLE_HEIGHT_M, SIMPLE_ROOM_WALL_HEIGHT_M } from '../../../../../src/shared/simple-room-geometry.ts';
 import './location-editor.css';
 
 type Step = 'details' | 'sensors' | 'model' | 'review';
+type FurnitureDialogTarget = { kind: 'room' } | { kind: 'table'; tableId: string };
+type FurnitureDialogRequest = { type: FurnitureType; target: FurnitureDialogTarget };
+type FurnitureAssetRequest = { controller: AbortController; promise: Promise<ArrayBuffer> };
 
 /** Render one private draft step; the parent route supplies `draftId` and owns step navigation through `onStep`. */
 export function LocationEditor({ draftId, step, onStep }: { draftId: string; step: Step; onStep(step: Step): void }) {
@@ -42,6 +47,15 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   const [canvasMode, setCanvasMode] = useState<'2d' | '3d'>('2d');
   const [viewportMount, setViewportMount] = useState<HTMLDivElement | null>(null);
   const [sensorLabels, setSensorLabels] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [furnitureBuffers, setFurnitureBuffers] = useState<ReadonlyMap<string, ArrayBuffer>>(() => new Map());
+  const [furnitureLibraryItems, setFurnitureLibraryItems] = useState<FurnitureLibraryItem[]>([]);
+  const [furnitureLibraryLoaded, setFurnitureLibraryLoaded] = useState(false);
+  const [furnitureDialog, setFurnitureDialog] = useState<FurnitureDialogRequest | null>(null);
+  const [furnitureSelectionBusy, setFurnitureSelectionBusy] = useState(false);
+  const furnitureBuffersRef = useRef(new Map<string, ArrayBuffer>());
+  const furnitureRequests = useRef(new Map<string, FurnitureAssetRequest>());
+  const furnitureDraftId = useRef(draftId);
+  const furnitureCatalogRequestDraft = useRef<string | null>(null);
   const drag = useRef<DragStart | null>(null);
   const drawingOrigin = useRef<string | null>(null);
   const sensorLabelRequestId = useRef(0);
@@ -59,6 +73,96 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
     }
     setCanvasMode(mode);
   };
+  furnitureDraftId.current = draftId;
+  useLayoutEffect(() => {
+    for (const request of furnitureRequests.current.values()) request.controller.abort();
+    furnitureRequests.current.clear();
+    furnitureBuffersRef.current.clear();
+    setFurnitureBuffers(new Map());
+    setFurnitureLibraryItems([]);
+    setFurnitureLibraryLoaded(false);
+    furnitureCatalogRequestDraft.current = null;
+    setFurnitureDialog(null);
+    setFurnitureSelectionBusy(false);
+    return () => {
+      for (const request of furnitureRequests.current.values()) request.controller.abort();
+      furnitureRequests.current.clear();
+      furnitureBuffersRef.current.clear();
+    };
+  }, [draftId]);
+  const ensureFurnitureAsset = useCallback((assetId: string): Promise<ArrayBuffer> => {
+    const ready = furnitureBuffersRef.current.get(assetId);
+    if (ready) return Promise.resolve(ready);
+    const existing = furnitureRequests.current.get(assetId);
+    if (existing) return existing.promise;
+    const controller = new AbortController();
+    const request: FurnitureAssetRequest = { controller, promise: Promise.resolve(new ArrayBuffer(0)) };
+    request.promise = readFurnitureLibraryItem(assetId, controller.signal).then(async (bytes) => {
+      await validateLocationModelBuffer(bytes);
+      if (controller.signal.aborted || furnitureDraftId.current !== draftId) throw new DOMException('Furniture load was superseded.', 'AbortError');
+      furnitureBuffersRef.current.set(assetId, bytes);
+      setFurnitureBuffers(new Map(furnitureBuffersRef.current));
+      return bytes;
+    }).finally(() => {
+      if (furnitureRequests.current.get(assetId) === request) furnitureRequests.current.delete(assetId);
+    });
+    furnitureRequests.current.set(assetId, request);
+    return request.promise;
+  }, [draftId]);
+  const furnitureItemsById = useMemo(() => new Map(furnitureLibraryItems.map((item) => [item.assetId, item])), [furnitureLibraryItems]);
+  const updateFurnitureLibraryItems = useCallback((items: FurnitureLibraryItem[]) => setFurnitureLibraryItems((current) => {
+    const merged = new Map(current.map((item) => [item.assetId, item]));
+    for (const item of items) merged.set(item.assetId, item);
+    const next = [...merged.values()];
+    return next.length === current.length && next.every((item, index) => item.assetId === current[index]?.assetId && item.displayName === current[index]?.displayName && item.type === current[index]?.type)
+      ? current : next;
+  }), []);
+  const openFurnitureLibrary = (type: FurnitureType, target: FurnitureDialogTarget) => {
+    setFurnitureDialog({ type, target });
+  };
+  const chooseFurnitureItem = async (item: FurnitureLibraryItem) => {
+    const request = furnitureDialog;
+    if (!request || item.type !== request.type) throw new Error('This model is not compatible with the selected furniture slot.');
+    setFurnitureSelectionBusy(true);
+    try {
+      await ensureFurnitureAsset(item.assetId);
+      setDocument((current) => {
+        if (!current) return current;
+        const applyAsset = (currentAssignment: FurnitureSlots[typeof request.type] | undefined, inherited: FurnitureSlots[typeof request.type] | undefined) =>
+          replaceAssignmentAsset(currentAssignment, inherited, item.assetId);
+        const target = request.target;
+        if (target.kind === 'room') {
+          const nextSlots = { ...(current.furnitureDefaults ?? {}) };
+          nextSlots[request.type] = applyAsset(current.furnitureDefaults?.[request.type], undefined);
+          return { ...current, furnitureDefaults: nextSlots };
+        }
+        let found = false;
+        const tables = current.tables.map((table) => {
+          if (table.id !== target.tableId) return table;
+          found = true;
+          const overrides = { ...(table.furnitureOverrides ?? {}) };
+          overrides[request.type] = applyAsset(overrides[request.type], current.furnitureDefaults?.[request.type]);
+          return { ...table, furnitureOverrides: overrides };
+        });
+        return found ? { ...current, tables } : current;
+      });
+      setProblem('');
+      setFurnitureDialog(null);
+    } finally { setFurnitureSelectionBusy(false); }
+  };
+  const baseHasFurniture = !!(baseDocument?.furnitureDefaults?.table || baseDocument?.furnitureDefaults?.chair
+    || baseDocument?.tables.some((table) => table.furnitureOverrides?.table || table.furnitureOverrides?.chair));
+  useEffect(() => {
+    if (loading || draft?.draftId !== draftId || !baseHasFurniture || !baseDocument || furnitureCatalogRequestDraft.current === draftId) return;
+    furnitureCatalogRequestDraft.current = draftId;
+    let active = true;
+    void listFurnitureLibrary().then(({ items }) => {
+      if (!active) return;
+      updateFurnitureLibraryItems(items);
+      setFurnitureLibraryLoaded(true);
+    }).catch(() => { if (active) setFurnitureLibraryLoaded(false); });
+    return () => { active = false; };
+  }, [baseHasFurniture, baseDocument, draft?.draftId, draftId, loading, updateFurnitureLibraryItems]);
   useEffect(() => {
     const url = pendingPlan?.url;
     return () => { if (url) URL.revokeObjectURL(url); };
@@ -120,19 +224,32 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   const source = document ? locationRoomSource(document, modelCapability) : '2d';
   const candidateScene = useMemo(() => {
     if (!document) return null;
-    try { return modelSceneFromDocument(document, modelCapability, sensorLabels); }
+    try {
+      const base = modelSceneFromDocument(document, modelCapability, sensorLabels);
+      return {
+        ...base,
+        tables: base.tables.map((sceneTable) => {
+          const table = document.tables.find((item) => item.id === sceneTable.id);
+          const furniture: FurnitureSlots = table ? {
+            ...(effectiveFurniture(document.furnitureDefaults, table.furnitureOverrides, 'table') ? { table: effectiveFurniture(document.furnitureDefaults, table.furnitureOverrides, 'table') } : {}),
+            ...(effectiveFurniture(document.furnitureDefaults, table.furnitureOverrides, 'chair') ? { chair: effectiveFurniture(document.furnitureDefaults, table.furnitureOverrides, 'chair') } : {}),
+          } : {};
+          return Object.keys(furniture).length ? { ...sceneTable, furniture } : sceneTable;
+        }),
+      } satisfies FurniturePreviewScene;
+    }
     catch { return null; }
   }, [document, modelCapability, sensorLabels]);
   const generatedEligible = document ? canSelectGeneratedRoom(document) : false;
   const hasTransientInvalid = Object.values(transientInputs).some(Boolean);
   const previewInvalid = errors.length > 0 || hasTransientInvalid || !candidateScene || (source === 'generated' && !generatedEligible);
-  const [lastValidPreview, setLastValidPreview] = useState<{ draftId: string; scene: ModelSceneDocument } | null>(null);
+  const [lastValidPreview, setLastValidPreview] = useState<{ draftId: string; scene: FurniturePreviewScene } | null>(null);
   useEffect(() => {
     if (!previewInvalid && candidateScene) setLastValidPreview({ draftId, scene: candidateScene });
   }, [draftId, previewInvalid, candidateScene]);
   const lastValidScene = lastValidPreview?.draftId === draftId ? lastValidPreview.scene : null;
   const currentScene = previewInvalid ? lastValidScene : candidateScene;
-  const displayScene: ModelSceneDocument = currentScene
+  const displayScene: FurniturePreviewScene = currentScene
     ? { ...currentScene, source }
     : { source, widthM: Math.max(0.1, (document?.widthCm ?? 1000) / 100), heightM: Math.max(0.1, (document?.heightCm ?? 1000) / 100), wallHeightM: SIMPLE_ROOM_WALL_HEIGHT_M, tableHeightM: SIMPLE_ROOM_TABLE_HEIGHT_M, tables: [], sensors: [] };
   const previewStale = previewInvalid && !!currentScene;
@@ -600,6 +717,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
         <div className="loc-shared-viewport" data-testid="location-shared-viewport">
           <div className={`loc-viewport-model ${((step !== 'details' && step !== 'sensors') || canvasMode === '3d') ? 'is-active' : ''}`} aria-hidden={step === 'details' || step === 'sensors' ? canvasMode !== '3d' : undefined} inert={step === 'details' || step === 'sensors' ? canvasMode !== '3d' : undefined}>
             <ModelPreview draft={draft} document={document} scene={displayScene} capability={modelCapability} retry={previewRetry} stale={previewStale}
+              furnitureBuffers={furnitureBuffers} onLoadFurnitureAsset={ensureFurnitureAsset}
               empty={previewInvalid && !lastValidScene} onUse2d={() => changeCanvasMode('2d')} onRetry={() => setPreviewRetry((value) => value + 1)} />
           </div>
           <div className={`loc-viewport-canvas ${(step === 'details' || step === 'sensors') && canvasMode === '2d' ? 'is-active' : ''}`} aria-hidden={!((step === 'details' || step === 'sensors') && canvasMode === '2d') || busy !== '' || mustReload} inert={!((step === 'details' || step === 'sensors') && canvasMode === '2d') || busy !== '' || mustReload}>
@@ -644,7 +762,9 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
             </div>
           </details>
           <div className="loc-inspector-scroll" ref={inspectorScroll} role="region" aria-labelledby="loc-inspector-heading" tabIndex={0} data-testid="location-editor-inspector">
-            <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput} />
+            <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput}
+              furnitureItems={furnitureItemsById} furnitureSource={source === 'generated' ? 'generated' : source === 'custom' ? 'custom' : 'other'}
+              onOpenFurnitureLibrary={(type, tableId) => openFurnitureLibrary(type, { kind: 'table', tableId })} />
           </div>
           {!!errors.length && <div className="loc-validation" role="status" tabIndex={-1}><b>Review the layout</b><ul>{errors.map((item, index) => <li key={`${item.field}:${item.message}`} id={`loc-validation-${index}`}>{item.message}</li>)}</ul></div>}
           <footer className="loc-footer">
@@ -662,16 +782,23 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
             onBack={() => onStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
         </div>
         {step === 'model' && <ModelAlignmentStep draft={draft} document={document} busy={busy} mustReload={mustReload} onUpdate={update}
+          furnitureItems={furnitureItemsById} onOpenFurnitureLibrary={(type) => openFurnitureLibrary(type, { kind: 'room' })}
           onSelectSource={selectRoomSource} onUpload={uploadModel} onSave={() => void save()} onBack={() => void changeStep('sensors')} onContinue={() => void changeStep('review')} onPreflightBlockedChange={setModelPreflightBlocked} />}
-        {step === 'review' && <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onEditModel={() => onStep('model')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />}
+        {step === 'review' && <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} furnitureItems={furnitureItemsById}
+          furnitureSource={source === 'generated' ? 'generated' : source === 'custom' ? 'custom' : 'other'}
+          onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onEditModel={() => onStep('model')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />}
       </div>
     </div>
+    <FurnitureLibraryDialog open={!!furnitureDialog} expectedType={furnitureDialog?.type ?? 'table'} busy={busy !== '' || furnitureSelectionBusy || mustReload}
+      catalogItems={furnitureLibraryItems} catalogLoaded={furnitureLibraryLoaded}
+      onClose={() => { if (!furnitureSelectionBusy) setFurnitureDialog(null); }} onSelect={chooseFurnitureItem} onItemsChange={updateFurnitureLibraryItems} />
   </main>;
 }
 
 /** Private pre-publication summary; publishing is an explicit parent callback and never follows a save implicitly. */
-function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCoverage, onEditModel, onSave, onPublish, onBack }: {
+function Review({ document, draft, dirty, busy, mustReload, furnitureItems, furnitureSource, onEdit, onEditCoverage, onEditModel, onSave, onPublish, onBack }: {
   document: LocationDocument; draft: DraftDetail; dirty: boolean; busy: string; mustReload: boolean;
+  furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; furnitureSource: 'generated' | 'custom' | 'other';
   onEdit(): void; onEditCoverage(): void; onEditModel(): void; onSave(): void; onPublish(): void; onBack(): void;
 }) {
   return <section className="loc-review">
@@ -682,6 +809,7 @@ function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCovera
       <h3>Zones</h3><ul>{document.zones.map((zone) => <li key={zone.id}>{zone.name} · {zone.polygon.length} vertices</li>)}</ul>
       <h3>Tables and seats</h3>{document.tables.length ? <ul>{document.tables.map((table) => <li key={table.id}>{table.name} · {table.shape?.type ?? 'legacy rectangle'} · {table.capacity} seats</li>)}</ul> : <p>No tables yet.</p>}
     </div>
+    <FurnitureReviewSummary document={document} items={furnitureItems} source={furnitureSource} />
     <ModelReviewSummary draft={draft} document={document} onEdit={onEditModel} />
     <SensorCoverageSummary draft={draft} document={document} onEdit={onEditCoverage} />
     <p className="loc-review-note">{draft.visibility === 'public'

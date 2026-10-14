@@ -1,14 +1,17 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { LocationDocument, Point, Table, TableShape, Zone } from '../../../entities/location-config/model/types.ts';
+import type { FurnitureLibraryItem, FurnitureType, LocationDocument, Point, Table, TableShape, Zone } from '../../../entities/location-config/model/types.ts';
 import { changeShapeKind, cmToMetres, metresToCm, setShape, shapeOf } from '../../../features/location-editor/index.ts';
+import { TableFurnitureOverrides } from '../../../features/location-furniture-models/index.ts';
 import type { Selection } from './editor-canvas.tsx';
 import { generateSeats } from '../../../../../src/shared/seats.ts';
 
 /** Edit the selected zone, table, or seat; `update` receives immutable document transforms in canonical centimetres. */
-export function EditorInspector({ document, selected, onSelect, update, onTransientValidityChange }: {
+export function EditorInspector({ document, selected, onSelect, update, onTransientValidityChange, furnitureItems, furnitureSource, onOpenFurnitureLibrary }: {
   document: LocationDocument; selected: Selection | null; onSelect(value: Selection): void;
   update(change: (current: LocationDocument) => LocationDocument): void;
   onTransientValidityChange(field: string, invalid: boolean): void;
+  furnitureSource: 'generated' | 'custom' | 'other';
+  furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; onOpenFurnitureLibrary(type: FurnitureType, tableId: string): void;
 }) {
   const zone = selected?.kind === 'zone' ? document.zones.find((item) => item.id === selected.id) : undefined;
   const table = selected?.kind === 'table' ? document.tables.find((item) => item.id === selected.id)
@@ -31,7 +34,8 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
     </fieldset>
     {zone && <ZoneFields key={zone.id} zone={zone} selectedIndex={selected?.kind === 'zone' && selected.id === zone.id ? selected.index : undefined} onTransientValidityChange={onTransientValidityChange}
       onSelectIndex={(index) => onSelect({ kind: 'zone', id: zone.id, index })} update={update} />}
-    {table && <TableFields key={table.id} table={table} document={document} selectedSeat={seat?.id ?? null} onSelect={onSelect} update={update} onTransientValidityChange={onTransientValidityChange} />}
+    {table && <TableFields key={table.id} table={table} document={document} selectedSeat={seat?.id ?? null} onSelect={onSelect} update={update} onTransientValidityChange={onTransientValidityChange}
+      furnitureItems={furnitureItems} furnitureSource={furnitureSource} onOpenFurnitureLibrary={onOpenFurnitureLibrary} />}
     {!zone && !table && <p className="cx-muted">Select a zone, table, or seat to edit its labelled coordinates.</p>}
     <div className="loc-inspector-block">
       <h2>Zones</h2>
@@ -73,10 +77,11 @@ function ZoneFields({ zone, selectedIndex, onSelectIndex, update, onTransientVal
 }
 
 /** Inspector section for a table and its seats; geometry stays canonical in centimetres until displayed as metres. */
-function TableFields({ table, document, selectedSeat, onSelect, update, onTransientValidityChange }: {
+function TableFields({ table, document, selectedSeat, onSelect, update, onTransientValidityChange, furnitureItems, furnitureSource, onOpenFurnitureLibrary }: {
   table: Table; document: LocationDocument; selectedSeat: string | null; onSelect(value: Selection): void;
   onTransientValidityChange(field: string, invalid: boolean): void;
   update(change: (current: LocationDocument) => LocationDocument): void;
+  furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; furnitureSource: 'generated' | 'custom' | 'other'; onOpenFurnitureLibrary(type: FurnitureType, tableId: string): void;
 }) {
   const shape = shapeOf(table);
   const prefix = `table.${table.id}`;
@@ -125,6 +130,8 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
         {!table.seats.length && <li className="cx-muted">No seats assigned.</li>}
       </ul>
     </details>
+    <TableFurnitureOverrides document={document} table={table} items={furnitureItems} disabled={false} source={furnitureSource} onUpdate={update}
+      onOpenLibrary={(type) => onOpenFurnitureLibrary(type, table.id)} />
   </div>;
 }
 

@@ -62,6 +62,8 @@ class LocationModelViewer extends HTMLElement {
   setFloor(value) { this.scene?.setFloor(value); }
   setTransform(value) { this.scene?.setTransform(value); }
   loadModel(value) { return this.scene?.loadModel(value); }
+  /** Provides private furniture bytes to the scene-local parser and clone cache. */
+  setFurnitureAssets(items) { this.scene?.setFurnitureAssets(items); }
   resetCamera() { this.scene?.resetCamera(); }
   zoomIn() { this.scene?.zoom(1.25); }
   zoomOut() { this.scene?.zoom(0.8); }

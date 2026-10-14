@@ -769,7 +769,7 @@ async function run() {
   await rectWidth.fill('2.6');
   await page.waitForFunction(async () => {
     const viewer = document.querySelector('[data-testid="location-room-preview-canvas"] tm-location-model-viewer');
-    const table = viewer?.scene?.overlay?.children?.find((object) => object.name.startsWith('generated-table-'));
+    const table = viewer?.scene?.furnitureFallback?.children?.find((object) => object.name.startsWith('generated-table-'));
     if (!table) return false;
     const THREE = await import('/location-model/vendor/three/three.module.js');
     const size = new THREE.Box3().setFromObject(table).getSize(new THREE.Vector3());
@@ -778,12 +778,12 @@ async function run() {
   const liveTableGeometry = await generatedViewer.evaluate(async (viewer) => {
     const THREE = await import('/location-model/vendor/three/three.module.js');
     const scene = viewer.scene;
-    scene.overlay.updateMatrixWorld(true);
-    const table = scene.overlay.children.find((object) => object.name.startsWith('generated-table-'));
+    scene.furnitureFallback.updateMatrixWorld(true);
+    const table = scene.furnitureFallback.children.find((object) => object.name.startsWith('generated-table-'));
     const bounds = new THREE.Box3().setFromObject(table);
     return {
       size: bounds.getSize(new THREE.Vector3()).toArray(), maxY: bounds.max.y,
-      seatCount: scene.overlay.children.filter((object) => object.name.startsWith('generated-seat-')).length,
+      seatCount: scene.furnitureFallback.children.filter((object) => object.name.startsWith('generated-seat-')).length,
       camera: { position: scene.camera.position.toArray(), target: scene.controls.target.toArray() },
     };
   });

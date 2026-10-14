@@ -17,7 +17,14 @@ export class LocationModelScene {
     this.walls = new Map();
     this.floor = new THREE.Group();
     this.overlay = new THREE.Group();
+    this.furnitureFallback = new THREE.Group();
+    this.furnitureGroup = new THREE.Group();
     this.modelRoot = new THREE.Group();
+    this.furnitureBuffers = new Map();
+    this.furnitureModels = new Map();
+    this.furnitureStates = new Map();
+    this.assignedFurnitureIds = new Set();
+    this.tables = [];
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x171d24);
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000000);
@@ -29,7 +36,7 @@ export class LocationModelScene {
     this.scene.add(new THREE.HemisphereLight(0xdce8f4, 0x2b3139, 2.2));
     const key = new THREE.DirectionalLight(0xffffff, 2.3);
     key.position.set(6, 10, 8);
-    this.scene.add(key, this.floor, this.modelRoot, this.overlay);
+    this.scene.add(key, this.floor, this.modelRoot, this.overlay, this.furnitureFallback, this.furnitureGroup);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.addEventListener('change', this.updateWallVisibility);
@@ -53,6 +60,8 @@ export class LocationModelScene {
     this.heightM = value.heightM;
     this.wallHeightM = value.wallHeightM;
     this.tableHeightM = value.tableHeightM;
+    this.tables = value.tables;
+    this.updateFurnitureAssignments(value.tables);
     clearGroup(this.floor);
     clearGroup(this.overlay);
     this.walls.clear();
@@ -60,11 +69,23 @@ export class LocationModelScene {
     if (this.source === 'generated') this.drawRoomWalls();
     for (const table of value.tables) this.drawTable(table);
     for (const sensor of value.sensors) this.drawSensor(sensor);
+    this.syncFurnitureAssets(false);
+    this.refreshFurnitureRendering();
     if (!this.initialFloorDrawn) {
       this.initialFloorDrawn = true;
       this.resetCamera();
     }
     this.updateWallVisibility();
+  }
+
+  /** Supplies the currently assigned private furniture buffers; calling again retries failed parses. */
+  setFurnitureAssets(items) {
+    if (this.disposed || !Array.isArray(items)) return;
+    this.furnitureBuffers = new Map(items
+      .filter((item) => item && typeof item.assetId === 'string' && item.assetId && item.buffer instanceof ArrayBuffer)
+      .map((item) => [item.assetId, item.buffer]));
+    this.syncFurnitureAssets(true);
+    this.refreshFurnitureRendering();
   }
 
   setTransform(value) {
@@ -143,14 +164,134 @@ export class LocationModelScene {
   }
 
   drawTable(table) {
-    if (this.source === 'generated') {
-      const top = raisedTable(table, this.tableHeightM);
-      this.overlay.add(top);
-      for (const seat of table.seats) this.overlay.add(chair(seat, table.kind));
-      return;
-    }
+    if (this.source === 'generated') return;
     this.overlay.add(lineLoop(footprintOutline(table.footprint).map((point) => [point.x, 0.025, point.z]), COLORS.table, 1));
     for (const seat of table.seats) this.overlay.add(sphere({ ...seat.position, y: 0 }, 0.075, COLORS.seat));
+  }
+
+  drawGeneratedFurnitureFallbacks() {
+    clearGroup(this.furnitureFallback);
+    if (this.source !== 'generated') return;
+    for (const table of this.tables) {
+      if (!this.hasLoadedFurniture(table.furniture?.table)) {
+        this.furnitureFallback.add(raisedTable(table, this.tableHeightM));
+      }
+      if (!this.hasLoadedFurniture(table.furniture?.chair)) {
+        for (const seat of table.seats) this.furnitureFallback.add(chair(seat, table.kind));
+      }
+    }
+  }
+
+  updateFurnitureAssignments(tables) {
+    const assigned = new Set();
+    for (const table of tables) {
+      for (const assignment of [table.furniture?.table, table.furniture?.chair]) {
+        if (assignment && typeof assignment.assetId === 'string' && assignment.assetId) assigned.add(assignment.assetId);
+      }
+    }
+    this.assignedFurnitureIds = assigned;
+    const removed = [...this.furnitureModels].filter(([assetId]) => !assigned.has(assetId));
+    if (removed.some(([, entry]) => entry.template)) this.clearFurnitureInstances();
+    for (const [assetId, entry] of removed) {
+      if (entry.template) disposeObject(entry.template);
+      this.furnitureModels.delete(assetId);
+      this.furnitureStates.delete(assetId);
+    }
+    for (const assetId of this.furnitureBuffers.keys()) {
+      if (!assigned.has(assetId)) this.furnitureBuffers.delete(assetId);
+    }
+    for (const assetId of this.furnitureStates.keys()) {
+      if (!assigned.has(assetId)) this.furnitureStates.delete(assetId);
+    }
+  }
+
+  syncFurnitureAssets(retryErrors) {
+    for (const assetId of this.assignedFurnitureIds) {
+      const entry = this.furnitureModels.get(assetId);
+      if (entry?.status === 'loaded') {
+        this.furnitureState(assetId, 'loaded', 'Assigned furniture model loaded.');
+        continue;
+      }
+      if (entry?.status === 'loading' || entry?.status === 'error' && !retryErrors) continue;
+      const buffer = this.furnitureBuffers.get(assetId);
+      if (buffer) this.loadFurnitureAsset(assetId, buffer);
+    }
+  }
+
+  loadFurnitureAsset(assetId, buffer) {
+    const entry = { status: 'loading', template: null };
+    this.furnitureModels.set(assetId, entry);
+    this.furnitureState(assetId, 'loading', 'Loading assigned furniture model.');
+    let candidate = null;
+    void new GLTFLoader().parseAsync(buffer.slice(0), '').then((result) => {
+      candidate = result.scene;
+      if (!this.isCurrentFurnitureRequest(assetId, entry)) {
+        disposeObject(candidate);
+        return;
+      }
+      const template = normalizeFurniture(candidate);
+      entry.status = 'loaded';
+      entry.template = template;
+      candidate = null;
+      this.furnitureBuffers.delete(assetId);
+      this.furnitureState(assetId, 'loaded', 'Assigned furniture model loaded.');
+      this.refreshFurnitureRendering();
+    }).catch(() => {
+      if (candidate) disposeObject(candidate);
+      if (!this.isCurrentFurnitureRequest(assetId, entry)) return;
+      if (entry.template) {
+        this.clearFurnitureInstances();
+        disposeObject(entry.template);
+        entry.template = null;
+      }
+      entry.status = 'error';
+      this.furnitureState(assetId, 'error', 'The assigned furniture model could not be rendered. Retry preview.');
+      this.refreshFurnitureRendering();
+    });
+  }
+
+  isCurrentFurnitureRequest(assetId, entry) {
+    return !this.disposed && this.assignedFurnitureIds.has(assetId) && this.furnitureModels.get(assetId) === entry;
+  }
+
+  hasLoadedFurniture(assignment) {
+    return isValidFurnitureAssignment(assignment) && this.furnitureModels.get(assignment.assetId)?.status === 'loaded';
+  }
+
+  drawFurnitureInstances() {
+    this.clearFurnitureInstances();
+    for (const table of this.tables) {
+      const tableAssignment = table.furniture?.table;
+      if (this.hasLoadedFurniture(tableAssignment)) {
+        const center = footprintCenter(table.footprint);
+        const instance = furnitureInstance(this.furnitureModels.get(tableAssignment.assetId).template, tableAssignment, center, 0);
+        if (instance) this.furnitureGroup.add(instance);
+      }
+      const chairAssignment = table.furniture?.chair;
+      if (!this.hasLoadedFurniture(chairAssignment)) continue;
+      const template = this.furnitureModels.get(chairAssignment.assetId).template;
+      for (const seat of table.seats) {
+        const instance = furnitureInstance(template, chairAssignment, seat.position, chairYaw(seat.side));
+        if (instance) this.furnitureGroup.add(instance);
+      }
+    }
+  }
+
+  refreshFurnitureRendering() {
+    this.drawGeneratedFurnitureFallbacks();
+    this.drawFurnitureInstances();
+  }
+
+  clearFurnitureInstances() {
+    for (const child of [...this.furnitureGroup.children]) this.furnitureGroup.remove(child);
+  }
+
+  furnitureState(assetId, state, message) {
+    if (this.furnitureStates.get(assetId) === state) return;
+    this.furnitureStates.set(assetId, state);
+    this.host.dispatchEvent(new CustomEvent('location-model-furniture-state', {
+      bubbles: true, detail: { assetId, state, message },
+    }));
   }
 
   drawSensor(sensor) {
@@ -224,6 +365,14 @@ export class LocationModelScene {
     this.resizeObserver.disconnect();
     this.controls.dispose();
     this.controls.removeEventListener('change', this.updateWallVisibility);
+    clearGroup(this.furnitureFallback);
+    this.clearFurnitureInstances();
+    for (const entry of this.furnitureModels.values()) {
+      if (entry.template) disposeObject(entry.template);
+    }
+    this.furnitureModels.clear();
+    this.furnitureBuffers.clear();
+    this.furnitureStates.clear();
     disposeObject(this.modelRoot);
     disposeObject(this.floor);
     disposeObject(this.overlay);
@@ -238,6 +387,58 @@ export class LocationModelScene {
 function lineLoop(points, color, opacity) {
   const geometry = new THREE.BufferGeometry().setFromPoints(points.map((point) => new THREE.Vector3(...point)));
   return new THREE.LineLoop(geometry, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity }));
+}
+
+function isValidFurnitureAssignment(value) {
+  return !!value && typeof value.assetId === 'string' && value.assetId.length > 0
+    && Number.isFinite(value.scale) && value.scale >= 0.01 && value.scale <= 100
+    && Number.isFinite(value.yawDeg) && value.yawDeg >= -360 && value.yawDeg <= 360
+    && Number.isFinite(value.elevationM) && value.elevationM >= 0 && value.elevationM <= 10;
+}
+
+function normalizeFurniture(scene) {
+  const template = new THREE.Group();
+  template.add(scene);
+  template.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(template);
+  if ([bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z].some((value) => !Number.isFinite(value))) {
+    throw new Error('The furniture model has no finite renderable bounds.');
+  }
+  const center = bounds.getCenter(new THREE.Vector3());
+  template.position.set(-center.x, -bounds.min.y, -center.z);
+  return template;
+}
+
+function furnitureInstance(template, assignment, anchor, canonicalYaw) {
+  if (!template || !isValidFurnitureAssignment(assignment)) return null;
+  const instance = new THREE.Group();
+  instance.add(template.clone(true));
+  instance.scale.set(assignment.scale, assignment.scale, assignment.scale);
+  instance.rotation.y = canonicalYaw + assignment.yawDeg * Math.PI / 180;
+  instance.position.set(anchor.x, assignment.elevationM, anchor.z);
+  instance.name = `furniture-${safeName(assignment.assetId)}`;
+  return instance;
+}
+
+function footprintCenter(footprint) {
+  if (footprint.type === 'circle') return footprint.center;
+  const points = footprint.points;
+  let crossSum = 0;
+  let centerX = 0;
+  let centerZ = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    const cross = current.x * next.z - next.x * current.z;
+    crossSum += cross;
+    centerX += (current.x + next.x) * cross;
+    centerZ += (current.z + next.z) * cross;
+  }
+  if (Math.abs(crossSum) < 1e-9) {
+    const total = points.reduce((center, point) => ({ x: center.x + point.x, z: center.z + point.z }), { x: 0, z: 0 });
+    return points.length ? { x: total.x / points.length, z: total.z / points.length } : { x: 0, z: 0 };
+  }
+  return { x: centerX / (3 * crossSum), z: centerZ / (3 * crossSum) };
 }
 
 function lineSegments(positions, color, opacity) {

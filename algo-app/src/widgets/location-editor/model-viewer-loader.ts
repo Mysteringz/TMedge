@@ -5,6 +5,8 @@ export interface LocationModelViewerElement extends HTMLElement {
   setFloor(value: ModelSceneDocument): void;
   setTransform(value: LocationWorldTransform): void;
   loadModel(value: ArrayBuffer): Promise<void> | undefined;
+  /** Provides private assigned GLB buffers for scene-local parsing and rendering. */
+  setFurnitureAssets(items: Array<{ assetId: string; buffer: ArrayBuffer }>): void;
   resetCamera(): void;
   zoomIn(): void;
   zoomOut(): void;
