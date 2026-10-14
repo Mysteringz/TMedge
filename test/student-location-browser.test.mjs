@@ -14,6 +14,7 @@ const MODEL_TRANSFORM = {
   rotationDeg: { x: 10, y: 22, z: -5 },
   positionM: { x: 1.25, y: 0.5, z: -0.75 },
 };
+const ROOM_VIEW_MODE_KEY = 'hkumyseat.student.room-view-mode.v1';
 const ARTIFACT_DIR = process.env.TASK_2_3_ARTIFACTS;
 
 test('signed student browser renders composite locations, aligned models, live status and recovery', { timeout: 120_000 }, async () => {
@@ -85,20 +86,21 @@ test('signed student browser renders composite locations, aligned models, live s
     await page.waitForURL('**/dashboard/spaces/site-a/shared-room**');
 
     const mapId = 'student-floor-map-site-a-shared-room';
-    assert.equal(await page.getByTestId(mapId).count(), 1);
-    for (const tableId of ['rect-table', 'round-table', 'poly-table']) {
-      assert.equal(await page.getByTestId(`student-map-table-site-a-shared-room-${tableId}`).count(), 1);
-      assert.equal(await page.getByTestId(`student-table-list-${tableId}`).count(), 1);
-    }
-    assert.match(await page.getByTestId('student-table-list-poly-table').innerText(), /No live data/);
-    assert.equal(await page.getByText('West study zone').count(), 1);
-    assert.equal(await page.getByText('East study zone').count(), 1);
-    assert.equal(await page.getByTestId('student-model-viewer-canvas').count(), 1);
     await page.waitForFunction(() => {
       const viewer = document.querySelector('floor-viewer');
       return Boolean(viewer?._model && viewer?._marks && viewer?._three);
     });
-    await screenshot(page, 'student-composite-model-and-map');
+    await assertSingleRenderer(page, '3d');
+    assert.equal(await page.getByRole('radio', { name: '3D view' }).isChecked(), true,
+      'a first visit defaults to 3D when the published custom model is available');
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), null,
+      'the source-based default does not write a preference before a deliberate choice');
+    assert.equal(await page.getByTestId(mapId).count(), 0, 'the inactive map is not rendered in 3D mode');
+    assert.equal(await page.getByTestId('student-model-viewer-canvas').isVisible(), true);
+    await page.getByRole('radio', { name: '3D view' }).click();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d',
+      'deliberately choosing the already active default view stores that preference');
+    await screenshot(page, 'student-composite-model-3d');
     const modelState = await page.evaluate(() => {
       const viewer = document.querySelector('floor-viewer');
       const plate = viewer._authoredTableRecords.get('rect-table').plate;
@@ -118,6 +120,68 @@ test('signed student browser renders composite locations, aligned models, live s
     assert.deepEqual(modelState.position, [1.25, 0.5, -0.75]);
     assert.ok(modelState.overlay.every((value, index) => Math.abs(value - [0.9, 0.025, -0.7][index]) < 1e-12),
       'the table overlay stays in authored floor coordinates while the GLB root is transformed');
+
+    const initialViewer = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      viewer._three.controls.target.set(1, 0.25, -1);
+      viewer._three.camera.position.set(4, 5, 6);
+      viewer._three.controls.update();
+      window.__studentOriginalViewer = viewer;
+      return { position: [4, 5, 6], target: [1, 0.25, -1] };
+    });
+    await page.getByRole('radio', { name: '2D map' }).check();
+    await assertSingleRenderer(page, '2d');
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '2d',
+      'a deliberate mode choice is remembered in one browser-local key');
+    assert.equal(await page.getByTestId('student-3d-renderer').getAttribute('aria-hidden'), 'true');
+    assert.equal(await page.getByTestId('student-3d-renderer').getAttribute('inert'), '');
+    assert.equal(await page.getByTestId('student-model-zoom-control').isVisible(), false,
+      'inactive 3D controls are absent from the visible and keyboard-accessible view');
+    for (const tableId of ['rect-table', 'round-table', 'poly-table']) {
+      assert.equal(await page.getByTestId(`student-map-table-site-a-shared-room-${tableId}`).count(), 1);
+      assert.equal(await page.getByTestId(`student-table-list-${tableId}`).count(), 1);
+    }
+    assert.match(await page.getByTestId('student-table-list-poly-table').innerText(), /No live data/);
+    assert.equal(await page.getByText('West study zone').count(), 1);
+    assert.equal(await page.getByText('East study zone').count(), 1);
+    await screenshot(page, 'student-composite-model-2d-map');
+    await page.getByTestId('student-map-table-site-a-shared-room-rect-table').focus();
+    await page.getByTestId('student-map-table-site-a-shared-room-rect-table').press('Enter');
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true',
+      'the map updates the same stable table selection as the 3D view and availability list');
+    await page.getByRole('radio', { name: '3D view' }).check();
+    await assertSingleRenderer(page, '3d');
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true',
+      'switching views preserves the selected table');
+    const cameraAfterToggle = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return {
+        sameViewer: viewer === window.__studentOriginalViewer,
+        position: [viewer._three.camera.position.x, viewer._three.camera.position.y, viewer._three.camera.position.z],
+        target: [viewer._three.controls.target.x, viewer._three.controls.target.y, viewer._three.controls.target.z],
+      };
+    });
+    assert.equal(cameraAfterToggle.sameViewer, true, 'the 3D scene stays mounted while the map is active');
+    assert.ok(cameraAfterToggle.position.every((value, index) => Math.abs(value - initialViewer.position[index]) < 1e-9),
+      'switching views retains camera orbit and zoom');
+    assert.ok(cameraAfterToggle.target.every((value, index) => Math.abs(value - initialViewer.target[index]) < 1e-9),
+      'switching views retains the orbit target');
+    await page.getByTestId('student-directions-toggle').click();
+    await page.getByRole('radio', { name: '2D map' }).check();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true');
+    await page.getByRole('radio', { name: '3D view' }).check();
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Hide directions',
+      'switching views preserves the directions state');
+    await page.getByRole('radio', { name: '2D map' }).check();
+    await page.reload();
+    await page.getByTestId(mapId).waitFor();
+    await assertSingleRenderer(page, '2d');
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '2d',
+      'the selected mode survives reloads');
+    await page.getByRole('radio', { name: '3D view' }).check();
+    await page.waitForFunction(() => Boolean(document.querySelector('floor-viewer')?._model));
+    await assertSingleRenderer(page, '3d');
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d');
 
     const rectRow = page.getByTestId('student-table-list-rect-table');
     await rectRow.focus();
@@ -180,8 +244,11 @@ test('signed student browser renders composite locations, aligned models, live s
       return Boolean(viewer?._generatedShell && viewer?._generatedTableRecords?.size === 3 && viewer?._three);
     });
     assert.match(await page.locator('.panel-3d .panel-title').innerText(), /Built-in 3D room/i);
+    await assertSingleRenderer(page, '3d');
+    assert.equal(await page.getByTestId('student-floor-map-generated-site-iw-maker-a').count(), 0,
+      'generated rooms do not render a second floor map below the 3D view');
     assert.equal(await page.getByTestId('student-table-list-poly-table').count(), 1);
-    await screenshot(page, 'student-generated-room-and-map');
+    await screenshot(page, 'student-generated-room-3d');
     const generatedState = await page.evaluate(() => {
       const viewer = document.querySelector('floor-viewer');
       const THREE = viewer._L.THREE;
@@ -318,10 +385,27 @@ test('signed student browser renders composite locations, aligned models, live s
     assert.ok(geometryUpdate.beforeCamera.every((value, index) => Math.abs(value - geometryUpdate.camera[index]) < 1e-9),
       'geometry updates retain the orbit camera');
 
+    await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+      floorId: 'iw-maker-a', proceduralRoom: true, rectFree: 2, rectXOffsetCm: 40,
+    }));
     moduleRetryEvidence = await assertViewerModuleRetry(browser, web);
 
+    await page.goto(`${web.base}/dashboard/spaces/site-b/shared-room`);
+    await assertSingleRenderer(page, '2d');
+    assert.equal(await page.getByRole('radio', { name: '3D view' }).isDisabled(), true,
+      'a valid 2D-only floor disables 3D with an explanation');
+    assert.equal(await page.getByText('3D view is not available for this location.').count(), 1);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d',
+      'a map-only floor does not overwrite the remembered 3D preference');
+    await page.goto(`${web.base}/dashboard/spaces/generated-site/iw-maker-a`);
+    await page.waitForFunction(() => Boolean(document.querySelector('floor-viewer')?._generatedShell));
+    await assertSingleRenderer(page, '3d');
+
+    await page.getByTestId('student-table-list-rect-table').click();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true');
     await page.getByTestId('student-directions-toggle').click();
     assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Hide directions');
+    await page.getByRole('radio', { name: '2D map' }).check();
     await page.evaluate(() => {
       const status = document.querySelector('[role="status"][aria-live="polite"]');
       window.__studentRemovalAnnouncementCount = 0;
@@ -340,7 +424,6 @@ test('signed student browser renders composite locations, aligned models, live s
       document.querySelector('[role="status"][aria-live="polite"]')?.textContent.trim() === message, removalMessage);
     await page.getByTestId('student-table-list-rect-table').waitFor({ state: 'detached' });
     await page.getByTestId('student-map-table-generated-site-iw-maker-a-rect-table').waitFor({ state: 'detached' });
-    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Get directions', 'removal clears directions');
     assert.equal(await page.getByTestId('student-table-list-round-table').getAttribute('aria-pressed'), 'false', 'removal clears table selection');
     const removalState = await page.evaluate(() => {
       const viewer = document.querySelector('floor-viewer');
@@ -352,6 +435,9 @@ test('signed student browser renders composite locations, aligned models, live s
     assert.equal(removalState.selectedTableId, null, 'the generated viewer receives the cleared selection');
     assert.equal(removalState.announcementCount, 1, 'the polite removal message is announced once');
     await screenshot(page, 'student-generated-table-removed');
+    await page.getByRole('radio', { name: '3D view' }).check();
+    assert.equal(await page.getByTestId('student-directions-toggle').innerText(), 'Get directions',
+      'removing the selected table clears directions and the reset is retained across a mode switch');
 
     const firstFloor = makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
       floorId: 'iw-maker-a', proceduralRoom: true,
@@ -389,11 +475,16 @@ test('signed student browser renders composite locations, aligned models, live s
     await page.getByTestId(mapId).waitFor();
     assert.equal(await page.getByTestId('student-model-viewer-canvas').count(), 0, 'explicit model:null removes the uploaded GLB panel');
     assert.equal(await page.getByTestId('student-map-table-site-a-shared-room-rect-table').count(), 1, 'the geometric map remains usable');
+    await assertSingleRenderer(page, '2d');
+    assert.equal(await page.getByRole('radio', { name: '3D view' }).isDisabled(), true);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d',
+      'explicit 2D-only fallback retains the saved 3D preference for a later supported floor');
     await screenshot(page, 'student-explicit-2d-location');
 
+    const storageFailureEvidence = await assertStorageUnavailable(browser, web);
     await assertEmptyAndRetry(browser, emptyWeb);
     assert.deepEqual(errors, [], `browser console/page errors: ${errors.join('; ')}`);
-    await storeArtifacts({ errors, network, moduleRetry: moduleRetryEvidence });
+    await storeArtifacts({ errors, network, moduleRetry: moduleRetryEvidence, storageFailure: storageFailureEvidence });
   } finally {
     if (traceStarted && tracePath) await context.tracing.stop({ path: tracePath }).catch(() => {});
     await context.close().catch(() => {});
@@ -411,6 +502,7 @@ async function assertViewerModuleRetry(browser, web) {
   await context.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
   await context.route('https://fonts.gstatic.com/**', (route) => route.fulfill({ status: 200, body: '' }));
   const page = await context.newPage();
+  await page.addInitScript((key) => localStorage.setItem(key, '3d'), ROOM_VIEW_MODE_KEY);
   const moduleRequests = [];
   const moduleResponses = [];
   const modelRequests = [];
@@ -451,23 +543,33 @@ async function assertViewerModuleRetry(browser, web) {
   });
   try {
     await page.goto(`${web.base}/dashboard/spaces/generated-site/iw-maker-a`);
-    const unavailable = page.locator('.viewer-error[role="status"]');
+    const unavailable = page.getByTestId('student-3d-fallback');
     await unavailable.waitFor();
-    assert.match(await unavailable.innerText(), /3D view unavailable\. Use the floor map below\./);
-    assert.equal(await page.getByTestId('student-map-table-generated-site-iw-maker-a-rect-table').count(), 1,
-      'the accessible floor map remains usable while the 3D module is unavailable');
+    assert.match(await unavailable.innerText(), /3D view unavailable\. The floor map is shown instead\./);
+    await assertSingleRenderer(page, '2d');
+    assert.equal(await page.getByTestId('student-map-table-generated-site-iw-maker-a-rect-table').isVisible(), true,
+      'the floor map is the active usable renderer while the 3D module is unavailable');
+    assert.equal(await page.getByTestId('student-table-list-rect-table').count(), 1,
+      'the live availability list remains visible during fallback');
     assert.equal(injectedFailures, 1, 'the harness injects exactly one failed module response');
     assert.equal(moduleRequests.length, 1, 'the initial renderer construction makes one OrbitControls module request');
     assert.equal(moduleResponses.length, 1);
     assert.equal(moduleResponses[0].status, 503);
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), ROOM_VIEW_MODE_KEY), '3d',
+      'a transient renderer failure does not overwrite the saved preference');
     await screenshot(page, 'student-module-retry-unavailable');
 
-    await page.getByTestId('student-model-preview-retry').click();
+    await page.getByTestId('student-table-list-rect-table').click();
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true');
+    await page.getByTestId('student-view-retry-3d').click();
     await page.waitForFunction(() => {
       const viewer = document.querySelector('floor-viewer');
       return Boolean(viewer?._three && viewer?._generatedShell && viewer?._generatedTableRecords?.size === 3);
     });
-    assert.equal(await page.locator('.viewer-error[role="status"]').count(), 0);
+    await assertSingleRenderer(page, '3d');
+    assert.equal(await page.getByTestId('student-3d-fallback').count(), 0);
+    assert.equal(await page.getByTestId('student-table-list-rect-table').getAttribute('aria-pressed'), 'true',
+      'retry recovery preserves the selected table');
     assert.equal(moduleRequests.length, 2, 'retry uses a fresh module URL after the rejected import');
     assert.notEqual(moduleRequests[0], moduleRequests[1]);
     assert.deepEqual(moduleResponses.map((response) => response.status), [503, 200]);
@@ -480,6 +582,58 @@ async function assertViewerModuleRetry(browser, web) {
     return { injectedFailures, moduleRequests, moduleResponses, expectedFailureConsoleEvents, unexpectedErrors, modelRequests };
   } finally {
     await context.close();
+  }
+}
+
+async function assertStorageUnavailable(browser, web) {
+  await pushSnapshot(web.base, makeSnapshot('edge-generated', 'generated-site', 'Generated Building', 'Built-in Room', {
+    floorId: 'iw-maker-a', proceduralRoom: true,
+  }));
+  const cookie = await signup(web.base, 'student-view-storage@connect.hku.hk');
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.addCookies([{ name: 'tm_session', value: cookie, url: web.base }]);
+  await context.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  await context.route('https://fonts.gstatic.com/**', (route) => route.fulfill({ status: 200, body: '' }));
+  await context.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() { throw new DOMException('blocked for this browser context', 'SecurityError'); },
+    });
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  try {
+    await page.goto(`${web.base}/dashboard/spaces/generated-site/iw-maker-a`);
+    await page.waitForFunction(() => Boolean(document.querySelector('floor-viewer')?._generatedShell));
+    await assertSingleRenderer(page, '3d');
+    await page.getByRole('radio', { name: '2D map' }).check();
+    await assertSingleRenderer(page, '2d');
+    await page.getByRole('radio', { name: '3D view' }).check();
+    await page.waitForFunction(() => Boolean(document.querySelector('floor-viewer')?._generatedShell));
+    await assertSingleRenderer(page, '3d');
+    assert.deepEqual(errors, [], `storage access failures are handled without browser errors: ${errors.join('; ')}`);
+    await screenshot(page, 'student-storage-unavailable-view-switch');
+    return { errors, readAndWriteAccessDenied: true, viewSwitchingRemainedAvailable: true };
+  } finally {
+    await context.close();
+  }
+}
+
+async function assertSingleRenderer(page, mode) {
+  const is3d = mode === '3d';
+  const stage3d = page.getByTestId('student-3d-renderer');
+  const stage2d = page.getByTestId('student-2d-renderer');
+  assert.equal(await stage3d.isVisible(), is3d, `3D renderer visibility matches ${mode} mode`);
+  assert.equal(await stage2d.isVisible(), !is3d, `2D renderer visibility matches ${mode} mode`);
+  assert.equal(await page.getByRole('region', { name: is3d ? '3D room view' : '2D floor map' }).count(), 1,
+    'the active viewport has one accessible region name');
+  assert.equal(await page.getByRole('radio', { name: is3d ? '3D view' : '2D map' }).isChecked(), true,
+    'the radio selection matches the active renderer');
+  if (!is3d && await stage3d.count()) {
+    assert.equal(await stage3d.getAttribute('aria-hidden'), 'true');
+    assert.equal(await stage3d.getAttribute('inert'), '');
   }
 }
 

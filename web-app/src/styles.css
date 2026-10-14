@@ -225,14 +225,33 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
 .panel-3d .panel-tools { grid-area: tools; display: flex; gap: 8px; flex-wrap: wrap }
 .panel-3d .viewport { grid-area: map }
 .panel-3d .caption { grid-area: caption; margin: 0 }
+.panel-3d.student-view-panel { display: flex; flex-direction: column; align-items: stretch; gap: 14px }
+.student-view-choice { min-width: 0; margin: 0; padding: 0; border: 0 }
+.student-view-choice legend { margin-bottom: 8px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase }
+.student-view-options { display: flex; flex-wrap: wrap; gap: 8px 18px }
+.student-view-options label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer }
+.student-view-options input { width: 18px; height: 18px; accent-color: var(--color-accent) }
+.student-view-unavailable { margin: 6px 0 0; color: var(--color-neutral-700); font-size: 13px }
+.student-view-heading { margin: 0; align-items: center }
+.student-view-heading .panel-tools { display: flex; flex-wrap: wrap; gap: 8px }
+.student-view-caption { margin: 0 }
 .panel-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px }
 .panel-title { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; font-weight: 600 }
 .viewport { border: 2px solid var(--color-text); height: clamp(300px, 46vw, 460px); background: var(--color-neutral-200) }
+.student-view-viewport { position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .caption { font-size: 12px }
 
 .viewer-host { position: relative; width: 100%; height: 100% }
 .viewer-canvas { position: absolute; inset: 0 }
-.viewer-error { position: absolute; z-index: 2; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 18px; background: var(--color-neutral-200); color: var(--color-text); text-align: center }
+.student-3d-stage, .student-2d-stage { position: relative; width: 100%; height: 100%; min-width: 0 }
+.student-3d-stage[hidden] { display: none !important }
+.student-2d-stage .floor-map { width: 100%; height: 100%; max-height: none; border: 0; }
+.student-view-fallback {
+  position: absolute; z-index: 3; top: 8px; left: 8px; right: 8px;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px;
+  padding: 8px 12px; border: 2px solid var(--color-text); background: var(--color-surface); color: var(--color-text);
+}
+.student-view-fallback .btn { min-height: 44px }
 .floor-map { display: block; width: 100%; height: auto; max-height: 680px; background: var(--color-neutral-100); border: 1px solid var(--color-divider); }
 .feed-unavailable { border: 2px solid var(--color-text); padding: 20px; background: var(--color-surface); margin: 20px 0; }
 .feed-unavailable h2 { font-family: var(--font-heading); font-size: 20px; margin: 0 0 8px; }

@@ -45,6 +45,9 @@ export interface FloorViewerProps {
   selectedTableId?: string | null;
   locationTransform?: LocationModelTransformInput;
   onPickTable?: (tableId: string) => void;
+  retryRequest: number;
+  onFailure: () => void;
+  onRecovered: () => void;
 }
 
 interface ProjectedSeat {
@@ -78,7 +81,10 @@ export default function FloorViewer(props: FloorViewerProps) {
   propsRef.current = props;
   const [zoom, setZoom] = useState(0.5);
   const [loadError, setLoadError] = useState<'viewer' | 'model' | null>(null);
+  const loadErrorRef = useRef(loadError);
+  loadErrorRef.current = loadError;
   const [retry, setRetry] = useState(0);
+  const lastRetryRequest = useRef(props.retryRequest);
   const layout = useMemo(() => props.floor ? projectStudentLayout(props.floor, props.selectedTableId ?? null) : undefined,
     [props.floor, props.selectedTableId]);
   const layoutRef = useRef(layout);
@@ -92,9 +98,21 @@ export default function FloorViewer(props: FloorViewerProps) {
       if (typeof detail.tableId === 'string') propsRef.current.onPickTable?.(detail.tableId);
       else if (typeof detail.index === 'number') propsRef.current.onPick(detail.index);
     };
-    const onViewerError = () => setLoadError('viewer');
-    const onModelError = () => setLoadError('model');
-    const onModelReady = () => setLoadError(null);
+    const onViewerError = () => {
+      if (!alive) return;
+      setLoadError('viewer');
+      propsRef.current.onFailure();
+    };
+    const onModelError = () => {
+      if (!alive) return;
+      setLoadError('model');
+      propsRef.current.onFailure();
+    };
+    const onModelReady = () => {
+      if (!alive) return;
+      setLoadError(null);
+      propsRef.current.onRecovered();
+    };
     void import(/* @vite-ignore */ viewerUrl(retry)).then(() => {
       if (!alive || !host.current) return;
       node = document.createElement('floor-viewer') as ViewerElement;
@@ -109,7 +127,11 @@ export default function FloorViewer(props: FloorViewerProps) {
       element.current = node;
       setLoadError(null);
       syncAttributes(node, propsRef.current, layoutRef.current);
-    }).catch(() => { if (alive) setLoadError('viewer'); });
+    }).catch(() => {
+      if (!alive) return;
+      setLoadError('viewer');
+      propsRef.current.onFailure();
+    });
     return () => {
       alive = false;
       if (node) {
@@ -131,6 +153,14 @@ export default function FloorViewer(props: FloorViewerProps) {
   useEffect(() => { setLoadError(null); }, [props.source, props.src]);
 
   useEffect(() => {
+    if (lastRetryRequest.current === props.retryRequest) return;
+    lastRetryRequest.current = props.retryRequest;
+    setLoadError(null);
+    if (loadErrorRef.current === 'viewer' || !element.current) setRetry((value) => value + 1);
+    else element.current.retryLoad?.();
+  }, [props.retryRequest]);
+
+  useEffect(() => {
     const id = setInterval(() => {
       const current = element.current?.getZoom?.();
       if (typeof current === 'number' && Number.isFinite(current)) {
@@ -141,20 +171,10 @@ export default function FloorViewer(props: FloorViewerProps) {
     return () => clearInterval(id);
   }, []);
 
-  const retryPreview = () => {
-    setLoadError(null);
-    if (loadError === 'viewer' || !element.current) setRetry((value) => value + 1);
-    else element.current.retryLoad?.();
-  };
-
   return (
     <div className="viewer-host" data-testid={props.source === 'generated' ? 'student-simple-room-viewer' : undefined}>
       <div data-testid="student-model-viewer-canvas" className="viewer-canvas" ref={host}
         aria-label={props.source === 'generated' ? 'Interactive 3D built-in room view' : 'Interactive 3D location model'} />
-      {loadError && <div className="viewer-error" role="status">
-        <span>3D view unavailable. Use the floor map below.</span>
-        <button type="button" data-testid="student-model-preview-retry" className="btn btn-secondary" onClick={retryPreview}>Try again</button>
-      </div>}
       <label className="zoom">
         <span className="sr-only">Zoom</span>
         <input data-testid="student-model-zoom-control" type="range" min={0} max={1} step={0.01} value={zoom} onChange={(event) => {

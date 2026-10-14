@@ -13,6 +13,27 @@ import { Chrome, FeedUnavailable, NoStudySpaces, Notice, SpacesSkeleton, ViewerS
 import FloorViewer from '../FloorViewer.tsx';
 import FloorMap from '../FloorMap.tsx';
 
+type RoomViewMode = '2d' | '3d';
+
+const ROOM_VIEW_MODE_KEY = 'hkumyseat.student.room-view-mode.v1';
+
+function readRoomViewMode(): RoomViewMode | null {
+  try {
+    const value = window.localStorage.getItem(ROOM_VIEW_MODE_KEY);
+    return value === '2d' || value === '3d' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistRoomViewMode(mode: RoomViewMode): void {
+  try {
+    window.localStorage.setItem(ROOM_VIEW_MODE_KEY, mode);
+  } catch {
+    // Keep the page's in-memory selection when browser persistence is unavailable.
+  }
+}
+
 export default function Spaces() {
   const { siteId, floorId } = useParams();
   const navigate = useNavigate();
@@ -23,6 +44,9 @@ export default function Spaces() {
   const [seats] = useSeats();
   const [table, setTable] = useState<string | null>(null);
   const [directions, setDirections] = useState(false);
+  const [preferredView, setPreferredView] = useState<RoomViewMode>(() => readRoomViewMode() ?? '3d');
+  const [failedViewerKey, setFailedViewerKey] = useState<string | null>(null);
+  const [viewerRetryRequest, setViewerRetryRequest] = useState(0);
 
   const resolution = floorId ? resolveCampusFloor(floors, floorId, siteId) : null;
   const requestedFloor = resolution?.kind === 'found' ? resolution.floor : null;
@@ -49,7 +73,20 @@ export default function Spaces() {
   }, []);
 
   useEffect(() => { document.title = `${entry?.venue.shortName ?? 'Spaces'} - HKUMySeat`; }, [entry]);
-  useEffect(() => { setTable(null); setDirections(false); }, [floor?.key]);
+  useEffect(() => { setTable(null); setDirections(false); setFailedViewerKey(null); }, [floor?.key]);
+
+  const chooseView = (mode: RoomViewMode) => {
+    setPreferredView(mode);
+    persistRoomViewMode(mode);
+    const retryFailedViewer = mode === '3d' && failedViewerKey !== null;
+    setFailedViewerKey(null);
+    if (retryFailedViewer) setViewerRetryRequest((value) => value + 1);
+  };
+
+  const retryViewer = () => {
+    setFailedViewerKey(null);
+    setViewerRetryRequest((value) => value + 1);
+  };
 
   const collisions = floorId ? floors.filter((item) => item.id === floorId) : [];
   return (
@@ -88,7 +125,11 @@ export default function Spaces() {
               ))}
             </div>
             <LiveView floor={floor} allFloors={floors} seats={seats} table={table} onTable={pickTable}
-              directions={directions} onDirections={toggleDirections} onSelectionRemoved={clearRemovedSelection} />
+              directions={directions} onDirections={toggleDirections} onSelectionRemoved={clearRemovedSelection}
+              preferredView={preferredView} failedViewerKey={failedViewerKey} retryRequest={viewerRetryRequest}
+              onChooseView={chooseView} onViewerFailure={setFailedViewerKey}
+              onViewerRecovered={(key) => setFailedViewerKey((current) => current === key ? null : current)}
+              onRetryViewer={retryViewer} />
           </>
         )}
       </div>
@@ -127,7 +168,9 @@ function SpaceBlock({ floor, allFloors, seats, selected, onOpen, testId }: {
   );
 }
 
-function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirections, onSelectionRemoved }: {
+function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirections, onSelectionRemoved,
+  preferredView, failedViewerKey, retryRequest, onChooseView, onViewerFailure, onViewerRecovered, onRetryViewer,
+}: {
   floor: CampusFloor;
   allFloors: readonly CampusFloor[];
   seats: number;
@@ -136,12 +179,28 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
   directions: boolean;
   onDirections: () => void;
   onSelectionRemoved: () => void;
+  preferredView: RoomViewMode;
+  failedViewerKey: string | null;
+  retryRequest: number;
+  onChooseView: (mode: RoomViewMode) => void;
+  onViewerFailure: (key: string) => void;
+  onViewerRecovered: (key: string) => void;
+  onRetryViewer: () => void;
 }) {
   const [announcement, setAnnouncement] = useState('');
   const lastAnnouncement = useRef('');
   const lastFloorKey = useRef(floor.key);
   const removedSelection = useRef<string | null>(null);
   const info = floorSpaceInfo(floor, allFloors);
+  const supports3d = info.source === 'generated' || info.source === 'custom' || (info.source === 'legacy' && Boolean(info.model));
+  const viewerKey = JSON.stringify([floor.key, info.source, info.model?.src ?? null]);
+  const viewMode: RoomViewMode = supports3d && preferredView === '3d' && failedViewerKey !== viewerKey ? '3d' : '2d';
+  const isFallback = supports3d && preferredView === '3d' && failedViewerKey === viewerKey;
+  const [mountedViewerKey, setMountedViewerKey] = useState<string | null>(() => viewMode === '3d' ? viewerKey : null);
+  useEffect(() => {
+    if (viewMode === '3d') setMountedViewerKey(viewerKey);
+    else if (mountedViewerKey !== null && mountedViewerKey !== viewerKey) setMountedViewerKey(null);
+  }, [mountedViewerKey, viewMode, viewerKey]);
   const ordered = walkOrder(floor.tables);
   const dark = isDark(floor);
   const cap = capacityOf(floor);
@@ -184,6 +243,8 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
   const list = (pick: (t: (typeof ordered)[number]) => boolean) =>
     ordered.map((t, i) => (pick(t) ? i + 1 : 0)).filter(Boolean).join(',');
   const sceneFloor = info.source === 'generated' || info.source === 'custom' ? floor : undefined;
+  const shouldMountViewer = supports3d && (viewMode === '3d' || mountedViewerKey === viewerKey);
+  const unavailableHintId = 'student-view-3d-unavailable';
 
   return (
     <>
@@ -191,18 +252,54 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
       {!dark && unknown.length > 0 && <Notice>{plural(unknown.length, 'table')} here have no working sensor. They are never counted as free.</Notice>}
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
-      {(info.source === 'generated' || info.model) && <div className="panel panel-3d">
-        <div className="panel-title">{info.source === 'generated' ? 'Built-in 3D room' : '3D map'} - drag to rotate, scroll or pinch to zoom</div>
-        <div className="panel-tools">
-          <button type="button" data-testid="student-directions-toggle" className={`btn ${directions ? 'btn-primary' : 'btn-secondary'}`} onClick={onDirections}>
-            {directions ? 'Hide directions' : 'Get directions'}
-          </button>
-          <button type="button" data-testid="student-model-zoom-to-table" className="btn btn-secondary" onClick={() => viewer()?.zoomToSeat?.()}>Zoom to table</button>
-          <button type="button" data-testid="student-model-reset-view" className="btn btn-secondary" onClick={() => viewer()?.resetView?.()}>Reset view</button>
-        </div>
-        <div className="viewport">
-          {(
-            <FloorViewer
+      <section className="panel panel-3d student-view-panel" aria-label="Room view and table availability">
+        <fieldset className="student-view-choice" data-testid="student-view-choice">
+          <legend>Room view</legend>
+          <div className="student-view-options">
+            <label>
+              <input type="radio" name="student-room-view" value="3d" data-testid="student-view-choice-3d"
+                checked={viewMode === '3d'} disabled={!supports3d}
+                aria-describedby={!supports3d ? unavailableHintId : undefined}
+                onChange={() => onChooseView('3d')}
+                onClick={() => { if (viewMode === '3d') persistRoomViewMode('3d'); }} />
+              <span>3D view</span>
+            </label>
+            <label>
+              <input type="radio" name="student-room-view" value="2d" data-testid="student-view-choice-2d"
+                checked={viewMode === '2d'}
+                onChange={() => onChooseView('2d')}
+                onClick={() => { if (viewMode === '2d' && preferredView !== '2d') onChooseView('2d'); }} />
+              <span>2D map</span>
+            </label>
+          </div>
+          {!supports3d && <p id={unavailableHintId} className="student-view-unavailable">3D view is not available for this location.</p>}
+        </fieldset>
+
+        {viewMode === '3d' ? <>
+          <div className="panel-head student-view-heading">
+            <div className="panel-title">{info.source === 'generated' ? 'Built-in 3D room' : '3D map'}</div>
+            <div className="panel-tools">
+              <button type="button" data-testid="student-directions-toggle" className={`btn ${directions ? 'btn-primary' : 'btn-secondary'}`} onClick={onDirections}>
+                {directions ? 'Hide directions' : 'Get directions'}
+              </button>
+              <button type="button" data-testid="student-model-zoom-to-table" className="btn btn-secondary" onClick={() => viewer()?.zoomToSeat?.()}>Zoom to table</button>
+              <button type="button" data-testid="student-model-reset-view" className="btn btn-secondary" onClick={() => viewer()?.resetView?.()}>Reset view</button>
+            </div>
+          </div>
+          <p className="caption text-muted student-view-caption">Drag to rotate, scroll or pinch to zoom. Green tables have room for {plural(seats, 'seat')}; grey are full and faint ones have no sensor data.</p>
+        </> : <div className="panel-head student-view-heading">
+          <div className="panel-title">Floor plan - top-down</div>
+          <div className="legend">
+            <span><i className="free" />Room for you</span><span><i className="picked" />Picked</span>
+            <span><i className="full" />Full</span><span><i className="nodata" />No data</span>
+          </div>
+        </div>}
+
+        <div className="viewport student-view-viewport" data-testid="student-room-view-viewport" role="region"
+          aria-label={viewMode === '3d' ? '3D room view' : '2D floor map'}>
+          {shouldMountViewer && <div className="student-3d-stage" data-testid="student-3d-renderer"
+            hidden={viewMode !== '3d'} aria-hidden={viewMode !== '3d'} inert={viewMode !== '3d'}>
+            <FloorViewer key={viewerKey}
               src={info.model?.src ?? null} source={info.source} room={info.model?.room ?? floor.name}
               columns={info.model?.columns ?? Math.max(1, floor.tables.length)} rows={info.model?.rows ?? 1}
               labels={ordered.map((item) => item.name)} free={list(fits)}
@@ -210,25 +307,23 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
               dark={list((item) => item.status === 'unknown' || item.free === null)} selected={table ? index(table) : 0}
               directions={directions} onPick={(n) => { const picked = ordered[n - 1]; if (picked && fits(picked)) onTable(picked.id); }}
               floor={sceneFloor} selectedTableId={table} locationTransform={info.uploadedModel?.transform}
+              retryRequest={retryRequest}
+              onFailure={() => onViewerFailure(viewerKey)} onRecovered={() => onViewerRecovered(viewerKey)}
               onPickTable={(id) => { const picked = floor.tables.find((item) => item.id === id); if (picked && fits(picked)) onTable(id); }}
             />
-          )}
+          </div>}
+          {viewMode === '2d' && <div className="student-2d-stage" data-testid="student-2d-renderer">
+            <FloorMap floor={floor} selected={table} canSelect={fits} onTable={(id) => onTable(table === id ? null : id)} />
+          </div>}
+          {isFallback && <div className="student-view-fallback" role="status" aria-live="polite" data-testid="student-3d-fallback">
+            <span>3D view unavailable. The floor map is shown instead.</span>
+            <button type="button" data-testid="student-view-retry-3d" className="btn btn-secondary" onClick={onRetryViewer}>Retry 3D view</button>
+          </div>}
         </div>
-        <div className="caption text-muted">Green tables have room for {plural(seats, 'seat')}; grey are full and faint ones have no sensor data. Pick a table here or below to mark it on the map.</div>
-      </div>}
 
-      <div className="panel">
-        <div className="panel-head">
-          <div className="panel-title">Floor plan - top-down</div>
-          <div className="legend">
-            <span><i className="free" />Room for you</span><span><i className="picked" />Picked</span>
-            <span><i className="full" />Full</span><span><i className="nodata" />No data</span>
-          </div>
-        </div>
-        <FloorMap floor={floor} selected={table} canSelect={fits} onTable={(id) => onTable(table === id ? null : id)} />
-        {floor.tables.length === 0 && <p className="text-muted">No tables are mapped for this location yet.</p>}
         <section className="plan-list" aria-labelledby="table-availability-heading">
           <h3 id="table-availability-heading" className="section-label">Tables by live availability</h3>
+          {floor.tables.length === 0 && <p className="text-muted">No tables are mapped for this location yet.</p>}
           <ul>
           {ordered.map((item) => {
             const unknownTable = item.status === 'unknown' || item.free === null;
@@ -245,7 +340,7 @@ function LiveView({ floor, allFloors, seats, table, onTable, directions, onDirec
           <span className="text-muted">{info.entranceNote}</span>
           <span className="text-muted">{dark ? 'No live counts for this space' : `${free} of ${floor.totals.seats} seats free - ${cap} seats per table`}</span>
         </div>
-      </div>
+      </section>
     </>
   );
 }
