@@ -10,6 +10,8 @@ Device Adoption reads remain available to signed-in accounts. Issuing/revoking T
 
 Location configuration is available to named Admin and Operator accounts through the dedicated `locations.manage` capability. Engineers and Viewers do not receive it, even though Engineers retain their separate firmware and provisioning capabilities. Published locations are visible in the manager; each account sees and edits only its own private drafts and previews.
 
+See the [location furniture user guide](location-furniture-user-guide.md) for shared-library uploads, room defaults, table overrides, and the explicit publish workflow.
+
 See the [location management OpenAPI contract](location-management.openapi.yaml) for the console API, edge model transfer and student model response requirements.
 
 Build the tools in the release directory with `npm run build`. Tools use the release's `.env`, `ALGO_USERS_FILE`, or `DATA_DIR/algo/users.json`. Passwords are entered through the existing terminal prompt or stdin, never command-line arguments.

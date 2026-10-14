@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { createSocket } from 'node:dgram';
 import { join, resolve } from 'node:path';
@@ -54,11 +55,15 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
     migrations: [],
   };
   const processes = new Set();
+  const task5FurnitureAssetIds = new Set();
+  let task5FurnitureAssetsCleaned = false;
   let browser;
   let browserContext;
   let edge;
   let web1;
   let web2;
+  let web1PushProxy;
+  let web2PushProxy;
   let migrationCount = 0;
   let migrationDownCount = 0;
   globalThis.__task42Evidence = evidence;
@@ -74,19 +79,24 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
       edgeUdp: await availableUdpPort(),
       web1: await availablePort(),
       web2: await availablePort(),
+      web1Push: await availablePort(),
+      web2Push: await availablePort(),
     };
     const edgeBase = `http://127.0.0.1:${ports.edgeAlgo}`;
     const web1Base = `http://127.0.0.1:${ports.web1}`;
     const web2Base = `http://127.0.0.1:${ports.web2}`;
+    const web1PushBase = `http://127.0.0.1:${ports.web1Push}`;
+    const web2PushBase = `http://127.0.0.1:${ports.web2Push}`;
     const dbEnv = PROFILE === 'postgres' ? postgresEnvironment() : {};
 
     if (PROFILE === 'postgres') {
       const preflight = await inspectPostgresCleanup(dbEnv);
-      assert.deepEqual(preflight, { registeredNodes: null, migrationRows: 0 }, 'the isolated synthetic database must be fresh before this profile');
+      assert.deepEqual(preflight, { registeredNodes: null, migrationRows: 0, publicTables: ['migrations'] },
+        'the isolated synthetic database must match the exact known fixture baseline before this profile');
       evidence.migrations.push({ direction: 'preflight', ...preflight, result: 'PASS' });
       const migrationFiles = readdirSync(resolve('dist/src/infrastructure/postgres/migrations'))
         .filter((name) => name.endsWith('.js')).sort();
-      const up = await runTool('dist/src/tools/postgres-migrate.js', ['up'], { ...dbEnv, PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'migration-only-test-placeholder' });
+      const up = await runTool('dist/src/tools/postgres-migrate.js', ['up'], { ...dbEnv, PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'task5-unused-migration-validation-only' });
       const applied = Number(/Applied (\d+) migration\(s\)\./.exec(up.stdout)?.[1] ?? -1);
       migrationCount = Math.max(applied, 0);
       assert.equal(applied, migrationFiles.length, `synthetic database must apply every compiled migration (${migrationFiles.length}); result=${up.stdout.trim()}`);
@@ -136,7 +146,7 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
       ALGO_USERS_FILE: usersPath,
       ALGO_SESSION_SECRET: 'task-4-2-edge-algo-session-secret-0123456789',
       TMFLASH_TOKEN: PROVISIONING_TOKEN,
-      WEB_PUSH_URLS: `${web1Base},${web2Base}`,
+      WEB_PUSH_URLS: `${web1PushBase},${web2PushBase}`,
       WEB_PUSH_TOKEN: WEB_TOKEN,
       PUBLISH_MS: '200',
       GATEWAY_PORT: '0', NODE_PORT: '0',
@@ -147,6 +157,8 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
     web2 = startWeb2();
     await waitHttp(`${web1Base}/login/`, 200, web1, 'first web target ready');
     await waitHttp(`${web2Base}/login/`, 200, web2, 'second web target ready');
+    web1PushProxy = await createSnapshotRecordingProxy(web1Base, ports.web1Push);
+    web2PushProxy = await createSnapshotRecordingProxy(web2Base, ports.web2Push);
     edge = startEdge();
     await waitHttp(`${edgeBase}/login`, 200, edge, 'edge algo sign-in page ready');
     stage('real entrypoints ready', { profile: PROFILE, separateWebTargets: 2, persistence: PROFILE });
@@ -328,7 +340,10 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
     }
     const planNotPublished = await fetch(`${web1Base}/api/models/${planUpload.body.data.assetId}`, { headers: { cookie: studentCookie } });
     assert.equal(planNotPublished.status, 404, 'a plan image is never exposed through the student model route');
-    await captureManagerBrowser({ edgeBase, cookie: managers['qa-admin-a'], artifacts, evidence });
+    const furnitureWorkflow = await captureManagerBrowser({
+      edgeBase, cookie: managers['qa-admin-a'], crossManagerCookie: managers['qa-operator-b'], artifacts, evidence,
+      furnitureAssetIds: task5FurnitureAssetIds,
+    });
     stage('two-target durable public model publication', { failureBeforeCommit: '503', retry: 'revision 1', targets: 2, identicalBytes: true, planRoute: 404 });
 
     const replacementDraft = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/${locationId}/drafts`, { expectedPublishedRevision: 1 });
@@ -758,6 +773,27 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
       browserSlot: (value) => { browser = value; }, contextSlot: (value) => { browserContext = value; },
     });
 
+    await exercisePublishedFurnitureWorkflow({
+      edgeBase, web1Base, web2Base, edge, fixture,
+      workflow: furnitureWorkflow, furnitureAssetIds: task5FurnitureAssetIds, managerCookie: await loginManager(edgeBase, 'qa-admin-a'),
+      operatorCookie: await loginManager(edgeBase, 'qa-operator-b'),
+      studentCookie: `tm_session=${await loginStudent(web1Base)}`,
+      student2Cookie: `tm_session=${await loginStudent(web2Base)}`,
+      artifacts, evidence, stage, snapshotProxies: [web1PushProxy, web2PushProxy],
+      edgeControl: {
+        stop: async () => { edge.stop(); await edge.wait(); edge = null; },
+        restart: async () => {
+          edge = startEdge();
+          await waitHttp(`${edgeBase}/login`, 200, edge, 'edge restarted for furniture snapshot replay');
+          return edge;
+        },
+      },
+      web2Control: {
+        stop: async () => { web2.stop(); await web2.wait(); web2 = null; },
+        restart: async () => { web2 = spawnOwned('web-target-2', 'dist/src/web/main.js', [], webEnv(ports.web2, fixture.web2Data, 'target-two'), processes, gracefulStopModule); await waitHttp(`${web2Base}/login/`, 200, web2, 'second target recovered for furniture retry'); },
+      },
+    });
+
     const reportIdentity = identity(SENSOR_UID);
     const rectangleSeats = authored.tables.find((table) => table.id === 'qa-rect').seats;
     await sendSignedReports(ports.edgeUdp, reportIdentity, [], 1);
@@ -871,15 +907,20 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
 
     if (PROFILE === 'postgres') {
       edge.stop(); await edge.wait(); edge = null;
+      const removedFurnitureAssets = await cleanupTask5FurnitureAssetRows(dbEnv, [...task5FurnitureAssetIds]);
+      task5FurnitureAssetsCleaned = true;
+      evidence.migrations.push({ direction: 'test-fixture-cleanup', furnitureRowsRemoved: removedFurnitureAssets, result: 'PASS' });
       const downCount = migrationCount;
       for (let i = 0; i < downCount; i++) {
-        await runTool('dist/src/tools/postgres-migrate.js', ['down'], { ...dbEnv, PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'migration-only-test-placeholder' });
+        await runTool('dist/src/tools/postgres-migrate.js', ['down'], { ...dbEnv, PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'task5-unused-migration-validation-only' });
+        migrationCount -= 1;
       }
       migrationDownCount = downCount;
       evidence.migrations.push({ direction: 'down', count: downCount, result: 'PASS' });
       const check = await inspectPostgresCleanup(dbEnv);
       assert.equal(check.registeredNodes, null, 'the migration rollback removes the task-owned application schema');
       assert.equal(check.migrationRows, 0, 'the synthetic migration ledger is empty after the down run');
+      assert.deepEqual(check.publicTables, ['migrations'], 'migration rollback restores the exact public-table baseline');
       migrationCount = 0;
     }
     stage('clean profile shutdown', { edge: true, webTargets: 2, pgMigrationDownCount: migrationDownCount, pgCleanup: PROFILE === 'postgres' ? `${migrationDownCount} migrations down` : 'not applicable' });
@@ -895,14 +936,40 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
     await browser?.close().catch(() => {});
     for (const child of [...processes]) child.stop();
     await Promise.all([...processes].map((child) => child.wait().catch(() => {})));
+    await closeHttpServer(web1PushProxy?.server);
+    await closeHttpServer(web2PushProxy?.server);
     if (PROFILE === 'postgres' && migrationCount > 0) {
-      for (let i = 0; i < migrationCount; i++) {
-        await runTool('dist/src/tools/postgres-migrate.js', ['down'], {
-          ...postgresEnvironment(), PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'migration-only-test-placeholder',
-        }).catch(() => {});
+      let remainingMigrations = 0;
+      if (!task5FurnitureAssetsCleaned && task5FurnitureAssetIds.size > 0) {
+        try {
+          const removedFurnitureAssets = await cleanupTask5FurnitureAssetRows(postgresEnvironment(), [...task5FurnitureAssetIds]);
+          task5FurnitureAssetsCleaned = true;
+          evidence.migrations.push({ direction: 'test-fixture-cleanup', furnitureRowsRemoved: removedFurnitureAssets, result: 'PASS' });
+        } catch {
+          evidence.migrations.push({ direction: 'test-fixture-cleanup', result: 'FAIL', failure: 'exact furniture-row cleanup failed' });
+        }
+      }
+      const beforeDown = await inspectPostgresCleanup(postgresEnvironment()).catch(() => null);
+      remainingMigrations = Number(beforeDown?.migrationRows ?? 0);
+      const lastKnownRemainingMigrations = migrationCount;
+      if (remainingMigrations <= lastKnownRemainingMigrations) {
+        migrationCount = remainingMigrations;
+        for (let i = 0; i < remainingMigrations; i++) {
+          try {
+            await runTool('dist/src/tools/postgres-migrate.js', ['down'], {
+              ...postgresEnvironment(), PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'task5-unused-migration-validation-only',
+            });
+            remainingMigrations -= 1;
+            migrationCount = remainingMigrations;
+          } catch {
+            break;
+          }
+        }
       }
       const cleanup = await inspectPostgresCleanup(postgresEnvironment()).catch(() => null);
-      if (cleanup?.registeredNodes === null && cleanup?.migrationRows === 0) migrationCount = 0;
+      if (cleanup) migrationCount = cleanup.migrationRows;
+      if (cleanup?.registeredNodes === null && cleanup?.migrationRows === 0
+        && JSON.stringify(cleanup.publicTables) === JSON.stringify(['migrations'])) migrationCount = 0;
     }
     // Keep only this run's deterministic evidence and fixture data until the task report is archived.
   }
@@ -974,8 +1041,8 @@ async function readDurablePublishedState(fixture, locationId, pgEnv) {
 function postgresEnvironment() {
   return {
     PGHOST: '127.0.0.1', PGPORT: '50928', PGDATABASE: 'wizard_storage_test',
-    PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'migration-only-test-placeholder',
-    PG_RUNTIME_USER: 'wizard_runtime', PG_RUNTIME_PASSWORD: 'runtime-only-test-placeholder',
+    PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'task5-unused-migration-validation-only',
+    PG_RUNTIME_USER: 'wizard_runtime', PG_RUNTIME_PASSWORD: 'task5-unused-runtime-validation-only',
   };
 }
 
@@ -996,12 +1063,93 @@ async function seedPostgresNodes(site, nodesConfig, pgEnv) {
 
 async function inspectPostgresCleanup(pgEnv) {
   const source = await openPostgres(loadPostgresConnectionConfig('migrator', {
-    ...pgEnv, PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'migration-only-test-placeholder',
+    ...pgEnv, PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'task5-unused-migration-validation-only',
   }));
   try {
-    const rows = await source.query("SELECT to_regclass('public.registered_nodes') AS registered_nodes, CASE WHEN to_regclass('public.migrations') IS NULL THEN 0 ELSE (SELECT count(*)::int FROM public.migrations) END AS migration_rows");
-    return { registeredNodes: rows[0]?.registered_nodes ?? null, migrationRows: Number(rows[0]?.migration_rows ?? 0) };
+    const rows = await source.query("SELECT to_regclass('public.registered_nodes') AS registered_nodes, CASE WHEN to_regclass('public.migrations') IS NULL THEN 0 ELSE (SELECT count(*)::int FROM public.migrations) END AS migration_rows, COALESCE((SELECT json_agg(table_name ORDER BY table_name) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'), '[]'::json) AS public_tables");
+    return {
+      registeredNodes: rows[0]?.registered_nodes ?? null,
+      migrationRows: Number(rows[0]?.migration_rows ?? 0),
+      publicTables: rows[0]?.public_tables ?? [],
+    };
   } finally { await closePostgres(source); }
+}
+
+async function cleanupTask5FurnitureAssetRows(pgEnv, assetIds) {
+  const expectedAssetIds = [...new Set(assetIds.map((assetId) => assetId.toLowerCase()))].sort();
+  if (expectedAssetIds.length === 0) return 0;
+  const source = await openPostgres(loadPostgresConnectionConfig('migrator', {
+    ...pgEnv, PG_MIGRATION_USER: 'wizard_test', PG_MIGRATION_PASSWORD: 'task5-unused-migration-validation-only',
+  }));
+  try {
+    const table = await source.query("SELECT to_regclass('public.location_assets') AS location_assets");
+    if (table[0]?.location_assets === null) return 0;
+    const rows = await source.query(
+      `SELECT asset_id, creator_id, purpose, furniture_type, display_name, created_at
+       FROM public.location_assets WHERE asset_id = ANY($1::uuid[]) ORDER BY asset_id`,
+      [expectedAssetIds],
+    );
+    const foundAssetIds = rows.map((row) => String(row.asset_id).toLowerCase()).sort();
+    assert.ok(foundAssetIds.every((assetId) => expectedAssetIds.includes(assetId)),
+      'cleanup rows are limited to suite-tracked furniture UUIDs');
+    const expectedTypeByName = new Map([
+      ['Task 5 private table asset.glb', 'table'],
+      ['Task 5 private chair asset.glb', 'chair'],
+      ['Task 5 retry table candidate', 'table'],
+    ]);
+    for (const row of rows) {
+      assert.equal(row.creator_id, 'qa-admin-a', 'only the synthetic Task5 uploader owns a tracked cleanup row');
+      assert.equal(row.purpose, 'furniture', 'tracked cleanup rows are immutable furniture metadata');
+      assert.equal(row.furniture_type, expectedTypeByName.get(row.display_name),
+        'tracked display-name/type metadata matches this suite upload');
+      assert.ok(Number(row.created_at) > 0, 'tracked metadata retains its creation timestamp');
+    }
+    const remainingFurniture = await source.query(
+      "SELECT count(*)::int AS count FROM public.location_assets WHERE purpose = 'furniture'",
+    );
+    if (rows.length === 0) {
+      assert.equal(Number(remainingFurniture[0]?.count ?? -1), 0,
+        'an idempotent cleanup may return early only when the fixture has no furniture rows');
+    }
+    const trigger = await source.query(
+      'SELECT tgenabled FROM pg_trigger WHERE tgrelid = to_regclass($1) AND tgname = $2 AND NOT tgisinternal',
+      ['public.location_assets', 'location_assets_immutable'],
+    );
+    assert.equal(trigger.length, 1, 'the expected immutable asset trigger exists before test cleanup');
+    assert.equal(trigger[0].tgenabled, 'O', 'the immutable asset trigger is enabled before test cleanup');
+    if (rows.length > 0) {
+      await source.transaction(async (manager) => {
+        await manager.query('ALTER TABLE public.location_assets DISABLE TRIGGER location_assets_immutable');
+        try {
+          await manager.query(
+            "DELETE FROM public.location_assets WHERE purpose = 'furniture' AND creator_id = $1 AND asset_id = ANY($2::uuid[]) RETURNING asset_id",
+            ['qa-admin-a', foundAssetIds],
+          );
+        } finally {
+          await manager.query('ALTER TABLE public.location_assets ENABLE TRIGGER location_assets_immutable');
+        }
+      });
+    }
+    const triggerAfter = await source.query(
+      'SELECT tgenabled FROM pg_trigger WHERE tgrelid = to_regclass($1) AND tgname = $2 AND NOT tgisinternal',
+      ['public.location_assets', 'location_assets_immutable'],
+    );
+    assert.equal(triggerAfter.length, 1);
+    assert.equal(triggerAfter[0].tgenabled, 'O', 'the immutable asset trigger is re-enabled after exact fixture cleanup');
+    const remaining = await source.query(
+      'SELECT count(*)::int AS count FROM public.location_assets WHERE asset_id = ANY($1::uuid[])',
+      [expectedAssetIds],
+    );
+    assert.equal(Number(remaining[0]?.count ?? -1), 0, 'no tracked Task5 furniture metadata rows remain');
+    const remainingFurnitureAfterCleanup = await source.query(
+      "SELECT count(*)::int AS count FROM public.location_assets WHERE purpose = 'furniture'",
+    );
+    assert.equal(Number(remainingFurnitureAfterCleanup[0]?.count ?? -1), 0,
+      'the clean-profile fixture has no untracked furniture metadata before migration rollback');
+    return rows.length;
+  } finally {
+    await closePostgres(source);
+  }
 }
 
 function processEnvironment(extra) {
@@ -1071,7 +1219,8 @@ async function waitFor(predicate, processHandle, label, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (processHandle?.exit) throw new Error(processHandle.diagnostic);
-    if (await predicate()) return;
+    const result = await predicate();
+    if (result) return result;
     await delay(120);
   }
   throw new Error(`Timed out waiting for ${label}${processHandle ? `; ${processHandle.diagnostic}` : ''}`);
@@ -1222,11 +1371,8 @@ async function captureStudentBrowser({ webBase, cookieValue: studentCookie, site
   await page.goto(`${webBase}/dashboard/`);
   await page.getByTestId('student-location-search').waitFor();
   await page.goto(`${webBase}/dashboard/spaces/${encodeURIComponent(siteId)}/${encodeURIComponent(floorId)}`);
-  await page.getByTestId(`student-floor-map-${siteId}-${floorId}`).waitFor();
-  for (const tableId of ['qa-rect', 'qa-circle', 'qa-polygon']) {
-    await page.getByTestId(`student-map-table-${siteId}-${floorId}-${tableId}`).waitFor();
-    await page.getByTestId(`student-table-list-${tableId}`).waitFor();
-  }
+  assert.equal(await page.getByRole('radio', { name: '3D view', exact: true }).isChecked(), true,
+    'a fresh student context starts with its default 3D room view');
   await page.getByTestId('student-model-viewer-canvas').waitFor();
   await page.waitForFunction(() => !!document.querySelector('floor-viewer')?._model);
   const modelState = await page.evaluate(() => {
@@ -1246,6 +1392,14 @@ async function captureStudentBrowser({ webBase, cookieValue: studentCookie, site
   assert.deepEqual(modelState.rotationDeg.map((value) => Math.round(value * 100) / 100), [3, 18, -2]);
   assert.deepEqual(modelState.position, [0.75, 0.4, -0.5]);
   assert.deepEqual(modelState.overlay, [4, 0.025, -2], 'table overlays stay in authored plan coordinates rather than following GLB alignment');
+  await page.getByRole('radio', { name: '2D map', exact: true }).click();
+  assert.equal(await page.getByRole('radio', { name: '2D map', exact: true }).isChecked(), true,
+    'the student can switch to the separate 2D floor map');
+  await page.getByTestId(`student-floor-map-${siteId}-${floorId}`).waitFor();
+  for (const tableId of ['qa-rect', 'qa-circle', 'qa-polygon']) {
+    await page.getByTestId(`student-map-table-${siteId}-${floorId}-${tableId}`).waitFor();
+    await page.getByTestId(`student-table-list-${tableId}`).waitFor();
+  }
   assert.equal((await page.locator('[data-testid="student-table-list-qa-rect"]').innerText()).includes('No live data'), true,
     'student browser preserves unknown as unknown rather than calling it free');
   await page.screenshot({ path: join(artifacts, 'student-published-location.png'), fullPage: true });
@@ -1267,7 +1421,7 @@ async function captureStudentBrowser({ webBase, cookieValue: studentCookie, site
   assert.deepEqual(evidence.browser.consoleErrors, [], `student browser has no console errors: ${JSON.stringify(evidence.browser.consoleErrors)}`);
 }
 
-async function captureManagerBrowser({ edgeBase, cookie, artifacts, evidence }) {
+async function captureManagerBrowser({ edgeBase, cookie, crossManagerCookie, artifacts, evidence, furnitureAssetIds }) {
   const browser = await chromium.launch({ headless: true, channel: 'chrome' });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   await context.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
@@ -1299,11 +1453,16 @@ async function captureManagerBrowser({ edgeBase, cookie, artifacts, evidence }) 
     await page.waitForURL(/\/locations\/[^/]+\/details$/);
     const draftId = decodeURIComponent(new URL(page.url()).pathname.split('/')[2]);
     await page.getByRole('heading', { name: 'QA Browser Integrated Location', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Add rectangle table', exact: true }).click();
+    await page.getByLabel('Table name').fill('Task 5 synthetic table');
+    await page.getByLabel('Capacity').fill('4');
+    await page.getByRole('button', { name: 'Generate seats', exact: true }).click();
     const saveResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
       && new URL(response.url()).pathname === `/api/locations/drafts/${encodeURIComponent(draftId)}`);
     await page.getByTestId('location-save-draft').click();
     const save = await saveResponse;
-    assert.equal(save.status(), 200, 'signed manager browser privately saves the created draft');
+    assert.equal(save.status(), 200, 'signed manager browser privately saves the authored table and seat anchors');
+    await page.getByText(/Draft saved.*private/).waitFor();
     const listResponse = await context.request.get(`${edgeBase}/api/locations`);
     assert.equal(listResponse.status(), 200);
     const list = (await listResponse.json()).data;
@@ -1311,9 +1470,89 @@ async function captureManagerBrowser({ edgeBase, cookie, artifacts, evidence }) 
     assert.ok(uiDraft, 'new manager draft appears only in its creator-private draft list');
     assert.equal(list.published.some((item) => item.locationId === uiDraft.locationId), false, 'browser save does not implicitly publish');
     await page.screenshot({ path: join(artifacts, 'manager-private-draft.png'), fullPage: true });
+
+    const initial = await context.request.get(`${edgeBase}/api/locations/drafts/${encodeURIComponent(draftId)}`);
+    assert.equal(initial.status(), 200);
+    const tableId = (await initial.json()).data.document.tables[0].id;
+    const glbBytes = makeTriangleGlb();
+    await page.getByTestId('location-step-model').click();
+    await page.waitForURL(new RegExp(`/locations/${draftId}/model$`));
+    const tableAssetId = await uploadFurnitureFromManager({
+      page, context, edgeBase, type: 'table', displayName: 'Task 5 private table asset.glb', bytes: glbBytes, furnitureAssetIds,
+    });
+    const tableDefault = { assetId: tableAssetId, scale: 1.25, yawDeg: 30, elevationM: 0.2 };
+    await page.getByTestId('location-default-table-scale').fill(String(tableDefault.scale));
+    await page.getByTestId('location-default-table-yawDeg').fill(String(tableDefault.yawDeg));
+    await page.getByTestId('location-default-table-elevationM').fill(String(tableDefault.elevationM));
+
+    const chairAssetId = await uploadFurnitureFromManager({
+      page, context, edgeBase, type: 'chair', displayName: 'Task 5 private chair asset.glb', bytes: glbBytes, furnitureAssetIds,
+    });
+    const chairDefault = { assetId: chairAssetId, scale: 0.75, yawDeg: -10, elevationM: 0.05 };
+    await page.getByTestId('location-default-chair-scale').fill(String(chairDefault.scale));
+    await page.getByTestId('location-default-chair-yawDeg').fill(String(chairDefault.yawDeg));
+    await page.getByTestId('location-default-chair-elevationM').fill(String(chairDefault.elevationM));
+
+    const modelSaveResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === `/api/locations/drafts/${encodeURIComponent(draftId)}`);
+    await page.getByTestId('location-model-save-draft').click();
+    assert.equal((await modelSaveResponse).status(), 200, 'room defaults and fit save as a private draft');
+    await page.getByText(/Draft saved.*private/).waitFor();
+    await page.getByTestId('location-step-details').click();
+    await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
+    const tableMode = page.getByTestId(`location-furniture-mode-${tableId}-table`);
+    await tableMode.selectOption('override');
+    assert.equal(await page.getByTestId(`table-${tableId}-table-scale`).inputValue(), '1.25',
+      'a table override starts with the complete room default fit');
+    await page.getByTestId(`table-${tableId}-table-scale`).fill('2');
+    await page.getByRole('button', { name: 'Reset to room default', exact: true }).click();
+    assert.equal(await tableMode.inputValue(), 'inherit', 'reset removes the complete table override');
+
+    const chairMode = page.getByTestId(`location-furniture-mode-${tableId}-chair`);
+    await chairMode.selectOption('override');
+    assert.equal(await page.getByTestId(`table-${tableId}-chair-scale`).inputValue(), '0.75',
+      'a chair override starts as a complete copy of the room default');
+    const chairOverride = { assetId: chairAssetId, scale: 0.9, yawDeg: 45, elevationM: 0.1 };
+    await page.getByTestId(`table-${tableId}-chair-scale`).fill(String(chairOverride.scale));
+    await page.getByTestId(`table-${tableId}-chair-yawDeg`).fill(String(chairOverride.yawDeg));
+    await page.getByTestId(`table-${tableId}-chair-elevationM`).fill(String(chairOverride.elevationM));
+    const detailsSaveResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === `/api/locations/drafts/${encodeURIComponent(draftId)}`);
+    await page.getByTestId('location-save-draft').click();
+    assert.equal((await detailsSaveResponse).status(), 200, 'the complete chair override saves privately');
+    await page.getByText(/Draft saved.*private/).waitFor();
+    await page.screenshot({ path: join(artifacts, 'manager-furniture-private-draft.png'), fullPage: true });
+    await page.reload();
+    await page.getByRole('heading', { name: 'QA Browser Integrated Location', exact: true }).waitFor();
+    await page.getByLabel('Select table', { exact: true }).selectOption(tableId);
+    assert.equal(await chairMode.inputValue(), 'override', 'the saved override is restored after reopening the draft');
+    assert.equal(await page.getByTestId(`table-${tableId}-chair-scale`).inputValue(), '0.9');
+
+    const detail = await context.request.get(`${edgeBase}/api/locations/drafts/${encodeURIComponent(draftId)}`);
+    assert.equal(detail.status(), 200);
+    const detailBody = (await detail.json()).data;
+    assert.equal(detailBody.visibility, 'public', 'the combined student workflow location is student-visible');
+    const savedDocument = detailBody.document;
+    assert.equal(savedDocument.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(savedDocument.furnitureDefaults.table.assetId, tableAssetId);
+    assert.deepEqual(savedDocument.furnitureDefaults.table, tableDefault);
+    assert.deepEqual(savedDocument.furnitureDefaults.chair, chairDefault);
+    assert.deepEqual(savedDocument.tables[0].furnitureOverrides, { chair: chairOverride });
+    assert.equal(savedDocument.tables[0].id, tableId);
+    assert.equal(savedDocument.tables[0].capacity, 4);
+    assert.equal(savedDocument.tables[0].seats.length, 4);
+
+    const crossManagerDraftId = await verifyCrossManagerFurnitureReuse({
+      edgeBase, managerCookie: cookie, operatorCookie: crossManagerCookie,
+      displayName: 'Task 5 private table asset.glb', assignment: tableDefault, bytes: glbBytes,
+    });
+    const beforePublishView = await getJson(edgeBase, '/api/locations', cookie);
+    assert.equal(beforePublishView.body.data.published.some((item) => item.locationId === uiDraft.locationId), false,
+      'saving and reopening furniture leaves it private until the explicit publish action');
+
     await page.getByRole('navigation', { name: 'Location wizard steps' }).getByRole('button', { name: /Review/ }).click();
     await page.getByRole('heading', { name: 'Review location' }).waitFor();
-    await page.screenshot({ path: join(artifacts, 'manager-review-before-publish.png'), fullPage: true });
+    await page.screenshot({ path: join(artifacts, 'manager-furniture-review-before-publish.png'), fullPage: true });
     const publishResponse = page.waitForResponse((response) => response.request().method() === 'POST'
       && new URL(response.url()).pathname === `/api/locations/drafts/${encodeURIComponent(draftId)}/publications`);
     await page.getByRole('button', { name: 'Publish location', exact: true }).click();
@@ -1329,13 +1568,643 @@ async function captureManagerBrowser({ edgeBase, cookie, artifacts, evidence }) 
       'manager browser publication updates the active revision');
     await waitFor(async () => (await fetch(`${edgeBase}/api/locations`, { headers: { cookie } }).then((response) => response.json()))
       .data.published.some((item) => item.locationId === uiDraft.locationId && item.activeRevision === 1), undefined, 'manager browser publication is visible through the API');
-    evidence.stages.push({ name: 'signed manager browser create-save-review-publish', draftPrivateBeforePublish: true, publicationRevision: 1, screenshot: 'manager-private-draft.png' });
+    evidence.stages.push({
+      name: 'signed manager browser shared-furniture publish', libraryUploads: 2, roomDefaults: 2,
+      completeOverrideResetAndReopen: true, unpublishedDraftPrivate: true, publicationRevision: 1,
+      generatedMarkerPreserved: true,
+    });
+    const workflow = {
+      locationId: uiDraft.locationId, draftId, tableId, tableAssetId, chairAssetId,
+      tableDefault, chairDefault, chairOverride, tableBytes: glbBytes, chairBytes: glbBytes,
+      privateDisplayNames: ['Task 5 private table asset.glb', 'Task 5 private chair asset.glb'],
+      crossManagerDraftId,
+      tableGeometry: {
+        capacity: savedDocument.tables[0].capacity,
+        rect: rectFromShape(savedDocument.tables[0].shape),
+        shape: structuredClone(savedDocument.tables[0].shape),
+        seats: savedDocument.tables[0].seats.map(({ id, x, y, neighbors }) => ({ id, x, y, neighbors })),
+      },
+    };
     await context.tracing.stop({ path: join(artifacts, 'manager-location-workflow.trace.zip') });
     assert.deepEqual(evidence.browser.pageErrors, [], `manager browser has no uncaught page errors: ${JSON.stringify(evidence.browser.pageErrors)}`);
     assert.deepEqual(evidence.browser.consoleErrors, [], `manager browser has no console errors: ${JSON.stringify(evidence.browser.consoleErrors)}`);
+    return workflow;
   } finally {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
+  }
+}
+
+async function uploadFurnitureFromManager({ page, context, edgeBase, type, displayName, bytes, furnitureAssetIds }) {
+  await page.getByRole('button', { name: 'Choose model', exact: true }).first().click();
+  const dialog = page.getByTestId('location-furniture-library-dialog');
+  await dialog.waitFor({ state: 'visible' });
+  await dialog.getByLabel('Furniture upload type').selectOption(type);
+  await dialog.getByLabel('Upload shared furniture GLB').setInputFiles({
+    name: `${type}-fixture.glb`, mimeType: 'model/gltf-binary', buffer: bytes,
+  });
+  await dialog.getByLabel('Display name').fill(displayName);
+  assert.equal(await dialog.getByLabel('Display name').inputValue(), displayName,
+    'the explicit library display name is typed after file selection');
+  const uploadResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/furniture-library');
+  await dialog.getByRole('button', { name: 'Upload model', exact: true }).click();
+  const uploaded = await uploadResponse;
+  assert.equal(uploaded.status(), 201, 'the UI upload has a successful shared-library response');
+  const uploadedBody = await uploaded.json();
+  assert.equal(typeof uploadedBody.data.assetId, 'string');
+  furnitureAssetIds.add(uploadedBody.data.assetId);
+  await dialog.getByRole('status').filter({ hasText: /uploaded to the shared library.*not been assigned/i }).waitFor();
+  await dialog.getByLabel('Filter furniture by type').selectOption(type);
+  const itemResponse = await context.request.get(`${edgeBase}/api/furniture-library?type=${type}`);
+  assert.equal(itemResponse.status(), 200);
+  const item = (await itemResponse.json()).data.items.find((entry) => entry.displayName === displayName);
+  assert.ok(item, 'the uploaded item appears in the shared type-filtered library');
+  assert.equal(item.assetId, uploadedBody.data.assetId, 'the listed item matches the exact upload response ID');
+  const row = dialog.getByTestId('location-furniture-results').getByRole('listitem').filter({ hasText: displayName });
+  await row.getByRole('button', { name: /^Use / }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  await page.getByTestId(`location-furniture-default-${type}`).filter({ hasText: displayName }).waitFor();
+  return item.assetId;
+}
+
+async function verifyCrossManagerFurnitureReuse({ edgeBase, managerCookie, operatorCookie, displayName, assignment, bytes }) {
+  const library = await getJson(edgeBase, `/api/furniture-library?type=table&q=${encodeURIComponent(displayName)}`, operatorCookie);
+  assert.equal(library.response.status, 200, 'a second manager role can read the shared furniture library');
+  assert.ok(library.body.data.items.some((item) => item.assetId === assignment.assetId),
+    'the second manager sees an asset uploaded by another creator');
+  const preview = await fetch(`${edgeBase}/api/furniture-library/${assignment.assetId}`, {
+    headers: { cookie: operatorCookie, origin: edgeBase, 'x-tm-algo': '1' },
+  });
+  assert.equal(preview.status, 200, 'the second manager can privately preflight the shared GLB');
+  assert.deepEqual(Buffer.from(await preview.arrayBuffer()), bytes);
+
+  const created = await managerJson(edgeBase, operatorCookie, 'POST', '/api/locations/drafts', {
+    name: 'Task 5 cross-manager reuse', building: 'Synthetic workflow', widthCm: 500, heightCm: 400,
+  });
+  assert.equal(created.response.status, 201);
+  const draftId = created.body.data.draftId;
+  const detail = await getJson(edgeBase, `/api/locations/drafts/${draftId}`, operatorCookie);
+  const document = structuredClone(detail.body.data.document);
+  document.furnitureDefaults = { table: assignment };
+  const saved = await managerJson(edgeBase, operatorCookie, 'PUT', `/api/locations/drafts/${draftId}`, {
+    expectedDraftRevision: detail.body.data.draftRevision, document,
+  });
+  assert.equal(saved.response.status, 200, 'a second manager can assign and save the shared asset in an owned draft');
+  const reloaded = await getJson(edgeBase, `/api/locations/drafts/${draftId}`, operatorCookie);
+  assert.deepEqual(reloaded.body.data.document.furnitureDefaults.table, assignment);
+  assert.equal((await getJson(edgeBase, '/api/locations', managerCookie)).body.data.drafts.some((item) => item.draftId === draftId), false,
+    'cross-manager asset reuse does not grant access to another manager private draft');
+  return draftId;
+}
+
+async function uploadSharedFurnitureAsset({ edgeBase, managerCookie, displayName, type, bytes, furnitureAssetIds }) {
+  const response = await fetch(`${edgeBase}/api/furniture-library`, {
+    method: 'POST',
+    headers: {
+      cookie: managerCookie, origin: edgeBase, 'x-tm-algo': '1',
+      'content-type': 'model/gltf-binary', 'x-furniture-type': type,
+      'x-asset-display-name': encodeURIComponent(displayName),
+    },
+    body: bytes,
+  });
+  recordStatus('POST', '/api/furniture-library', response.status);
+  const body = await response.json().catch(() => null);
+  if (typeof body?.data?.assetId === 'string') furnitureAssetIds.add(body.data.assetId);
+  return { response, body };
+}
+
+async function exercisePublishedFurnitureWorkflow({
+  edgeBase, web1Base, web2Base, edge, fixture, workflow, managerCookie, operatorCookie,
+  furnitureAssetIds, studentCookie, student2Cookie, artifacts, evidence, stage, edgeControl, web2Control, snapshotProxies,
+}) {
+  const { locationId, tableId, tableAssetId, chairAssetId, tableDefault, chairDefault, chairOverride,
+    tableBytes, chairBytes, privateDisplayNames } = workflow;
+  const cookies = [studentCookie, student2Cookie];
+  const bases = [web1Base, web2Base];
+  let firstProjection;
+  try {
+    firstProjection = await waitForFurnitureProjection(bases, cookies, locationId, edge,
+      (floor) => floor.furnitureDefaults?.table?.scale === tableDefault.scale, 'initial furniture v3 snapshot reaches both student targets');
+  } catch (error) {
+    const targetViews = await Promise.all(bases.map(async (base, index) => {
+      const response = await fetch(`${base}/api/occupancy`, { headers: { cookie: cookies[index] } });
+      const view = response.ok ? await response.json() : null;
+      const floor = view?.floors.find((candidate) => candidate.id === locationId);
+      return {
+        status: response.status, hasFloor: Boolean(floor), proceduralRoom: floor?.proceduralRoom,
+        hasFurnitureDefaults: Boolean(floor?.furnitureDefaults), tableScale: floor?.furnitureDefaults?.table?.scale,
+        tableCount: floor?.tables.length,
+      };
+    }));
+    const forwardedSnapshots = snapshotProxies.map((proxy) => ({
+      recent: proxy.snapshots.filter((capture) => capture.snapshot.floors?.some((floor) => floor.id === locationId))
+        .slice(-5).map((capture) => {
+          const floor = capture.snapshot.floors.find((candidate) => candidate.id === locationId);
+          return {
+            receiverStatus: capture.receiverStatus, version: capture.snapshot.version,
+            proceduralRoom: floor.proceduralRoom, hasFurnitureDefaults: Boolean(floor.furnitureDefaults),
+            tableScale: floor.furnitureDefaults?.table?.scale,
+          };
+        }),
+    }));
+    evidence.stages.push({ name: 'initial furniture projection diagnostics', targetViews, forwardedSnapshots });
+    throw error;
+  }
+  firstProjection.forEach((floor) => assertFurnitureProjection(floor, workflow, { tableScale: tableDefault.scale }));
+  await waitFor(() => snapshotProxies.every((proxy) => latestAcceptedSnapshot(proxy, locationId)?.snapshot.version === 3),
+    edge, 'real edge emitter sends a v3 snapshot with furniture to both receivers');
+  for (const proxy of snapshotProxies) {
+    assertEmittedFurnitureSnapshot(latestAcceptedSnapshot(proxy, locationId), workflow, 3);
+  }
+  assertReceiverFurnitureBytes(fixture, workflow);
+  stage('initial furniture v3 publication and durable receiver bytes', {
+    targets: 2, uniqueAssets: 2, targetAssetCopies: 4, durableDigestReceipts: true,
+    versionlessCampusProjection: true, generatedRoomMarkerPreserved: true,
+  });
+
+  await captureStudentFurnitureBrowser({
+    webBase: web1Base, cookie: studentCookie, locationId, workflow, artifacts, evidence,
+    preferredMode: '3d', expectedScale: tableDefault.scale,
+  });
+  await captureFreshPreferred2DFurnitureBrowser({
+    webBase: web1Base, cookie: studentCookie, locationId, evidence,
+  });
+
+  const edit = await managerJson(edgeBase, managerCookie, 'POST', `/api/locations/${locationId}/drafts`, { expectedPublishedRevision: 1 });
+  assert.equal(edit.response.status, 201, 'a manager can create a follow-up draft from the current furniture winner');
+  const draftId = edit.body.data.draftId;
+  const detail = await getJson(edgeBase, `/api/locations/drafts/${draftId}`, managerCookie);
+  assert.equal(detail.response.status, 200);
+  const candidateBytes = makeTriangleGlb();
+  const candidateUpload = await uploadSharedFurnitureAsset({
+    edgeBase, managerCookie, displayName: 'Task 5 retry table candidate', type: 'table', bytes: candidateBytes, furnitureAssetIds,
+  });
+  assert.equal(candidateUpload.response.status, 201, 'manager creates a new shared table candidate for the follow-up draft');
+  const candidateAssetId = candidateUpload.body.data.assetId;
+  assert.equal(candidateUpload.body.data.displayName, 'Task 5 retry table candidate');
+  assert.notEqual(candidateAssetId, tableAssetId, 'the failed publication candidate has a distinct immutable asset ID');
+  const changedDocument = structuredClone(detail.body.data.document);
+  changedDocument.furnitureDefaults.table.assetId = candidateAssetId;
+  changedDocument.furnitureDefaults.table.scale = 1.5;
+  const saved = await managerJson(edgeBase, managerCookie, 'PUT', `/api/locations/drafts/${draftId}`, {
+    expectedDraftRevision: detail.body.data.draftRevision, document: changedDocument,
+  });
+  assert.equal(saved.response.status, 200, 'the next assignment revision is saved as a private draft');
+  assert.equal((await getJson(edgeBase, '/api/locations', operatorCookie)).body.data.published
+    .find((item) => item.locationId === locationId)?.activeRevision, 1,
+  'private assignment edits leave the winning public revision unchanged');
+  const beforeFailure = await Promise.all(bases.map((base, index) => readPublicFloor(base, cookies[index], locationId)));
+  beforeFailure.forEach((floor) => assertFurnitureProjection(floor, workflow, { tableScale: tableDefault.scale }));
+
+  snapshotProxies[1].rejectNextAsset(candidateAssetId);
+  let failedPublication;
+  failedPublication = await managerJson(edgeBase, managerCookie, 'POST', `/api/locations/drafts/${draftId}/publications`, {
+    expectedDraftRevision: saved.body.data.draftRevision, expectedPublishedRevision: 1,
+  });
+  assert.equal(failedPublication.response.status, 503,
+    'a target rejects the candidate asset while both configured receiver processes remain live');
+  assert.equal(snapshotProxies[1].rejections.filter((id) => id === candidateAssetId).length, 1,
+    'the failure injection rejects exactly the new candidate transfer at target two');
+  const activeAfterFailure = await getJson(edgeBase, '/api/locations', managerCookie);
+  assert.equal(activeAfterFailure.body.data.published.find((item) => item.locationId === locationId)?.activeRevision, 1,
+    'receiver failure preserves the old active publication revision');
+  const oldFloorsBeforeRestart = await Promise.all(bases.map((base, index) => readPublicFloor(base, cookies[index], locationId)));
+  oldFloorsBeforeRestart.forEach((floor) => assertFurnitureProjection(floor, workflow, { tableScale: tableDefault.scale }));
+  for (let index = 0; index < bases.length; index += 1) {
+    for (const assetId of [tableAssetId, chairAssetId]) {
+      const oldAsset = await fetch(`${bases[index]}/api/models/${assetId}`, { headers: { cookie: cookies[index] } });
+      assert.equal(oldAsset.status, 200, 'both running targets retain the old winning snapshot and its referenced GLBs');
+    }
+  }
+  assertDurableReceiverAsset(fixture.web1Data, candidateAssetId, candidateBytes);
+  assert.equal(publishedModelFiles(fixture.web2Data).includes(`${candidateAssetId}.glb`), false,
+    'the injected target rejection prevents candidate bytes from reaching target two');
+  for (let index = 0; index < bases.length; index += 1) {
+    const privateCandidate = await fetch(`${bases[index]}/api/models/${candidateAssetId}`, { headers: { cookie: cookies[index] } });
+    assert.equal(privateCandidate.status, 404,
+      'the partially transferred candidate remains unauthorized on both targets under the old winning snapshots');
+  }
+
+  await edgeControl.stop();
+  await web2Control.stop();
+  await web2Control.restart();
+  const restartedView = await waitFor(async () => {
+    const response = await fetch(`${web2Base}/api/occupancy`, { headers: { cookie: student2Cookie } });
+    if (!response.ok) return false;
+    const view = await response.json();
+    return view.floors.some((floor) => floor.id === locationId) ? false : view;
+  }, undefined, 'restarted target is ready with its established empty in-memory snapshot store');
+  for (const assetId of [tableAssetId, chairAssetId, candidateAssetId]) {
+    const denied = await fetch(`${web2Base}/api/models/${assetId}`, { headers: { cookie: student2Cookie } });
+    assert.equal(denied.status, 404,
+      'a web-only restart has no current winning snapshot, so durable old or partial bytes stay unauthorized until the next edge snapshot');
+  }
+  assertDurableReceiverAsset(fixture.web2Data, tableAssetId, tableBytes);
+  assertDurableReceiverAsset(fixture.web2Data, chairAssetId, chairBytes);
+  assert.equal((await fetch(`${web1Base}/api/models/${tableAssetId}`, { headers: { cookie: studentCookie } })).status, 200,
+    'target one keeps its old current reference while target two has restarted empty');
+  assert.equal((await fetch(`${web1Base}/api/models/${candidateAssetId}`, { headers: { cookie: studentCookie } })).status, 404,
+    'target one continues denying the partial candidate while target two has restarted empty');
+  assert.equal(restartedView.floors.some((floor) => floor.id === locationId), false,
+    'web-only restart resets the old snapshot; the normal retry below reestablishes current authorization');
+  edge = await edgeControl.restart();
+  managerCookie = await loginManager(edgeBase, 'qa-admin-a');
+  const replayedOldFloors = await waitForFurnitureProjection(bases, cookies, locationId, edge,
+    (floor) => floor.furnitureDefaults?.table?.scale === tableDefault.scale,
+    'edge restart republishes the unchanged old furniture winner to both targets');
+  replayedOldFloors.forEach((floor) => assertFurnitureProjection(floor, workflow, { tableScale: tableDefault.scale }));
+  for (let index = 0; index < bases.length; index += 1) {
+    for (const assetId of [tableAssetId, chairAssetId]) {
+      const oldAsset = await fetch(`${bases[index]}/api/models/${assetId}`, { headers: { cookie: cookies[index] } });
+      assert.equal(oldAsset.status, 200, 'edge replay restores the old winner authorization on both targets');
+    }
+    const privateCandidate = await fetch(`${bases[index]}/api/models/${candidateAssetId}`, { headers: { cookie: cookies[index] } });
+    assert.equal(privateCandidate.status, 404,
+      'edge replay of the old winner still denies the partial candidate on both targets');
+  }
+  stage('failed furniture publication retains old winner', {
+    failedStatus: failedPublication?.response.status, activeRevision: 1,
+    oldWinnerReadableOnBothLiveTargetsBeforeRestart: true, restartedTargetSnapshotEmptyWhileEdgeOffline: true,
+    durableBytesAndReceiptsRetained: true, oldWinnerReplayedAfterEdgeRestart: true,
+    partialCandidateDeniedBeforeAndAfterRestart: true,
+  });
+
+  const retried = await managerJson(edgeBase, managerCookie, 'POST', `/api/locations/drafts/${draftId}/publications`, {
+    expectedDraftRevision: saved.body.data.draftRevision, expectedPublishedRevision: 1,
+  });
+  assert.equal(retried.response.status, 200, 'retry succeeds after both configured receivers recover');
+  assert.equal(retried.body.data.publishedRevision, 2);
+  const retryWorkflow = {
+    ...workflow,
+    tableAssetId: candidateAssetId,
+    tableDefault: { ...tableDefault, assetId: candidateAssetId, scale: 1.5 },
+    tableBytes: candidateBytes,
+    privateDisplayNames: [...workflow.privateDisplayNames, 'Task 5 retry table candidate'],
+  };
+  const secondProjection = await waitForFurnitureProjection(bases, cookies, locationId, edge,
+    (floor) => floor.furnitureDefaults?.table?.scale === 1.5, 'retry publishes the complete v3 snapshot to both targets');
+  secondProjection.forEach((floor) => assertFurnitureProjection(floor, retryWorkflow, { tableScale: 1.5 }));
+  await waitFor(() => snapshotProxies.every((proxy) => latestAcceptedSnapshot(proxy, locationId)?.snapshot.floors
+    .find((floor) => floor.id === locationId)?.furnitureDefaults?.table?.assetId === candidateAssetId),
+  edge, 'real edge emitter sends the retried furniture v3 winner to both receivers');
+  for (const proxy of snapshotProxies) assertEmittedFurnitureSnapshot(latestAcceptedSnapshot(proxy, locationId), retryWorkflow, 3);
+  assertReceiverFurnitureBytes(fixture, workflow, [[candidateAssetId, candidateBytes]]);
+  for (let index = 0; index < bases.length; index += 1) {
+    const candidateCurrent = await fetch(`${bases[index]}/api/models/${candidateAssetId}`, { headers: { cookie: cookies[index] } });
+    assert.equal(candidateCurrent.status, 200,
+      'the candidate asset becomes authorized on each target only after the winning retry snapshot commits');
+    assert.deepEqual(Buffer.from(await candidateCurrent.arrayBuffer()), candidateBytes);
+    const superseded = await fetch(`${bases[index]}/api/models/${tableAssetId}`, { headers: { cookie: cookies[index] } });
+    assert.equal(superseded.status, 404, 'the replaced table asset loses public authorization when the retry wins');
+  }
+  await captureStudentFurnitureBrowser({
+    webBase: web2Base, cookie: student2Cookie, locationId, workflow: retryWorkflow, artifacts, evidence,
+    preferredMode: '3d', expectedScale: 1.5,
+  });
+  stage('furniture publication retry', {
+    publishedRevision: 2, targets: 2, exactAssignmentsAndGeometry: true,
+    uniqueAssetRequestsPerFresh3DViewer: 2,
+  });
+
+  const withdraw = await managerJson(edgeBase, managerCookie, 'POST', `/api/locations/${locationId}/drafts`, { expectedPublishedRevision: 2 });
+  assert.equal(withdraw.response.status, 201);
+  const withdrawDetail = await getJson(edgeBase, `/api/locations/drafts/${withdraw.body.data.draftId}`, managerCookie);
+  assert.equal(withdrawDetail.response.status, 200);
+  const withdrawnDocument = structuredClone(withdrawDetail.body.data.document);
+  delete withdrawnDocument.furnitureDefaults;
+  for (const table of withdrawnDocument.tables) delete table.furnitureOverrides;
+  const withdrawnSave = await managerJson(edgeBase, managerCookie, 'PUT', `/api/locations/drafts/${withdraw.body.data.draftId}`, {
+    expectedDraftRevision: withdrawDetail.body.data.draftRevision, document: withdrawnDocument,
+  });
+  assert.equal(withdrawnSave.response.status, 200);
+  const withdrawal = await managerJson(edgeBase, managerCookie, 'POST', `/api/locations/drafts/${withdraw.body.data.draftId}/publications`, {
+    expectedDraftRevision: withdrawnSave.body.data.draftRevision, expectedPublishedRevision: 2,
+  });
+  assert.equal(withdrawal.response.status, 200, 'removing all assignments uses the normal private-edit and publication path');
+  assert.equal(withdrawal.body.data.publishedRevision, 3);
+  const withdrawnFloors = await waitFor(async () => {
+    const floors = await Promise.all(bases.map((base, index) => readPublicFloor(base, cookies[index], locationId)));
+    return floors.every((floor) => !Object.hasOwn(floor, 'furnitureDefaults')
+      && floor.tables.every((table) => !Object.hasOwn(table, 'furnitureOverrides'))
+      && floor.proceduralRoom === 'simple-rectangle-v1') ? floors : false;
+  }, edge, 'withdrawn v2 projection reaches both web targets');
+  for (const floor of withdrawnFloors) {
+    assert.equal(floor.version, undefined, 'the public campus projection remains versionless');
+    assert.equal(floor.proceduralRoom, 'simple-rectangle-v1', 'supported v2 procedural-room marker remains intact');
+    assert.equal(Object.hasOwn(floor, 'furnitureDefaults'), false);
+    assert.ok(floor.tables.every((table) => !Object.hasOwn(table, 'furnitureOverrides')));
+  }
+  await waitFor(() => snapshotProxies.every((proxy) => latestAcceptedSnapshot(proxy, locationId)?.snapshot.version === 2
+    && !Object.hasOwn(latestAcceptedSnapshot(proxy, locationId).snapshot.floors.find((floor) => floor.id === locationId) ?? {}, 'furnitureDefaults')),
+  edge, 'real edge emitter downgrades furniture-free public snapshot to supported v2 on both targets');
+  for (const proxy of snapshotProxies) {
+    const captured = latestAcceptedSnapshot(proxy, locationId);
+    assert.equal(captured.snapshot.version, 2, 'actual edge output uses supported snapshot v2 after all furniture references are withdrawn');
+    assertEmittedFurnitureSnapshot(captured, workflow, 2);
+  }
+  const stillPrivate = await getJson(edgeBase, `/api/locations/drafts/${workflow.crossManagerDraftId}`, operatorCookie);
+  assert.equal(stillPrivate.response.status, 200,
+    'withdrawing public references does not delete another manager private assignment draft');
+  assert.equal(stillPrivate.body.data.document.furnitureDefaults.table.assetId, tableAssetId);
+  for (let index = 0; index < bases.length; index += 1) {
+    for (const assetId of [tableAssetId, candidateAssetId, chairAssetId]) {
+      const denied = await fetch(`${bases[index]}/api/models/${assetId}`, { headers: { cookie: cookies[index] } });
+      assert.equal(denied.status, 404,
+        'withdrawn furniture bytes are denied when no current public floor references the immutable asset');
+    }
+  }
+  stage('furniture reference withdrawal projects supported v2', {
+    publishedRevision: 3, targets: 2, furnitureFieldsAbsent: true,
+    proceduralRoomMarkerPreserved: true, privateDraftRetained: true, unreferencedPublicBytesDenied: true,
+  });
+}
+
+async function readPublicFloor(webBase, cookie, locationId) {
+  const response = await fetch(`${webBase}/api/occupancy`, { headers: { cookie } });
+  assert.equal(response.status, 200, 'student occupancy remains available');
+  const view = await response.json();
+  const floor = view.floors.find((candidate) => candidate.siteId === 'hku-innowing' && candidate.id === locationId);
+  assert.ok(floor, 'the composite location appears in the current student campus projection');
+  assert.equal(Object.hasOwn(view, 'version'), false, 'campus view omits an internal transport version');
+  return floor;
+}
+
+async function createSnapshotRecordingProxy(targetBase, port) {
+  const snapshots = [];
+  const rejections = [];
+  let rejectAssetId;
+  const server = createHttpServer((request, response) => {
+    void (async () => {
+      const chunks = [];
+      let length = 0;
+      for await (const chunk of request) {
+        length += chunk.byteLength;
+        if (length > 128 * 1024 * 1024) {
+          response.writeHead(413).end();
+          return;
+        }
+        chunks.push(chunk);
+      }
+      const body = Buffer.concat(chunks);
+      const urlPath = request.url ?? '/';
+      const assetId = decodeURIComponent(urlPath.split('/').at(-1) ?? '');
+      if (request.method === 'PUT' && urlPath.startsWith('/api/edge/location-assets/') && assetId === rejectAssetId) {
+        rejections.push(assetId);
+        rejectAssetId = undefined;
+        response.writeHead(503, { 'content-length': '0' });
+        response.end();
+        return;
+      }
+      let emittedSnapshot;
+      if (request.method === 'POST' && urlPath === '/api/edge/snapshot') {
+        try { emittedSnapshot = JSON.parse(body.toString('utf8')); } catch { emittedSnapshot = undefined; }
+      }
+      const headers = {};
+      for (const name of ['authorization', 'content-type', 'x-tm-edge-id', 'x-tm-sha256']) {
+        const value = request.headers[name];
+        if (typeof value === 'string') headers[name] = value;
+      }
+      try {
+        const upstream = await fetch(new URL(urlPath, targetBase), {
+          method: request.method, headers, ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        const bytes = Buffer.from(await upstream.arrayBuffer());
+        response.writeHead(upstream.status, {
+          'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+          'content-length': String(bytes.byteLength),
+        });
+        response.end(bytes);
+        if (emittedSnapshot) {
+          snapshots.push({ snapshot: emittedSnapshot, receiverStatus: upstream.status });
+          if (snapshots.length > 30) snapshots.splice(0, snapshots.length - 30);
+        }
+      } catch {
+        if (!response.headersSent) response.writeHead(502, { 'content-length': '0' });
+        response.end();
+        if (emittedSnapshot) {
+          snapshots.push({ snapshot: emittedSnapshot, receiverStatus: 502 });
+          if (snapshots.length > 30) snapshots.splice(0, snapshots.length - 30);
+        }
+      }
+    })();
+  });
+  await new Promise((resolveListen, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolveListen);
+  });
+  return { server, snapshots, rejections, rejectNextAsset: (assetId) => { rejectAssetId = assetId; } };
+}
+
+async function closeHttpServer(server) {
+  if (!server?.listening) return;
+  await new Promise((resolveClose) => {
+    server.close(() => resolveClose());
+    server.closeAllConnections?.();
+  });
+}
+
+function latestAcceptedSnapshot(proxy, locationId) {
+  return [...proxy.snapshots].reverse().find((capture) => capture.receiverStatus === 200
+    && capture.snapshot.floors?.some((floor) => floor.id === locationId));
+}
+
+function assertEmittedFurnitureSnapshot(capture, workflow, version) {
+  assert.ok(capture, 'each real target accepts an edge-emitted snapshot for this location');
+  const { snapshot } = capture;
+  assert.equal(capture.receiverStatus, 200, 'receiver accepts the captured snapshot');
+  assert.equal(snapshot.version, version);
+  const floor = snapshot.floors.find((item) => item.id === workflow.locationId);
+  assert.ok(floor);
+  assert.equal(floor.proceduralRoom, 'simple-rectangle-v1');
+  const table = floor.tables.find((item) => item.id === workflow.tableId);
+  assert.ok(table);
+  assert.equal(table.capacity, workflow.tableGeometry.capacity);
+  assert.deepEqual(table.rect, workflow.tableGeometry.rect);
+  assert.deepEqual(table.shape, workflow.tableGeometry.shape);
+  assert.deepEqual(table.seats.map(({ id, x, y, neighbors }) => ({ id, x, y, neighbors })), workflow.tableGeometry.seats,
+    'actual transport snapshot retains the authored table and seat geometry');
+  if (version === 3) {
+    assert.deepEqual(floor.furnitureDefaults, {
+      table: workflow.tableDefault, chair: workflow.chairDefault,
+    });
+    assert.deepEqual(table.furnitureOverrides, { chair: workflow.chairOverride });
+  } else {
+    assert.equal(version, 2);
+    assert.equal(Object.hasOwn(floor, 'furnitureDefaults'), false);
+    assert.ok(floor.tables.every((table) => !Object.hasOwn(table, 'furnitureOverrides')));
+  }
+}
+
+async function waitForFurnitureProjection(bases, cookies, locationId, processHandle, predicate, label) {
+  return waitFor(async () => {
+    const floors = await Promise.all(bases.map(async (base, index) => {
+      try { return await readPublicFloor(base, cookies[index], locationId); }
+      catch { return null; }
+    }));
+    return floors.every((floor) => floor && predicate(floor)) ? floors : false;
+  }, processHandle, label);
+}
+
+function assertFurnitureProjection(floor, workflow, { tableScale, tableAssetId = workflow.tableAssetId }) {
+  const { tableId, chairAssetId, tableDefault, chairDefault, chairOverride,
+    privateDisplayNames, tableGeometry } = workflow;
+  assert.equal(floor.proceduralRoom, 'simple-rectangle-v1');
+  assert.equal(Object.hasOwn(floor, 'version'), false);
+  assert.deepEqual(floor.furnitureDefaults, {
+    table: { ...tableDefault, assetId: tableAssetId, scale: tableScale }, chair: chairDefault,
+  }, 'public v3 projection contains only the complete safe default asset references and transforms');
+  const table = floor.tables.find((candidate) => candidate.id === tableId);
+  assert.ok(table, 'published v3 projection preserves the authored table');
+  assert.equal(table.capacity, tableGeometry.capacity);
+  assert.deepEqual(table.rect, tableGeometry.rect);
+  assert.deepEqual(table.shape, tableGeometry.shape);
+  assert.deepEqual(table.seats.map(({ id, x, y, neighbors }) => ({ id, x, y, neighbors })), tableGeometry.seats,
+    'furniture transforms do not change authored table or seat geometry');
+  assert.deepEqual(table.furnitureOverrides, { chair: chairOverride });
+  assert.equal(floor.tables.reduce((sum, candidate) => sum + candidate.capacity, 0), 4);
+  const serialized = JSON.stringify(floor);
+  for (const privateName of privateDisplayNames) assert.equal(serialized.includes(privateName), false,
+    'public campus projection excludes manager-private display names');
+  for (const forbidden of ['creatorId', 'assetProvenance', 'uploader', 'metadata']) {
+    assert.equal(Object.hasOwn(floor, forbidden), false, `public campus projection excludes ${forbidden}`);
+  }
+  assert.equal(table.furnitureOverrides.chair.assetId, chairAssetId);
+  assert.equal(floor.furnitureDefaults.table.assetId, tableAssetId);
+}
+
+function assertReceiverFurnitureBytes(fixture, workflow, extraAssets = []) {
+  let copies = 0;
+  for (const dataDir of [fixture.web1Data, fixture.web2Data]) {
+    for (const [assetId, bytes] of [
+      [workflow.tableAssetId, workflow.tableBytes], [workflow.chairAssetId, workflow.chairBytes], ...extraAssets,
+    ]) {
+      assertDurableReceiverAsset(dataDir, assetId, bytes);
+      copies += 1;
+    }
+    assert.deepEqual(JSON.parse(readFileSync(join(dataDir, 'published-models', '.integrity-baseline-v1'), 'utf8')),
+      { schemaVersion: 1 }, 'the receiver completed its versioned integrity baseline before serving model bytes');
+  }
+  assert.equal(copies, (2 + extraAssets.length) * 2);
+}
+
+function assertDurableReceiverAsset(dataDir, assetId, bytes) {
+  const directory = join(dataDir, 'published-models');
+  const persisted = readFileSync(join(directory, `${assetId}.glb`));
+  assert.deepEqual(persisted, bytes, 'receiver persists the exact immutable GLB bytes');
+  const metadata = JSON.parse(readFileSync(join(directory, `${assetId}.meta`), 'utf8'));
+  assert.deepEqual(metadata, { sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.byteLength },
+    'receiver persists the matching immutable digest and byte length receipt');
+}
+
+async function captureStudentFurnitureBrowser({ webBase, cookie, locationId, workflow, artifacts, evidence, preferredMode, expectedScale }) {
+  const errors = [];
+  const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--enable-webgl', '--ignore-gpu-blocklist'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  await context.addCookies([{ name: 'tm_session', value: cookie.replace(/^tm_session=/, ''), url: webBase }]);
+  await context.addInitScript((mode) => localStorage.setItem('hkumyseat.student.room-view-mode.v1', mode), preferredMode);
+  await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+  const page = await context.newPage();
+  const modelRequests = [];
+  page.on('pageerror', (error) => errors.push(error.name));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(`console:${message.text().slice(0, 120)}`); });
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.origin === webBase && /^\/api\/models\/[0-9a-f-]{36}$/i.test(url.pathname)) modelRequests.push(url.pathname);
+    if (url.origin === webBase) evidence.browser.network.push({ event: 'furniture-student-request', method: request.method(), path: routeLabel(url.pathname) });
+  });
+  try {
+    await page.goto(`${webBase}/dashboard/`);
+    await page.getByTestId('student-location-search').waitFor();
+    await page.goto(`${webBase}/dashboard/spaces/hku-innowing/${encodeURIComponent(locationId)}`);
+    assert.equal(await page.getByRole('radio', { name: '3D view' }).isChecked(), true,
+      'fresh selected 3D preference initializes the student furniture viewer');
+    await page.getByTestId('student-model-viewer-canvas').waitFor();
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return Boolean(viewer?._three && viewer?._generatedShell && viewer?._furnitureInstances?.size === 5);
+    });
+    const rendered = await page.evaluate(() => {
+      const viewer = document.querySelector('floor-viewer');
+      return [...viewer._furnitureInstances.entries()].map(([key, object]) => ({
+        key, assetId: object.userData.assetId, tableId: object.userData.tableId,
+        slot: object.userData.slot, seatId: object.userData.seatId ?? null,
+        position: [object.position.x, object.position.y, object.position.z],
+        scale: [object.scale.x, object.scale.y, object.scale.z], yaw: object.rotation.y,
+      }));
+    });
+    assert.equal(rendered.filter((item) => item.assetId === workflow.tableAssetId && item.slot === 'table').length, 1);
+    assert.equal(rendered.filter((item) => item.assetId === workflow.chairAssetId && item.slot === 'chair').length, 4,
+      'four authored seats inherit the unique chair GLB reference');
+    const tableInstance = rendered.find((item) => item.assetId === workflow.tableAssetId && item.slot === 'table');
+    const chairInstances = rendered.filter((item) => item.assetId === workflow.chairAssetId && item.slot === 'chair');
+    assert.deepEqual(tableInstance.scale, [expectedScale, expectedScale, expectedScale], 'table display fit uses a uniform scale');
+    assert.ok(chairInstances.every((item) => item.scale.every((value) => value === workflow.chairOverride.scale)),
+      'the complete per-table chair override applies uniform scale to each authored seat');
+    assert.ok(Math.abs(tableInstance.yaw - workflow.tableDefault.yawDeg * Math.PI / 180) < 1e-10,
+      'table display yaw is applied around vertical Y');
+    assert.ok(Math.abs(tableInstance.position[1] - workflow.tableDefault.elevationM) < 1e-10,
+      'table display elevation is applied from the base');
+    assert.ok(chairInstances.every((item) => Math.abs(item.position[1] - workflow.chairOverride.elevationM) < 1e-10),
+      'chair elevation applies at each authored seat base');
+    assert.equal((await page.getByTestId(`student-table-list-${workflow.tableId}`).innerText()).includes('No live data'), true,
+      'furniture display preserves unknown occupancy status');
+    assert.equal(modelRequests.filter((path) => path === `/api/models/${workflow.tableAssetId}`).length, 1,
+      'the unique table asset is fetched once');
+    assert.equal(modelRequests.filter((path) => path === `/api/models/${workflow.chairAssetId}`).length, 1,
+      'the unique chair asset shared by all seat instances is fetched once');
+    assert.equal(modelRequests.length, 2, 'student 3D viewer fetches only the two unique assigned furniture models');
+    await page.screenshot({ path: join(artifacts, `student-furniture-${expectedScale}.png`), fullPage: true });
+    const body = await page.locator('body').innerText();
+    for (const name of workflow.privateDisplayNames) assert.equal(body.includes(name), false,
+      'student UI does not expose manager-private shared-library display names');
+    const layoutAssignments = await page.evaluate(() => JSON.parse(document.querySelector('floor-viewer').getAttribute('location-layout'))
+      .tables.map((table) => table.furniture));
+    assert.equal(layoutAssignments.length, 1);
+    assert.deepEqual(layoutAssignments[0], {
+      table: { ...workflow.tableDefault, scale: expectedScale }, chair: workflow.chairOverride,
+    }, 'the student bridge receives the complete inherited/default and overridden assignments');
+    await context.tracing.stop({ path: join(artifacts, `student-furniture-${expectedScale}.trace.zip`) });
+    evidence.stages.push({ name: 'student v3 furniture geometry', preferredMode, expectedScale,
+      visibleFurnitureInstances: rendered.length, uniqueAssetRequests: modelRequests.length,
+      uniformScaleYawElevation: true, authoredGeometryRetained: true, unknownStatusRetained: true });
+  } finally {
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+  }
+  assert.deepEqual(errors, [], `student furniture page has no browser errors: ${JSON.stringify(errors)}`);
+}
+
+async function captureFreshPreferred2DFurnitureBrowser({ webBase, cookie, locationId, evidence }) {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  await context.addCookies([{ name: 'tm_session', value: cookie.replace(/^tm_session=/, ''), url: webBase }]);
+  await context.addInitScript(() => localStorage.setItem('hkumyseat.student.room-view-mode.v1', '2d'));
+  const modelRequests = [];
+  const page = await context.newPage();
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.origin === webBase && /^\/api\/models\/[0-9a-f-]{36}$/i.test(url.pathname)) modelRequests.push(url.pathname);
+  });
+  try {
+    await page.goto(`${webBase}/dashboard/`);
+    await page.getByTestId('student-location-search').waitFor();
+    await page.goto(`${webBase}/dashboard/spaces/hku-innowing/${encodeURIComponent(locationId)}`);
+    const map = page.getByTestId(`student-floor-map-hku-innowing-${locationId}`);
+    await map.waitFor();
+    assert.equal(await map.isVisible(), true);
+    assert.equal(await page.getByRole('radio', { name: '2D map' }).isChecked(), true);
+    assert.equal(await page.getByTestId('student-model-viewer-canvas').count(), 0,
+      'a fresh preferred 2D browser does not initialize the hidden 3D viewer');
+    assert.equal(await page.evaluate(() => localStorage.getItem('hkumyseat.student.room-view-mode.v1')), '2d');
+    assert.deepEqual(modelRequests, [], 'fresh preferred 2D startup makes no furniture model requests');
+    evidence.stages.push({ name: 'fresh preferred 2d does not fetch furniture', freshBrowserContext: true, modelRequests: 0 });
+  } finally {
+    await context.close();
+    await browser.close();
   }
 }
 
@@ -1397,8 +2266,16 @@ function makeTriangleGlb() {
 }
 
 function align4(length) { return Math.ceil(length / 4) * 4; }
+function rectFromShape(shape) {
+  if (shape.type === 'rect') return { x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+  if (shape.type === 'circle') return { x: shape.cx - shape.radius, y: shape.cy - shape.radius, width: shape.radius * 2, height: shape.radius * 2 };
+  const xs = shape.points.map(([x]) => x), ys = shape.points.map(([, y]) => y);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
 function routeLabel(path) {
   return path.replace(/\/api\/models\/[0-9a-f-]{36}/gi, '/api/models/{assetId}')
+    .replace(/\/api\/furniture-library\/[0-9a-f-]{36}/gi, '/api/furniture-library/{assetId}')
     .replace(/\/api\/locations\/drafts\/[0-9a-f-]{36}/gi, '/api/locations/drafts/{draftId}')
     .replace(/\/api\/locations\/location_[^/]+/gi, '/api/locations/{locationId}');
 }
