@@ -43,6 +43,27 @@ test('public campus parser retains valid authored v2 and projects away unknown/p
   });
 });
 
+test('versionless public campus projection carries complete furniture references and excludes private metadata', () => {
+  const value = validView();
+  const floor = value.floors[0]!;
+  const defaults = { table: { assetId: '00000000-0000-4000-8000-000000000021', scale: 1.25, yawDeg: 35, elevationM: 0.04 } };
+  const overrides = { chair: { assetId: '00000000-0000-4000-8000-000000000022', scale: 0.75, yawDeg: -90, elevationM: 0.12 } };
+  floor.furnitureDefaults = defaults;
+  floor.tables[0]!.furnitureOverrides = overrides;
+  Object.assign(floor, { furnitureDigest: 'private', creatorId: 'private' });
+  const parsed = parseCampusView(value);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.floors[0]!.furnitureDefaults, defaults);
+  assert.deepEqual(parsed.floors[0]!.tables[0]!.furnitureOverrides, overrides);
+  assert.equal('furnitureDigest' in parsed.floors[0]!, false);
+  assert.equal('creatorId' in parsed.floors[0]!, false);
+  assert.equal('version' in parsed, false, 'the campus projection remains versionless');
+
+  const malformed = structuredClone(value);
+  malformed.floors[0]!.tables[0]!.furnitureOverrides!.chair!.elevationM = 11;
+  assert.equal(parseCampusView(malformed), null, 'versionless projections reject malformed furniture bundles');
+});
+
 test('public campus parser preserves the legacy spatial envelope for untagged tables', () => {
   const value = validView();
   const floor = value.floors[0]!;

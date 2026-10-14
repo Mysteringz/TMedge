@@ -289,7 +289,9 @@ components:
       description: >-
         A closed public floor view. Campus metadata is listed with the floor
         fields so strict property validation accepts the composite view while
-        rejecting private or unknown fields.
+        rejecting private or unknown fields. The projection remains
+        versionless and may carry validated v3 furniture defaults and table
+        overrides as opaque asset references with render-only transforms.
       required: [id, building, name, width, height, outline, zones, tables, totals, siteId, key, edgeId, updatedAt, stale]
       not:
         required: [model, proceduralRoom]
@@ -328,6 +330,8 @@ components:
             V2 only. Selects the fixed 3 m rectangular room and 0.75 m table
             presentation generated from the validated floor/table/seat data.
             This field is mutually exclusive with model. V1 snapshots reject it.
+        furnitureDefaults:
+          $ref: '#/components/schemas/FurnitureSlots'
         siteId: { type: string }
         key: { type: string, description: 'Collision-safe JSON identity for [siteId, floorId].' }
         edgeId: { type: string }
@@ -349,6 +353,7 @@ components:
     TableState:
       type: object
       required: [id, name, zoneId, rect, capacity, occupied, free, status, seats]
+      additionalProperties: false
       properties:
         id: { type: string, description: Stable authored table ID. }
         name: { type: string }
@@ -360,6 +365,8 @@ components:
             - $ref: '#/components/schemas/RectShape'
             - $ref: '#/components/schemas/CircleShape'
             - $ref: '#/components/schemas/PolygonShape'
+        furnitureOverrides:
+          $ref: '#/components/schemas/FurnitureSlots'
         capacity: { type: integer, minimum: 1 }
         occupied: { type: integer, minimum: 0, nullable: true }
         free: { type: integer, minimum: 0, nullable: true }
@@ -367,6 +374,27 @@ components:
         seats:
           type: array
           items: { $ref: '#/components/schemas/SeatState' }
+    FurnitureSlots:
+      type: object
+      description: >-
+        Optional v3 room defaults or whole-slot table overrides. Empty objects,
+        null values, unknown keys, and partial assignments are invalid. No
+        creator, library, digest, purpose, or storage metadata is public.
+      minProperties: 1
+      maxProperties: 2
+      additionalProperties: false
+      properties:
+        table: { $ref: '#/components/schemas/FurnitureAssignment' }
+        chair: { $ref: '#/components/schemas/FurnitureAssignment' }
+    FurnitureAssignment:
+      type: object
+      required: [assetId, scale, yawDeg, elevationM]
+      additionalProperties: false
+      properties:
+        assetId: { type: string, format: uuid }
+        scale: { type: number, minimum: 0.01, maximum: 100 }
+        yawDeg: { type: number, minimum: -360, maximum: 360 }
+        elevationM: { type: number, minimum: 0, maximum: 10 }
     Rectangle:
       type: object
       required: [x, y, width, height]

@@ -6,6 +6,7 @@
  * on screen, or students are sent to a floor that filled up an hour ago.
  */
 import type { CampusFloor, CampusView, FloorState, OccupancySnapshot, Rect, TableShape, TableState } from '../shared/types.js';
+import { parseFurnitureSlots } from '../shared/furniture.js';
 import { LOCATION_GEOMETRY_EPSILON, LOCATION_MODEL_TRANSFORM_LIMITS, isValidSimpleBoundedPolygon } from '../shared/location-validation.js';
 import { tableBounds } from '../shared/table-geometry.js';
 import { campusLocationKey } from '../shared/location-identity.js';
@@ -34,11 +35,18 @@ export class SnapshotStore {
   }
 
   /** Current winner lookup shared by the student view and model authorization. */
-  referencesUploadedModel(assetId: string, now = Date.now()): boolean {
+  referencesPublishedAsset(assetId: string, now = Date.now()): boolean {
+    const expected = assetId.toLowerCase();
     for (const { floor } of this.currentWinningFloors(now).values()) {
-      if (floor.model?.assetId === assetId) return true;
+      if (floor.model?.assetId.toLowerCase() === expected) return true;
+      if (furnitureSlotsReference(floor.furnitureDefaults, expected)) return true;
+      if (floor.tables.some((table) => furnitureSlotsReference(table.furnitureOverrides, expected))) return true;
     }
     return false;
+  }
+
+  referencesUploadedModel(assetId: string, now = Date.now()): boolean {
+    return this.referencesPublishedAsset(assetId, now);
   }
 
   private currentWinningFloors(now: number): Map<string, { floor: FloorState; siteId: string; edgeId: string; receivedAt: number; stale: boolean }> {
@@ -61,6 +69,10 @@ export class SnapshotStore {
   edges(now = Date.now()): { edgeId: string; ageMs: number }[] {
     return [...this.latest.values()].map(({ snap, receivedAt }) => ({ edgeId: snap.edgeId, ageMs: now - receivedAt }));
   }
+}
+
+function furnitureSlotsReference(slots: FloorState['furnitureDefaults'], assetId: string): boolean {
+  return slots?.table?.assetId.toLowerCase() === assetId || slots?.chair?.assetId.toLowerCase() === assetId;
 }
 
 function blank(f: FloorState): FloorState {
@@ -87,7 +99,7 @@ function blank(f: FloorState): FloorState {
 export function isSnapshot(v: unknown): v is OccupancySnapshot {
   if (!record(v, ['version', 'edgeId', 'site', 'generatedAt', 'floors'])) return false;
   const version = v.version;
-  return (version === 1 || version === 2) && text(v.edgeId, 99) && record(v.site, ['id', 'name']) &&
+  return (version === 1 || version === 2 || version === 3) && text(v.edgeId, 99) && record(v.site, ['id', 'name']) &&
     text(v.site.id) && text(v.site.name) && nonnegative(v.generatedAt) &&
     list(v.floors, 200) && unique(v.floors) && v.floors.every((floor) => validFloor(floor, version));
 }
@@ -122,16 +134,18 @@ function validSeat(v: unknown, enforceBounds: boolean, floorWidth: number, floor
     (v.occupied === null || typeof v.occupied === 'boolean') &&
     list(v.neighbors, 100) && v.neighbors.every((n) => text(n)) && new Set(v.neighbors).size === v.neighbors.length;
 }
-function validTable(v: unknown, version: 1 | 2, floorWidth: number, floorHeight: number): v is unknown & TableState {
+function validTable(v: unknown, version: 1 | 2 | 3, floorWidth: number, floorHeight: number): v is unknown & TableState {
   const hasShape = !!v && typeof v === 'object' && !Array.isArray(v) && Object.hasOwn(v, 'shape');
-  if (!record(v, ['id', 'name', 'zoneId', 'rect', 'capacity', 'occupied', 'free', 'status', 'seats'], version === 2 ? ['shape'] : []) ||
+  const optionalKeys = [...(version >= 2 ? ['shape'] : []), ...(version === 3 ? ['furnitureOverrides'] : [])];
+  if (!record(v, ['id', 'name', 'zoneId', 'rect', 'capacity', 'occupied', 'free', 'status', 'seats'], optionalKeys) ||
+      (version === 3 && Object.hasOwn(v, 'furnitureOverrides') && !parseFurnitureSlots(v.furnitureOverrides)) ||
       !text(v.id) || !text(v.name) || !text(v.zoneId) || !count(v.capacity, 100) || v.capacity < 1 ||
       !record(v.rect, ['x', 'y', 'width', 'height']) || !finite(v.rect.x) || !finite(v.rect.y) ||
       !finite(v.rect.width) || v.rect.width <= 0 || !finite(v.rect.height) || v.rect.height <= 0 ||
       !list(v.seats, 100) || v.seats.length !== v.capacity || !unique(v.seats) ||
-      !v.seats.every((seat) => validSeat(seat, version === 2 && hasShape, floorWidth, floorHeight))) return false;
+      !v.seats.every((seat) => validSeat(seat, version >= 2 && hasShape, floorWidth, floorHeight))) return false;
   const rect = v.rect as unknown as Rect;
-  if (version === 2 && hasShape) {
+  if (version >= 2 && hasShape) {
     if (rect.width < LOCATION_GEOMETRY_EPSILON || rect.height < LOCATION_GEOMETRY_EPSILON ||
         rect.x < 0 || rect.y < 0 || rect.x + rect.width > floorWidth || rect.y + rect.height > floorHeight) return false;
     const shape = Object.hasOwn(v, 'shape') ? validShape(v.shape, floorWidth, floorHeight) : undefined;
@@ -146,13 +160,16 @@ function validTable(v: unknown, version: 1 | 2, floorWidth: number, floorHeight:
     t.occupied + t.free === t.capacity && t.seats.every((s) => typeof s.occupied === 'boolean') &&
     t.seats.filter((s) => s.occupied).length === t.occupied;
 }
-function validFloor(v: unknown, version: 1 | 2): boolean {
-  const optionalV2Keys = version === 2 ? ['model', 'proceduralRoom'] : [];
+function validFloor(v: unknown, version: 1 | 2 | 3): boolean {
+  const optionalV2Keys = version >= 2 ? ['model', 'proceduralRoom'] : [];
+  const optionalFurnitureKeys = version === 3 ? ['furnitureDefaults'] : [];
+  const optionalKeys = [...optionalV2Keys, ...optionalFurnitureKeys];
   const hasProceduralRoom = !!v && typeof v === 'object' && !Array.isArray(v) && Object.hasOwn(v, 'proceduralRoom');
-  if (!record(v, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'totals'], optionalV2Keys) ||
+  if (!record(v, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'totals'], optionalKeys) ||
+      (version === 3 && Object.hasOwn(v, 'furnitureDefaults') && !parseFurnitureSlots(v.furnitureDefaults)) ||
       !text(v.id) || !text(v.building) || !text(v.name) || !finite(v.width) || v.width <= 0 || !finite(v.height) || v.height <= 0 ||
       !polygon(v.outline) || (Object.hasOwn(v, 'model') && v.model !== null && !validPublishedModel(v.model)) ||
-      (hasProceduralRoom && (version !== 2 || v.proceduralRoom !== 'simple-rectangle-v1' || Object.hasOwn(v, 'model'))) ||
+      (hasProceduralRoom && (version < 2 || v.proceduralRoom !== 'simple-rectangle-v1' || Object.hasOwn(v, 'model'))) ||
       (hasProceduralRoom && !isSimpleRoomRectangleOutline(v.outline as [number, number][], v.width, v.height)) ||
       !list(v.zones, 1000) || !unique(v.zones) || !list(v.tables, 1000) || !unique(v.tables) ||
       !record(v.totals, ['seats', 'free', 'occupied', 'unknownSeats', 'tablesFullyFree']) ||

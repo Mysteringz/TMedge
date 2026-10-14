@@ -1,4 +1,5 @@
 import type { CampusFloor, CampusView, CoverageStatus, PublishedFloorModel, Point, SeatSide, TableShape } from './types.js';
+import { parseFurnitureSlots } from './furniture.js';
 import { isValidSimpleBoundedPolygon, LOCATION_MODEL_TRANSFORM_LIMITS } from './location-validation.js';
 import { isSimpleRoomRectangleOutline, SIMPLE_ROOM_SOURCE } from './simple-room-geometry.js';
 
@@ -42,8 +43,10 @@ function parseFloor(value: unknown): CampusFloor | null {
   })) return null;
   const totals = parseTotals(value.totals);
   const model = parseModel(value);
+  const hasFurnitureDefaults = Object.hasOwn(value, 'furnitureDefaults');
+  const furnitureDefaults = hasFurnitureDefaults ? parseFurnitureSlots(value.furnitureDefaults) : undefined;
   const hasProceduralRoom = Object.hasOwn(value, 'proceduralRoom');
-  if (!totals || model === invalidModel || (hasProceduralRoom && (
+  if (!totals || model === invalidModel || (hasFurnitureDefaults && !furnitureDefaults) || (hasProceduralRoom && (
     value.proceduralRoom !== SIMPLE_ROOM_SOURCE || Object.hasOwn(value, 'model') ||
     !isSimpleRoomRectangleOutline(value.outline as Point[], value.width as number, value.height as number)
   ))) return null;
@@ -64,6 +67,7 @@ function parseFloor(value: unknown): CampusFloor | null {
     tables: parsedTables, totals, updatedAt: value.updatedAt, stale: value.stale,
     ...(model === undefined ? {} : { model }),
     ...(hasProceduralRoom ? { proceduralRoom: SIMPLE_ROOM_SOURCE } : {}),
+    ...(furnitureDefaults ? { furnitureDefaults } : {}),
   };
 }
 
@@ -82,6 +86,9 @@ function parseTable(value: unknown, width: number, height: number) {
   const hasShape = Object.hasOwn(value, 'shape');
   const shape = hasShape ? parseShape(value.shape, width, height, value.rect) : undefined;
   if (hasShape && !shape) return null;
+  const hasFurnitureOverrides = Object.hasOwn(value, 'furnitureOverrides');
+  const furnitureOverrides = hasFurnitureOverrides ? parseFurnitureSlots(value.furnitureOverrides) : undefined;
+  if (hasFurnitureOverrides && !furnitureOverrides) return null;
   const seats = value.seats.map((seat) => parseSeat(seat, width, height, hasShape));
   if (seats.some((seat) => seat === null)) return null;
   const parsedSeats = seats as NonNullable<typeof seats[number]>[];
@@ -97,6 +104,7 @@ function parseTable(value: unknown, width: number, height: number) {
     rect: { x: value.rect.x, y: value.rect.y, width: value.rect.width, height: value.rect.height },
     ...(shape ? { shape } : {}), capacity: value.capacity, occupied: value.occupied, free: value.free,
     status: value.status, seats: parsedSeats,
+    ...(furnitureOverrides ? { furnitureOverrides } : {}),
   };
 }
 

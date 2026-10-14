@@ -11,8 +11,9 @@ import type {
 
 const draftId = '00000000-0000-4000-8000-000000000001';
 const modelId = '00000000-0000-4000-8000-000000000002';
+const furnitureId = '00000000-0000-4000-8000-000000000005';
 
-function document(withModel = false, visibility: 'public' | 'console' = 'public', generatedRoom = false) {
+function document(withModel = false, visibility: 'public' | 'console' = 'public', generatedRoom = false, withFurniture = false) {
   return parseLocationDocument({
     schemaVersion: 1,
     locationId: 'location_edge-test_00000000-0000-4000-8000-000000000003',
@@ -30,11 +31,15 @@ function document(withModel = false, visibility: 'public' | 'console' = 'public'
       modelTransform: { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } },
     } : {}),
     ...(generatedRoom ? { proceduralRoom: 'simple-rectangle-v1' } : {}),
+    ...(withFurniture ? { furnitureDefaults: { table: { assetId: furnitureId, scale: 1, yawDeg: 0, elevationM: 0 } } } : {}),
   });
 }
 
 function harness(options: {
   withModel?: boolean;
+  withFurniture?: boolean;
+  furnitureUnavailable?: boolean;
+  furnitureTypeMismatch?: boolean;
   generatedReplacement?: boolean;
   visibility?: 'public' | 'console';
   legacyStatic?: boolean;
@@ -45,7 +50,7 @@ function harness(options: {
 } = {}) {
   let locked = false;
   const events: string[] = [];
-  const location = document(options.withModel, options.visibility, options.generatedReplacement);
+  const location = document(options.withModel, options.visibility, options.generatedReplacement, options.withFurniture);
   const baseDocument = options.legacyStatic ? document(true, options.visibility) : options.existingBase ? document(false, options.visibility) : null;
   const activeRevision = options.legacyStatic ? 0 : options.existingBase ? 1 : null;
   const baseProvenance = options.legacyStatic ? {
@@ -131,10 +136,19 @@ function harness(options: {
         } : null;
       },
     },
+    furnitureLibrary: {
+      async getFurnitureMetadata(id) {
+        events.push('furniture-meta');
+        return options.withFurniture && !options.furnitureUnavailable && id === furnitureId ? {
+          assetId: furnitureId, creatorId: 'different-uploader', purpose: 'furniture', furnitureType: options.furnitureTypeMismatch ? 'chair' : 'table',
+          mediaType: 'model/gltf-binary', sha256: 'b'.repeat(64), byteLength: 20, createdAt: 1, displayName: 'Shared table.glb',
+        } : null;
+      },
+    },
     ...(options.modelAcknowledgement ? { modelDistributor: { acknowledge: async () => { events.push('model-ack'); await options.modelAcknowledgement!(); } } } : {}),
     now: () => 100,
   });
-  return { useCase, events, get preparedDocument() { return runtimeCandidate; } };
+  return { useCase, events, get preparedDocument() { return runtimeCandidate; }, get publishedState() { return state; } };
 }
 
 test('publication prepares and acknowledges before commit, then activates before unlocking', async () => {
@@ -165,6 +179,52 @@ test('a failed public GLB acknowledgement is a pre-commit distribution failure',
   assert.ok(events.includes('model-ack'));
   assert.ok(!events.includes('commit'));
   assert.ok(!events.includes('activate'));
+});
+
+test('a furniture acknowledgement failure leaves an existing public winner and runtime active', async () => {
+  const { useCase, events, publishedState } = harness({
+    withFurniture: true,
+    existingBase: true,
+    modelAcknowledgement: async () => { throw new Error('target did not confirm furniture'); },
+  });
+  assert.equal(publishedState?.activeRevision, 1);
+  assert.equal(publishedState?.history.at(-1)?.document.furnitureDefaults, undefined);
+  await assert.rejects(
+    useCase.execute({ creatorId: 'operator-a', draftId, expectedDraftRevision: 2, expectedPublishedRevision: 1 }),
+    PublishedModelDistributionFailedError,
+  );
+  assert.equal(publishedState?.activeRevision, 1, 'the old composite location winner remains current');
+  assert.equal(publishedState?.history.at(-1)?.revision, 1);
+  assert.equal(publishedState?.history.at(-1)?.document.furnitureDefaults, undefined,
+    'the failed candidate never replaces the old winner document');
+  assert.ok(!events.includes('commit'));
+  assert.ok(!events.includes('activate'), 'the prior runtime generation remains active');
+});
+
+test('a public shared-furniture reference is revalidated then acknowledged before commit', async () => {
+  const { useCase, events } = harness({ withFurniture: true, modelAcknowledgement: async () => undefined });
+  const result = await useCase.execute({ creatorId: 'operator-a', draftId, expectedDraftRevision: 2, expectedPublishedRevision: null });
+  assert.equal(result.publishedRevision, 1);
+  assert.deepEqual(events, ['lock', 'read', 'draft', 'furniture-meta', 'available', 'prepare', 'model-ack', 'refresh', 'commit', 'activate', 'unlock']);
+});
+
+test('public furniture publication fails before prepare when the shared metadata is unavailable or type-incompatible', async () => {
+  for (const options of [{ withFurniture: true, furnitureUnavailable: true }, { withFurniture: true, furnitureTypeMismatch: true }]) {
+    const { useCase, events } = harness(options);
+    await assert.rejects(useCase.execute({ creatorId: 'operator-a', draftId, expectedDraftRevision: 2, expectedPublishedRevision: null }));
+    assert.ok(events.includes('furniture-meta'));
+    assert.ok(!events.includes('prepare'));
+    assert.ok(!events.includes('commit'));
+  }
+});
+
+test('console-only furniture is metadata-validated but never distributed to student web targets', async () => {
+  const { useCase, events } = harness({ withFurniture: true, visibility: 'console', modelAcknowledgement: async () => undefined });
+  const result = await useCase.execute({ creatorId: 'operator-a', draftId, expectedDraftRevision: 2, expectedPublishedRevision: null });
+  assert.equal(result.publishedRevision, 1);
+  assert.ok(events.includes('furniture-meta'));
+  assert.ok(!events.includes('model-ack'));
+  assert.ok(events.includes('activate'));
 });
 
 test('console-only uploaded models stay edge-local and do not wait for student web distribution', async () => {

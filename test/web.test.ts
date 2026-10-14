@@ -3,8 +3,9 @@
  * when data goes stale.
  */
 import assert from 'node:assert/strict';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -144,6 +145,10 @@ test('web: uploaded models are immutable and student reads follow only the curre
     assert.equal(visible.headers.get('cache-control'), 'private, no-store');
     assert.deepEqual(Buffer.from(await visible.arrayBuffer()), bytes);
 
+    writeFileSync(join(modelsPath, `${assetId}.glb`), changedBytes);
+    assert.equal((await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } })).status, 503,
+      'a structurally valid file changed after durable ingest fails the stored digest/length check');
+
     const noModel = await fetch(`${base}/api/edge/snapshot`, {
       method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(snapshot()),
     });
@@ -161,10 +166,155 @@ test('web: uploaded models are immutable and student reads follow only the curre
   try {
     assert.equal((await fetch(`${restarted}/api/models/${assetId}`, { headers: { cookie } })).status, 404,
       'persistent bytes do not become readable until a current snapshot references them after restart');
+    const current = version2Snapshot();
+    current.floors[0]!.model!.assetId = assetId;
+    assert.equal((await fetch(`${restarted}/api/edge/snapshot`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(current),
+    })).status, 200);
+    assert.equal((await fetch(`${restarted}/api/models/${assetId}`, { headers: { cookie } })).status, 503,
+      'restarting the receiver does not adopt changed bytes as a new trusted digest');
   } finally {
     web.server.closeAllConnections();
     await web.dispose();
     await new Promise<void>((resolve) => web.server.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('web: furniture refs authorize globally keyed bytes only while at least one current composite winner references them', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'published-furniture-authority-'));
+  const web = createWebApp({
+    port: 0, host: '127.0.0.1', pushToken: TOKEN, sessionSecret: Buffer.from('f'.repeat(40)),
+    usersPath: join(directory, 'users.json'), publishedModelsDir: join(directory, 'published-models'),
+    allowedDomains: ['connect.hku.hk'], signupOpen: true, cookieSecure: false, trustProxy: false, staleMs: 30_000,
+  });
+  await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
+  const cookie = await signup(base, 'furniture-reader@connect.hku.hk');
+  const assetId = '00000000-0000-4000-8000-000000000095';
+  const bytes = makeGlb({ asset: { version: '2.0', generator: 'published-shared-furniture' }, buffers: [] });
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const upload = () => fetch(`${base}/api/edge/location-assets/location_edge-a_00000000-0000-4000-8000-000000000095/${assetId}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${TOKEN}`, 'x-tm-edge-id': 'edge-a', 'x-tm-sha256': digest, 'content-type': 'model/gltf-binary' }, body: bytes,
+  });
+  const push = (snapshotValue: OccupancySnapshot) => fetch(`${base}/api/edge/snapshot`, {
+    method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(snapshotValue),
+  });
+  const furnitureSnapshot = () => {
+    const value = version2Snapshot();
+    value.version = 3;
+    value.floors[0]!.model = null;
+    value.floors[0]!.tables[0]!.furnitureOverrides = {
+      chair: { assetId, scale: 1.5, yawDeg: -45, elevationM: 0.1 },
+    };
+    return value;
+  };
+  try {
+    assert.equal((await upload()).status, 201);
+    const first = furnitureSnapshot();
+    assert.equal(isSnapshot(first), true);
+    assert.equal((await push(first)).status, 200);
+    const visible = await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } });
+    assert.equal(visible.status, 200, 'an override reference authorizes shared furniture GLB bytes through the existing student route');
+    assert.deepEqual(Buffer.from(await visible.arrayBuffer()), bytes);
+
+    const secondSite = structuredClone(first);
+    secondSite.edgeId = 'edge-b';
+    secondSite.site = { id: 'site-b', name: 'Other site' };
+    assert.equal((await push(secondSite)).status, 200);
+    const withdrawnFirst = structuredClone(first);
+    withdrawnFirst.generatedAt += 1;
+    delete withdrawnFirst.floors[0]!.tables[0]!.furnitureOverrides;
+    assert.equal((await push(withdrawnFirst)).status, 200);
+    assert.equal((await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } })).status, 200,
+      'another composite current winner continues to authorize the globally keyed asset');
+
+    const withdrawnSecond = structuredClone(secondSite);
+    withdrawnSecond.generatedAt += 1;
+    delete withdrawnSecond.floors[0]!.tables[0]!.furnitureOverrides;
+    assert.equal((await push(withdrawnSecond)).status, 200);
+    assert.equal((await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } })).status, 404,
+      'once no current winning floor references the furniture, stored bytes are unreadable');
+  } finally {
+    web.server.closeAllConnections();
+    await web.dispose();
+    await new Promise<void>((resolve) => web.server.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('web: legacy published GLBs are inventoried once and receipt loss fails closed after cutover', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'published-model-integrity-baseline-'));
+  const modelsPath = join(directory, 'published-models');
+  const bytes = makeGlb({ asset: { version: '2.0', generator: 'legacy-stored-model' }, buffers: [] });
+  const changedBytes = makeGlb({ asset: { version: '2.0', generator: 'changed-after-baseline' }, buffers: [] });
+  const assetId = '00000000-0000-4000-8000-000000000094';
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  mkdirSync(modelsPath, { recursive: true });
+  writeFileSync(join(modelsPath, `${assetId}.glb`), bytes);
+  try {
+    const firstBoot = new FilePublishedModelStore(modelsPath);
+    assert.deepEqual(await firstBoot.read(assetId), { bytes, sha256: digest },
+      'first boot validates and records the current legacy file before serving it');
+    assert.equal(readFileSync(join(modelsPath, '.integrity-baseline-v1'), 'utf8'), '{"schemaVersion":1}');
+    assert.deepEqual(JSON.parse(readFileSync(join(modelsPath, `${assetId}.meta`), 'utf8')), { sha256: digest, byteLength: bytes.byteLength });
+
+    unlinkSync(join(modelsPath, `${assetId}.meta`));
+    const secondBoot = new FilePublishedModelStore(modelsPath);
+    await assert.rejects(secondBoot.read(assetId), /durable metadata/,
+      'once the cutover marker exists, a missing receipt is never silently adopted on read');
+    assert.equal(await secondBoot.put(assetId, digest, bytes), 'already-present',
+      'an authenticated retry repairs only an unreceipted file that matches its supplied digest and length');
+    assert.deepEqual(await secondBoot.read(assetId), { bytes, sha256: digest });
+
+    writeFileSync(join(modelsPath, `${assetId}.glb`), changedBytes);
+    await assert.rejects(new FilePublishedModelStore(modelsPath).read(assetId), /do not match their durable metadata/,
+      'a later process still detects changed valid GLB bytes against the baseline receipt');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('web: integrity baseline waits for a live initializer and recovers an exact stale owner lock', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'published-model-baseline-lock-'));
+  const lockPath = join(directory, '.integrity-baseline-v1.lock');
+  let child: ChildProcess | undefined;
+  try {
+    child = spawn(process.execPath, ['-e', [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const { randomUUID } = require('node:crypto');",
+      "const lock = path.join(process.argv[1], '.integrity-baseline-v1.lock');",
+      "fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, nonce: randomUUID() }), { mode: 0o600 });",
+      "process.stdout.write('lock-ready\\n');",
+      "process.stdin.once('data', () => { fs.unlinkSync(lock); process.stdout.write('lock-released\\n'); });",
+    ].join(' '), directory], { stdio: ['pipe', 'pipe', 'pipe'] });
+    await waitForChildText(child, 'lock-ready');
+    let initializationFinished = false;
+    const waitingInitialization = new FilePublishedModelStore(directory).ensureInitialized().then(() => { initializationFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(initializationFinished, false, 'a live foreign owner keeps startup behind the baseline barrier');
+    child.stdin?.end('release');
+    await waitingInitialization;
+    await waitForChildExit(child);
+    child = undefined;
+    assert.equal(readFileSync(join(directory, '.integrity-baseline-v1'), 'utf8'), '{"schemaVersion":1}');
+    assert.equal(readdirSync(directory).some((name) => name.endsWith('.lock.tmp')), false,
+      'successful initialization removes its temporary hardlink');
+
+    unlinkSync(join(directory, '.integrity-baseline-v1'));
+    const deadOwner = spawn(process.execPath, ['-e', "process.stdout.write(String(process.pid))"], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const deadOwnerPid = Number(await readChildOutput(deadOwner));
+    await waitForChildExit(deadOwner);
+    writeFileSync(lockPath, JSON.stringify({ pid: deadOwnerPid, nonce: '00000000-0000-4000-8000-000000000001' }), { mode: 0o600 });
+    await new FilePublishedModelStore(directory).ensureInitialized();
+    assert.equal(readFileSync(join(directory, '.integrity-baseline-v1'), 'utf8'), '{"schemaVersion":1}',
+      'a dead process owner is reclaimed and the inventory barrier completes');
+    assert.equal(readdirSync(directory).includes('.integrity-baseline-v1.lock'), false, 'the stale lock is removed');
+    assert.equal(readdirSync(directory).some((name) => name.endsWith('.lock.tmp')), false, 'stale recovery leaves no temporary hardlinks');
+  } finally {
+    if (child && child.exitCode === null) {
+      child.stdin?.end('release');
+      child.kill();
+    }
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -833,6 +983,49 @@ test('web: v2 snapshot ingress preserves strict shape and model fields while kee
   } finally { await w.close(); }
 });
 
+test('web: strict v3 snapshot ingress preserves only complete furniture references while v1/v2 stay unchanged', async () => {
+  const current = version2Snapshot();
+  const v3 = structuredClone(current);
+  v3.version = 3;
+  v3.floors[0]!.furnitureDefaults = { table: { assetId: '00000000-0000-4000-8000-000000000096', scale: 1, yawDeg: 0, elevationM: 0 } };
+  v3.floors[0]!.tables[0]!.furnitureOverrides = { chair: { assetId: '00000000-0000-4000-8000-000000000097', scale: 2, yawDeg: 90, elevationM: 0.5 } };
+  assert.equal(isSnapshot(v3), true);
+
+  const v2WithFurniture = structuredClone(current);
+  v2WithFurniture.floors[0]!.furnitureDefaults = structuredClone(v3.floors[0]!.furnitureDefaults);
+  assert.equal(isSnapshot(v2WithFurniture), false, 'v2 cannot accept v3-only floor keys');
+  const v1WithFurniture = structuredClone(snapshot());
+  v1WithFurniture.floors[0]!.furnitureDefaults = structuredClone(v3.floors[0]!.furnitureDefaults);
+  assert.equal(isSnapshot(v1WithFurniture), false, 'v1 cannot accept v3-only floor keys');
+
+  const invalid: OccupancySnapshot[] = [];
+  for (const change of [
+    (value: OccupancySnapshot) => { value.floors[0]!.furnitureDefaults = {}; },
+    (value: OccupancySnapshot) => { value.floors[0]!.furnitureDefaults = { table: { assetId: '00000000-0000-4000-8000-000000000096', scale: 1, yawDeg: 0 } } as never; },
+    (value: OccupancySnapshot) => { value.floors[0]!.furnitureDefaults = { table: { assetId: '00000000-0000-4000-8000-000000000096', scale: 101, yawDeg: 0, elevationM: 0 } }; },
+    (value: OccupancySnapshot) => { value.floors[0]!.furnitureDefaults = { table: { assetId: '00000000-0000-4000-8000-000000000096', scale: 1, yawDeg: 0, elevationM: 0 }, private: {} } as never; },
+    (value: OccupancySnapshot) => { value.floors[0]!.tables[0]!.furnitureOverrides = null as never; },
+  ]) {
+    const value = structuredClone(v3);
+    change(value);
+    invalid.push(value);
+  }
+  for (const value of invalid) assert.equal(isSnapshot(value), false, 'v3 rejects empty, partial, out-of-range, unknown, and null furniture assignments');
+
+  const web = await start();
+  try {
+    const accepted = await fetch(`${web.base}/api/edge/snapshot`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(v3),
+    });
+    assert.equal(accepted.status, 200);
+    const campusFloor = web.store.view().floors[0];
+    assert.deepEqual(campusFloor?.furnitureDefaults, v3.floors[0]!.furnitureDefaults);
+    assert.deepEqual(campusFloor?.tables[0]?.furnitureOverrides, v3.floors[0]!.tables[0]!.furnitureOverrides);
+    const stale = web.store.view(Date.now() + 31_000).floors[0];
+    assert.deepEqual(stale?.furnitureDefaults, v3.floors[0]!.furnitureDefaults, 'stale occupancy blanking retains safe render references');
+  } finally { await web.close(); }
+});
+
 test('web: emitted v2 snapshots keep legacy zones and perimeter seats without synthesized shapes', () => {
   const site = {
     site: { id: 'legacy-site', name: 'Legacy site' },
@@ -993,4 +1186,40 @@ function makeGlb(root: Record<string, unknown>): Buffer {
   output.writeUInt32LE(0x4e4f534a, 16);
   json.copy(output, 20);
   return output;
+}
+
+function waitForChildText(child: ChildProcess, expected: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => reject(new Error(`Child process did not write ${expected}.`)), 5_000);
+    const onData = (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+      if (!output.includes(expected)) return;
+      clearTimeout(timer);
+      child.stdout?.off('data', onData);
+      resolve();
+    };
+    child.stdout?.on('data', onData);
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (code) => {
+      if (!output.includes(expected)) { clearTimeout(timer); reject(new Error(`Child exited before writing ${expected} (code ${code}).`)); }
+    });
+  });
+}
+
+function readChildOutput(child: ChildProcess): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
+    child.stdout?.once('end', () => resolve(output));
+    child.once('error', reject);
+  });
+}
+
+function waitForChildExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return child.exitCode === 0 ? Promise.resolve() : Promise.reject(new Error(`Child exited with code ${child.exitCode}.`));
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Child exited with code ${code}.`)));
+  });
 }

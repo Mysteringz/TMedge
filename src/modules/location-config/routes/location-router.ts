@@ -16,7 +16,7 @@ import type {
 import { CreateLocationDraftUseCase } from '../use-cases/create-location-draft.js';
 import { StartLocationEditDraftUseCase } from '../use-cases/start-location-edit-draft.js';
 import { SaveLocationDraftUseCase } from '../use-cases/save-location-draft.js';
-import { FurniturePublicationUnavailableError, PublishLocationUseCase, PublishedModelDistributionFailedError, PublishedModelDistributionUnavailableError } from '../use-cases/publish-location.js';
+import { PublishLocationUseCase, PublishedModelDistributionFailedError, PublishedModelDistributionUnavailableError } from '../use-cases/publish-location.js';
 import { UploadLocationAssetUseCase } from '../use-cases/upload-location-asset.js';
 import { ReadLocationDraftAssetUseCase } from '../use-cases/read-location-draft-asset.js';
 import { FurnitureLibraryUseCase } from '../use-cases/furniture-library.js';
@@ -59,7 +59,8 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
   const publish = new PublishLocationUseCase<PreparedRuntimeGeneration>({
     drafts: dependencies.drafts, published: dependencies.published, snapshots: dependencies.snapshots,
     mutationCoordinator: dependencies.coordinator, runtime: dependencies.runtime,
-    assetMetadata: dependencies.assetMetadata, modelDistributor: dependencies.modelDistributor, now: dependencies.now,
+    assetMetadata: dependencies.assetMetadata, furnitureLibrary: dependencies.furnitureLibrary,
+    modelDistributor: dependencies.modelDistributor, now: dependencies.now,
   });
   const upload = new UploadLocationAssetUseCase({ drafts: dependencies.drafts, assets: dependencies.assets, saveDraft: save, now: dependencies.now });
   const readAsset = new ReadLocationDraftAssetUseCase({
@@ -418,10 +419,9 @@ function handleError(res: Response, error: unknown): Response {
   if (error instanceof SyntaxError) return fail(res, 400, 'INVALID_JSON', 'The request body is malformed.');
   if (error instanceof LocationConflictError) return fail(res, 409, 'CONFLICT', error.message);
   if (error instanceof FurnitureLibraryRequestError) return fail(res, 400, 'VALIDATION', 'The furniture library request is invalid.');
-  if (error instanceof FurniturePublicationUnavailableError) return fail(res, 422, 'FURNITURE_PUBLICATION_UNAVAILABLE', 'Furniture publication is not available yet.');
   if (error instanceof LocationDraftNotFoundError) return fail(res, 404, 'NOT_FOUND', 'Location draft was not found.');
   if (error instanceof UnknownRegistryCommitOutcomeError) return fail(res, 503, 'COMMIT_OUTCOME_UNKNOWN', 'Publication outcome is unknown; reload after registry recovery.');
-  if (error instanceof PublishedModelDistributionUnavailableError || error instanceof PublishedModelDistributionFailedError) return fail(res, 503, 'MODEL_DISTRIBUTION_FAILED', 'The model was not acknowledged by every student site; the location was not published.');
+  if (error instanceof PublishedModelDistributionUnavailableError || error instanceof PublishedModelDistributionFailedError) return fail(res, 503, 'MODEL_DISTRIBUTION_FAILED', 'A public GLB asset was not acknowledged by every student site; the location was not published.');
   if (error instanceof LocationStorageUnavailableError) return fail(res, 503, 'STORAGE_UNAVAILABLE', 'Location storage is unavailable.');
   if (error instanceof InvalidLocationAssetReferenceError) return fail(res, 404, 'ASSET_NOT_FOUND', 'The referenced asset is not available.');
   if (error instanceof InvalidLocationDocumentError || error instanceof TypeError || error instanceof RangeError) return fail(res, 422, 'VALIDATION', 'The location request is invalid.');

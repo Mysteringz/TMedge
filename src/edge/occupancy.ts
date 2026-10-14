@@ -292,6 +292,7 @@ export class OccupancyEngine {
   }
 
   snapshot(now: number, mutateTracks = true): OccupancySnapshot {
+    const snapshotVersion = this.reg.snapshotVersion ?? 1;
     const floors: FloorState[] = this.reg.floors.map((floor) => {
       const tables: TableState[] = floor.tables.map((t) => this.tableState(t, now, mutateTracks));
       const zones: ZoneState[] = floor.zones.map((z) => {
@@ -322,8 +323,9 @@ export class OccupancyEngine {
         outline: floor.outline,
         zones,
         tables,
-        ...(this.reg.snapshotVersion === 2 && model !== undefined ? { model } : {}),
-        ...(this.reg.snapshotVersion === 2 && floor.proceduralRoom ? { proceduralRoom: floor.proceduralRoom } : {}),
+        ...(snapshotVersion >= 2 && model !== undefined ? { model } : {}),
+        ...(snapshotVersion >= 2 && floor.proceduralRoom ? { proceduralRoom: floor.proceduralRoom } : {}),
+        ...(snapshotVersion === 3 && floor.furnitureDefaults ? { furnitureDefaults: floor.furnitureDefaults } : {}),
         totals: {
           seats: tables.reduce((a, t) => a + t.capacity, 0),
           free: known.reduce((a, t) => a + (t.free ?? 0), 0),
@@ -333,7 +335,7 @@ export class OccupancyEngine {
         },
       };
     });
-    return { version: this.reg.snapshotVersion ?? 1, edgeId: this.edgeId, site: this.reg.site, generatedAt: now, floors };
+    return { version: snapshotVersion, edgeId: this.edgeId, site: this.reg.site, generatedAt: now, floors };
   }
 
   // --- internals -------------------------------------------------------------
@@ -508,7 +510,8 @@ export class OccupancyEngine {
       name: t.name,
       zoneId: t.zoneId,
       rect: t.rect,
-      ...(this.reg.snapshotVersion === 2 && t.shapeAuthored ? { shape: t.shape } : {}),
+      ...((this.reg.snapshotVersion === 2 || this.reg.snapshotVersion === 3) && t.shapeAuthored ? { shape: t.shape } : {}),
+      ...(this.reg.snapshotVersion === 3 && t.furnitureOverrides ? { furnitureOverrides: t.furnitureOverrides } : {}),
       capacity: t.capacity,
       occupied,
       free: occupied === null ? null : t.capacity - occupied,

@@ -12,8 +12,9 @@
 import { readFileSync } from 'node:fs';
 import { floorToPixel, GRID_H, GRID_W } from '../shared/geometry.js';
 import { generateSeats, type SeatSpec } from '../shared/seats.js';
-import type { NodePose, Point, Rect, TableShape, PublishedFloorModel, ProceduralRoom } from '../shared/types.js';
+import type { NodePose, Point, Rect, TableShape, PublishedFloorModel, ProceduralRoom, FurnitureSlots } from '../shared/types.js';
 import { tableBounds } from '../shared/table-geometry.js';
+import { parseFurnitureSlots } from '../shared/furniture.js';
 import { LOCATION_MODEL_TRANSFORM_LIMITS } from '../shared/location-validation.js';
 import { nodesArrayForRegistry } from '../modules/location-config/domain/nodes-config.js';
 import { parseLocationDocument, type LocationDocument } from '../modules/location-config/domain/location-document.js';
@@ -26,6 +27,7 @@ export interface TableDef {
   floorId: string;
   zoneId: string;
   shape: TableShape;
+  furnitureOverrides?: FurnitureSlots;
   /** True only when the source floor supplied an authored tagged shape. */
   shapeAuthored: boolean;
   rect: Rect;
@@ -65,6 +67,7 @@ export interface FloorDef {
   outline: Point[];
   zones: ZoneDef[];
   tables: TableDef[];
+  furnitureDefaults?: FurnitureSlots;
   model?: PublishedFloorModel;
   proceduralRoom?: ProceduralRoom;
   /** Server-derived v2 hint; never read from site.json or a client document. */
@@ -115,7 +118,7 @@ export interface Registry {
   nodes: Map<string, NodeDef>;
   seatIndex: Map<string, { seat: SeatSpec; table: TableDef }>;
   /** Location-backed registries emit the version-2 public snapshot contract. */
-  snapshotVersion?: 1 | 2;
+  snapshotVersion?: 1 | 2 | 3;
 }
 
 export class ConfigError extends Error {}
@@ -183,6 +186,7 @@ function buildRegistryCore(
   siteJson: unknown,
   nodesJson: unknown,
   trustedLegacySeats: ReadonlyMap<string, { x: number; y: number }> = new Map(),
+  locationFurnitureFloors: ReadonlySet<string> = new Set(),
 ): Registry {
   const root = obj(siteJson, 'site.json');
   only(root, 'site.json', ['site', 'floors']);
@@ -198,12 +202,15 @@ function buildRegistryCore(
   root.floors.forEach((fv, fi) => {
     const w = `floors[${fi}]`;
     const f = obj(fv, w);
-    only(f, w, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'visibility', 'model']);
+    const floorId = str(f, 'id', w);
+    const locationBacked = locationFurnitureFloors.has(floorId);
+    only(f, w, ['id', 'building', 'name', 'width', 'height', 'outline', 'zones', 'tables', 'visibility', 'model',
+      ...(locationBacked ? ['furnitureDefaults'] : [])]);
     if (f.visibility !== undefined && f.visibility !== 'public' && f.visibility !== 'console') {
       throw new ConfigError(`${w}.visibility: expected "public" or "console"`);
     }
     const floor: FloorDef = {
-      id: str(f, 'id', w),
+      id: floorId,
       visibility: f.visibility === 'console' ? 'console' : 'public',
       building: str(f, 'building', w),
       name: str(f, 'name', w),
@@ -214,6 +221,11 @@ function buildRegistryCore(
       tables: [],
     };
     if (f.model !== undefined) floor.model = parseFloorModel(f.model, `${w}.model`);
+    if (f.furnitureDefaults !== undefined) {
+      const defaults = parseFurnitureSlots(f.furnitureDefaults);
+      if (!defaults) throw new ConfigError(`${w}.furnitureDefaults: expected complete table/chair assignments`);
+      floor.furnitureDefaults = defaults;
+    }
     if (floors.some((x) => x.id === floor.id)) throw new ConfigError(`${w}: duplicate floor id "${floor.id}"`);
 
     if (!Array.isArray(f.zones) || f.zones.length === 0) throw new ConfigError(`${w}.zones: expected a non-empty array`);
@@ -230,7 +242,8 @@ function buildRegistryCore(
     f.tables.forEach((tv, ti) => {
       const tw = `${w}.tables[${ti}]`;
       const t = obj(tv, tw);
-      only(t, tw, ['id', 'name', 'zone', 'x', 'y', 'width', 'height', 'shape', 'capacity', 'seats', 'seatRadiusCm']);
+      only(t, tw, ['id', 'name', 'zone', 'x', 'y', 'width', 'height', 'shape', 'capacity', 'seats', 'seatRadiusCm',
+        ...(locationBacked ? ['furnitureOverrides'] : [])]);
       const id = str(t, 'id', tw);
       if (tables.has(id)) throw new ConfigError(`${tw}: duplicate table id "${id}" (table ids are unique site-wide)`);
       const zoneId = str(t, 'zone', tw);
@@ -258,6 +271,11 @@ function buildRegistryCore(
         coveredBy: [],
         owner: null,
       };
+      if (t.furnitureOverrides !== undefined) {
+        const overrides = parseFurnitureSlots(t.furnitureOverrides);
+        if (!overrides) throw new ConfigError(`${tw}.furnitureOverrides: expected complete table/chair assignments`);
+        table.furnitureOverrides = overrides;
+      }
       tables.set(id, table);
       floor.tables.push(table);
       for (const seat of table.seats) seatIndex.set(seat.id, { seat, table });
@@ -398,11 +416,14 @@ export function buildRegistryFromLocationDocuments(
   if (!Array.isArray(root.floors)) throw new ConfigError('site.json.floors: expected a non-empty array');
   const replacements = new Map<string, LocationDocument>();
   const proceduralRooms = new Map<string, ProceduralRoom>();
+  let hasPublicFurniture = false;
   for (const input of documents) {
     const document = parseLocationDocument(input);
     if (replacements.has(document.locationId)) throw new ConfigError(`duplicate published location "${document.locationId}"`);
     replacements.set(document.locationId, document);
     if (document.proceduralRoom) proceduralRooms.set(document.locationId, document.proceduralRoom);
+    if (document.visibility === 'public' && (Object.hasOwn(document, 'furnitureDefaults')
+      || document.tables.some((table) => Object.hasOwn(table, 'furnitureOverrides')))) hasPublicFurniture = true;
   }
   const seedIds = new Set(root.floors.map((floor, index) => str(obj(floor, `floors[${index}]`), 'id', `floors[${index}]`)));
   const floors = (root.floors as unknown[]).map((floor, index) => {
@@ -425,14 +446,14 @@ export function buildRegistryFromLocationDocuments(
   // coordinates, and its allow-list comes from exact-base validated storage
   // provenance. The registry computes ownership and coverage from the real
   // inherited positions rather than temporary placeholders.
-  const registry = buildRegistryCore({ ...root, floors }, nodesJson, trustedLegacySeats);
+  const registry = buildRegistryCore({ ...root, floors }, nodesJson, trustedLegacySeats, new Set(documents.map((document) => document.locationId)));
   for (const floor of registry.floors) {
     const proceduralRoom = proceduralRooms.get(floor.id);
     if (proceduralRoom) floor.proceduralRoom = proceduralRoom;
     const disposition = modelDispositionByLocation.get(floor.id);
     if (disposition) floor.modelDisposition = disposition;
   }
-  registry.snapshotVersion = 2;
+  registry.snapshotVersion = hasPublicFurniture ? 3 : 2;
   return registry;
 }
 
@@ -465,11 +486,13 @@ function locationDocumentFloor(
         id: table.id, name: table.name, zone: table.zoneId, capacity: table.capacity,
         x: inherited.rect.x, y: inherited.rect.y, width: inherited.rect.width, height: inherited.rect.height,
         seatRadiusCm: table.seatRadiusCm, seats,
+        ...(table.furnitureOverrides ? { furnitureOverrides: table.furnitureOverrides } : {}),
       };
     }
     return {
       id: table.id, name: table.name, zone: table.zoneId, shape: table.shape, capacity: table.capacity,
       seatRadiusCm: table.seatRadiusCm, seats,
+      ...(table.furnitureOverrides ? { furnitureOverrides: table.furnitureOverrides } : {}),
     };
   });
   const floor: Obj = {
@@ -483,6 +506,7 @@ function locationDocumentFloor(
     zones,
     tables,
   };
+  if (document.furnitureDefaults) floor.furnitureDefaults = document.furnitureDefaults;
   if (!modelDisposition && document.modelAssetId && document.modelTransform) floor.model = { assetId: document.modelAssetId, transform: document.modelTransform };
   return floor;
 }

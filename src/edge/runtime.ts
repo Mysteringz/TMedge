@@ -282,7 +282,11 @@ export class EdgeRuntime extends EventEmitter {
    */
   publicSnapshot(s: OccupancySnapshot, generation = this.captureGeneration()): OccupancySnapshot {
     const pub = new Set(generation.reg.floors.filter((f) => f.visibility === 'public').map((f) => f.id));
-    return { ...s, floors: s.floors.filter((f) => pub.has(f.id)) };
+    const floors = s.floors.filter((f) => pub.has(f.id));
+    const hasFurniture = floors.some((floor) => Object.hasOwn(floor, 'furnitureDefaults')
+      || floor.tables.some((table) => Object.hasOwn(table, 'furnitureOverrides')));
+    const version = hasFurniture ? 3 : s.version === 1 ? 1 : 2;
+    return { ...s, version, floors };
   }
 
   /** Latest RGB frame per RGB-enabled node: memory only, never recorded. */

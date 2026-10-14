@@ -54,6 +54,8 @@ export interface TableState {
   rect: Rect;
   /** Present on version-2 snapshots. `rect` remains the derived legacy bounds. */
   shape?: TableShape;
+  /** V3 public render assignment override; absent means inherit the floor default. */
+  furnitureOverrides?: FurnitureSlots;
   capacity: number;
   /** Seats taken; never more than capacity. null when unknown. */
   occupied: number | null;
@@ -96,6 +98,8 @@ export interface FloorState {
   model?: PublishedFloorModel | null;
   /** V2 generated-room renderer contract; mutually exclusive with `model`. */
   proceduralRoom?: ProceduralRoom;
+  /** V3 public room defaults. */
+  furnitureDefaults?: FurnitureSlots;
   totals: FloorTotals;
 }
 
@@ -109,12 +113,24 @@ export interface PublishedFloorModel {
 }
 
 export interface OccupancySnapshot {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   edgeId: string;
   site: { id: string; name: string };
   /** Edge clock, ms since epoch. */
   generatedAt: number;
   floors: FloorState[];
+}
+
+export interface FurnitureAssignment {
+  assetId: string;
+  scale: number;
+  yawDeg: number;
+  elevationM: number;
+}
+
+export interface FurnitureSlots {
+  table?: FurnitureAssignment;
+  chair?: FurnitureAssignment;
 }
 
 /** What the web tier serves: every floor from every edge, with freshness. */

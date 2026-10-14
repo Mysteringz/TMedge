@@ -109,6 +109,8 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 export interface WebAppInstance<TAccounts extends IStudentAccountRepository> {
   app: express.Express;
   server: Server;
+  /** Completes storage preflight before the production listener is bound. */
+  ready: Promise<void>;
   store: SnapshotStore;
   users: TAccounts;
   sessions: Sessions;
@@ -149,6 +151,7 @@ export function createWebApp(cfg: WebConfig, options: {
   const store = new SnapshotStore(cfg.staleMs);
   // Keep model bytes beside persistent web account data, outside public/static assets.
   const modelStore = new FilePublishedModelStore(cfg.publishedModelsDir ?? join(dirname(cfg.usersPath), 'published-models'));
+  const ready = modelStore.ensureInitialized();
   const noStore = (res: Response) => res.set('Cache-Control', 'no-store').vary('Cookie').vary('Authorization');
   // Counts of how the site is used, for module 05 of the algo console. Always
   // on: it is the only usage record there is when accounts live in a file.
@@ -171,6 +174,9 @@ export function createWebApp(cfg: WebConfig, options: {
     .replaceAll('{{turnstile}}', cfg.turnstile?.siteKey ?? '')
     .replaceAll('{{google}}', google ? 'on' : '');
   const app = createExpressApp(cfg);
+  // Do not process snapshots or model requests until legacy immutable GLBs
+  // have a durable digest/length receipt and the inventory cutover marker is written.
+  app.use((_req, _res, next) => { void modelStore.ensureInitialized().then(() => next(), next); });
   app.use((req, res, next) => {
     // Taken now: routers rewrite req.url while they work, and by the time the
     // response has finished only the outermost path is the one to count.
@@ -287,7 +293,7 @@ export function createWebApp(cfg: WebConfig, options: {
       }
     })();
     return disposal;  };
-  return { app, server, store, users: accounts, sessions, activity: options.activity, usage: meter, dispose };
+  return { app, server, ready, store, users: accounts, sessions, activity: options.activity, usage: meter, dispose };
 }
 
 /** Async production composition; file-mode factories remain synchronous for existing callers. */
@@ -389,6 +395,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const web = await createConfiguredWebApp(cfg);
     let count: number;
     try {
+      await web.ready;
       count = await web.users.count();
       await new Promise<void>((resolve, reject) => {
         web.server.once('error', reject);

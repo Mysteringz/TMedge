@@ -474,12 +474,12 @@ paths:
         '409': { $ref: '#/components/responses/ConsoleConflict' }
         '413': { $ref: '#/components/responses/ConsoleTooLarge' }
         '422':
-          description: Invalid request or furniture references are unavailable to public receivers in this release.
+          description: Invalid authored request, unavailable shared-library reference, or incompatible furniture slot type.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
         '503':
-          description: Storage unavailable, model distribution failed before commit, or PostgreSQL commit outcome is unknown.
+          description: Storage unavailable, public GLB asset distribution failed before commit, or PostgreSQL commit outcome is unknown.
           content:
             application/json:
               schema:
@@ -496,8 +496,9 @@ paths:
         namespace exception. In keyed mode explicit ownership wins globally.
         The body must be a valid GLB no larger than 128 MiB and its SHA-256
         must match X-TM-SHA256. Same-ID identical bytes are idempotent; a
-        different immutable payload conflicts. This route accepts no URL,
-        owner, or filesystem path.
+        different immutable payload conflicts. Asset IDs are global across
+        locations; locationId scopes edge authorization but is not an asset
+        storage key. This route accepts no URL, owner, or filesystem path.
       security:
         - edgeBearer: []
       parameters:
@@ -566,11 +567,12 @@ paths:
   /api/models/{assetId}:
     get:
       tags: [Student models]
-      summary: Read a currently published uploaded GLB
+      summary: Read a currently published room or furniture GLB
       description: >-
         Requires a valid student session cookie or student bearer token. The
-        exact asset ID must be referenced by a current winning public snapshot;
-        drafts, history, private/console-only models, stale uploads, and
+        exact asset ID must be referenced by a current winning public snapshot
+        as a room model or v3 furniture default/override; drafts, history,
+        private/console-only models, stale uploads, and
         revision-0 static models do not authorize this route. A restarted web
         service denies reads until a current snapshot is received.
       security:

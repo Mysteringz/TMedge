@@ -170,6 +170,7 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
       mutationCoordinator: options.registryMutationCoordinator,
       runtime: publicationRuntime,
       assetMetadata: options.locationPublication.assetMetadata,
+      furnitureLibrary: options.locationPublication.assets,
       modelDistributor,
     })
     : null;

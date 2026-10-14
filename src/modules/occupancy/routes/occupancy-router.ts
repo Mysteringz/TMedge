@@ -68,12 +68,12 @@ export function createOccupancyRouter(dependencies: OccupancyRouterDependencies)
   router.get('/api/models/:assetId', dependencies.requireStudent, async (req, res) => {
     const assetId = typeof req.params.assetId === 'string' ? req.params.assetId : '';
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(assetId)
-      || !dependencies.store.referencesUploadedModel(assetId.toLowerCase())) return res.status(404).end();
+      || !dependencies.store.referencesPublishedAsset(assetId.toLowerCase())) return res.status(404).end();
     if (!dependencies.models) return res.status(503).end();
     try {
       const model = await dependencies.models.read(assetId);
       if (!model) return res.status(404).end();
-      if (!dependencies.store.referencesUploadedModel(assetId.toLowerCase())) return res.status(404).end();
+      if (!dependencies.store.referencesPublishedAsset(assetId.toLowerCase())) return res.status(404).end();
       return res.status(200).type('model/gltf-binary').set({
         'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store',
         'Content-Length': String(model.bytes.byteLength), 'ETag': `"${model.sha256}"`,

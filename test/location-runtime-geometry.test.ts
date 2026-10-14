@@ -3,6 +3,7 @@ import test from 'node:test';
 import { buildRegistry, buildRegistryFromLocationDocuments } from '../src/edge/registry.js';
 import { OccupancyEngine } from '../src/edge/occupancy.js';
 import { EdgeLocationPublicationRuntime } from '../src/edge/location-publication-runtime.js';
+import { EdgeRuntime } from '../src/edge/runtime.js';
 import { parseLocationDocument } from '../src/modules/location-config/domain/location-document.js';
 import { activeLocationModelDispositions, locationModelPresentationDisposition, type LocationAssetProvenance } from '../src/modules/location-config/domain/location-assets.js';
 import type { PublishedLocationState } from '../src/modules/location-config/domain/location-records.js';
@@ -155,6 +156,41 @@ test('location documents assemble into a complete shape-aware registry with exac
   assert.deepEqual(table.seats.map((seat) => seat.id), ['STUDIO-SEAT-A', 'STUDIO-SEAT-B']);
   assert.equal(floor.model?.assetId, document.modelAssetId);
   assert.deepEqual(floor.zones[0]?.polygon, document.zones[0]?.polygon);
+});
+
+test('public furniture assignments select strict v3 while furniture-free and console-only projection stays v2', () => {
+  const site = { site: { id: 'test', name: 'Test' }, floors: [] };
+  const assignment = { assetId: '00000000-0000-4000-8000-000000000031', scale: 1, yawDeg: 0, elevationM: 0 };
+  const publicFurniture = parseLocationDocument({
+    ...baseDoc('location_test_00000000-0000-4000-8000-000000000032'),
+    furnitureDefaults: { table: assignment },
+  });
+  const publicRegistry = buildRegistryFromLocationDocuments(site, { nodes: [] }, [publicFurniture]);
+  const emitted = new OccupancyEngine(publicRegistry, 'edge-a').snapshot(1);
+  assert.equal(publicRegistry.snapshotVersion, 3);
+  assert.equal(emitted.version, 3);
+  assert.deepEqual(emitted.floors[0]?.furnitureDefaults, { table: assignment });
+  assert.equal(isSnapshot(emitted), true);
+
+  const furnitureFree = parseLocationDocument(baseDoc('location_test_00000000-0000-4000-8000-000000000033'));
+  const noFurniture = new OccupancyEngine(buildRegistryFromLocationDocuments(site, { nodes: [] }, [furnitureFree]), 'edge-a').snapshot(1);
+  assert.equal(noFurniture.version, 2);
+  assert.equal(Object.hasOwn(noFurniture.floors[0]!, 'furnitureDefaults'), false);
+
+  const consoleFurniture = parseLocationDocument({
+    ...baseDoc('location_test_00000000-0000-4000-8000-000000000034'),
+    visibility: 'console', furnitureDefaults: { table: assignment },
+  });
+  const mixed = buildRegistryFromLocationDocuments(site, { nodes: [] }, [furnitureFree, consoleFurniture]);
+  assert.equal(mixed.snapshotVersion, 2, 'console-only furniture does not select public v3 emission');
+  const internal = new OccupancyEngine(mixed, 'edge-a').snapshot(1);
+  internal.version = 3;
+  internal.floors.find((floor) => floor.id === consoleFurniture.locationId)!.furnitureDefaults = { table: assignment };
+  const projected = EdgeRuntime.prototype.publicSnapshot.call({}, internal, { reg: mixed } as never);
+  assert.equal(projected.version, 2, 'version selection uses the emitted public floor payload');
+  assert.deepEqual(projected.floors.map((floor) => floor.id), [furnitureFree.locationId]);
+  assert.equal(projected.floors.some((floor) => Object.hasOwn(floor, 'furnitureDefaults')), false,
+    'console-only references are not emitted to the public target');
 });
 
 test('v2 model disposition distinguishes authored 2D-only, retained legacy-static, and uploaded models', () => {
