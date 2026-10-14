@@ -23,16 +23,17 @@ Sensors use UDP, a TMWAccess Wi-Fi gateway, or secure WebSocket; all paths
 share checks. TMflash provisions over USB in a Mac app or module 07; saved
 settings and boot counters survive.
 
-- Location management is Admin/Operator only; drafts and previews are private.
-  Public uploaded GLBs transfer to every configured web tier before publish.
-  Console models stay edge-side and plans never go to students. Students can
-  read a GLB only while a current public snapshot references it. The edge
-  release carries signed viewer modules; GLB bytes stay behind the draft API.
-  See docs/location-configuration-storage.md. Stop edge before
-  `db:registry:import --apply`; restart afterward; the CLI cannot check service
-  state. Student routes use site+floor IDs; ambiguous bare-floor links prompt a choice.
-  V2 model object=GLB+transform, null=none, absent=legacy fallback unless
-  proceduralRoom="simple-rectangle-v1" selects generated geometry; v1 rejects it.
+- Location management is Admin/Operator only; drafts/previews are private.
+  Public GLBs reach all web tiers before publish; console models stay edge-side,
+  plans private. Students read only snapshot-linked GLBs. Edge serves
+  signed viewer modules; draft GLBs stay behind its API. Stop edge for
+  `db:registry:import --apply`; restart after.
+  Student URLs need site/floor; ambiguous floors prompt.
+  V2 `model`: object=GLB+transform, null=none, absent=legacy fallback;
+  `proceduralRoom="simple-rectangle-v1"` selects generated geometry; v1 rejects it.
+  Room view previews private drafts beside Details/Sensors. Edit in 2D; valid
+  edits render live, invalid inputs keep last-valid. Generated rooms use fixed
+  fixed 3 m walls/0.75 m tables, no asset I/O; drafts private until publish.
 
 ## How a count is made
 

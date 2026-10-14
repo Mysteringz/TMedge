@@ -14,7 +14,7 @@ type PoseErrors = Partial<Record<PoseFieldName, string>>;
  * transient sensor selection, eligibility reads and advisory coverage state.
  * @example <SensorPlacementStep draft={draft} document={document} onUpdate={update} onSave={save} ... />
  */
-export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack, onContinue, busy, mustReload }: {
+export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack, onContinue, busy, mustReload, onTransientValidityChange, onSensorLabelsChange }: {
   draft: DraftDetail;
   document: LocationDocument;
   onUpdate(change: (current: LocationDocument) => LocationDocument): void;
@@ -23,6 +23,8 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
   onContinue(): void;
   busy: string;
   mustReload: boolean;
+  onTransientValidityChange(field: string, invalid: boolean): void;
+  onSensorLabelsChange(sensors: Array<Pick<EligibleSensor, 'uid' | 'label'>>): void;
 }) {
   const [eligible, setEligible] = useState<EligibleSensor[]>([]);
   const [loadingSensors, setLoadingSensors] = useState(true);
@@ -34,10 +36,24 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
   const [notice, setNotice] = useState('');
   const [coverageRetry, setCoverageRetry] = useState(0);
   const requestId = useRef(0);
+  const transientSensorRef = useRef<string | null>(null);
+  const transientValidityCallback = useRef(onTransientValidityChange);
+  transientValidityCallback.current = onTransientValidityChange;
   const eligibleByUid = useMemo(() => new Map(eligible.map((sensor) => [sensor.uid.toLowerCase(), sensor])), [eligible]);
   const assignmentsByUid = useMemo(() => new Map(document.sensorAssignments.map((assignment) => [assignment.uid.toLowerCase(), assignment])), [document.sensorAssignments]);
   const selectedAssignment = selectedUid ? assignmentsByUid.get(selectedUid.toLowerCase()) : undefined;
   const selectedSensor = selectedUid ? eligibleByUid.get(selectedUid.toLowerCase()) : undefined;
+
+  useEffect(() => {
+    const previous = transientSensorRef.current;
+    if (previous && previous !== selectedUid) {
+      for (const field of poseFieldNames) transientValidityCallback.current(`sensor.${previous}.${field}`, false);
+    }
+    transientSensorRef.current = selectedUid;
+    return () => {
+      if (selectedUid) for (const field of poseFieldNames) transientValidityCallback.current(`sensor.${selectedUid}.${field}`, false);
+    };
+  }, [selectedUid]);
   const disabled = busy !== '' || mustReload;
   const proposal = useMemo(() => proposedSensors(document, eligible), [document, eligible]);
   const coverageKey = JSON.stringify([draft.draftId, document, proposal]);
@@ -54,6 +70,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
     try {
       const result = await getEligibleDraftSensors(draft.draftId);
       setEligible(result.sensors);
+      onSensorLabelsChange(result.sensors);
       setSelectedUid((current) => current ?? document.sensorAssignments.find((item) => result.sensors.some((sensor) => sensor.uid.toLowerCase() === item.uid.toLowerCase()))?.uid ?? result.sensors[0]?.uid ?? null);
     } catch (error) {
       setSensorError(error instanceof LocationApiError ? error.message : 'Eligible sensors could not be loaded.');
@@ -100,7 +117,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
   }, [document.sensorAssignments, eligibleByUid, selectedUid, selectedSensor, selectedAssignment, poseInput.x, poseInput.y]);
 
   const validation = (field: PoseFieldName, input: string): { value: number; error: string } => {
-    if (!input.trim()) return { value: NaN, error: field === 'height' ? 'Enter a mounting height from 1.5 m to 15 m.' : 'Enter a position.' };
+    if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(input)) return { value: NaN, error: field === 'height' ? 'Enter a mounting height from 1.5 m to 15 m.' : 'Enter a valid number.' };
     const parsed = Number(input);
     if (!Number.isFinite(parsed)) return { value: NaN, error: 'Enter a valid number.' };
     const bounds: [number, number] = field === 'x' ? [-10, document.widthCm / 100 + 10]
@@ -113,10 +130,21 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
   const commitPoseField = (field: PoseFieldName, raw: string) => {
     const result = validation(field, raw);
     setPoseErrors((current) => ({ ...current, [field]: result.error || undefined }));
+    if (selectedUid) onTransientValidityChange(`sensor.${selectedUid}.${field}`, !!result.error);
     if (result.error || !selectedUid || !selectedAssignment) return;
     const patch = changedPoseField(selectedAssignment.pose, field, result.value);
     if (!patch) return;
     onUpdate((current) => patchSensorPose(current, selectedUid, patch));
+  };
+
+  const changePoseInput = (field: PoseFieldName, value: string) => {
+    setPoseInput((current) => ({ ...current, [field]: value }));
+    const result = validation(field, value);
+    setPoseErrors((current) => ({ ...current, [field]: result.error || undefined }));
+    if (selectedUid) onTransientValidityChange(`sensor.${selectedUid}.${field}`, !!result.error);
+    if (result.error || !selectedUid || !selectedAssignment) return;
+    const patch = changedPoseField(selectedAssignment.pose, field, result.value);
+    if (patch) onUpdate((current) => patchSensorPose(current, selectedUid, patch));
   };
 
   const completePose = (): SensorAssignment['pose'] | null => {
@@ -232,13 +260,13 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
                 : selectedSensor.pose ? <p className="cx-muted">Already in this location · not yet in this draft</p>
                   : <p className="loc-sensor-warning">Pose not set</p>}
               <PoseField label="Position X (m)" name="x" value={poseInput.x} error={poseErrors.x} min={-10} max={document.widthCm / 100 + 10} testId="location-sensor-position-x"
-                disabled={disabled} onChange={(value) => setPoseInput((current) => ({ ...current, x: value }))} onCommit={(value) => commitPoseField('x', value)} />
+                disabled={disabled} onChange={(value) => changePoseInput('x', value)} onCommit={(value) => commitPoseField('x', value)} />
               <PoseField label="Position Y (m)" name="y" value={poseInput.y} error={poseErrors.y} min={-10} max={document.heightCm / 100 + 10} testId="location-sensor-position-y"
-                disabled={disabled} onChange={(value) => setPoseInput((current) => ({ ...current, y: value }))} onCommit={(value) => commitPoseField('y', value)} />
+                disabled={disabled} onChange={(value) => changePoseInput('y', value)} onCommit={(value) => commitPoseField('y', value)} />
               <PoseField label="Height (m)" name="height" value={poseInput.height} error={poseErrors.height} min={1.5} max={15} testId="location-sensor-height"
-                help="Enter a mounting height from 1.5 m to 15 m." disabled={disabled} onChange={(value) => setPoseInput((current) => ({ ...current, height: value }))} onCommit={(value) => commitPoseField('height', value)} />
+                help="Enter a mounting height from 1.5 m to 15 m." disabled={disabled} onChange={(value) => changePoseInput('height', value)} onCommit={(value) => commitPoseField('height', value)} />
               <PoseField label="Yaw (°)" name="yaw" value={poseInput.yaw} error={poseErrors.yaw} min={-360} max={360} testId="location-sensor-yaw"
-                disabled={disabled} onChange={(value) => setPoseInput((current) => ({ ...current, yaw: value }))} onCommit={(value) => commitPoseField('yaw', value)} />
+                disabled={disabled} onChange={(value) => changePoseInput('yaw', value)} onCommit={(value) => commitPoseField('yaw', value)} />
               <label className="loc-sensor-mirror"><input type="checkbox" data-testid="location-sensor-mirror" checked={poseInput.mirror} disabled={disabled} onChange={(event) => {
                 const mirror = event.target.checked; setPoseInput((current) => ({ ...current, mirror }));
                 if (selectedAssignment) onUpdate((current) => patchSensorPose(current, selectedUid, { mirror }));
@@ -288,7 +316,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
       <button type="button" className="btn btn-ghost" data-testid="location-sensors-back" disabled={busy !== ''} onClick={onBack}>Back to layout</button>
       <span>{mustReload ? 'Reload latest before further changes' : `Draft revision ${draft.draftRevision} · private · live assignments unchanged`}</span>
       <button type="button" className="btn btn-secondary" data-testid="location-sensors-save" disabled={disabled} onClick={() => void onSave()}>{busy === 'save' ? 'Saving…' : 'Save draft'}</button>
-      <button type="button" className="btn btn-primary" data-testid="location-sensors-continue" disabled={disabled} onClick={onContinue}>Continue to 3D model</button>
+      <button type="button" className="btn btn-primary" data-testid="location-sensors-continue" disabled={disabled} onClick={onContinue}>Continue to Room view</button>
     </footer>
   </section>;
 }
@@ -316,3 +344,4 @@ function PoseField({ label, name, value, min, max, error, help, testId, disabled
 
 function isFiniteInput(value: string): boolean { return value.trim() !== '' && Number.isFinite(Number(value)); }
 function testToken(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
+const poseFieldNames: PoseFieldName[] = ['x', 'y', 'height', 'yaw'];

@@ -38,6 +38,7 @@ export interface LocationDocument {
   name: string; building: string; widthCm: number; heightCm: number; outline: Point[];
   zones: Zone[]; tables: Table[]; sensorAssignments: SensorAssignment[];
   planAssetId?: string; modelAssetId?: string; modelTransform?: ModelTransform;
+  proceduralRoom?: 'simple-rectangle-v1';
 }
 export interface PublishedSummary {
   locationId: string; name: string; building: string; visibility: 'public' | 'console'; activeRevision: number;

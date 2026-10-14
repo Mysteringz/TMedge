@@ -18,7 +18,7 @@ import { computeLocationCoverageSuggestions } from '../dist/src/infrastructure/l
 import { createLocationRouter } from '../dist/src/modules/location-config/routes/location-router.js';
 import { KEY } from '../dist/test/fixtures.js';
 
-const artifacts = resolve(process.env.LOCATION_EDITOR_ARTIFACT_DIR ?? 'tmp/task-3-1-browser-artifacts');
+const artifacts = resolve(process.env.LOCATION_EDITOR_ARTIFACT_DIR ?? 'tmp/task-2-2-console-room-preview/artifacts');
 const tempRoot = resolve('tmp/wizard-e2e');
 const planPng = resolve('../.codex/docs/new-location-add-wizard/task-2-3-location-api-and-assets/artifacts/synthetic-assets/valid-plan.png');
 const planJpg = resolve('../.codex/docs/new-location-add-wizard/task-2-3-location-api-and-assets/artifacts/synthetic-assets/valid-plan.jpg');
@@ -135,8 +135,17 @@ const cfg = {
 };
 
 let persistence, runtime, handle, browser;
-const browserErrors = [], network = [], checks = [], expectedBrowserEvents = [], externalBrowserRequests = [];
-let expectViewerModuleFailure = false, expectEmbeddedTextureFailure = false, expectRendererFailure = false;
+const browserErrors = [], network = [], checks = [], expectedBrowserEvents = [], externalBrowserRequests = [], expectedHttpConsoleFailures = [];
+let expectEmbeddedTextureFailure = false, expectRendererFailure = false;
+const expectHttpConsoleFailure = (request, status) => {
+  expectedHttpConsoleFailures.push({ method: request.method(), path: new URL(request.url()).pathname, status, responseSeen: false });
+};
+const expectHttpConsoleFailureAt = (method, path, status) => {
+  expectedHttpConsoleFailures.push({ method, path, status, responseSeen: false });
+};
+const consoleLocationPath = (message) => {
+  try { return new URL(message.location().url).pathname; } catch { return ''; }
+};
 const jsonFrom = async (response) => {
   const envelope = await response.json();
   assert.ok(envelope && Object.hasOwn(envelope, 'data'), `expected API data envelope, got status ${response.status()}`);
@@ -202,17 +211,27 @@ async function run() {
     page.on('console', (message) => {
       if (message.type() !== 'error') return;
       const text = message.text();
-      if (expectViewerModuleFailure && /location-model-viewer\.js/i.test(text)) {
-        expectedBrowserEvents.push({ kind: 'viewer-module-retry', message: text.slice(0, 240) }); return;
-      }
       if (expectEmbeddedTextureFailure && /couldn.t load texture/i.test(text)) {
+        expectEmbeddedTextureFailure = false;
         expectedBrowserEvents.push({ kind: 'embedded-texture-parse-failure', message: text.slice(0, 240) }); return;
       }
-      if (expectRendererFailure && /THREE\.WebGLRenderer: Error creating WebGL context/i.test(text)) {
+      if (expectRendererFailure && text === 'THREE.WebGLRenderer: QA injected one-shot renderer construction failure') {
+        expectRendererFailure = false;
         expectedBrowserEvents.push({ kind: 'renderer-construction-failure', message: text.slice(0, 240) }); return;
       }
-      if (/server responded with a status of (?:409|503)/i.test(text)) return; // Deliberate conflict/unavailable recovery probes.
-      browserErrors.push({ kind: 'console', message: text.slice(0, 300) });
+      const statusMatch = text.match(/server responded with a status of (\d{3})\b/i);
+      if (statusMatch) {
+        const path = consoleLocationPath(message);
+        const status = Number(statusMatch[1]);
+        const expectedIndex = expectedHttpConsoleFailures.findIndex((item) => item.responseSeen && item.path === path && item.status === status);
+        if (expectedIndex >= 0) {
+          const [expected] = expectedHttpConsoleFailures.splice(expectedIndex, 1);
+          const { responseSeen: _responseSeen, ...details } = expected;
+          expectedBrowserEvents.push({ kind: 'intercepted-http-error', ...details }); return;
+        }
+        browserErrors.push({ kind: 'console', path, status, message: text.slice(0, 300) }); return;
+      }
+      browserErrors.push({ kind: 'console', path: consoleLocationPath(message), message: text.slice(0, 300) });
     });
     page.on('requestfailed', (request) => network.push({
       method: request.method(), path: new URL(request.url()).pathname,
@@ -223,7 +242,12 @@ async function run() {
       if (!url.startsWith(base) && !url.startsWith('data:') && !url.startsWith('blob:')
         && !url.startsWith('https://fonts.googleapis.com/')) externalBrowserRequests.push(url);
     });
-    page.on('response', (response) => network.push({ method: response.request().method(), path: new URL(response.url()).pathname, status: response.status() }));
+    page.on('response', (response) => {
+      const method = response.request().method(), path = new URL(response.url()).pathname, status = response.status();
+      const expected = expectedHttpConsoleFailures.find((item) => !item.responseSeen && item.method === method && item.path === path && item.status === status);
+      if (expected) expected.responseSeen = true;
+      network.push({ method, path, status });
+    });
   };
 
   for (const username of ['qa-engineer', 'qa-viewer']) {
@@ -295,6 +319,27 @@ async function run() {
   assert.equal(await page.getByLabel('Floor width (m)').inputValue(), '12.34');
   assert.equal(await page.getByLabel('Floor height (m)').inputValue(), '8.76');
   assert.equal(await page.getByRole('button', { name: 'Main area', exact: true }).count(), 1);
+  const initialRoomDraft = await readDraft(adminContext, base, draftId);
+  assert.equal(initialRoomDraft.document.proceduralRoom, 'simple-rectangle-v1', 'a new rectangular draft selects the persisted built-in room source');
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Built-in room preview ready.' }).waitFor();
+  const generatedViewer = page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer');
+  await page.waitForFunction(() => {
+    const viewer = document.querySelector('[data-testid="location-room-preview-canvas"] tm-location-model-viewer');
+    return viewer?.scene?.source === 'generated' && viewer.scene.walls?.size === 4;
+  });
+  const initialRoomGeometry = await generatedViewer.evaluate(async (viewer) => {
+    const THREE = await import('/location-model/vendor/three/three.module.js');
+    const scene = viewer.scene;
+    const wallBounds = [...scene.walls.values()].map((wall) => new THREE.Box3().setFromObject(wall).getSize(new THREE.Vector3()).y);
+    return { source: scene.source, wallCount: scene.walls.size, hiddenWalls: [...scene.walls.values()].filter((wall) => !wall.visible).length, wallHeights: wallBounds };
+  });
+  assert.equal(initialRoomGeometry.source, 'generated');
+  assert.equal(initialRoomGeometry.wallCount, 4, 'the empty built-in scene includes all four walls');
+  assert.equal(initialRoomGeometry.hiddenWalls, 1, 'the initial cardinal camera view hides one camera-facing wall');
+  assert.ok(initialRoomGeometry.wallHeights.every((height) => Math.abs(height - 3) < 1e-6), 'every wall mesh is exactly 3.0 m high');
+  assert.equal(network.filter((request) => request.method === 'GET' && request.path.startsWith(`/api/locations/drafts/${draftId}/assets/`)).length, 0,
+    'the generated source loads no model or asset bytes');
+  await page.screenshot({ path: join(artifacts, 'location-generated-room-details-desktop.png'), fullPage: true });
   await page.screenshot({ path: join(artifacts, 'location-editor-desktop.png'), fullPage: true });
 
   // Dimension input remains decimal text through real sequential key events.
@@ -371,6 +416,55 @@ async function run() {
   const seatX = page.getByLabel('Seat 1 X (m)'), seatY = page.getByLabel('Seat 1 Y (m)');
   await typeSequentially(seatX, '1.75'); await seatX.press('Tab');
   await typeSequentially(seatY, '0.9'); await seatY.press('Tab');
+  await page.getByTestId('location-model-zoom-in').click();
+  await page.waitForTimeout(250);
+  const cameraBeforeLiveTableEdit = await generatedViewer.evaluate((viewer) => ({ position: viewer.scene.camera.position.toArray(), target: viewer.scene.controls.target.toArray() }));
+  await rectWidth.fill('2.6');
+  await page.waitForFunction(async () => {
+    const viewer = document.querySelector('[data-testid="location-room-preview-canvas"] tm-location-model-viewer');
+    const table = viewer?.scene?.overlay?.children?.find((object) => object.name.startsWith('generated-table-'));
+    if (!table) return false;
+    const THREE = await import('/location-model/vendor/three/three.module.js');
+    const size = new THREE.Box3().setFromObject(table).getSize(new THREE.Vector3());
+    return Math.abs(size.x - 2.6) < 1e-5;
+  });
+  const liveTableGeometry = await generatedViewer.evaluate(async (viewer) => {
+    const THREE = await import('/location-model/vendor/three/three.module.js');
+    const scene = viewer.scene;
+    scene.overlay.updateMatrixWorld(true);
+    const table = scene.overlay.children.find((object) => object.name.startsWith('generated-table-'));
+    const bounds = new THREE.Box3().setFromObject(table);
+    return {
+      size: bounds.getSize(new THREE.Vector3()).toArray(), maxY: bounds.max.y,
+      seatCount: scene.overlay.children.filter((object) => object.name.startsWith('generated-seat-')).length,
+      camera: { position: scene.camera.position.toArray(), target: scene.controls.target.toArray() },
+    };
+  });
+  assert.ok(Math.abs(liveTableGeometry.size[0] - 2.6) < 1e-5 && Math.abs(liveTableGeometry.size[2] - 1.5) < 1e-5,
+    'the generated rectangle mesh uses the live 2D dimensions exactly');
+  assert.ok(Math.abs(liveTableGeometry.maxY - 0.75) < 1e-6, 'the generated table mesh top is exactly 0.75 m above the floor');
+  assert.equal(liveTableGeometry.seatCount, 4, 'the generated scene places one chair proxy at each stored seat');
+  for (const axis of ['position', 'target']) for (let index = 0; index < 3; index++) {
+    assert.ok(Math.abs(liveTableGeometry.camera[axis][index] - cameraBeforeLiveTableEdit[axis][index]) < 0.03,
+      `a live layout edit preserves camera ${axis} component ${index}`);
+  }
+  const wallVisibility = await generatedViewer.evaluate((viewer) => {
+    const scene = viewer.scene;
+    const centerX = scene.widthM / 2, centerZ = -scene.heightM / 2;
+    scene.camera.position.set(centerX, 5, centerZ + 10); scene.updateWallVisibility();
+    const cardinal = [...scene.walls].filter(([, wall]) => !wall.visible).map(([name]) => name);
+    scene.camera.position.set(centerX + 10, 5, centerZ + 10); scene.updateWallVisibility();
+    const diagonal = [...scene.walls].filter(([, wall]) => !wall.visible).map(([name]) => name);
+    scene.camera.position.set(centerX, 5, centerZ - 10); scene.updateWallVisibility();
+    const opposite = [...scene.walls].filter(([, wall]) => !wall.visible).map(([name]) => name);
+    return { cardinal, diagonal, opposite };
+  });
+  assert.deepEqual(wallVisibility.cardinal, ['north']);
+  assert.deepEqual(wallVisibility.diagonal.sort(), ['east', 'north']);
+  assert.deepEqual(wallVisibility.opposite, ['south'], 'camera-facing walls restore as the orbit crosses the room');
+  await generatedViewer.evaluate((viewer) => viewer.scene.resetCamera());
+  await rectWidth.fill('2.5'); await rectWidth.press('Tab');
+  checks.push('generated preview starts with four exact-height walls, updates exact table/seat meshes immediately, retains camera state, and hides/restores cardinal/diagonal camera-facing walls');
 
   // Distinct round-table center/radius and polygon-table vertex edit.
   await page.getByRole('button', { name: 'Add round table' }).click();
@@ -399,6 +493,12 @@ async function run() {
 
   // Field-specific error paths: width, height, table shape, seat and zone vertex.
   const saveButton = page.getByRole('button', { name: 'Save draft', exact: true });
+  const incompleteWidth = page.getByLabel('Floor width (m)');
+  await incompleteWidth.fill('12.');
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Last valid preview. Fix the highlighted 2D fields to update the preview.' }).waitFor();
+  assert.equal(await incompleteWidth.getAttribute('aria-invalid'), 'true', 'an incomplete decimal is exposed as invalid before blur');
+  await incompleteWidth.fill('12.34'); await incompleteWidth.press('Tab');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="location-room-preview-status"]')?.textContent?.includes('Last valid preview'));
   for (const [label, invalid, restore] of [
     ['Floor width (m)', '0.5', '12.34'], ['Floor height (m)', '0.5', '8.76'],
   ]) {
@@ -410,7 +510,9 @@ async function run() {
   }
 
   await page.getByRole('button', { name: 'West rectangle', exact: true }).click();
-  const badRectX = page.getByLabel('Table X (m)'); await badRectX.fill('-0.1'); await badRectX.press('Tab'); await saveButton.click();
+  const badRectX = page.getByLabel('Table X (m)'); await badRectX.fill('-0.1');
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Last valid preview. Fix the highlighted 2D fields to update the preview.' }).waitFor();
+  await badRectX.press('Tab'); await saveButton.click();
   await assertErrorAssociation(page, badRectX, 'X must be inside');
   await badRectX.fill('2.5'); await badRectX.press('Tab');
   const badSeat = page.getByLabel('Seat 1 X (m)'); await badSeat.fill('-0.5'); await badSeat.press('Tab'); await saveButton.click();
@@ -444,9 +546,10 @@ async function run() {
   await typeSequentially(sensorX, '3.75'); await sensorX.press('Tab');
   await typeSequentially(sensorY, '2.5'); await sensorY.press('Tab');
   await typeSequentially(sensorHeight, '1.49'); await sensorHeight.press('Tab');
-  await assertInlineErrorAssociation(page, sensorHeight, 'mounting height from 1.5 m to 15 m');
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Last valid preview. Fix the highlighted 2D fields to update the preview.' }).waitFor();
+  await assertInlineErrorAssociation(page, sensorHeight, '(?:mounting height|value).*1\\.5.*15');
   await typeSequentially(sensorHeight, '15.01'); await sensorHeight.press('Tab');
-  await assertInlineErrorAssociation(page, sensorHeight, 'mounting height from 1.5 m to 15 m');
+  await assertInlineErrorAssociation(page, sensorHeight, '(?:mounting height|value).*1\\.5.*15');
   await typeSequentially(sensorHeight, '1.5'); await sensorHeight.press('Tab');
   assert.notEqual(await sensorHeight.getAttribute('aria-invalid'), 'true', 'the minimum mounting height is accepted');
   await typeSequentially(sensorHeight, '15'); await sensorHeight.press('Tab');
@@ -622,6 +725,7 @@ async function run() {
   await page.route('**/api/locations/drafts/*/coverage-suggestions', async (route) => {
     if (failCoverageOnce && route.request().method() === 'POST') {
       failCoverageOnce = false;
+      expectHttpConsoleFailure(route.request(), 503);
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_UNAVAILABLE', message: 'Synthetic coverage failure.' } }) });
       return;
     }
@@ -654,6 +758,21 @@ async function run() {
   assert.deepEqual(savedSensorA.pose, expectedSensorAPose, 'keyboard/pointer pose and preserved mounting fields round-trip exactly');
   assert.deepEqual(savedSensorA.owns, [], 'changing the table owner removes its previous owner');
   assert.deepEqual(savedSensorB.pose, { x: 925, y: 250, heightCm: 400, yawDeg: 0, mirror: false });
+  const sensorSceneEvidence = await generatedViewer.evaluate(async (viewer, uid) => {
+    const THREE = await import('/location-model/vendor/three/three.module.js');
+    const scene = viewer.scene;
+    const token = uid.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const marker = scene.overlay.getObjectByName(`draft-sensor-${token}`);
+    const arrow = scene.overlay.getObjectByName(`draft-sensor-yaw-${token}`);
+    const direction = arrow ? new THREE.Vector3(0, 1, 0).applyQuaternion(arrow.quaternion) : null;
+    return { position: marker?.position.toArray(), yawDirection: direction?.toArray() };
+  }, SENSOR_B);
+  assert.deepEqual(sensorSceneEvidence.position, [9.25, 4, -2.5], 'the generated sensor mesh keeps authored X/Y and its exact 4 m height above the wall top');
+  assert.ok(Math.abs(sensorSceneEvidence.yawDirection[0] - 1) < 1e-6 && Math.abs(sensorSceneEvidence.yawDirection[2]) < 1e-6,
+    'the sensor orientation arrow follows the authored zero-degree yaw');
+  await page.getByTestId('location-room-preview-object-list').getByText('QA Ceiling Sensor B', { exact: false }).waitFor();
+  assert.match(await page.getByTestId('location-room-preview-object-list').innerText(), /4\.00 m high/,
+    'the text alternative exposes a sensor height above the 3 m wall top');
   assert.deepEqual(savedSensorB.owns.sort(), [roundTable.id, westTable.id].sort(), 'suggestion acceptance and explicit owner selection assign distinct tables to the same sensor');
   for (const uid of [SENSOR_A, SENSOR_B]) {
     const live = persistence.registry.nodes.get(uid);
@@ -769,6 +888,7 @@ async function run() {
   await page.route('**/api/locations/drafts/*/assets/floor-plan', async (route) => {
     markUploadStarted();
     await new Promise((done) => { releaseUpload = done; });
+    expectHttpConsoleFailure(route.request(), 503);
     await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'TEST_UNAVAILABLE', message: 'Synthetic upload failure.' } }) });
   });
   await page.getByLabel('Upload floor plan (PNG or JPEG)').setInputFiles(planPng);
@@ -817,6 +937,7 @@ async function run() {
     data: { expectedDraftRevision: detail.draftRevision, document: remoteDocument }, headers: { 'x-tm-algo': '1', origin: base },
   });
   assert.equal(remoteSave.status(), 200);
+  expectHttpConsoleFailureAt('PUT', `/api/locations/drafts/${encodeURIComponent(draftId)}/assets/floor-plan`, 409);
   await page.getByLabel('Upload floor plan (PNG or JPEG)').setInputFiles(planJpg);
   await page.getByText('This draft changed before the plan upload completed. Your selected image preview is retained. Reload latest before retrying.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Reload latest' }).isVisible(), true);
@@ -866,6 +987,7 @@ async function run() {
 
   const failedRecoveryResponse = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === `/api/locations/drafts/${encodeURIComponent(draftId)}`);
+  expectHttpConsoleFailureAt('GET', `/api/locations/drafts/${encodeURIComponent(draftId)}`, 503);
   await page.getByRole('button', { name: 'Reload latest' }).click();
   assert.equal((await failedRecoveryResponse).status(), 503,
     'a normal draft GET cannot erase the unconfirmed outcome while file recovery still fails');
@@ -889,6 +1011,7 @@ async function run() {
     if (failNextDetailRead && request.method() === 'GET'
       && new URL(request.url()).pathname === `/api/locations/drafts/${encodeURIComponent(draftId)}`) {
       failNextDetailRead = false;
+      expectHttpConsoleFailure(request, 503);
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_UNAVAILABLE', message: 'Synthetic detail read failure.' } }) });
       return;
     }
@@ -920,13 +1043,21 @@ async function run() {
   // Exercise the actual signed-in model step, its same-origin module graph,
   // immutable upload metadata, in-memory GLB parsing and transform persistence.
   await page.addInitScript(() => {
-    const evidence = { createdUrls: [], revokedUrls: [], imageBitmapAttempts: 0, imageBitmapsCreated: 0, imageBitmapDecodeFailures: 0, imageBitmapsClosed: 0 };
-    const rendererFailurePending = sessionStorage.getItem('wizard-model-renderer-failure') !== 'used';
+    const evidence = { createdUrls: [], revokedUrls: [], imageBitmapAttempts: 0, imageBitmapsCreated: 0, imageBitmapDecodeFailures: 0, imageBitmapsClosed: 0, rendererContextFailureAttempts: 0 };
+    const rendererFailurePending = sessionStorage.getItem('wizard-model-renderer-failure') === 'pending';
     if (rendererFailurePending) sessionStorage.setItem('wizard-model-renderer-failure', 'used');
     globalThis.__failLocationModelRenderer = rendererFailurePending;
     const getContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (type, ...args) {
-      if (globalThis.__failLocationModelRenderer && /^(?:webgl2?|experimental-webgl)$/i.test(String(type))) return null;
+      if (globalThis.__failLocationModelRenderer && String(type) === 'webgl2'
+        && this.getAttribute('data-engine')?.startsWith('three.js r')) {
+        evidence.rendererContextFailureAttempts += 1;
+        // Three marks its renderer canvas before requesting WebGL. Throwing on
+        // its first candidate fails this one constructor deterministically;
+        // disarm synchronously before the viewer can be retried.
+        globalThis.__failLocationModelRenderer = false;
+        throw new Error('QA injected one-shot renderer construction failure');
+      }
       return getContext.call(this, type, ...args);
     };
     const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
@@ -961,11 +1092,12 @@ async function run() {
   let failModelRead = true;
   await page.getByTestId('location-step-model').click();
   await page.waitForURL(new RegExp(`/locations/${draftId}/model$`));
-  await page.getByRole('heading', { name: '3D model', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Room view', exact: true }).waitFor();
   await page.route('**/api/locations/drafts/*/assets/*', async (route) => {
     const request = route.request();
     if (failModelRead && request.method() === 'GET' && request.headers().accept === 'model/gltf-binary') {
       failModelRead = false;
+      expectHttpConsoleFailure(request, 503);
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_UNAVAILABLE', message: 'Synthetic model-preview failure.' } }) });
       return;
     }
@@ -1053,32 +1185,37 @@ async function run() {
     scale: { x: 1.25, y: 1, z: 1 }, rotationDeg: { x: 15.5, y: 90, z: -30 }, positionM: { x: 0.25, y: 1.5, z: -2.125 },
   });
   let failViewerModule = true;
-  expectViewerModuleFailure = true;
   await page.route((url) => new URL(url).pathname === '/location-model-viewer.js', async (route) => {
     if (failViewerModule) {
       failViewerModule = false;
       expectedBrowserEvents.push({ kind: 'viewer-module-503', status: 503, path: '/location-model-viewer.js' });
+      expectHttpConsoleFailure(route.request(), 503);
       await route.fulfill({ status: 503, contentType: 'text/plain', body: 'Synthetic viewer-module failure.' });
       return;
     }
     await route.continue();
   });
   expectRendererFailure = true;
-  await page.evaluate(() => sessionStorage.removeItem('wizard-model-renderer-failure'));
+  await page.evaluate(() => sessionStorage.setItem('wizard-model-renderer-failure', 'pending'));
   await page.reload();
-  await page.getByRole('heading', { name: '3D model', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Room view', exact: true }).waitFor();
   await page.getByTestId('location-model-viewer-retry').waitFor();
-  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'viewer-module-503'), 'viewer module failure is captured on reload');
+  assert.equal(expectedBrowserEvents.filter((item) => item.kind === 'viewer-module-503').length, 1, 'the route injects exactly one viewer module failure');
   await page.getByTestId('location-model-viewer-retry').click();
-  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'viewer-module-503'), 'viewer module failure is captured on reload');
-  await page.getByText('The 3D preview could not be started in this browser. Retry the viewer.', { exact: true }).waitFor();
-  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'renderer-construction-failure'), 'renderer construction failure is distinct from GLB parsing and has an actionable retry');
-  expectRendererFailure = false;
-  await page.evaluate(() => { globalThis.__failLocationModelRenderer = false; });
+  assert.equal(expectedBrowserEvents.filter((item) => item.kind === 'intercepted-http-error'
+    && item.method === 'GET' && item.path === '/location-model-viewer.js' && item.status === 503).length, 1,
+  'the deliberate module error is consumed once for its exact GET path and 503 response');
+  await page.getByRole('alert').filter({ hasText: /The 3D preview could not be started in this browser\..*2D editor and object list.*retry the viewer/i }).waitFor();
+  assert.equal(expectedBrowserEvents.filter((item) => item.kind === 'renderer-construction-failure').length, 1,
+    'only the injected renderer-construction error is consumed; later WebGL errors remain unexpected');
+  assert.equal(await page.evaluate(() => globalThis.__locationModelResourceEvidence.rendererContextFailureAttempts), 1,
+    'the failure is injected into exactly one Three renderer context request');
+  assert.equal(await page.evaluate(() => globalThis.__failLocationModelRenderer), false,
+    'the injected failure is disarmed when the single renderer-construction stack ends, before user retry');
   await page.getByTestId('location-model-viewer-retry').click();
   await page.waitForFunction(() => !!document.querySelector('[data-testid="location-model-viewer"] tm-location-model-viewer')?.scene);
-  expectViewerModuleFailure = false;
   await page.getByText('GLB preview loaded.', { exact: true }).waitFor();
+  expectRendererFailure = false;
   alignedDraft = await readDraft(adminContext, base, draftId);
   assert.deepEqual(alignedDraft.document.modelTransform.positionM, { x: 0.25, y: 1.5, z: -2.125 },
     'the exact model transform survives private save and page reload');
@@ -1157,8 +1294,8 @@ async function run() {
   const malformedTextureUrls = resourcesAfterBadImage.createdUrls.filter((item) => /GLTFLoader\.js/.test(item.stack)).map((item) => item.url);
   assert.deepEqual(resourcesAfterBadImage.revokedUrls.filter((url) => malformedTextureUrls.includes(url)), malformedTextureUrls,
     'local malformed embedded-image parsing releases every GLTFLoader image URL');
-  assert.ok(expectedBrowserEvents.some((item) => item.kind === 'embedded-texture-parse-failure'),
-    'the invalid embedded texture parser failure is captured');
+  assert.equal(expectedBrowserEvents.filter((item) => item.kind === 'embedded-texture-parse-failure').length, 1,
+    'the injected embedded-texture parser error is consumed once');
   assert.equal(externalBrowserRequests.length, 0, 'GLTF preflight and preview issue no off-edge requests');
 
   const sharedReplacementResources = await page.evaluate(async () => {
@@ -1200,6 +1337,58 @@ async function run() {
   const replacedResources = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
   assert.ok(replacedResources.imageBitmapsClosed > 0, 'replacing the successful textured model closes its released ImageBitmap');
   assert.equal(await page.getByTestId('location-model-filename').innerText(), 'QA replacement textured.glb · This draft · private');
+  // A deliberate custom-to-generated source change clears the model only after
+  // native confirmation, saves as a private draft, and leaves no model key.
+  const customBeforeSourceSwitch = await readDraft(adminContext, base, draftId);
+  const assetPathBeforeSourceSwitch = `/api/locations/drafts/${draftId}/assets/${customBeforeSourceSwitch.document.modelAssetId}`;
+  const assetReadsBeforeSourceSwitch = network.filter((item) => item.method === 'GET' && item.path === assetPathBeforeSourceSwitch).length;
+  let canceledSourcePrompt = '';
+  page.once('dialog', (dialog) => { canceledSourcePrompt = dialog.message(); void dialog.dismiss(); });
+  await page.getByTestId('location-room-source-generated').click();
+  assert.match(canceledSourcePrompt, /published revision stays active/i, 'source confirmation describes the published-state boundary');
+  assert.equal(await page.getByTestId('location-room-source-custom').isChecked(), true, 'canceling confirmation keeps the current custom source');
+  const afterCanceledSourceSwitch = await readDraft(adminContext, base, draftId);
+  assert.equal(afterCanceledSourceSwitch.document.modelAssetId, customBeforeSourceSwitch.document.modelAssetId);
+  assert.equal(afterCanceledSourceSwitch.draftRevision, customBeforeSourceSwitch.draftRevision);
+
+  let acceptedSourcePrompt = '';
+  page.once('dialog', (dialog) => { acceptedSourcePrompt = dialog.message(); void dialog.accept(); });
+  await page.getByTestId('location-room-source-generated').click();
+  assert.match(acceptedSourcePrompt, /immutable asset and history are retained/i);
+  assert.equal(await page.getByTestId('location-room-source-generated').isChecked(), true);
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Built-in room preview ready.' }).waitFor();
+  await page.waitForFunction(() => {
+    const viewer = document.querySelector('[data-testid="location-room-preview-canvas"] tm-location-model-viewer');
+    return viewer?.scene?.source === 'generated' && viewer.scene.modelRoot.children.length === 0 && viewer.scene.walls.size === 4;
+  });
+  assert.equal(network.filter((item) => item.method === 'GET' && item.path === assetPathBeforeSourceSwitch).length, assetReadsBeforeSourceSwitch,
+    'switching to the built-in source performs no GLB read');
+  const savedCustomBeforeSwitch = await readDraft(adminContext, base, draftId);
+  assert.equal(savedCustomBeforeSwitch.document.modelAssetId, customBeforeSourceSwitch.document.modelAssetId,
+    'the source choice stays local until save');
+  assert.deepEqual(savedCustomBeforeSwitch.document.modelTransform, customBeforeSourceSwitch.document.modelTransform,
+    'the persisted transform stays intact until save');
+  await page.getByTestId('location-model-save-draft').click();
+  await page.getByText('Draft saved · private', { exact: true }).waitFor();
+  const savedGeneratedSource = await readDraft(adminContext, base, draftId);
+  assert.equal(savedGeneratedSource.document.proceduralRoom, 'simple-rectangle-v1');
+  assert.equal(Object.hasOwn(savedGeneratedSource.document, 'modelAssetId'), false);
+  assert.equal(Object.hasOwn(savedGeneratedSource.document, 'modelTransform'), false);
+  assert.equal(savedGeneratedSource.visibility, customBeforeSourceSwitch.visibility, 'the source change preserves the draft visibility');
+  assert.equal(savedGeneratedSource.basePublishedRevision, customBeforeSourceSwitch.basePublishedRevision,
+    'saving a source change does not publish or advance the published base');
+  const restoredModelUpload = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === `/api/locations/drafts/${draftId}/assets/model`, { timeout: 10000 });
+  await page.getByTestId('location-model-upload').setInputFiles({
+    name: 'QA replacement textured.glb', mimeType: 'model/gltf-binary', buffer: readFileSync(dataUriTexturedGlb),
+  });
+  assert.equal((await restoredModelUpload).status(), 200, 'a successful upload switches the generated draft back to custom');
+  await page.getByText('GLB preview loaded.', { exact: true }).waitFor();
+  const restoredCustomSource = await readDraft(adminContext, base, draftId);
+  assert.ok(restoredCustomSource.document.modelAssetId);
+  assert.equal(Object.hasOwn(restoredCustomSource.document, 'proceduralRoom'), false,
+    'a successful GLB upload clears the procedural marker before strict save');
+
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.getByTestId('location-model-zoom-in').isVisible());
   assert.ok(await page.getByTestId('location-model-reset-view').isVisible());
@@ -1214,6 +1403,12 @@ async function run() {
   assert.ok(cameraDistanceAfterZoomOut > cameraDistanceAfterZoomIn, 'Zoom out moves the camera farther from the fixed target');
   await page.getByTestId('location-model-reset-view').click();
   await page.screenshot({ path: join(artifacts, 'model-preview-mobile.png'), fullPage: true });
+  const retainedViewerState = await modelViewer.evaluate((viewer) => ({
+    sameViewer: (globalThis.__retainedRoomViewer = viewer) === viewer,
+    sameScene: (globalThis.__retainedRoomScene = viewer.scene) === viewer.scene,
+    camera: viewer.scene.camera.position.toArray(),
+    target: viewer.scene.controls.target.toArray(),
+  }));
   await page.getByTestId('location-step-details').click();
   await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
   await page.getByAltText('Private floor plan background preview').waitFor();
@@ -1221,9 +1416,38 @@ async function run() {
   assert.ok(retainedPlanPreviewUrl?.startsWith('blob:'), 'the editor keeps its plan preview through model-step navigation');
   assert.ok(editorPlanResources.some((item) => item.url === retainedPlanPreviewUrl),
     'the active plan image is the separately tracked non-GLTF Blob URL');
+  assert.equal(await page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer').count(), 1,
+    'the generated/custom viewer host stays mounted as navigation changes editing steps');
+  const viewerAfterStepChange = await page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer').evaluate((viewer) => ({
+    sameViewer: viewer === globalThis.__retainedRoomViewer,
+    sameScene: viewer.scene === globalThis.__retainedRoomScene,
+    camera: viewer.scene.camera.position.toArray(),
+    target: viewer.scene.controls.target.toArray(),
+  }));
+  assert.equal(await page.getByTestId('location-room-live-preview-toggle').getAttribute('aria-expanded'), 'true',
+    'the mobile preview pane starts expanded');
+  await page.getByTestId('location-room-live-preview-toggle').click();
+  assert.equal(await page.getByTestId('location-room-live-preview-toggle').getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer').count(), 1,
+    'collapsing the mobile preview hides its pane without unmounting the viewer');
+  await page.getByTestId('location-room-live-preview-toggle').click();
+  const viewerAfterPaneToggle = await page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer').evaluate((viewer) => ({
+    sameViewer: viewer === globalThis.__retainedRoomViewer,
+    sameScene: viewer.scene === globalThis.__retainedRoomScene,
+    camera: viewer.scene.camera.position.toArray(),
+    target: viewer.scene.controls.target.toArray(),
+  }));
+  assert.equal(viewerAfterStepChange.sameViewer, true, 'step navigation retains the same mounted viewer element');
+  assert.equal(viewerAfterStepChange.sameScene, true, 'step navigation retains the same Three.js scene instance');
+  assert.equal(viewerAfterPaneToggle.sameViewer, true, 'mobile hide/show retains the same mounted viewer element');
+  assert.equal(viewerAfterPaneToggle.sameScene, true, 'mobile hide/show retains the same Three.js scene instance');
+  for (const axis of ['camera', 'target']) for (let index = 0; index < 3; index++) {
+    assert.ok(Math.abs(viewerAfterPaneToggle[axis][index] - retainedViewerState[axis][index]) < 0.03,
+      `step and pane changes retain ${axis} component ${index}`);
+  }
   const releasedResources = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
-  assert.equal(releasedResources.imageBitmapsClosed, releasedResources.imageBitmapsCreated,
-    'leaving the model step disposes every successful embedded texture ImageBitmap exactly once');
+  assert.ok(releasedResources.imageBitmapsClosed < releasedResources.imageBitmapsCreated,
+    'the active custom GLB retains its ImageBitmap while the persistent editor preview remains mounted');
   const allEmbeddedTextureUrls = releasedResources.createdUrls.filter((item) => /GLTFLoader\.js/.test(item.stack)).map((item) => item.url);
   assert.deepEqual(releasedResources.revokedUrls.filter((url) => allEmbeddedTextureUrls.includes(url)), allEmbeddedTextureUrls,
     'all successful and failed embedded-image parse paths revoke their object URLs');
@@ -1303,7 +1527,7 @@ async function run() {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile has no horizontal overflow');
   const addZoneBox = await page.getByRole('button', { name: 'Add zone' }).boundingBox();
   assert.ok(addZoneBox.height >= 44, 'mobile editor action has a 44px target');
-  await page.getByRole('button', { name: 'Zoom in' }).click();
+  await page.getByTestId('location-canvas-zoom-in').click();
   const canvasBox = await page.locator('.loc-canvas').boundingBox();
   assert.ok(canvasBox);
   const touch = await page.context().newCDPSession(page);
@@ -1315,7 +1539,7 @@ async function run() {
   assert.notEqual(await page.locator('.loc-canvas').getAttribute('viewBox'), viewBeforeTouch, 'touch drag pans the zoomed mobile canvas');
   assert.equal(await page.getByText('Zoom 1.25×').count(), 1, 'mobile zoom control changes the view scale');
   await touch.detach();
-  await page.getByRole('button', { name: 'Reset view' }).click();
+  await page.getByTestId('location-canvas-reset').click();
   await page.screenshot({ path: join(artifacts, 'location-editor-mobile.png'), fullPage: true });
   await page.setViewportSize({ width: 720, height: 1000 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '200% browser-like zoom reflows without horizontal overflow');
@@ -1345,6 +1569,7 @@ async function run() {
     if (failInitialDraftRead && route.request().method() === 'GET'
       && /^\/api\/locations\/drafts\/[0-9a-f-]+$/i.test(new URL(route.request().url()).pathname)) {
       failInitialDraftRead = false;
+      expectHttpConsoleFailure(route.request(), 503);
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'STORAGE_UNAVAILABLE', message: 'Synthetic initial draft read failure.' } }) });
       return;
     }
@@ -1490,10 +1715,11 @@ async function run() {
   checks.push('admin-uploaded published plan remains privately previewable by a second manager only through the exact owned base draft after save/reload');
 
   // Keep a minimal, sanitized result summary; never include cookies, request bodies, or auth data.
+  assert.deepEqual(expectedHttpConsoleFailures, [], 'every expected HTTP console error is matched to its intercepted method, path, and status exactly once');
   assert.deepEqual(browserErrors, [], `unexpected browser errors: ${JSON.stringify(browserErrors)}`);
   writeFileSync(join(artifacts, 'browser-results.json'), JSON.stringify({
     runner: 'Local Playwright 1.63 / installed Chrome; real /auth/login sessions; temporary file persistence; loopback only',
-    checks, network, browserErrors,
+    checks, network, expectedBrowserEvents, browserErrors,
     screenshots: ['locations-list-desktop.png', 'location-editor-desktop.png', 'location-review-private.png', 'location-editor-mobile.png', 'legacy-edit-preserved.png'],
   }, null, 2));
   writeFileSync(join(artifacts, 'failure-trace.json'), JSON.stringify({
@@ -1507,7 +1733,7 @@ try {
   await run();
 } catch (error) {
   const safeMessage = error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 1200) : 'Unknown browser harness failure';
-  writeFileSync(join(artifacts, 'failure-trace.json'), JSON.stringify({ unexpectedFailure: safeMessage, network, browserErrors }, null, 2));
+  writeFileSync(join(artifacts, 'failure-trace.json'), JSON.stringify({ unexpectedFailure: safeMessage, network, expectedBrowserEvents, expectedHttpConsoleFailures, browserErrors }, null, 2));
   throw error;
 } finally {
   if (browser) await browser.close();

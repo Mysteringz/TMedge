@@ -2,7 +2,7 @@ import * as THREE from '../location-model/vendor/three/three.module.js';
 import { OrbitControls } from '../location-model/vendor/three/OrbitControls.js';
 import { GLTFLoader } from '../location-model/vendor/three/GLTFLoader.js';
 
-const COLORS = { floor: 0x8995a2, table: 0x57a0e8, seat: 0xe6edf4, sensor: 0xffa600 };
+const COLORS = { floor: 0x8995a2, table: 0x57a0e8, seat: 0xe6edf4, sensor: 0xffa600, wall: 0x65717e };
 
 /** Owns one GLB root and a separate authored-coordinate overlay scene. */
 export class LocationModelScene {
@@ -10,8 +10,11 @@ export class LocationModelScene {
     this.host = host;
     this.disposed = false;
     this.loadId = 0;
+    this.source = '2d';
+    this.initialFloorDrawn = false;
     this.widthM = 10;
     this.heightM = 10;
+    this.walls = new Map();
     this.floor = new THREE.Group();
     this.overlay = new THREE.Group();
     this.modelRoot = new THREE.Group();
@@ -29,6 +32,7 @@ export class LocationModelScene {
     this.scene.add(key, this.floor, this.modelRoot, this.overlay);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.controls.addEventListener('change', this.updateWallVisibility);
     this.controls.target.set(this.widthM / 2, 0, -this.heightM / 2);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.host);
@@ -38,13 +42,29 @@ export class LocationModelScene {
 
   setFloor(value) {
     if (this.disposed) return;
+    if (value.source !== this.source) {
+      this.source = value.source;
+      if (value.source !== 'custom') {
+        this.loadId += 1;
+        clearGroup(this.modelRoot);
+      }
+    }
     this.widthM = value.widthM;
     this.heightM = value.heightM;
+    this.wallHeightM = value.wallHeightM;
+    this.tableHeightM = value.tableHeightM;
     clearGroup(this.floor);
     clearGroup(this.overlay);
+    this.walls.clear();
     this.drawFloor();
+    if (this.source === 'generated') this.drawRoomWalls();
     for (const table of value.tables) this.drawTable(table);
     for (const sensor of value.sensors) this.drawSensor(sensor);
+    if (!this.initialFloorDrawn) {
+      this.initialFloorDrawn = true;
+      this.resetCamera();
+    }
+    this.updateWallVisibility();
   }
 
   setTransform(value) {
@@ -76,19 +96,19 @@ export class LocationModelScene {
 
   resetCamera = () => {
     if (this.disposed) return;
-    const bounds = new THREE.Box3();
-    bounds.expandByPoint(new THREE.Vector3(0, 0, 0));
-    bounds.expandByPoint(new THREE.Vector3(this.widthM, 0, -this.heightM));
+    const bounds = new THREE.Box3().setFromObject(this.floor);
+    bounds.union(new THREE.Box3().setFromObject(this.overlay));
     if (this.modelRoot.children.length) bounds.union(new THREE.Box3().setFromObject(this.modelRoot));
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
     const span = Math.max(size.x, size.y, size.z, 1);
     this.controls.target.copy(center);
-    this.camera.position.set(center.x + span * 0.8, center.y + span * 0.85, center.z + span * 1.05);
+    this.camera.position.set(center.x, center.y + span * 0.85, center.z + span * 1.05);
     this.camera.near = Math.max(0.01, span / 10000);
     this.camera.far = Math.max(1000, span * 20);
     this.camera.updateProjectionMatrix();
     this.controls.update();
+    this.updateWallVisibility();
   };
 
   zoom(factor) {
@@ -112,19 +132,67 @@ export class LocationModelScene {
     for (let x = 0; x <= this.widthM + 1e-6; x += step) positions.push(x, -0.002, 0, x, -0.002, -this.heightM);
     for (let z = 0; z >= -this.heightM - 1e-6; z -= step) positions.push(0, -0.002, z, this.widthM, -0.002, z);
     this.floor.add(lineSegments(positions, 0x59636e, 0.45));
+    if (this.source === 'generated') {
+      const material = new THREE.MeshStandardMaterial({ color: 0x252d36, roughness: 0.95, side: THREE.DoubleSide });
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(this.widthM, this.heightM), material);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.set(this.widthM / 2, -0.015, -this.heightM / 2);
+      floor.name = 'generated-floor';
+      this.floor.add(floor);
+    }
   }
 
   drawTable(table) {
-    this.overlay.add(lineLoop(table.outline.map((point) => [point.x, 0.025, point.z]), COLORS.table, 1));
-    for (const seat of table.seats) this.overlay.add(sphere(seat.position, 0.075, COLORS.seat));
+    if (this.source === 'generated') {
+      const top = raisedTable(table, this.tableHeightM);
+      this.overlay.add(top);
+      for (const seat of table.seats) this.overlay.add(chair(seat, table.kind));
+      return;
+    }
+    this.overlay.add(lineLoop(footprintOutline(table.footprint).map((point) => [point.x, 0.025, point.z]), COLORS.table, 1));
+    for (const seat of table.seats) this.overlay.add(sphere({ ...seat.position, y: 0 }, 0.075, COLORS.seat));
   }
 
   drawSensor(sensor) {
-    this.overlay.add(sphere(sensor.position, 0.14, COLORS.sensor));
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 8), new THREE.MeshStandardMaterial({ color: COLORS.sensor }));
+    marker.position.set(sensor.position.x, sensor.position.y, sensor.position.z);
+    marker.name = `draft-sensor-${safeName(sensor.uid)}`;
+    this.overlay.add(marker);
     const start = new THREE.Vector3(sensor.position.x, sensor.position.y, sensor.position.z);
     const direction = new THREE.Vector3(sensor.direction.x, 0, sensor.direction.z).normalize();
-    this.overlay.add(new THREE.ArrowHelper(direction, start, 0.5, COLORS.sensor, 0.16, 0.1));
+    const arrow = new THREE.ArrowHelper(direction, start, 0.5, COLORS.sensor, 0.16, 0.1);
+    arrow.name = `draft-sensor-yaw-${safeName(sensor.uid)}`;
+    this.overlay.add(arrow);
   }
+
+  drawRoomWalls() {
+    const thickness = 0.08;
+    const material = new THREE.MeshStandardMaterial({ color: COLORS.wall, roughness: 0.82, transparent: true, opacity: 0.86 });
+    const wallHeight = this.wallHeightM;
+    const definitions = [
+      ['north', this.widthM + thickness, wallHeight, thickness, this.widthM / 2, wallHeight / 2, 0],
+      ['south', this.widthM + thickness, wallHeight, thickness, this.widthM / 2, wallHeight / 2, -this.heightM],
+      ['west', thickness, wallHeight, this.heightM + thickness, 0, wallHeight / 2, -this.heightM / 2],
+      ['east', thickness, wallHeight, this.heightM + thickness, this.widthM, wallHeight / 2, -this.heightM / 2],
+    ];
+    for (const [name, width, height, depth, x, y, z] of definitions) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+      wall.position.set(x, y, z);
+      wall.name = `generated-wall-${name}`;
+      this.walls.set(name, wall);
+      this.floor.add(wall);
+    }
+  }
+
+  updateWallVisibility = () => {
+    if (this.source !== 'generated' || this.walls.size !== 4) return;
+    const centerX = this.widthM / 2;
+    const centerZ = -this.heightM / 2;
+    this.walls.get('north').visible = !(this.camera.position.z > centerZ + 0.001);
+    this.walls.get('south').visible = !(this.camera.position.z < centerZ - 0.001);
+    this.walls.get('west').visible = !(this.camera.position.x < centerX - 0.001);
+    this.walls.get('east').visible = !(this.camera.position.x > centerX + 0.001);
+  };
 
   resize() {
     if (this.disposed) return;
@@ -139,6 +207,7 @@ export class LocationModelScene {
   render = () => {
     if (this.disposed) return;
     this.controls.update();
+    this.updateWallVisibility();
     this.renderer.render(this.scene, this.camera);
     this.frameId = requestAnimationFrame(this.render);
   };
@@ -154,6 +223,7 @@ export class LocationModelScene {
     cancelAnimationFrame(this.frameId);
     this.resizeObserver.disconnect();
     this.controls.dispose();
+    this.controls.removeEventListener('change', this.updateWallVisibility);
     disposeObject(this.modelRoot);
     disposeObject(this.floor);
     disposeObject(this.overlay);
@@ -180,6 +250,58 @@ function sphere(point, radius, color) {
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 8), new THREE.MeshStandardMaterial({ color }));
   mesh.position.set(point.x, point.y + 0.035, point.z);
   return mesh;
+}
+
+function raisedTable(table, tableHeightM) {
+  const shape = new THREE.Shape();
+  if (table.footprint.type === 'circle') {
+    const { center, radiusM } = table.footprint;
+    shape.absarc(center.x, center.z, radiusM, 0, Math.PI * 2, false);
+    shape.closePath();
+  } else {
+    const points = table.footprint.points;
+    const first = points[0];
+    if (!first) return new THREE.Group();
+    shape.moveTo(first.x, first.z);
+    for (const point of points.slice(1)) shape.lineTo(point.x, point.z);
+    shape.closePath();
+  }
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: 0.06, bevelEnabled: false, curveSegments: 32 });
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: COLORS.table, roughness: 0.8 }));
+  mesh.rotation.x = Math.PI / 2;
+  mesh.position.y = tableHeightM;
+  mesh.name = `generated-table-${safeName(table.id)}`;
+  return mesh;
+}
+
+function chair(seat, tableKind) {
+  const geometry = tableKind === 'circle'
+    ? new THREE.CylinderGeometry(0.11, 0.11, 0.2, 16)
+    : new THREE.BoxGeometry(0.22, 0.2, 0.22);
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: COLORS.seat, roughness: 0.85 }));
+  mesh.position.set(seat.position.x, 0.1, seat.position.z);
+  mesh.rotation.y = chairYaw(seat.side);
+  mesh.name = `generated-seat-${safeName(seat.id)}`;
+  return mesh;
+}
+
+function chairYaw(side) {
+  if (side === 'L') return Math.PI / 2;
+  if (side === 'R') return -Math.PI / 2;
+  if (side === 'T') return Math.PI;
+  return 0;
+}
+
+function footprintOutline(footprint) {
+  if (footprint.type !== 'circle') return footprint.points;
+  return Array.from({ length: 48 }, (_, index) => {
+    const angle = index / 48 * Math.PI * 2;
+    return { x: footprint.center.x + Math.cos(angle) * footprint.radiusM, z: footprint.center.z + Math.sin(angle) * footprint.radiusM };
+  });
+}
+
+function safeName(value) {
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 function clearGroup(group) {

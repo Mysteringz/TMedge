@@ -1,120 +1,163 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { readDraftModel } from '../../../entities/location-config/index.ts';
 import type { AssetCapability, DraftDetail, LocationDocument, ModelTransform } from '../../../entities/location-config/index.ts';
-import { modelRootTransform, modelSceneFromDocument } from '../../../features/location-editor/index.ts';
+import { modelRootTransform, type ModelSceneDocument } from '../../../features/location-editor/index.ts';
 import { ensureLocationModelViewer, type LocationModelViewerElement } from '../model-viewer-loader.ts';
 
-type PreviewState = 'loading' | 'loaded' | 'error' | 'empty';
+type PreviewState = 'loading' | 'ready' | 'error';
 
-/** Authenticated model preview with authored overlays; the parent owns document state and upload/save actions.
- * @example <ModelPreview draft={draft} document={document} onRetry={() => setRetry((n) => n + 1)} />
- */
-export function ModelPreview({ draft, document, capability, retry, onRetry }: {
-  draft: DraftDetail; document: LocationDocument; capability?: AssetCapability; retry: number; onRetry(): void;
+/** One stable viewer for the Room view and the live Details/Sensors companion pane. */
+export function ModelPreview({ draft, document, scene, capability, retry, stale, onRetry }: {
+  draft: DraftDetail; document: LocationDocument; scene: ModelSceneDocument; capability?: AssetCapability;
+  retry: number; stale: boolean; onRetry(): void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const viewer = useRef<LocationModelViewerElement | null>(null);
+  const listener = useRef<EventListener | null>(null);
   const [viewerReady, setViewerReady] = useState(false);
   const [viewerError, setViewerError] = useState('');
   const [moduleRetry, setModuleRetry] = useState(0);
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
-  const [state, setState] = useState<PreviewState>(document.modelAssetId ? 'loading' : 'empty');
-  const [message, setMessage] = useState('');
-  const scene = useMemo(() => modelSceneFromDocument(document), [document.widthCm, document.heightCm, document.tables, document.sensorAssignments]);
+  const [state, setState] = useState<PreviewState>('loading');
+  const [message, setMessage] = useState('Loading built-in room preview…');
   const transform = useMemo(() => modelRootTransform(document.modelTransform ?? defaultTransform()), [document.modelTransform]);
-  const onViewerState = (event: Event) => {
-    const detail = (event as CustomEvent<{ state: string; message: string }>).detail;
-    if (!detail) return;
-    if (detail.state === 'error' && /3d preview could not be started/i.test(detail.message)) {
-      setState('error');
-      setMessage(detail.message);
-      setViewerError('The 3D preview could not be started in this browser. Retry the viewer.');
-      return;
-    }
-    setState(detail.state === 'loaded' ? 'loaded' : detail.state === 'error' ? 'error' : 'loading');
-    setMessage(detail.message);
-  };
+  const uses3dViewer = scene.source === 'generated' || scene.source === 'custom';
+  const readsModel = scene.source === 'custom' && !!document.modelAssetId;
 
   useEffect(() => {
+    if (!uses3dViewer) { setViewerError(''); setState('ready'); return; }
+    if (viewer.current) return;
     let active = true;
     setViewerReady(false);
     setViewerError('');
-    const element = host.current;
-    if (!element) return () => { active = false; };
     void ensureLocationModelViewer().then(() => {
       if (!active) return;
+      const element = host.current;
+      if (!element) return;
       const customElement = globalThis.document.createElement('tm-location-model-viewer');
-      viewer.current = customElement;
+      const onViewerState: EventListener = (event) => {
+        const detail = (event as CustomEvent<{ state: string; message: string }>).detail;
+        if (!detail) return;
+        if (detail.state === 'error' && /3d preview could not be started/i.test(detail.message)) {
+          setState('error'); setMessage(detail.message); setViewerError('The 3D preview could not be started in this browser. Use the 2D editor and object list, or retry the viewer.');
+          setViewerReady(false); return;
+        }
+        setState(detail.state === 'error' ? 'error' : detail.state === 'loaded' ? 'ready' : 'loading');
+        setMessage(detail.message);
+      };
+      listener.current = onViewerState;
       customElement.addEventListener('location-model-state', onViewerState);
-      // Register before connection; connectedCallback may synchronously report
-      // a renderer/WebGL startup failure.
+      viewer.current = customElement;
       element.replaceChildren(customElement);
       setViewerReady(true);
-    }).catch(() => { if (active) setViewerError('The edge-hosted 3D viewer could not be loaded. Retry the preview.'); });
-    return () => {
-      active = false;
-      viewer.current?.removeEventListener('location-model-state', onViewerState);
-      viewer.current?.remove();
-      viewer.current = null;
-    };
-  }, [moduleRetry]);
+    }).catch(() => {
+      if (active) setViewerError('The edge-hosted 3D viewer could not be loaded. Use the 2D editor and object list, or retry the viewer.');
+    });
+    return () => { active = false; };
+  }, [uses3dViewer, moduleRetry]);
+
+  useEffect(() => () => {
+    const element = viewer.current;
+    if (element && listener.current) element.removeEventListener('location-model-state', listener.current);
+    element?.remove();
+    viewer.current = null;
+  }, []);
 
   useEffect(() => {
-    const assetId = document.modelAssetId;
-    if (!assetId) { setBuffer(null); setState('empty'); setMessage('No GLB selected. Authored floor overlays remain in the preview.'); return; }
+    if (!readsModel || !document.modelAssetId) {
+      setBuffer(null);
+      if (!readsModel) {
+        setState(uses3dViewer ? 'loading' : 'ready');
+        setMessage(scene.source === 'generated' ? 'Loading built-in room preview…' : '2D floor view selected for this private draft.');
+      }
+      return;
+    }
     if (capability?.source !== 'upload' || !capability.previewAvailable) {
       setBuffer(null); setState('error'); setMessage('This model cannot be previewed through the current private draft.'); return;
     }
     const controller = new AbortController();
     let active = true;
     setBuffer(null); setState('loading'); setMessage('Loading the authorized private GLB preview.');
-    void readDraftModel(draft.draftId, assetId, controller.signal).then((bytes) => {
-      if (!active) return;
-      setBuffer(bytes);
+    void readDraftModel(draft.draftId, document.modelAssetId, controller.signal).then((bytes) => {
+      if (active) setBuffer(bytes);
     }).catch(() => {
       if (active) { setState('error'); setMessage('The private model preview could not be loaded. The draft reference is preserved.'); }
     });
     return () => { active = false; controller.abort(); };
-  }, [draft.draftId, document.modelAssetId, capability?.source, capability?.previewAvailable, retry]);
+  }, [draft.draftId, document.modelAssetId, capability?.source, capability?.previewAvailable, readsModel, retry, scene.source, uses3dViewer]);
 
-  useEffect(() => { if (viewerReady) viewer.current?.setFloor(scene); }, [viewerReady, scene]);
-  useEffect(() => { if (viewerReady) viewer.current?.setTransform(transform); }, [viewerReady, transform]);
   useEffect(() => {
-    if (!viewerReady || !buffer) return;
+    if (!viewerReady) return;
+    viewer.current?.setFloor(scene);
+    if (scene.source === 'generated') { setState('ready'); setMessage('Built-in room preview ready.'); }
+  }, [viewerReady, scene, retry]);
+  useEffect(() => { if (viewerReady && scene.source === 'custom') viewer.current?.setTransform(transform); }, [viewerReady, scene.source, transform]);
+  useEffect(() => {
+    if (!viewerReady || scene.source !== 'custom' || !buffer) return;
     setState('loading');
     void viewer.current?.loadModel(buffer);
-  }, [viewerReady, buffer]);
+  }, [viewerReady, scene.source, buffer]);
 
-  return <section className="loc-model-preview-panel" aria-label="3D model preview">
-    <div className="loc-model-viewer-frame" aria-busy={state === 'loading'}>
+  const retryViewer = () => {
+    const element = viewer.current;
+    if (element && listener.current) element.removeEventListener('location-model-state', listener.current);
+    element?.remove(); viewer.current = null; listener.current = null;
+    setViewerReady(false); setViewerError(''); setModuleRetry((value) => value + 1);
+  };
+  const status = stale ? 'Last valid preview. Fix the highlighted 2D fields to update the preview.' : message;
+  const showFallback = !uses3dViewer || !!viewerError;
+  return <section className="loc-room-preview-panel" aria-label="3D room preview">
+    <header className="loc-room-preview-heading"><div><h2>3D room preview</h2>
+      {scene.source === 'generated' && <p>Room height · 3.0 m <span aria-hidden="true">·</span> Table height · 0.75 m</p>}
+    </div></header>
+    <div className="loc-model-viewer-frame" aria-busy={uses3dViewer && (state === 'loading' || !viewerReady)} data-testid="location-room-preview-canvas">
       {viewerError && <p className="loc-alert" role="alert">{viewerError}</p>}
-      <div className="loc-model-viewer" ref={host} role="img" aria-label="3D location preview. Table and sensor overlays stay fixed while the GLB alignment changes."
-        aria-hidden={viewerError ? true : undefined} hidden={!!viewerError} data-testid="location-model-viewer" />
+      {showFallback && <FloorGeometryFallback scene={scene} />}
+      <div className="loc-model-viewer" ref={host} hidden={showFallback} role="img" aria-label="Read-only 3D location preview. Move tables, seats, and sensors in the 2D editor. Use the camera controls to orbit and zoom." data-testid="location-model-viewer" data-preview-canvas="true" />
     </div>
     <div className="loc-model-view-controls" aria-label="Camera controls">
-      <button type="button" className="btn btn-secondary" data-testid="location-model-zoom-in" disabled={!viewerReady} onClick={() => viewer.current?.zoomIn()}>Zoom in</button>
-      <button type="button" className="btn btn-secondary" data-testid="location-model-zoom-out" disabled={!viewerReady} onClick={() => viewer.current?.zoomOut()}>Zoom out</button>
-      <button type="button" className="btn btn-secondary" data-testid="location-model-reset-view" disabled={!viewerReady} onClick={() => viewer.current?.resetCamera()}>Reset view</button>
-      {state === 'error' && <button type="button" className="btn btn-ghost" data-testid="location-model-preview-retry" onClick={onRetry}>Retry preview</button>}
-      {viewerError && <button type="button" className="btn btn-ghost" data-testid="location-model-viewer-retry" onClick={() => { setViewerReady(false); setModuleRetry((value) => value + 1); }}>Retry viewer</button>}
+      <button type="button" className="btn btn-secondary" data-testid="location-model-zoom-in" disabled={!viewerReady || showFallback} onClick={() => viewer.current?.zoomIn()}>Zoom in</button>
+      <button type="button" className="btn btn-secondary" data-testid="location-model-zoom-out" disabled={!viewerReady || showFallback} onClick={() => viewer.current?.zoomOut()}>Zoom out</button>
+      <span data-testid="location-room-reset-view"><button type="button" className="btn btn-secondary" data-testid="location-model-reset-view" disabled={!viewerReady || showFallback} onClick={() => viewer.current?.resetCamera()}>Reset view</button></span>
+      {(state === 'error' || stale) && <span data-testid="location-room-preview-retry"><button type="button" className="btn btn-ghost" data-testid="location-model-preview-retry" onClick={onRetry}>Retry preview</button></span>}
+      {viewerError && <span data-testid="location-room-preview-viewer-retry"><button type="button" className="btn btn-ghost" data-testid="location-model-viewer-retry" onClick={retryViewer}>Retry viewer</button></span>}
     </div>
-    <p className={`loc-model-preview-status ${state === 'error' ? 'is-error' : ''}`} role={state === 'error' ? 'alert' : 'status'} aria-live="polite">{message}</p>
-    <SceneLegend document={document} scene={scene} />
+    <p className={`loc-model-preview-status ${state === 'error' || stale ? 'is-error' : ''}`} role={state === 'error' || stale ? 'alert' : 'status'} aria-live="polite" data-testid="location-room-preview-status">{status}</p>
+    <SceneLegend scene={scene} />
   </section>;
 }
 
-/** Text equivalent of the preview overlays, preserving stable table and seat labels. */
-function SceneLegend({ document, scene }: { document: LocationDocument; scene: ReturnType<typeof modelSceneFromDocument> }) {
-  return <div className="loc-model-scene-list" aria-label="3D preview objects">
-    <h3>Authored floor overlays</h3>
-    {!scene.tables.length && !scene.sensors.length && <p>No tables or placed sensors in this draft.</p>}
-    <ul>{scene.tables.map((table, index) => {
-      const source = document.tables[index];
-      return <li key={table.id}><b>{table.name}</b> · {source?.shape?.type ?? 'legacy rectangle'} · {table.seats.length} seats
-        {table.seats.length > 0 && <ul>{table.seats.map((seat) => <li key={seat.id}>Seat {seat.id}</li>)}</ul>}
-      </li>;
-    })}{scene.sensors.map((sensor, index) => <li key={`${sensor.label}:${index}`}><b>{sensor.label}</b> · current draft pose marker</li>)}</ul>
+/** Readable text alternative to the preview geometry and private sensor poses. */
+function SceneLegend({ scene }: { scene: ModelSceneDocument }) {
+  return <div className="loc-model-scene-list" aria-label="3D preview objects" data-testid="location-room-preview-object-list">
+    <h3>Room objects</h3>
+    {!scene.tables.length && !scene.sensors.length && <p>No tables or placed sensors yet. Add them in the 2D layout and Sensors steps.</p>}
+    <ul>{scene.tables.map((table) => <li key={table.id}><b>{table.name}</b> · {table.kind} · {table.seats.length} seats
+      {table.seats.length > 0 && <ul>{table.seats.map((seat) => <li key={seat.id}>Seat {seat.id}</li>)}</ul>}
+    </li>)}{scene.sensors.map((sensor) => <li key={sensor.uid}><b>{sensor.label}</b> · {sensor.position.y.toFixed(2)} m high · yaw {(sensor.yawRad * 180 / Math.PI).toFixed(1)}°</li>)}</ul>
   </div>;
+}
+
+/** 2D equivalent shown for explicit 2D mode, legacy-static, or viewer failure. */
+function FloorGeometryFallback({ scene }: { scene: ModelSceneDocument }) {
+  return <div className="loc-model-floor-fallback" data-testid="location-model-2d-fallback">
+    <h3>{scene.source === '2d' ? '2D floor view selected' : '2D floor geometry'}</h3>
+    <svg viewBox={`0 ${-scene.heightM} ${scene.widthM} ${scene.heightM}`} role="img" aria-label="Two-dimensional floor geometry with authored tables, seats and placed sensors" preserveAspectRatio="xMidYMid meet">
+      <rect className="loc-model-floor-outline" x="0" y={-scene.heightM} width={scene.widthM} height={scene.heightM} />
+      {scene.tables.map((table) => <Footprint key={table.id} table={table} />)}
+      {scene.tables.flatMap((table) => table.seats.map((seat) => <circle className="loc-model-floor-seat" key={`${table.id}:${seat.id}`} cx={seat.position.x} cy={seat.position.z} r="0.12" />))}
+      {scene.sensors.map((sensor) => <circle className="loc-model-floor-sensor" key={sensor.uid} cx={sensor.position.x} cy={sensor.position.z} r="0.16"><title>{`${sensor.label} · height ${sensor.position.y.toFixed(2)} m`}</title></circle>)}
+    </svg>
+  </div>;
+}
+
+function Footprint({ table }: { table: ModelSceneDocument['tables'][number] }) {
+  const footprint = table.footprint;
+  if (footprint.type === 'circle') return <circle className="loc-model-floor-table" data-table-id={table.id} cx={footprint.center.x} cy={footprint.center.z} r={footprint.radiusM} />;
+  const points = footprint.points.map((point) => `${point.x},${point.z}`).join(' ');
+  return footprint.type === 'rect'
+    ? <polygon className="loc-model-floor-table" data-table-id={table.id} points={points} />
+    : <polygon className="loc-model-floor-table" data-table-id={table.id} points={points} />;
 }
 
 function defaultTransform(): ModelTransform {

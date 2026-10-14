@@ -1,13 +1,16 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { getLocationDraft, LocationApiError, publishLocationDraft, readDraftPlan, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
+import { getEligibleDraftSensors, getLocationDraft, LocationApiError, publishLocationDraft, readDraftPlan, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
 import type { DraftDetail, LocationDocument, Point, Table, TableShape } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
-import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue } from '../../../features/location-editor/index.ts';
+import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, modelSceneFromDocument, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue, type ModelSceneDocument } from '../../../features/location-editor/index.ts';
+import { canSelectGeneratedRoom, locationRoomSource, requiresModelClearConfirmation, selectGeneratedRoom, selectTwoDimensional } from '../../../features/location-room-source/index.ts';
 import { EditorCanvas, type DragStart, type Drawing, type Selection } from './editor-canvas.tsx';
 import { EditorInspector } from './editor-inspector.tsx';
 import { SensorPlacementStep } from './sensor-placement-step.tsx';
 import { SensorCoverageSummary } from './sensor-coverage-summary.tsx';
 import { ModelAlignmentStep, ModelReviewSummary, type ModelUploadOutcome } from './model-alignment-step.tsx';
+import { ModelPreview } from './model-preview.tsx';
+import { SIMPLE_ROOM_TABLE_HEIGHT_M, SIMPLE_ROOM_WALL_HEIGHT_M } from '../../../../../src/shared/simple-room-geometry.ts';
 import './location-editor.css';
 
 type Step = 'details' | 'sensors' | 'model' | 'review';
@@ -33,8 +36,13 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   const [planRetry, setPlanRetry] = useState(0);
   const [planFileName, setPlanFileName] = useState('');
   const [announcement, setAnnouncement] = useState('');
+  const [transientInputs, setTransientInputs] = useState<Record<string, boolean>>({});
+  const [previewRetry, setPreviewRetry] = useState(0);
+  const [previewExpanded, setPreviewExpanded] = useState(true);
+  const [sensorLabels, setSensorLabels] = useState<ReadonlyMap<string, string>>(() => new Map());
   const drag = useRef<DragStart | null>(null);
   const drawingOrigin = useRef<string | null>(null);
+  const sensorLabelRequestId = useRef(0);
   const wizard = useRef<HTMLElement>(null);
   useEffect(() => {
     const url = pendingPlan?.url;
@@ -47,6 +55,13 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
       const result = await getLocationDraft(draftId);
       setDraft(result);
       const remote = structuredClone(result.document);
+      const labelRequest = ++sensorLabelRequestId.current;
+      setSensorLabels(new Map());
+      if (remote.sensorAssignments.length) {
+        void getEligibleDraftSensors(result.draftId).then((response) => {
+          if (sensorLabelRequestId.current === labelRequest) setSensorLabels(new Map(response.sensors.map((sensor) => [sensor.uid.toLowerCase(), sensor.label])));
+        }).catch(() => {});
+      }
       setBaseDocument(remote);
       setSavedDocument(remote);
       setDocument(result.basePublishedRevision === null ? addDefaultZone(remote) : remote);
@@ -81,6 +96,26 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const dirty = !!document && !!savedDocument && !sameJson(document, savedDocument);
   const errors = useMemo(() => document ? validateEditorDocument(document, baseDocument) : [], [document, baseDocument]);
+  const modelCapability = draft?.assetCapabilities?.modelAssetId;
+  const source = document ? locationRoomSource(document, modelCapability) : '2d';
+  const candidateScene = useMemo(() => {
+    if (!document) return null;
+    try { return modelSceneFromDocument(document, modelCapability, sensorLabels); }
+    catch { return null; }
+  }, [document, modelCapability, sensorLabels]);
+  const generatedEligible = document ? canSelectGeneratedRoom(document) : false;
+  const hasTransientInvalid = Object.values(transientInputs).some(Boolean);
+  const previewInvalid = errors.length > 0 || hasTransientInvalid || !candidateScene || (source === 'generated' && !generatedEligible);
+  const [lastValidScene, setLastValidScene] = useState<ModelSceneDocument | null>(null);
+  useEffect(() => {
+    if (!previewInvalid && candidateScene) setLastValidScene(candidateScene);
+  }, [previewInvalid, candidateScene]);
+  const currentScene = previewInvalid ? lastValidScene ?? candidateScene : candidateScene;
+  const displayScene: ModelSceneDocument = currentScene
+    ? { ...currentScene, source }
+    : { source, widthM: Math.max(0.1, (document?.widthCm ?? 1000) / 100), heightM: Math.max(0.1, (document?.heightCm ?? 1000) / 100), wallHeightM: SIMPLE_ROOM_WALL_HEIGHT_M, tableHeightM: SIMPLE_ROOM_TABLE_HEIGHT_M, tables: [], sensors: [] };
+  const previewStale = previewInvalid && !!currentScene;
+  const previewHasError = !candidateScene;
   useEffect(() => {
     const fields = [...(wizard.current?.querySelectorAll<HTMLElement>('[data-location-field]') ?? [])];
     for (const field of fields) {
@@ -231,6 +266,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
         modelAssetId: result.assetId,
         modelTransform: ready.document.modelTransform ?? defaultModelTransform(),
       };
+      delete appliedDocument.proceduralRoom;
       const appliedDraft: DraftDetail = {
         ...ready,
         draftRevision: result.draftRevision,
@@ -260,7 +296,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
         setProblem(`GLB attachment was saved to draft revision ${result.draftRevision}, but draft details could not be reloaded. The selected file and preview are retained. Retry reload before further changes.`);
         return { assetId: result.assetId, draftRevision: result.draftRevision, durability: result.durability, displayName: result.displayName, reloaded: false };
       }
-      setMessage('GLB attached to this private draft. The previously published model remains active until publication.');
+      setMessage('GLB attached to this private draft. The previously published source remains active until publication.');
       return { assetId: result.assetId, draftRevision: result.draftRevision, durability: result.durability, displayName: result.displayName, reloaded: true };
     } catch (cause) {
       if (cause instanceof LocationApiError && cause.status === 409) {
@@ -311,7 +347,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const changeStep = async (next: Step) => {
     if (modelPreflightBlocked && step !== next) {
-      setProblem('Retry or clear the selected GLB before leaving the model step.');
+      setProblem('Retry or clear the selected GLB before leaving the Room view step.');
       return;
     }
     if (step !== next && dirty) {
@@ -323,6 +359,34 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const update = (change: (current: LocationDocument) => LocationDocument) => {
     setDocument((current) => current ? change(current) : current); setProblem('');
+  };
+  const reportTransientInput = (key: string, invalid: boolean) => setTransientInputs((current) => {
+    if ((current[key] ?? false) === invalid) return current;
+    return { ...current, [key]: invalid };
+  });
+  const clearModelCapability = () => setDraft((current) => {
+    if (!current?.assetCapabilities) return current;
+    const assetCapabilities = { ...current.assetCapabilities };
+    delete assetCapabilities.modelAssetId;
+    return { ...current, assetCapabilities };
+  });
+  const selectRoomSource = (nextSource: 'generated' | '2d') => {
+    if (!document || !draft) return;
+    if (nextSource === 'generated' && !canSelectGeneratedRoom(document)) {
+      setProblem('Built-in room needs a floor outline that matches the rectangular floor dimensions. Edit the outline or choose another source.');
+      return;
+    }
+    const nextDocument = nextSource === 'generated' ? selectGeneratedRoom(document) : selectTwoDimensional(document, modelCapability);
+    if (!nextDocument) return;
+    if (requiresModelClearConfirmation(document)) {
+      const choice = nextSource === 'generated' ? 'Built-in room' : '2D only';
+      const accepted = globalThis.confirm(`Switch this draft to ${choice}? This clears the active draft model reference and alignment. The published revision stays active, and its immutable asset and history are retained.`);
+      if (!accepted) return;
+    }
+    setDocument(nextDocument);
+    clearModelCapability();
+    setProblem('');
+    setMessage(`${nextSource === 'generated' ? 'Built-in room' : '2D floor view'} selected for this private draft. The published revision remains active until publication.`);
   };
   const focusCanvas = () => requestAnimationFrame(() => wizard.current?.querySelector<SVGSVGElement>('.loc-canvas')?.focus());
   const cancelDrawing = () => {
@@ -411,7 +475,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   </main>;
 
   const stepItems: Array<{ id: Step; label: string }> = [
-    { id: 'details', label: 'Details & layout' }, { id: 'sensors', label: 'Sensors' }, { id: 'model', label: '3D model · optional' }, { id: 'review', label: 'Review' },
+    { id: 'details', label: 'Details & layout' }, { id: 'sensors', label: 'Sensors' }, { id: 'model', label: 'Room view' }, { id: 'review', label: 'Review' },
   ];
   return <main className="cx-train loc-page" ref={wizard}>
     <header className="cx-train-head loc-editor-head">
@@ -430,12 +494,14 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
     </div>}
     {message && <p className="loc-status" role="status" aria-live="polite">{message}</p>}
 
+    <div className={`loc-step-layout is-${step}`}>
+    <div className="loc-step-main">
     {step === 'details' ? <fieldset className="loc-editor-fieldset" disabled={busy !== '' || mustReload} inert={busy !== '' || mustReload} aria-busy={busy !== ''}>
       <div className="loc-metadata card">
         <Field label="Location name" value={document.name} onChange={(name) => update((current) => ({ ...current, name }))} />
         <Field label="Building" value={document.building} onChange={(building) => update((current) => ({ ...current, building }))} />
-        <Field label="Floor width (m)" fieldPath="floor.width" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.widthCm))} onChange={(value) => editDimensions('widthCm', value)} />
-        <Field label="Floor height (m)" fieldPath="floor.height" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.heightCm))} onChange={(value) => editDimensions('heightCm', value)} />
+        <Field label="Floor width (m)" fieldPath="floor.width" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.widthCm))} onChange={(value) => editDimensions('widthCm', value)} onTransientInvalid={(invalid) => reportTransientInput('floor.width', invalid)} />
+        <Field label="Floor height (m)" fieldPath="floor.height" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.heightCm))} onChange={(value) => editDimensions('heightCm', value)} onTransientInvalid={(invalid) => reportTransientInput('floor.height', invalid)} />
         <p className="loc-visibility"><b>Visibility · read-only</b><span>{draft.basePublishedRevision === null ? 'Public · server default' : draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'}</span></p>
       </div>
       <section className="loc-plan-section card" aria-labelledby="loc-plan-title">
@@ -468,7 +534,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
             onFinishDrawing={finishDrawing} onCancelDrawing={cancelDrawing} />
           <p className="loc-canvas-live" aria-live="polite">{announcement}</p>
         </section>
-        <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} />
+        <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput} />
       </div>
       {!!errors.length && <div className="loc-validation" role="status" tabIndex={-1}><b>Review the layout</b><ul>{errors.map((item, index) => <li key={`${item.field}:${item.message}`} id={`loc-validation-${index}`}>{item.message}</li>)}</ul></div>}
       <footer className="loc-footer">
@@ -478,10 +544,25 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
         <button type="button" className="btn btn-primary" data-testid="location-continue-sensors" disabled={busy !== '' || mustReload} onClick={() => void changeStep('sensors')}>Continue to sensors</button>
       </footer>
     </fieldset> : step === 'sensors' ? <SensorPlacementStep draft={draft} document={document} onUpdate={update} onSave={() => save()}
+      onTransientValidityChange={(field, invalid) => reportTransientInput(field, invalid)}
+      onSensorLabelsChange={(sensors) => setSensorLabels(new Map(sensors.map((sensor) => [sensor.uid.toLowerCase(), sensor.label])))}
       onBack={() => onStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
       : step === 'model' ? <ModelAlignmentStep draft={draft} document={document} busy={busy} mustReload={mustReload} onUpdate={update}
-        onUpload={uploadModel} onSave={() => void save()} onBack={() => void changeStep('sensors')} onContinue={() => void changeStep('review')} onPreflightBlockedChange={setModelPreflightBlocked} />
+        onSelectSource={selectRoomSource} onUpload={uploadModel} onSave={() => void save()} onBack={() => void changeStep('sensors')} onContinue={() => void changeStep('review')} onPreflightBlockedChange={setModelPreflightBlocked} />
         : <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onEditModel={() => onStep('model')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />}
+    </div>
+    <aside className="loc-live-preview" aria-label="Live room preview" data-testid="location-room-live-preview">
+      {(step === 'details' || step === 'sensors') && <button type="button" className="btn btn-secondary loc-live-preview-toggle" data-testid="location-room-live-preview-toggle"
+        aria-expanded={previewExpanded} aria-controls="location-room-preview-panel" onClick={() => setPreviewExpanded((expanded) => !expanded)}>
+        {previewExpanded ? 'Hide 3D preview' : 'Show 3D preview'}
+      </button>}
+      <div id="location-room-preview-panel" className={`loc-live-preview-panel ${(step === 'details' || step === 'sensors') && !previewExpanded ? 'is-collapsed' : ''}`}>
+        <ModelPreview draft={draft} document={document} scene={displayScene} capability={modelCapability} retry={previewRetry} stale={previewStale}
+          onRetry={() => setPreviewRetry((value) => value + 1)} />
+      </div>
+      {previewHasError && <p className="loc-alert" role="alert">The last valid room preview could not be built. Retry the preview or continue editing with the 2D tools.</p>}
+    </aside>
+    </div>
   </main>;
 }
 
@@ -511,24 +592,47 @@ function Review({ document, draft, dirty, busy, mustReload, onEdit, onEditCovera
 }
 
 /** Labeled editor input; numeric values keep a raw string until blur to preserve sequential keyboard entry. */
-function Field({ label, value, onChange, type = 'text', min, max, step, fieldPath }: { label: string; value: string; onChange(value: string): void; type?: string; min?: number; max?: number; step?: number; fieldPath?: string }) {
+function Field({ label, value, onChange, type = 'text', min, max, step, fieldPath, onTransientInvalid }: {
+  label: string; value: string; onChange(value: string): void; type?: string; min?: number; max?: number; step?: number; fieldPath?: string;
+  onTransientInvalid?(invalid: boolean): void;
+}) {
   const id = useId();
   const [raw, setRaw] = useState(value);
   const [fieldError, setFieldError] = useState('');
-  useEffect(() => { setRaw(value); setFieldError(''); }, [value]);
   const deferredNumber = type === 'number';
-  return <label className="loc-field"><span>{label}</span><input className="input" aria-label={label} data-testid={`location-field-${testToken(fieldPath ?? label)}`} data-location-field={fieldPath} data-local-invalid={fieldError ? 'true' : undefined} aria-invalid={fieldError ? true : undefined} aria-describedby={fieldError ? id : undefined}
-    value={raw} type={deferredNumber ? 'text' : type} inputMode={deferredNumber ? 'decimal' : undefined} min={deferredNumber ? undefined : min} max={deferredNumber ? undefined : max} step={deferredNumber ? undefined : step} onChange={(event) => { setRaw(event.target.value); setFieldError(''); if (!deferredNumber) onChange(event.target.value); }}
+  const transientCallback = useRef(onTransientInvalid);
+  transientCallback.current = onTransientInvalid;
+  useEffect(() => () => transientCallback.current?.(false), []);
+  useEffect(() => {
+    const input = globalThis.document.activeElement;
+    if (input?.getAttribute('data-location-field') !== fieldPath) { setRaw(value); setFieldError(''); onTransientInvalid?.(false); }
+  }, [value, fieldPath]);
+  const rawValid = !deferredNumber || validNumberText(raw, min, max, step);
+  return <label className="loc-field"><span>{label}</span><input className="input" aria-label={label} data-testid={`location-field-${testToken(fieldPath ?? label)}`} data-location-field={fieldPath}
+    data-local-invalid={fieldError || !rawValid ? 'true' : undefined} aria-invalid={fieldError || !rawValid ? true : undefined} aria-describedby={fieldError ? id : undefined}
+    value={raw} type={deferredNumber ? 'text' : type} inputMode={deferredNumber ? 'decimal' : undefined} min={deferredNumber ? undefined : min} max={deferredNumber ? undefined : max} step={deferredNumber ? undefined : step} onChange={(event) => {
+      const text = event.target.value; setRaw(text); setFieldError('');
+      if (!deferredNumber) { onChange(text); return; }
+      const valid = validNumberText(text, min, max, step);
+      onTransientInvalid?.(!valid);
+      if (valid) onChange(text);
+    }}
     onBlur={() => {
       if (!deferredNumber) return;
-      const parsed = Number(raw);
-      if (!raw.trim() || !Number.isFinite(parsed) || (min !== undefined && parsed < min) || (max !== undefined && parsed > max)
-        || (step !== undefined && min !== undefined && Math.abs((parsed - min) / step - Math.round((parsed - min) / step)) > 1e-7)) {
+      if (!validNumberText(raw, min, max, step)) {
         setFieldError(min !== undefined && max !== undefined ? `Enter a number from ${min} to ${max}.` : 'Enter a valid number.');
+        onTransientInvalid?.(true);
         return;
       }
-      setFieldError(''); onChange(raw);
+      setFieldError(''); onTransientInvalid?.(false); onChange(raw);
     }} />{fieldError && <small className="loc-field-error" id={id} role="alert">{fieldError}</small>}</label>;
+}
+
+function validNumberText(text: string, min?: number, max?: number, step?: number): boolean {
+  if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) return false;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) && (min === undefined || parsed >= min) && (max === undefined || parsed <= max)
+    && (step === undefined || min === undefined || Math.abs((parsed - min) / step - Math.round((parsed - min) / step)) <= 1e-7);
 }
 
 function testToken(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }

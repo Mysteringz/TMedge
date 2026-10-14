@@ -172,8 +172,45 @@
 .cx .loc-coverage-status.is-unknown { border-style: dashed; }
 .cx .loc-coverage-row select.input { min-width: 140px; }
 
+.cx .loc-step-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, .9fr); align-items: start; gap: 16px; margin-top: 16px; }
+.cx .loc-step-main, .cx .loc-live-preview { min-width: 0; }
+.cx .loc-step-main { display: flex; flex-direction: column; gap: 16px; }
+.cx .loc-live-preview { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.cx .loc-step-layout.is-review .loc-live-preview { display: none; }
+.cx .loc-live-preview-toggle { display: none; min-height: 44px; }
+.cx .loc-live-preview-panel { min-width: 0; }
+.cx .loc-room-preview-panel { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(180px, .8fr); align-items: start; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--border-subtle-01); border-radius: 4px; background: var(--layer-01); }
+.cx .loc-room-preview-heading { grid-column: 1 / -1; }
+.cx .loc-room-preview-heading h2 { margin: 0 0 4px; }
+.cx .loc-room-preview-heading p { margin: 0; color: var(--text-helper); font-size: 12px; }
+.cx .loc-room-preview-panel .loc-model-viewer-frame { grid-column: 1; grid-row: 2 / span 3; min-height: 320px; }
+.cx .loc-room-preview-panel .loc-model-viewer, .cx .loc-room-preview-panel tm-location-model-viewer { height: clamp(300px, 46vh, 520px); min-height: 300px; }
+.cx .loc-room-preview-panel .loc-model-viewer[hidden] { display: none !important; }
+.cx .loc-room-preview-panel .loc-model-view-controls { grid-column: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.cx .loc-room-preview-panel .loc-model-view-controls .btn { min-height: 44px; }
+.cx .loc-room-preview-panel .loc-model-preview-status { grid-column: 2; margin: 0; padding: 9px 10px; font-size: 12px; }
+.cx .loc-room-preview-panel .loc-model-scene-list { grid-column: 2; min-width: 0; max-height: 250px; overflow: auto; padding: 10px; background: var(--layer-02); font-size: 12px; }
+.cx .loc-room-preview-panel .loc-model-scene-list h3 { margin-top: 0; }
+.cx .loc-room-preview-panel .loc-model-scene-list ul { padding-left: 18px; }
+.cx .loc-room-preview-panel .loc-model-floor-fallback { width: 100%; max-width: none; margin: 0; }
+.cx .loc-room-preview-panel .loc-model-floor-fallback svg { width: 100%; height: 100%; min-height: 300px; max-height: 520px; }
+.cx .loc-room-source { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--border-subtle-01); }
+.cx .loc-room-source legend { padding-inline: 6px; color: var(--text-primary); font-weight: 600; }
+.cx .loc-room-source-choice { display: flex; min-height: 56px; align-items: center; gap: 12px; padding: 9px 11px; border: 1px solid var(--border-subtle-01); color: var(--text-primary); cursor: pointer; }
+.cx .loc-room-source-choice:has(input:checked) { border-color: var(--interactive); background: color-mix(in srgb, var(--interactive) 8%, var(--layer-01)); }
+.cx .loc-room-source-choice input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--interactive); }
+.cx .loc-room-source-choice span { display: flex; flex-direction: column; gap: 3px; }
+.cx .loc-room-source-choice small, .cx .loc-room-source-help { color: var(--text-helper); font-size: 12px; }
+.cx .loc-room-source-help, .cx .loc-room-source-status { margin: 0; }
+.cx .loc-room-source-status { padding: 9px 11px; border-left: 3px solid var(--interactive); background: var(--layer-01); color: var(--text-secondary); font-size: 12px; }
+.cx .loc-model-viewer-frame .loc-alert { margin: 8px; }
+.cx .loc-room-preview-panel .loc-model-preview-status.is-error { border-left: 3px solid var(--support-error); }
+
 @media (max-width: 900px) {
   .cx .loc-editor-grid { grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-step-layout { grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-live-preview { position: static; }
+  .cx .loc-room-preview-panel { grid-template-columns: minmax(0, 1.3fr) minmax(180px, .7fr); }
   .cx .loc-inspector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .cx .loc-inspector-block:last-child { grid-column: 1 / -1; }
   .cx .loc-sensor-layout { grid-template-columns: minmax(180px, .7fr) minmax(0, 1.3fr); }
@@ -184,6 +221,14 @@
 }
 @media (max-width: 600px) {
   .cx .loc-page { padding: 20px 12px 48px; }
+  .cx .loc-step-layout { gap: 12px; margin-top: 12px; }
+  .cx .loc-live-preview-toggle { display: inline-flex; align-self: flex-start; }
+  .cx .loc-live-preview-panel.is-collapsed { display: none; }
+  .cx .loc-room-preview-panel { grid-template-columns: minmax(0, 1fr); }
+  .cx .loc-room-preview-panel .loc-model-viewer-frame { grid-column: 1; grid-row: auto; min-height: 300px; }
+  .cx .loc-room-preview-panel .loc-model-view-controls, .cx .loc-room-preview-panel .loc-model-preview-status, .cx .loc-room-preview-panel .loc-model-scene-list { grid-column: 1; }
+  .cx .loc-room-preview-panel .loc-model-scene-list { max-height: 180px; }
+  .cx .loc-room-source-choice { min-height: 64px; }
   .cx .loc-list-card { align-items: flex-start; flex-direction: column; }
   .cx .loc-list-actions { align-items: flex-start; justify-content: flex-start; }
   .cx .loc-metadata, .cx .loc-form-grid, .cx .loc-plan-section { grid-template-columns: minmax(0, 1fr); }

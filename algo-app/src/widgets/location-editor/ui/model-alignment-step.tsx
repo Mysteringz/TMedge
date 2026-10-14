@@ -1,9 +1,8 @@
-import { useEffect, useId, useState } from 'react';
-import type { AssetUploadResult, DraftDetail, LocationDocument, ModelTransform, TableShape } from '../../../entities/location-config/index.ts';
-import { modelSceneFromDocument, shapeOf } from '../../../features/location-editor/index.ts';
+import { useEffect, useId, useRef, useState } from 'react';
+import type { AssetUploadResult, DraftDetail, LocationDocument, ModelTransform } from '../../../entities/location-config/index.ts';
+import { locationRoomSource, canSelectGeneratedRoom } from '../../../features/location-room-source/index.ts';
 import { LOCATION_MODEL_TRANSFORM_LIMITS } from '../../../../../src/shared/location-validation.ts';
 import { validateLocationModelBuffer } from '../model-viewer-loader.ts';
-import { ModelPreview } from './model-preview.tsx';
 
 export interface ModelUploadOutcome extends Pick<AssetUploadResult, 'assetId' | 'draftRevision' | 'durability' | 'displayName'> {
   /** False when the attachment committed but authoritative draft details could not yet be reloaded. */
@@ -13,23 +12,25 @@ export interface ModelUploadOutcome extends Pick<AssetUploadResult, 'assetId' | 
 /** Optional model editor; the parent owns draft persistence/publication and passes only safe asset capability data.
  * @example <ModelAlignmentStep draft={draft} document={document} onUpload={uploadModel} onUpdate={update} />
  */
-export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate, onUpload, onSave, onBack, onContinue, onPreflightBlockedChange }: {
+export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate, onSelectSource, onUpload, onSave, onBack, onContinue, onPreflightBlockedChange }: {
   draft: DraftDetail; document: LocationDocument; busy: string; mustReload: boolean;
   onUpdate(change: (current: LocationDocument) => LocationDocument): void;
+  onSelectSource(source: 'generated' | '2d'): void;
   onUpload(file: File): Promise<ModelUploadOutcome | null>;
   onSave(): void; onBack(): void; onContinue(): void;
   onPreflightBlockedChange(blocked: boolean): void;
 }) {
   const capability = draft.assetCapabilities?.modelAssetId;
-  const legacyStatic = capability?.source === 'legacy-static';
+  const source = locationRoomSource(document, capability);
+  const legacyStatic = source === 'legacy-static';
   const hasModel = !!document.modelAssetId;
   const editable = hasModel && capability?.source === 'upload' && capability.alignmentEditable;
   const transform = document.modelTransform ?? defaultTransform();
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const modelInput = useRef<HTMLInputElement>(null);
   const [pendingOutcome, setPendingOutcome] = useState<ModelUploadOutcome | null>(null);
   const [preflightFailed, setPreflightFailed] = useState(false);
   const [preflighting, setPreflighting] = useState(false);
-  const [previewRetry, setPreviewRetry] = useState(0);
   const [message, setMessage] = useState('');
   const [transformError, setTransformError] = useState('');
 
@@ -83,24 +84,52 @@ export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate
     });
   };
 
+  const chooseSource = (next: 'generated' | '2d') => onSelectSource(next);
+
   return <section className="card loc-model-step" aria-labelledby="loc-model-step-title">
     <header className="loc-model-heading">
-      <div><p className="cx-kicker">Optional step</p><h2 tabIndex={-1} data-location-step-heading id="loc-model-step-title">3D model</h2>
-        <p className="cx-muted">Align a self-contained GLB to the fixed floor, table, seat and sensor coordinates.</p></div>
+      <div><p className="cx-kicker">Room presentation</p><h2 tabIndex={-1} data-location-step-heading id="loc-model-step-title">Room view</h2>
+        <p className="cx-muted">Choose how this private draft is presented. Table, seat and sensor positions stay in the 2D editors.</p></div>
       <p className="loc-visibility"><b>Visibility · read-only</b><span>{draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'}</span></p>
     </header>
 
+    <fieldset className="loc-room-source" disabled={busy !== '' || mustReload || preflighting} aria-describedby="location-room-source-status">
+      <legend>Room view source</legend>
+      <label className="loc-room-source-choice">
+        <input type="radio" name="location-room-source" data-testid="location-room-source-generated" checked={source === 'generated'}
+          disabled={!canSelectGeneratedRoom(document)} onChange={() => chooseSource('generated')} />
+        <span><b>Built-in room</b><small>Exact rectangular outline · fixed 3.0 m walls and 0.75 m table tops.</small></span>
+      </label>
+      {!canSelectGeneratedRoom(document) && <p className="loc-room-source-help" id="location-room-source-generated-help">Built-in room needs a floor outline that matches the rectangular floor dimensions. Edit the outline or choose another source.</p>}
+      <label className="loc-room-source-choice">
+        <input type="radio" name="location-room-source" data-testid="location-room-source-custom" checked={source === 'custom'} onChange={() => modelInput.current?.click()} />
+        <span><b>Custom GLB</b><small>Choose a self-contained GLB below. The current source stays active until upload succeeds.</small></span>
+      </label>
+      <label className="loc-room-source-choice">
+        <input type="radio" name="location-room-source" data-testid="location-room-source-2d" checked={source === '2d'} disabled={legacyStatic}
+          aria-describedby={legacyStatic ? 'location-room-source-status' : undefined} onChange={() => chooseSource('2d')} />
+        <span><b>2D only</b><small>Use the existing floor map after this draft is published.</small></span>
+      </label>
+      <p id="location-room-source-status" className="loc-room-source-status" role="status" aria-live="polite">
+        {legacyStatic ? 'Existing venue model · retained from the published location · read-only. Choose the eligible built-in room or upload a replacement GLB.'
+          : source === 'generated' ? 'Built-in room selected for this private draft. The published revision remains active until publication.'
+            : source === 'custom' ? 'Custom GLB selected for this private draft. The published revision remains active until publication.'
+              : '2D floor view selected for this private draft. The published revision remains active until publication.'}
+      </p>
+    </fieldset>
+
     {legacyStatic ? <section className="loc-model-legacy" aria-labelledby="loc-model-legacy-title">
       <h3 id="loc-model-legacy-title">Existing venue model · read-only</h3>
-      <p>The existing venue model is retained from the published base. Its preview is unavailable in this console. Use the 2D floor view below; upload a GLB to change the model or alignment.</p>
+      <p>The existing venue model is retained from the published base. Its preview is unavailable in this console. Choose the eligible built-in room or upload a GLB to replace it.</p>
       <ReadOnlyTransform transform={transform} />
-      <FloorGeometryFallback document={document} />
-    </section> : editable && capability?.previewAvailable ? <ModelPreview
-      draft={draft} document={document} capability={capability} retry={previewRetry} onRetry={() => setPreviewRetry((value) => value + 1)} />
-      : <section className="loc-model-empty" aria-label="Model preview status">
-        {hasModel ? <><p role="status">The referenced model is retained, but its authorized preview capability is unavailable. Reload the draft or choose a replacement GLB.</p><FloorGeometryFallback document={document} /></>
-          : <><p>No 3D model is selected. {draft.visibility === 'public' ? 'Students will see the 2D floor map until a model is uploaded and published.' : 'The console will use the saved floor geometry.'}</p><FloorGeometryFallback document={document} /></>}
-      </section>}
+    </section> : source === 'generated' ? <section className="loc-model-empty" aria-label="Built-in room source">
+      <p>The built-in room is selected. Its live preview follows valid 2D layout and sensor edits without saving.</p>
+      <p>Room height · 3.0 m · Table height · 0.75 m</p>
+    </section> : source === '2d' ? <section className="loc-model-empty" aria-label="2D source">
+      <p>{draft.visibility === 'public' ? '2D floor map selected. Students will use the floor map after this draft is published.' : '2D view selected for this console-only location.'}</p>
+    </section> : !editable && hasModel ? <section className="loc-model-empty" aria-label="Model preview status">
+      <p role="status">The referenced model is retained, but its authorized preview capability is unavailable. Reload the draft or choose a replacement GLB.</p>
+    </section> : null}
 
     {editable && <section className="loc-model-transform" aria-labelledby="loc-model-transform-title">
       <div className="loc-model-transform-heading"><div><h3 id="loc-model-transform-title">Model alignment</h3>
@@ -142,12 +171,10 @@ export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate
     <div className="loc-model-upload-panel">
       <label className="loc-upload"><span>{legacyStatic ? 'Replace with uploaded GLB' : hasModel ? 'Replace GLB' : 'Upload GLB'}</span>
         <input type="file" accept=".glb,model/gltf-binary" aria-label={legacyStatic ? 'Replace with uploaded GLB' : 'Upload GLB'}
-          data-testid="location-model-upload" disabled={busy !== '' || mustReload || preflighting}
+          ref={modelInput} data-testid="location-model-upload" disabled={busy !== '' || mustReload || preflighting}
           onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void upload(file); }} />
       </label>
       <p className="cx-muted">Choose a self-contained binary glTF (.glb), up to 128 MiB. The server checks the file before it replaces the current reference.</p>
-      {hasModel && !legacyStatic && <button type="button" className="btn btn-ghost" data-testid="location-model-use-2d" disabled={busy !== '' || mustReload}
-        onClick={() => onUpdate((current) => { const next = { ...current }; delete next.modelAssetId; delete next.modelTransform; return next; })}>Use 2D only in this draft</button>}
       {legacyStatic && <p className="loc-model-legacy-help">Upload a GLB to change the model or alignment. The inherited model stays in place until the replacement upload succeeds.</p>}
     </div>
 
@@ -166,14 +193,20 @@ export function ModelAlignmentStep({ draft, document, busy, mustReload, onUpdate
 export function ModelReviewSummary({ draft, document, onEdit }: { draft: DraftDetail; document: LocationDocument; onEdit(): void }) {
   const capability = draft.assetCapabilities?.modelAssetId;
   const transform = document.modelTransform ?? defaultTransform();
+  if (document.proceduralRoom === 'simple-rectangle-v1') return <section className="card loc-model-review" aria-labelledby="loc-model-review-title">
+    <h3 id="loc-model-review-title">Room view · built-in room</h3>
+    <p>Fixed room height · 3.0 m · Table height · 0.75 m</p>
+    <p>{draft.visibility === 'public' ? 'This source stays private until you publish this draft. Students continue to see the current published revision.' : 'This console-only source remains hidden from students.'}</p>
+    <button type="button" className="btn btn-secondary" data-testid="location-review-adjust-model" onClick={onEdit}>Change room view</button>
+  </section>;
   if (!document.modelAssetId) return <section className="card loc-model-review" aria-labelledby="loc-model-review-title">
-    <h3 id="loc-model-review-title">3D model · optional</h3>
-    <p>{draft.visibility === 'public' ? 'No 3D model — students will see the 2D floor map.' : 'No 3D model is selected. The console uses the saved floor geometry.'}</p>
-    <button type="button" className="btn btn-secondary" data-testid="location-review-adjust-model" onClick={onEdit}>Add a 3D model</button>
+    <h3 id="loc-model-review-title">Room view · 2D only</h3>
+    <p>{draft.visibility === 'public' ? '2D floor map selected. Students will use the floor map after this draft is published.' : '2D view selected for this console-only location.'}</p>
+    <button type="button" className="btn btn-secondary" data-testid="location-review-adjust-model" onClick={onEdit}>Change room view</button>
   </section>;
 
   if (capability?.source === 'legacy-static') return <section className="card loc-model-review" aria-labelledby="loc-model-review-title">
-    <h3 id="loc-model-review-title">3D model · retained</h3>
+    <h3 id="loc-model-review-title">Room view · existing venue model</h3>
     <p>Existing venue model · retained, alignment read-only.</p>
     <ReadOnlyTransform transform={transform} />
     <p>The static model is not previewed or distributed as an uploaded asset. Use the 2D floor view, or upload a GLB to change it.</p>
@@ -181,12 +214,12 @@ export function ModelReviewSummary({ draft, document, onEdit }: { draft: DraftDe
   </section>;
 
   if (capability?.source !== 'upload') return <section className="card loc-model-review" aria-labelledby="loc-model-review-title">
-    <h3 id="loc-model-review-title">3D model status unavailable</h3>
+    <h3 id="loc-model-review-title">Room view status unavailable</h3>
     <p>The saved reference is preserved. Reload the draft to confirm its preview capability.</p>
   </section>;
 
   return <section className="card loc-model-review" aria-labelledby="loc-model-review-title">
-    <h3 id="loc-model-review-title">3D model · uploaded</h3>
+    <h3 id="loc-model-review-title">Room view · Custom GLB</h3>
     <p>{capability.fromPublishedBase ? 'Published base · private draft' : 'This draft · private'}</p>
     <p data-testid="location-review-model-filename">{capability.displayName ?? 'Uploaded GLB'}</p>
     {draft.visibility === 'public'
@@ -240,28 +273,6 @@ function ReadOnlyTransform({ transform }: { transform: ModelTransform }) {
     <dt>Position (m)</dt><dd>{vectorText(transform.positionM)}</dd>
     <dt>Alignment</dt><dd>Read-only · upload a GLB to change alignment.</dd>
   </dl>;
-}
-
-/** Used by the model step when no uploaded GLB is available; it draws draft geometry and fetches no static bytes. */
-function FloorGeometryFallback({ document }: { document: LocationDocument }) {
-  const scene = modelSceneFromDocument(document);
-  return <div className="loc-model-floor-fallback" data-testid="location-model-2d-fallback">
-    <h3>2D floor geometry</h3>
-    <svg viewBox={`0 0 ${document.widthCm} ${document.heightCm}`} role="img" aria-label="Two-dimensional floor geometry with authored tables, seats and placed sensors" preserveAspectRatio="xMidYMid meet">
-      <rect className="loc-model-floor-outline" x="0" y="0" width={document.widthCm} height={document.heightCm} />
-      {document.tables.map((table) => <FloorTable key={table.id} id={table.id} shape={shapeOf(table)} />)}
-      {document.tables.flatMap((table) => table.seats.map((seat) => <circle className="loc-model-floor-seat" key={`${table.id}:${seat.id}`} cx={seat.x} cy={seat.y} r={Math.max(4, Math.min(12, document.widthCm / 180))} />))}
-      {document.sensorAssignments.map((assignment, index) => <circle className="loc-model-floor-sensor" key={assignment.uid} cx={assignment.pose.x} cy={assignment.pose.y} r={Math.max(8, Math.min(20, document.widthCm / 90))}><title>{`Placed sensor ${index + 1}`}</title></circle>)}
-    </svg>
-    <ul aria-label="Floor geometry objects">{scene.tables.map((table) => <li key={table.id}>{table.name} · {table.seats.length} seats</li>)}{scene.sensors.map((sensor, index) => <li key={`${sensor.label}:${index}`}>{sensor.label} · placed</li>)}</ul>
-  </div>;
-}
-
-/** Internal child of FloorGeometryFallback that draws a rectangle, circle, or polygon table shape. */
-function FloorTable({ id, shape }: { id: string; shape: TableShape }) {
-  if (shape.type === 'circle') return <circle className="loc-model-floor-table" data-table-id={id} cx={shape.cx} cy={shape.cy} r={shape.radius} />;
-  if (shape.type === 'polygon') return <polygon className="loc-model-floor-table" data-table-id={id} points={shape.points.map(([x, y]) => `${x},${y}`).join(' ')} />;
-  return <rect className="loc-model-floor-table" data-table-id={id} x={shape.x} y={shape.y} width={shape.width} height={shape.height} />;
 }
 
 function defaultTransform(): ModelTransform {
