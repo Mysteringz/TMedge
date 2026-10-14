@@ -9,6 +9,11 @@ Inputs come from the feature cache (dataset.py), targets from the teacher's
 labels (labels.py). Validation days pick the epoch and the threshold and
 nothing else; the hand-labelled test is never touched here.
 
+A final model can then be trained on every day, validation days included,
+with nothing left to validate on: --keep-epoch and --threshold carry over
+what validation chose, and the learning-rate schedule is the same one, so
+the model kept is the same point of the same training, on more data.
+
 What keeps a model trained on one desk honest about other rooms is the
 augmentation, each aimed at a room the rig has not seen:
 
@@ -247,7 +252,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--device', default='cpu', help='cpu, cuda or mps')
     p.add_argument('--uid', default='2c:cf:67:0b:c0:94')
     p.add_argument('--train-day', action='append', required=True)
-    p.add_argument('--val-day', action='append', required=True)
+    p.add_argument('--val-day', action='append', default=[])
+    p.add_argument('--keep-epoch', type=int, help='no validation days: keep the model after this epoch')
+    p.add_argument('--threshold', type=float, help='no validation days: the threshold validation chose')
     p.add_argument('--epochs', type=int, default=25)
     p.add_argument('--samples', type=int, default=20000, help='frames per epoch, half of them with people')
     p.add_argument('--batch', type=int, default=256)
@@ -258,16 +265,18 @@ def main(argv: list[str] | None = None) -> int:
     a = p.parse_args(argv)
 
     days.assert_trainable(set(a.train_day) | set(a.val_day))
+    if not a.val_day and (a.keep_epoch is None or a.threshold is None or not 1 <= a.keep_epoch <= a.epochs):
+        raise SystemExit('without a validation day, say which epoch to keep (--keep-epoch) and the threshold (--threshold)')
     if set(a.train_day) & set(a.val_day):
         raise SystemExit('a day cannot be both trained and validated on')
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
     load = (lambda d: load_pack_day(a.pack, a.labels, a.uid, d)) if a.pack else (lambda d: load_day(a.features, a.labels, a.shards, a.uid, d))
     tr = concat([load(d) for d in a.train_day])
-    va = concat([load(d) for d in a.val_day])
+    va = concat([load(d) for d in a.val_day]) if a.val_day else None
     with_people = np.array([len(q) > 0 for q in tr['pts']])
     donors = donor_patches(tr, rng)
-    print(f'train {len(tr["at"])} frames ({int(with_people.sum())} with people), val {len(va["at"])}, donors {len(donors)}', flush=True)
+    print(f'train {len(tr["at"])} frames ({int(with_people.sum())} with people), val {len(va["at"]) if va else 0}, donors {len(donors)}', flush=True)
 
     dev = torch.device(a.device)
     widths = tuple(int(v) for v in a.widths.split(','))
@@ -299,6 +308,15 @@ def main(argv: list[str] | None = None) -> int:
             opt.step()
             sched.step()
             total += loss.item() * len(xs)
+        if va is None:
+            row = {'epoch': epoch, 'loss': total / len(order), 'threshold': a.threshold, 'seconds': round(time.time() - t0)}
+            history.append(row)
+            print(json.dumps(row), flush=True)
+            if epoch == a.keep_epoch:
+                best = row
+                torch.save(model.state_dict(), os.path.join(a.out, 'best.pt'))
+                break
+            continue
         scores = evaluate(model, va)
         t_best = max(scores, key=lambda t: (scores[t]['f1'] if not math.isnan(scores[t]['f1']) else -1))
         s = scores[t_best]
@@ -313,14 +331,18 @@ def main(argv: list[str] | None = None) -> int:
     model.load_state_dict(torch.load(os.path.join(a.out, 'best.pt'), map_location=dev))
     model = model.cpu()
     meta = {'threshold': best['threshold'], 'trainedAt': int(time.time() * 1000), 'trainDays': a.train_day, 'valDays': a.val_day,
-            'labels': os.path.basename(os.path.normpath(a.labels)), 'metrics': {'validation': best}, 'seed': a.seed,
+            'labels': os.path.basename(os.path.normpath(a.labels)), 'seed': a.seed, 'epochs': a.epochs,
+            'metrics': {'validation': best} if va is not None else {'validation': None, 'keptEpoch': best['epoch']},
             'widths': list(widths), 'weights': sum(int(t.numel()) for t in model.parameters())}
     doc = finite(export(model, meta))
     with open(os.path.join(a.out, 'model.json'), 'w') as f:
         json.dump(doc, f, separators=(',', ':'), allow_nan=False)
     with open(os.path.join(a.out, 'history.json'), 'w') as f:
         json.dump(finite(history), f, indent=1, allow_nan=False)
-    print(f'best epoch {best["epoch"]}: validation F1 {best["f1"]:.3f} at threshold {best["threshold"]}; model {doc["id"]}')
+    if va is None:
+        print(f'kept epoch {best["epoch"]} of {a.epochs}, threshold {best["threshold"]} (chosen by validation earlier); model {doc["id"]}')
+    else:
+        print(f'best epoch {best["epoch"]} of {a.epochs}: validation F1 {best["f1"]:.3f} at threshold {best["threshold"]}; model {doc["id"]}')
     return 0
 
 

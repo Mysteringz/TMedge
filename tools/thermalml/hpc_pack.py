@@ -181,7 +181,7 @@ def full_zip(out: str) -> str:
               'Job 2 (two recipes compared on the same teacher boxes; docs/THERMAL_ML.md) on such a PC, in the background:',
               '  cd ~/thermalml/job && setsid nohup python3 -u hpc_job.py --stage compare >> ~/thermalml/job2.log 2>&1 < /dev/null &',
               'It waits for a download already running, and uses the downloaded export once the edge no longer lists it.',
-              '  tail -n 40 ~/thermalml/job2.log     # progress; the comparison is printed at the end']
+              '  tail -n 40 ~/thermalml/job2.log     # progress; the comparison and the final model are printed at the end']
     with open(os.path.join(out, 'README.txt'), 'w') as f:
         f.write('\n'.join(readme) + '\n')
     print('\n'.join(readme))

@@ -270,6 +270,27 @@ t3.micro is not measured yet; that comes before anything ships.
   - Otherwise: **no measurable difference on 400 frames**, which is reported
     as such. Nobody rounds it into a win.
 
+**Using all of the data** (asked for by Kevin the same day):
+- **Every rig day in the export.** Days after 11 Oct are labelled and
+  trained on too, each only if both cameras are where they were on 6 Oct
+  (`alignment.same_place`: the day's median photo within 2 px and 0.3°, and
+  its thermal background within 0.25 px). These are the checks done by hand on
+  13 Oct, which measured 0.0–0.7 px and 0.04 px within October. A day that
+  fails, or has fewer than 500 photos, is left out, and `days.json` says why.
+  10 Oct stays the check day.
+- **A final model on every labelled day, 10 Oct included.** After the
+  comparison, the winner is retrained on all of it, with the same learning-rate
+  schedule and seed, and kept at the epoch and threshold its validation chose.
+  With no measurable winner, recipe 1 goes on, because it costs the edge half as
+  much. The hand test scores it, a third use in the ledger. Two caveats are
+  reported with that score: the hand test also chose the recipe, so the score is
+  slightly optimistic; and no October check day is left.
+- **Not used, on purpose:**
+  - photos too dark for the teacher;
+  - thermal frames without a photo, which are near-copies of a neighbour a
+    second away;
+  - the bench board, which has no labels.
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 

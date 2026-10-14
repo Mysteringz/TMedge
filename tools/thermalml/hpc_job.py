@@ -12,11 +12,13 @@ shards, extracts every paired photo, runs all three teachers on every
 October photo, labels, trains, scores against today's edge detector, runs the
 hand-labelled test once, and deletes the photos it extracted.
 
-`compare` (job 2) prepares the same way under ~/thermalml/job2, then trains
+`compare` (job 2) prepares the same way under ~/thermalml/job2, also
+labelling rig days after 11 Oct whose cameras have not moved, then trains
 two recipes three times each from the same teacher boxes: today's recipe
 (job 1's), and a model with about twice the weights trained on labels the
 nearby photos voted on. Each recipe keeps its best run on the validation
 day; the hand-labelled test then compares the two, paired on its 400 frames.
+Last, the winner is retrained on every labelled day, 10 Oct included.
 
 Uploads come from tools/thermalml/hpc_pack.py; each carries this file, the
 tools/thermalml code and one piece of data. Everything persistent lives under
@@ -491,11 +493,13 @@ TRAIN_DAYS = ['2026-10-06', '2026-10-07', '2026-10-11']
 VAL_DAYS = ['2026-10-10']
 
 
-def prepare(w: str) -> tuple[dict[str, str], str]:
-    """Data, inputs, every October photo's teacher boxes and labels under w, and the device to train on.
+def prepare(w: str, more_days: bool = False) -> tuple[dict[str, str], str, list[str]]:
+    """Data, inputs, every photo's teacher boxes and labels under w, the device to train on, and the days labelled.
 
     Each step is skipped when its output is already there, so a job that
     was stopped resumes; Faster R-CNN also keeps its place within a day.
+    With more_days, rig days after 11 Oct in the export are labelled too,
+    if both cameras are where they were on 6 Oct (choose_days).
     """
     os.environ.setdefault('YOLO_CONFIG_DIR', os.path.join(ROOT, 'ultralytics'))   # its settings stay under ~/thermalml
     os.makedirs(os.environ['YOLO_CONFIG_DIR'], exist_ok=True)
@@ -510,7 +514,10 @@ def prepare(w: str) -> tuple[dict[str, str], str]:
     if not os.listdir(d['shards']):
         log('shards: every thermal frame, per sensor per day')
         tm.main(['shards', '--dump', zips['training.frames'], '--out', d['shards']])
-    labelled = all(os.path.exists(os.path.join(d['labels'], SENSOR, f'{day}.json')) for day in OCT_DAYS)
+    days_file = os.path.join(w, 'days.json')
+    chosen = json.load(open(days_file))['label'] if os.path.exists(days_file) else None
+    done = lambda ds: all(os.path.exists(os.path.join(d['labels'], SENSOR, f'{day}.json')) for day in ds)
+    labelled = done(chosen) if chosen else (not more_days and done(OCT_DAYS))
     if not labelled and not os.listdir(d['rgb']):
         log('photos: every one paired with a thermal frame')
         tm.main(['rgb', '--dump', zips['training.frames'], '--pairs', zips['training.pairs'], '--shards', d['shards'], '--out', d['rgb']])
@@ -518,25 +525,52 @@ def prepare(w: str) -> tuple[dict[str, str], str]:
         log('inputs: c0/c1/c2 for every frame')
         dataset.main(['--shards', d['shards'], '--out', d['features']])
     dev = device()
+    if not labelled and chosen is None:
+        chosen = choose_days(d, days_file) if more_days else list(OCT_DAYS)
+    chosen = chosen or list(OCT_DAYS)
     if not labelled:
         for model in TEACHER:
             log(f'teacher {model} on every October photo ({dev})')
             # Every photo (THERMALML_EVERY is only for rehearsals on a laptop).
             teachers.main(['--model', model, '--rgb', d['rgb'], '--out', d['teachers'], '--device', dev, '--batch', '16',
                            '--every', os.environ.get('THERMALML_EVERY', '1')]
-                          + [x for day in OCT_DAYS for x in ('--day', day)])
+                          + [x for day in chosen for x in ('--day', day)])
         log('labels: fused teacher, lit photos only, unknown outside the photo')
         labels.main(['--teacher', d['teachers'], '--models', '+'.join(TEACHER), '--mapping', 'data/ml/mapping/2ccf670bc094-oct.json',
-                     '--rgb', d['rgb'], '--out', d['labels']] + [x for day in OCT_DAYS for x in ('--day', day)])
+                     '--rgb', d['rgb'], '--out', d['labels']] + [x for day in chosen for x in ('--day', day)])
         # The photos were only ever needed to make labels.
         shutil.rmtree(d['rgb'], ignore_errors=True)
         log('photos deleted: the labels are kept')
-    return d, dev
+    return d, dev, chosen
+
+
+def choose_days(d: dict[str, str], days_file: str) -> list[str]:
+    """6-11 Oct, plus each later rig day with enough photos whose cameras have not moved; written down once."""
+    from tools.thermalml import alignment, days as daymod
+    folder = os.path.join(d['rgb'], SENSOR)
+    found = sorted(x for x in os.listdir(folder) if __import__('re').fullmatch(r'\d{4}-\d{2}-\d{2}', x)) if os.path.isdir(folder) else []
+    minimum = int(os.environ.get('THERMALML_MIN_DAY_PHOTOS', '500'))
+    chosen, why = list(OCT_DAYS), {}
+    for day in (x for x in found if x > OCT_DAYS[-1] and x not in daymod.LOCKED_DAYS):
+        n = len(os.listdir(os.path.join(folder, day)))
+        if n < minimum:
+            why[day] = f'left out: {n} photos'
+        else:
+            ok, said = alignment.same_place(OCT_DAYS[0], day, d['rgb'], d['shards'], UID)
+            why[day] = said
+            if ok:
+                chosen.append(day)
+        log(f'{day}: {why[day]}')
+    with open(days_file + '.tmp', 'w') as f:
+        json.dump({'label': chosen, 'checked': why}, f, indent=1)
+    os.replace(days_file + '.tmp', days_file)
+    log(f'days to label: {", ".join(chosen)}')
+    return chosen
 
 
 def stage_full() -> None:
     w = os.path.join(ROOT, 'full')
-    d, dev = prepare(w)
+    d, dev, _days = prepare(w)
     from tools.thermalml import evaluate, handtest, train
     model_json = os.path.join(d['model'], 'model.json')
     if not os.path.exists(model_json):
@@ -574,80 +608,125 @@ RECIPES = {
 SEEDS = (0, 1, 2)
 
 
+def verdict(diff: dict) -> str:
+    """The rule in docs/THERMAL_ML.md: only an interval that excludes 0 names a winner."""
+    lo, hi = diff['f1ci95']
+    if lo is None or hi is None or lo != lo or hi != hi:
+        return 'not measured'
+    return ('recipe 2 is better on the hand test' if lo > 0 else 'recipe 1 is better on the hand test' if hi < 0
+            else 'no measurable difference on the 400 hand-labelled frames')
+
+
 def stage_compare() -> None:
     w = os.path.join(ROOT, 'job2')
-    d, dev = prepare(w)
+    d, dev, labelled_days = prepare(w, more_days=True)
     from tools.thermalml import evaluate, handtest, labels, train
     from tools.thermalml.metrics import paired_bootstrap
-    done = os.path.join(d['reports'], 'compare.json')
-    if os.path.exists(done):            # finished: say what it found, and leave the locked test alone
-        print_compare(json.load(open(done)))
+    compared, final = os.path.join(d['reports'], 'compare.json'), os.path.join(d['reports'], 'final.json')
+    if os.path.exists(final):           # finished: say what it found, and leave the locked test alone
+        print_compare(json.load(open(compared)), json.load(open(final)))
         return
     d['labels-voted'] = os.path.join(w, 'labels-voted')
-    if not all(os.path.exists(os.path.join(d['labels-voted'], SENSOR, f'{day}.json')) for day in OCT_DAYS):
+    if not all(os.path.exists(os.path.join(d['labels-voted'], SENSOR, f'{day}.json')) for day in labelled_days):
         log('labels voted on by the photos within 3 s (recipe 2)')
         window = float(os.environ.get('THERMALML_VOTE_S', labels.VOTE_WINDOW_S))   # wider only in rehearsals on every n-th photo
-        for line in labels.vote_build(d['labels'], d['shards'], UID, OCT_DAYS, d['labels-voted'], window):
+        for line in labels.vote_build(d['labels'], d['shards'], UID, labelled_days, d['labels-voted'], window):
             log(line)
-
-    runs: dict[str, list[dict]] = {}
-    for name, r in RECIPES.items():
-        runs[name] = []
-        for seed in SEEDS:
-            out = os.path.join(w, 'models', name, f'seed{seed}')
-            model_json = os.path.join(out, 'model.json')
-            if not os.path.exists(model_json):
-                log(f'{name} ({r["what"]}), run {seed + 1} of {len(SEEDS)} ({dev})')
-                t0 = time.time()
-                train.main(['--labels', d[r['labels']], '--features', d['features'], '--shards', d['shards'], '--device', dev,
-                            '--out', out, '--widths', r['widths'], '--seed', str(seed)]
-                           + (['--epochs', '1', '--samples', '512'] if QUICK else [])
-                           + [x for day in TRAIN_DAYS for x in ('--train-day', day)] + [x for day in VAL_DAYS for x in ('--val-day', day)])
-                log(f'{name} run {seed + 1}: {(time.time() - t0) / 60:.1f} min')
-            m = json.load(open(model_json))
-            runs[name].append({'seed': seed, 'model': model_json, 'id': m['id'], 'weights': m.get('weights'),
-                               'validationF1': m['metrics']['validation']['f1']})
-
-    # Each recipe keeps the run its own validation day prefers, as it would in production.
-    pick = {name: max(rs, key=lambda x: x['validationF1'] if x['validationF1'] is not None else -1) for name, rs in runs.items()}
-    report: dict = {'recipes': {}, 'trainDays': TRAIN_DAYS, 'valDays': VAL_DAYS,
-                    'rule': 'docs/THERMAL_ML.md#job-2-two-recipes-compared'}
-    for name, r in RECIPES.items():
-        p = pick[name]
-        row = {'what': r['what'], 'widths': r['widths'], 'weights': p['weights'], 'runs': runs[name], 'picked': p, 'validation': {}}
-        # Scored against both label sets: each recipe is favoured by its own, so neither alone decides.
-        for lab in ('labels', 'labels-voted'):
-            dest = os.path.join(d['reports'], f'validation-{name}-on-{lab}.json')
-            evaluate.main(['--labels', d[lab], '--model', p['model'], '--features', d['features'], '--shards', d['shards'],
-                           '--replay', 'data/ml/replay', '--out', dest] + [x for day in VAL_DAYS for x in ('--day', day)])
-            row['validation'][lab] = json.load(open(dest))['days']
-        report['recipes'][name] = row
-
+    # Days after 11 Oct that passed the camera check train both recipes; 10 Oct stays the check day.
+    train_days = TRAIN_DAYS + [x for x in labelled_days if x not in OCT_DAYS]
     handtest.LEDGER = os.path.join(d['reports'], 'handtest-ledger.jsonl')
-    frames = {}
-    for name in RECIPES:
-        frames[name] = []
-        out = handtest.run(pick[name]['model'], f'job 2: {name}, the run its validation day picked', mapping_path='data/ml/mapping/2ccf670bc094-sept.json',
-                           labels_root='data/ml/handlabels/v1', features_root=d['features'], shards_root=d['shards'], frames_out=frames[name])
-        report['recipes'][name]['handTest'] = out['result']
-    report['handTestDifference'] = paired_bootstrap(frames['recipe1'], frames['recipe2'])
-    with open(done + '.tmp', 'w') as f:
-        json.dump(train.finite(report), f, indent=1, allow_nan=False)
-    os.replace(done + '.tmp', done)
-    print_compare(report)
-    log(f'everything is in {w}: reports/compare.json, models/<recipe>/seed<n>/model.json')
+    ht = dict(mapping_path='data/ml/mapping/2ccf670bc094-sept.json', labels_root='data/ml/handlabels/v1',
+              features_root=d['features'], shards_root=d['shards'])
+
+    if os.path.exists(compared):
+        report = json.load(open(compared))
+    else:
+        runs: dict[str, list[dict]] = {}
+        for name, r in RECIPES.items():
+            runs[name] = []
+            for seed in SEEDS:
+                out = os.path.join(w, 'models', name, f'seed{seed}')
+                model_json = os.path.join(out, 'model.json')
+                if not os.path.exists(model_json):
+                    log(f'{name} ({r["what"]}), run {seed + 1} of {len(SEEDS)} ({dev})')
+                    t0 = time.time()
+                    train.main(['--labels', d[r['labels']], '--features', d['features'], '--shards', d['shards'], '--device', dev,
+                                '--out', out, '--widths', r['widths'], '--seed', str(seed)]
+                               + (['--epochs', '1', '--samples', '512'] if QUICK else [])
+                               + [x for day in train_days for x in ('--train-day', day)] + [x for day in VAL_DAYS for x in ('--val-day', day)])
+                    log(f'{name} run {seed + 1}: {(time.time() - t0) / 60:.1f} min')
+                m = json.load(open(model_json))
+                v = m['metrics']['validation']
+                runs[name].append({'seed': seed, 'model': model_json, 'id': m['id'], 'weights': m.get('weights'),
+                                   'validationF1': v['f1'], 'epoch': v['epoch'], 'epochs': m.get('epochs'), 'threshold': m['threshold']})
+
+        # Each recipe keeps the run its own validation day prefers, as it would in production.
+        pick = {name: max(rs, key=lambda x: x['validationF1'] if x['validationF1'] is not None else -1) for name, rs in runs.items()}
+        report = {'recipes': {}, 'trainDays': train_days, 'valDays': VAL_DAYS, 'rule': 'docs/THERMAL_ML.md#job-2-two-recipes-compared'}
+        for name, r in RECIPES.items():
+            p = pick[name]
+            row = {'what': r['what'], 'widths': r['widths'], 'weights': p['weights'], 'runs': runs[name], 'picked': p, 'validation': {}}
+            # Scored against both label sets: each recipe is favoured by its own, so neither alone decides.
+            for lab in ('labels', 'labels-voted'):
+                dest = os.path.join(d['reports'], f'validation-{name}-on-{lab}.json')
+                evaluate.main(['--labels', d[lab], '--model', p['model'], '--features', d['features'], '--shards', d['shards'],
+                               '--replay', 'data/ml/replay', '--out', dest] + [x for day in VAL_DAYS for x in ('--day', day)])
+                row['validation'][lab] = json.load(open(dest))['days']
+            report['recipes'][name] = row
+        frames = {}
+        for name in RECIPES:
+            frames[name] = []
+            out = handtest.run(pick[name]['model'], f'job 2: {name}, the run its validation day picked', frames_out=frames[name], **ht)
+            report['recipes'][name]['handTest'] = out['result']
+        report['handTestDifference'] = paired_bootstrap(frames['recipe1'], frames['recipe2'])
+        report['verdict'] = verdict(report['handTestDifference'])
+        with open(compared + '.tmp', 'w') as f:
+            json.dump(train.finite(report), f, indent=1, allow_nan=False)
+        os.replace(compared + '.tmp', compared)
+        print_compare(report)
+
+    # The most accurate model the data allows: the winner, retrained on every labelled
+    # day (10 Oct included), kept at the epoch and threshold its validation chose.
+    # Without a measurable winner the smaller recipe 1 goes on: it costs the edge half as much.
+    winner = 'recipe2' if (report.get('verdict') or verdict(report['handTestDifference'])).startswith('recipe 2') else 'recipe1'
+    p, r = report['recipes'][winner]['picked'], RECIPES[winner]
+    all_days = [x for x in labelled_days if x in TRAIN_DAYS + VAL_DAYS or x not in OCT_DAYS]
+    out = os.path.join(w, 'models', 'final')
+    if not os.path.exists(os.path.join(out, 'model.json')):
+        log(f'final model: {winner} retrained on {", ".join(all_days)}, kept at epoch {p["epoch"]}, threshold {p["threshold"]} ({dev})')
+        t0 = time.time()
+        train.main(['--labels', d[r['labels']], '--features', d['features'], '--shards', d['shards'], '--device', dev, '--out', out,
+                    '--widths', r['widths'], '--seed', str(p['seed']), '--keep-epoch', str(p['epoch']), '--threshold', str(p['threshold'])]
+                   + (['--epochs', '1', '--samples', '512'] if QUICK else ['--epochs', str(p['epochs'] or 25)])
+                   + [x for day in all_days for x in ('--train-day', day)])
+        log(f'final model: {(time.time() - t0) / 60:.1f} min')
+    model_json = os.path.join(out, 'model.json')
+    res = handtest.run(model_json, f'job 2: final model ({winner} on every labelled day); the recipe was chosen with this test', **ht)
+    fin = {'recipe': winner, 'why': report.get('verdict') or verdict(report['handTestDifference']), 'days': all_days, 'model': model_json, 'id': json.load(open(model_json))['id'],
+           'keptEpoch': p['epoch'], 'threshold': p['threshold'], 'handTest': res['result'],
+           'caveat': 'The hand test also chose the recipe, so this score is slightly optimistic; 10 Oct was trained on, so there is no check day left.'}
+    with open(final + '.tmp', 'w') as f:
+        json.dump(train.finite(fin), f, indent=1, allow_nan=False)
+    os.replace(final + '.tmp', final)
+    print_compare(report, fin)
+    log(f'everything is in {w}: reports/compare.json, reports/final.json, models/final/model.json')
 
 
-def print_compare(report: dict) -> None:
+def print_compare(report: dict, fin: dict | None = None) -> None:
     fmt = lambda v: '-' if v is None or v != v else f'{v:.3f}'
+    signed = lambda v: '-' if v is None or v != v else f'{v:+.3f}'
     ci = lambda c: f'[{fmt(c[0])}, {fmt(c[1])}]'
     log('== JOB 2 RESULTS: two recipes, the same teacher boxes ==')
+    print(f'trained on {", ".join(report["trainDays"])}; checked on {", ".join(report["valDays"])}')
     for name, row in report['recipes'].items():
         h, hc = row['handTest']['all'], row['handTest']['ci95']
         empty = row['handTest']['byTrueCount'].get('0', {}).get('falsePerFrame')
+        p = row['picked']
         print(f'{name}: {row["what"]}; {row["weights"]} weights')
         print(f'  validation F1 of its {len(row["runs"])} runs: {", ".join(fmt(x["validationF1"]) for x in row["runs"])} '
-              f'-> kept run {row["picked"]["seed"] + 1}')
+              f'-> kept run {p["seed"] + 1} (best at epoch {p.get("epoch")} of {p.get("epochs")}'
+              + ('; still improving at the end: longer training may help' if p.get('epoch') and p.get('epochs') and p['epoch'] >= p['epochs'] - 2 else '')
+              + ')')
         for lab, days_ in row['validation'].items():
             for day, v in days_.items():
                 print(f'  {day} against {lab}: F1 {fmt(v["model"]["all"]["f1"])} {ci(v["model"]["ci95"]["f1"])}, '
@@ -655,14 +734,14 @@ def print_compare(report: dict) -> None:
         print(f'  HAND TEST: F1 {fmt(h["f1"])} {ci(hc["f1"])}, precision {fmt(h["precision"])}, recall {fmt(h["recall"])}, '
               f'count error {fmt(h["countMAE"])}, false people per empty frame {fmt(empty)}')
     diff = report['handTestDifference']
-    lo, hi = diff['f1ci95']
-    signed = lambda v: '-' if v is None or v != v else f'{v:+.3f}'
-    verdict = ('not measured' if lo is None or hi is None or lo != lo or hi != hi
-               else 'recipe 2 is better on the hand test' if lo > 0 else 'recipe 1 is better on the hand test' if hi < 0
-               else 'no measurable difference on the 400 hand-labelled frames')
     print(f'recipe 2 minus recipe 1 on the hand test: F1 {signed(diff["f1"])} {ci(diff["f1ci95"])}, '
           f'count error {signed(diff["countMAE"])} {ci(diff["countMAEci95"])} (paired, {diff["blocks"]} ten-minute blocks)')
-    log(f'VERDICT: {verdict}')
+    log(f'VERDICT: {report.get("verdict") or verdict(diff)}')
+    if fin:
+        h, hc = fin['handTest']['all'], fin['handTest']['ci95']
+        log(f'FINAL MODEL ({fin["recipe"]} on {", ".join(fin["days"])}): HAND TEST F1 {fmt(h["f1"])} {ci(hc["f1"])}, '
+            f'precision {fmt(h["precision"])}, recall {fmt(h["recall"])}, count error {fmt(h["countMAE"])}')
+        print(f'  ({fin["caveat"]})')
 
 
 def main() -> int:

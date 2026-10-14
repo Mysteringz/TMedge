@@ -363,6 +363,29 @@ class VotedLabels(unittest.TestCase):
 class Comparison(unittest.TestCase):
     """Two models on the same frames are compared by their difference, resampled together."""
 
+    def test_only_an_interval_that_excludes_zero_names_a_winner(self) -> None:
+        from tools.thermalml.hpc_job import verdict
+        self.assertTrue(verdict({'f1ci95': [0.01, 0.06]}).startswith('recipe 2'))
+        self.assertTrue(verdict({'f1ci95': [-0.06, -0.01]}).startswith('recipe 1'))
+        self.assertTrue(verdict({'f1ci95': [-0.01, 0.06]}).startswith('no measurable difference'))
+        self.assertEqual(verdict({'f1ci95': [None, None]}), 'not measured')
+
+    def test_a_later_day_is_labelled_only_if_neither_camera_moved(self) -> None:
+        from unittest import mock
+        from tools.thermalml import alignment, hpc_job
+        with tempfile.TemporaryDirectory() as w:
+            folder = os.path.join(w, 'rgb', '2ccf670bc094')
+            for day, n in (('2026-10-06', 3), ('2026-10-12', 600), ('2026-10-13', 600), ('2026-10-14', 20)):
+                os.makedirs(os.path.join(folder, day))
+                for i in range(n):
+                    open(os.path.join(folder, day, f'{i}.jpg'), 'w').close()
+            moved = {'2026-10-12': (True, 'in place'), '2026-10-13': (False, 'moved')}
+            with mock.patch.object(alignment, 'same_place', side_effect=lambda ref, day, *_a: moved[day]):
+                got = hpc_job.choose_days({'rgb': os.path.join(w, 'rgb'), 'shards': w}, os.path.join(w, 'days.json'))
+            self.assertEqual(got, hpc_job.OCT_DAYS + ['2026-10-12'])      # 13 Oct moved; 14 Oct has too few photos
+            self.assertEqual(json.load(open(os.path.join(w, 'days.json')))['label'], got)
+
+
     def test_the_difference_is_measured_on_the_same_blocks_of_time(self) -> None:
         from tools.thermalml.metrics import Frame, paired_bootstrap
         a = [Frame(600_000 * i, 1, 1, 1 if i % 2 else 0, 0 if i % 2 else 1, 0 if i % 2 else 1) for i in range(40)]
@@ -389,6 +412,26 @@ class Comparison(unittest.TestCase):
                 self.assertEqual(set(got.values()), {os.path.join(home, 'data', 'ml-data-abc.zip')})
             finally:
                 hpc_job.ROOT = old
+
+
+class CameraCheck(unittest.TestCase):
+    """A day is labelled with a period's mapping only if both cameras are where they were."""
+
+    @unittest.skipUnless(__import__('importlib').util.find_spec('cv2'), 'needs OpenCV (the ML environment)')
+    def test_a_photo_camera_moved_a_few_pixels_is_measured_as_moved(self) -> None:
+        import cv2
+        from tools.thermalml.alignment import photo_shift, thermal_shift
+        rng = np.random.default_rng(1)
+        ref = cv2.GaussianBlur((rng.random((480, 640)) * 255).astype(np.float32), (0, 0), 6)
+        moved = cv2.warpAffine(ref, np.float32([[1, 0, 5], [0, 1, -3]]), (640, 480), borderMode=cv2.BORDER_REFLECT)
+        dx, dy, deg = photo_shift(ref, moved)
+        self.assertAlmostEqual(abs(dx), 5, delta=0.5)
+        self.assertAlmostEqual(abs(dy), 3, delta=0.5)
+        self.assertLess(abs(deg), 0.1)
+        bg = cv2.GaussianBlur(rng.random((24, 32)).astype(np.float32), (0, 0), 1.5)
+        self.assertLess(math.hypot(*thermal_shift(bg, bg)), 0.05)
+        shifted = np.roll(bg, 1, axis=1)
+        self.assertAlmostEqual(math.hypot(*thermal_shift(bg, shifted)), 1.0, delta=0.2)
 
 
 class Cluster(unittest.TestCase):
