@@ -15,6 +15,7 @@ import { JsonStudentAccountRepository } from '../dist/src/infrastructure/web/jso
 import { loadPostgresConnectionConfig } from '../dist/src/infrastructure/postgres/config.js';
 import { closePostgres, openPostgres } from '../dist/src/infrastructure/postgres/data-source.js';
 import { PostgresRegistryMutationCoordinator } from '../dist/src/infrastructure/location-config/postgres-registry-mutation-coordinator.js';
+import { PostgresPublishedLocationRepository } from '../dist/src/infrastructure/postgres/location-configuration-repositories.js';
 import { PostgresRegistryRepository } from '../dist/src/infrastructure/postgres/registry-repository.js';
 import { identity, personAt, report } from '../dist/test/fixtures.js';
 
@@ -420,6 +421,194 @@ test(`Task 4.2 real-process workflow (${PROFILE ?? 'profile required'})`, {
     assert.equal(staticNotDistributed.status, 404, 'legacy static fallback is not transferred as an uploaded GLB');
     assert.equal(readdirSync(join(fixture.web1Data, 'published-models')).includes(`${fixture.staticAssetId}.glb`), false);
 
+    const transitionId = 'qa-generated-transition';
+    const transitionBase = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/${transitionId}/drafts`, {
+      expectedPublishedRevision: 0,
+    });
+    assert.equal(transitionBase.response.status, 201, 'the separate canonical fixture starts at its revision-zero static base');
+    const transitionDraftId = transitionBase.body.data.draftId;
+    assert.equal(transitionBase.body.data.document.modelAssetId, fixture.generatedStaticAssetId);
+    const transitionDetail = await getJson(edgeBase, `/api/locations/drafts/${transitionDraftId}`, managers['qa-admin-a']);
+    assert.equal(transitionDetail.body.data.assetCapabilities.modelAssetId.source, 'legacy-static');
+    const transitionLegacyFloor = (await fetch(`${web1Base}/api/occupancy`, { headers: { cookie: studentCookie } }).then((r) => r.json()))
+      .floors.find((floor) => floor.id === transitionId);
+    assert.ok(transitionLegacyFloor, 'the revision-zero static fixture is part of the initial student feed');
+    assert.equal(Object.hasOwn(transitionLegacyFloor, 'proceduralRoom'), false, 'the old publication has no generated source marker');
+
+    const bypass2d = { ...transitionBase.body.data.document };
+    delete bypass2d.modelAssetId;
+    delete bypass2d.modelTransform;
+    const legacy2dBypass = await managerJson(edgeBase, managers['qa-admin-a'], 'PUT', `/api/locations/drafts/${transitionDraftId}`, {
+      expectedDraftRevision: 1, document: bypass2d,
+    });
+    assert.equal(legacy2dBypass.response.status, 404, 'legacy-static cannot be switched directly to explicit 2D');
+
+    const generatedPrivateDocument = { ...transitionBase.body.data.document };
+    delete generatedPrivateDocument.modelAssetId;
+    delete generatedPrivateDocument.modelTransform;
+    generatedPrivateDocument.proceduralRoom = 'simple-rectangle-v1';
+    const generatedPrivateSave = await managerJson(edgeBase, managers['qa-admin-a'], 'PUT', `/api/locations/drafts/${transitionDraftId}`, {
+      expectedDraftRevision: 1, document: generatedPrivateDocument,
+    });
+    assert.equal(generatedPrivateSave.response.status, 200, 'an explicit generated source replacement saves privately');
+    assert.equal(generatedPrivateSave.body.data.draftRevision, 2);
+    assert.equal(generatedPrivateSave.body.data.document.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(Object.hasOwn(generatedPrivateSave.body.data.document, 'modelAssetId'), false);
+    assert.equal(Object.hasOwn(generatedPrivateSave.body.data.document, 'modelTransform'), false);
+    const generatedPrivateDetail = await getJson(edgeBase, `/api/locations/drafts/${transitionDraftId}`, managers['qa-admin-a']);
+    assert.equal(Object.hasOwn(generatedPrivateDetail.body.data.assetCapabilities, 'modelAssetId'), false,
+      'generated drafts expose no dormant model capability or asset stash');
+    const privateTransitionList = await getJson(edgeBase, '/api/locations', managers['qa-admin-a']);
+    assert.equal(privateTransitionList.body.data.published.find((item) => item.locationId === transitionId).activeRevision, 0,
+      'saving generated source does not advance the active static publication');
+    const legacyStillPublicOne = (await fetch(`${web1Base}/api/occupancy`, { headers: { cookie: studentCookie } }).then((r) => r.json()))
+      .floors.find((floor) => floor.id === transitionId);
+    const legacyStillPublicTwo = (await fetch(`${web2Base}/api/occupancy`, { headers: { cookie: student2Cookie } }).then((r) => r.json()))
+      .floors.find((floor) => floor.id === transitionId);
+    assert.equal(legacyStillPublicOne?.proceduralRoom, undefined, 'student target 1 keeps the old source before publication');
+    assert.equal(legacyStillPublicTwo?.proceduralRoom, undefined, 'student target 2 keeps the old source before publication');
+    const privatelySavedState = await readDurablePublishedState(fixture, transitionId, dbEnv);
+    assert.equal(privatelySavedState.activeRevision, 0, 'the durable published pointer remains on revision zero after private save');
+    assert.equal(privatelySavedState.history[0]?.document.modelAssetId, fixture.generatedStaticAssetId,
+      'the immutable revision-zero static model remains in published history');
+
+    edge.stop(); await edge.wait(); edge = null;
+    edge = startEdge();
+    await waitHttp(`${edgeBase}/login`, 200, edge, 'edge reopened from the same location store');
+    managers['qa-admin-a'] = await loginManager(edgeBase, 'qa-admin-a');
+    const reopenedGeneratedDraft = await getJson(edgeBase, `/api/locations/drafts/${transitionDraftId}`, managers['qa-admin-a']);
+    assert.equal(reopenedGeneratedDraft.response.status, 200, 'the private generated draft is available after an edge process restart');
+    assert.equal(reopenedGeneratedDraft.body.data.document.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(reopenedGeneratedDraft.body.data.draftRevision, 2);
+    const afterPrivateRestartList = await getJson(edgeBase, '/api/locations', managers['qa-admin-a']);
+    assert.equal(afterPrivateRestartList.body.data.published.find((item) => item.locationId === transitionId).activeRevision, 0,
+      'edge reconstruction keeps the original publication active until explicit publish');
+    const transferFilesBeforeGenerated = publishedModelFiles(fixture.web1Data);
+    const transferFilesBeforeGeneratedTwo = publishedModelFiles(fixture.web2Data);
+
+    web2.stop(); await web2.wait(); web2 = null;
+    const generatedPublish = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/drafts/${transitionDraftId}/publications`, {
+      expectedDraftRevision: 2, expectedPublishedRevision: 0,
+    });
+    assert.equal(generatedPublish.response.status, 200, 'generated publication commits while one student target is offline because no GLB ACK is required');
+    assert.equal(generatedPublish.body.data.publishedRevision, 1);
+    await waitFor(async () => {
+      const view = await fetch(`${web1Base}/api/occupancy`, { headers: { cookie: studentCookie } }).then((r) => r.json());
+      const floor = view.floors.find((item) => item.id === transitionId);
+      return floor?.proceduralRoom === 'simple-rectangle-v1' && !Object.hasOwn(floor, 'model');
+    }, edge, 'student target 1 receives the generated source with no model key');
+    assert.deepEqual(publishedModelFiles(fixture.web1Data), transferFilesBeforeGenerated,
+      'generated publication adds no uploaded-model transfer to the first web target');
+    assert.equal(publishedModelFiles(fixture.web1Data).includes(`${fixture.generatedStaticAssetId}.glb`), false,
+      'the replaced static source is not uploaded to the web model store');
+    web2 = startWeb2(); await waitHttp(`${web2Base}/login/`, 200, web2, 'second web target recovered after generated publish');
+    const student2AfterGenerated = await loginStudent(web2Base);
+    const student2AfterGeneratedCookie = `tm_session=${student2AfterGenerated}`;
+    await waitFor(async () => {
+      const view = await fetch(`${web2Base}/api/occupancy`, { headers: { cookie: student2AfterGeneratedCookie } }).then((r) => r.json());
+      const floor = view.floors.find((item) => item.id === transitionId);
+      return floor?.proceduralRoom === 'simple-rectangle-v1' && !Object.hasOwn(floor, 'model');
+    }, edge, 'student target 2 receives the generated source with no model key');
+    assert.deepEqual(publishedModelFiles(fixture.web2Data), transferFilesBeforeGeneratedTwo,
+      'the recovered second web target receives the generated snapshot without a model transfer');
+
+    const generatedToCustom = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/${transitionId}/drafts`, {
+      expectedPublishedRevision: 1,
+    });
+    assert.equal(generatedToCustom.response.status, 201);
+    const transitionModelBytes = makeTriangleGlb();
+    const generatedModelUpload = await managerUpload(edgeBase, managers['qa-admin-a'], generatedToCustom.body.data.draftId,
+      'model', 1, transitionModelBytes, 'generated replacement.glb', 'model/gltf-binary');
+    assert.equal(generatedModelUpload.response.status, 200, 'a successful uploaded GLB switches the generated draft to custom');
+    const transitionModelAssetId = generatedModelUpload.body.data.assetId;
+    const customDraftDetail = await getJson(edgeBase, `/api/locations/drafts/${generatedToCustom.body.data.draftId}`, managers['qa-admin-a']);
+    assert.equal(customDraftDetail.body.data.document.modelAssetId, transitionModelAssetId);
+    assert.equal(Object.hasOwn(customDraftDetail.body.data.document, 'proceduralRoom'), false);
+    assert.equal(customDraftDetail.body.data.assetCapabilities.modelAssetId.source, 'upload');
+    const customPublish = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/drafts/${generatedToCustom.body.data.draftId}/publications`, {
+      expectedDraftRevision: generatedModelUpload.body.data.draftRevision, expectedPublishedRevision: 1,
+    });
+    assert.equal(customPublish.response.status, 200, 'custom GLB publication follows the established all-target ACK path');
+    assert.equal(customPublish.body.data.publishedRevision, 2);
+    await waitFor(async () => Promise.all([[web1Base, studentCookie], [web2Base, student2AfterGeneratedCookie]].map(async ([base, cookie]) =>
+      (await fetch(`${base}/api/models/${transitionModelAssetId}`, { headers: { cookie } })).status === 200)).then((results) => results.every(Boolean)),
+    edge, 'both targets acknowledge and authorize the custom replacement GLB');
+    for (const [base, cookie] of [[web1Base, studentCookie], [web2Base, student2AfterGeneratedCookie]]) {
+      const response = await fetch(`${base}/api/models/${transitionModelAssetId}`, { headers: { cookie } });
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), transitionModelBytes);
+      const view = await fetch(`${base}/api/occupancy`, { headers: { cookie } }).then((r) => r.json());
+      const floor = view.floors.find((item) => item.id === transitionId);
+      assert.equal(Object.hasOwn(floor, 'proceduralRoom'), false);
+      assert.equal(floor.model.assetId, transitionModelAssetId);
+    }
+
+    const customTo2d = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/${transitionId}/drafts`, {
+      expectedPublishedRevision: 2,
+    });
+    assert.equal(customTo2d.response.status, 201);
+    const twoDDocument = { ...customTo2d.body.data.document };
+    delete twoDDocument.modelAssetId;
+    delete twoDDocument.modelTransform;
+    delete twoDDocument.proceduralRoom;
+    const twoDSave = await managerJson(edgeBase, managers['qa-admin-a'], 'PUT', `/api/locations/drafts/${customTo2d.body.data.draftId}`, {
+      expectedDraftRevision: 1, document: twoDDocument,
+    });
+    assert.equal(twoDSave.response.status, 200, 'custom can be explicitly switched to 2D by clearing the active model reference');
+    const twoDPublish = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/drafts/${customTo2d.body.data.draftId}/publications`, {
+      expectedDraftRevision: 2, expectedPublishedRevision: 2,
+    });
+    assert.equal(twoDPublish.response.status, 200);
+    assert.equal(twoDPublish.body.data.publishedRevision, 3);
+    await waitFor(async () => Promise.all([[web1Base, studentCookie], [web2Base, student2AfterGeneratedCookie]].map(async ([base, cookie]) => {
+      const view = await fetch(`${base}/api/occupancy`, { headers: { cookie } }).then((r) => r.json());
+      const floor = view.floors.find((item) => item.id === transitionId);
+      return floor?.model === null && !Object.hasOwn(floor, 'proceduralRoom');
+    })).then((results) => results.every(Boolean)), edge, 'both targets receive the explicit 2D source');
+    for (const [base, cookie] of [[web1Base, studentCookie], [web2Base, student2AfterGeneratedCookie]]) {
+      assert.equal((await fetch(`${base}/api/models/${transitionModelAssetId}`, { headers: { cookie } })).status, 404,
+        'explicit 2D publication revokes access to the superseded GLB');
+    }
+
+    const twoDToGenerated = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/${transitionId}/drafts`, {
+      expectedPublishedRevision: 3,
+    });
+    assert.equal(twoDToGenerated.response.status, 201);
+    const generatedAgainDocument = { ...twoDToGenerated.body.data.document, proceduralRoom: 'simple-rectangle-v1' };
+    const generatedAgainSave = await managerJson(edgeBase, managers['qa-admin-a'], 'PUT', `/api/locations/drafts/${twoDToGenerated.body.data.draftId}`, {
+      expectedDraftRevision: 1, document: generatedAgainDocument,
+    });
+    assert.equal(generatedAgainSave.response.status, 200);
+    const generatedAgainPublish = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', `/api/locations/drafts/${twoDToGenerated.body.data.draftId}/publications`, {
+      expectedDraftRevision: 2, expectedPublishedRevision: 3,
+    });
+    assert.equal(generatedAgainPublish.response.status, 200);
+    assert.equal(generatedAgainPublish.body.data.publishedRevision, 4);
+    await waitFor(async () => Promise.all([[web1Base, studentCookie], [web2Base, student2AfterGeneratedCookie]].map(async ([base, cookie]) => {
+      const view = await fetch(`${base}/api/occupancy`, { headers: { cookie } }).then((r) => r.json());
+      const floor = view.floors.find((item) => item.id === transitionId);
+      return floor?.proceduralRoom === 'simple-rectangle-v1' && !Object.hasOwn(floor, 'model');
+    })).then((results) => results.every(Boolean)), edge, 'both targets receive the final generated source with no model descriptor');
+    for (const [base, cookie] of [[web1Base, studentCookie], [web2Base, student2AfterGeneratedCookie]]) {
+      assert.equal((await fetch(`${base}/api/models/${transitionModelAssetId}`, { headers: { cookie } })).status, 404,
+        'generated return revokes the superseded GLB without a generated model route');
+    }
+    assert.equal(publishedModelFiles(fixture.web1Data).includes(`${fixture.generatedStaticAssetId}.glb`), false);
+    const transitionHistory = await readDurablePublishedState(fixture, transitionId, dbEnv);
+    assert.equal(transitionHistory.activeRevision, 4, 'the final generated revision is durably active');
+    assert.deepEqual(transitionHistory.history.map((revision) => revision.revision), [0, 1, 2, 3, 4],
+      'the static, generated, custom, explicit 2D, and generated revisions remain immutable in history');
+    assert.equal(transitionHistory.history[0].document.modelAssetId, fixture.generatedStaticAssetId);
+    assert.equal(transitionHistory.history[1].document.proceduralRoom, 'simple-rectangle-v1');
+    assert.equal(transitionHistory.history[2].document.modelAssetId, transitionModelAssetId);
+    assert.equal(transitionHistory.history[3].document.modelAssetId, undefined);
+    assert.equal(transitionHistory.history[4].document.proceduralRoom, 'simple-rectangle-v1');
+    stage('generated source integrated file and PostgreSQL lifecycle', {
+      locationId: transitionId, persistence: PROFILE, transitions: ['legacy-static', 'generated', 'uploaded-GLB', 'explicit-2D', 'generated'],
+      privateSaveSurvivesEdgeRestart: true, oldPublicationStayedActiveUntilPublish: true,
+      generatedWithWebTargetOffline: 'published without GLB ACK', generatedAssetTransfers: 0,
+      customTargetAcks: 2, activeRevision: 4, history: [0, 1, 2, 3, 4],
+    });
+
     const consoleEdit = await managerJson(edgeBase, managers['qa-admin-a'], 'POST', '/api/locations/iw-intern-demo/drafts', { expectedPublishedRevision: 0 });
     assert.equal(consoleEdit.response.status, 201, 'the server-managed console seed can be edited without changing visibility');
     const consoleUpload = await managerUpload(edgeBase, managers['qa-admin-a'], consoleEdit.body.data.draftId,
@@ -727,12 +916,20 @@ function createFixtureFiles(runDir) {
   const site = JSON.parse(readFileSync('config/site.json', 'utf8'));
   const seedFloorIds = site.floors.map((floor) => floor.id);
   const staticAssetId = '4a0c1020-54cb-4a39-8d73-9f27fd1b7a99';
+  const generatedStaticAssetId = '7b2c0300-9a21-4b03-8ad2-3213b27ab099';
   site.floors.push({
     id: 'qa-legacy-static', building: 'Legacy model test', name: 'Legacy static reference', width: 400, height: 300,
     outline: [[-10, -10], [410, -10], [400, 300], [0, 300]],
     zones: [{ id: 'qa-legacy-zone', name: 'Legacy room', polygon: [[-10, -10], [410, -10], [400, 300]] }],
     tables: [{ id: 'qa-legacy-table', name: 'Wall table', zone: 'qa-legacy-zone', x: 0, y: 100, width: 40, height: 60, capacity: 3 }],
     model: { assetId: staticAssetId, transform: { scale: { x: 1, y: 1, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, positionM: { x: 0, y: 0, z: 0 } } },
+  });
+  site.floors.push({
+    id: 'qa-generated-transition', building: 'Generated source test', name: 'Generated transition fixture', width: 400, height: 300,
+    outline: [[0, 0], [400, 0], [400, 300], [0, 300]],
+    zones: [{ id: 'qa-generated-zone', name: 'Generated test room', polygon: [[0, 0], [400, 0], [400, 300], [0, 300]] }],
+    tables: [{ id: 'qa-generated-table', name: 'Generated test table', zone: 'qa-generated-zone', x: 160, y: 110, width: 80, height: 60, capacity: 2 }],
+    model: { assetId: generatedStaticAssetId, transform: structuredClone(LOCATION_TRANSFORM) },
   });
   const nodes = JSON.parse(readFileSync('config/nodes.json', 'utf8'));
   const seedNodes = structuredClone(nodes.nodes);
@@ -742,7 +939,36 @@ function createFixtureFiles(runDir) {
   writeFileSync(sitePath, JSON.stringify(site, null, 2));
   writeFileSync(nodesPath, JSON.stringify(nodes, null, 2));
   const publicSeedFloorIds = site.floors.filter((floor) => floor.visibility !== 'console').map((floor) => floor.id);
-  return { edgeData, web1Data, web2Data, site, nodes, sitePath, nodesPath, staticAssetId, seedFloorIds, publicSeedFloorIds, seedNodes };
+  return { edgeData, web1Data, web2Data, site, nodes, sitePath, nodesPath, staticAssetId, generatedStaticAssetId, seedFloorIds, publicSeedFloorIds, seedNodes };
+}
+
+function publishedModelFiles(dataDir) {
+  return readdirSync(join(dataDir, 'published-models')).filter((name) => name.endsWith('.glb')).sort();
+}
+
+async function readDurablePublishedState(fixture, locationId, pgEnv) {
+  if (PROFILE === 'file') {
+    const registry = JSON.parse(readFileSync(fixture.nodesPath, 'utf8'));
+    const persisted = registry.publishedLocations.find((item) => item.locationId === locationId);
+    const seedFloor = fixture.site.floors.find((item) => item.id === locationId);
+    assert.ok(seedFloor, `file fixture retains the revision-zero seed for ${locationId}`);
+    return {
+      activeRevision: persisted?.activeRevision ?? 0,
+      // File mode derives immutable revision zero from the seed site config; NODES_CONFIG stores only authored overrides.
+      history: [
+        { revision: 0, document: { modelAssetId: seedFloor.model?.assetId } },
+        ...(persisted?.revisions ?? []),
+      ],
+    };
+  }
+  const source = await openPostgres(loadPostgresConnectionConfig('runtime', pgEnv));
+  try {
+    const coordinator = new PostgresRegistryMutationCoordinator(source);
+    const repository = new PostgresPublishedLocationRepository(source, new Set(), coordinator);
+    const persisted = await repository.getActive(locationId);
+    assert.ok(persisted, `fresh PostgreSQL repository connection contains ${locationId} publication history`);
+    return persisted;
+  } finally { await closePostgres(source); }
 }
 
 function postgresEnvironment() {
@@ -1005,7 +1231,8 @@ async function captureStudentBrowser({ webBase, cookieValue: studentCookie, site
   await page.waitForFunction(() => !!document.querySelector('floor-viewer')?._model);
   const modelState = await page.evaluate(() => {
     const viewer = document.querySelector('floor-viewer');
-    const plate = viewer?._marks?.children.find((child) => child.userData.tableId === 'qa-rect');
+    const plate = viewer?._authoredTableRecords?.get('qa-rect')?.plate
+      ?? viewer?._marks?.children.find((child) => child.userData.tableId === 'qa-rect');
     return {
       scale: [viewer?._model?.scale.x, viewer?._model?.scale.y, viewer?._model?.scale.z],
       rotationOrder: viewer?._model?.rotation.order,
