@@ -28,11 +28,20 @@ One mapping per period (September, October), fitted on all of it: neither
 camera moved within a period (docs/THERMAL_ML.md), and fits on single days
 are ambiguous because people sit in the same few seats -- they disagreed by
 2-6 px where the cameras themselves had not moved at all.
+
+Voted labels (job 2's second recipe, --vote-from): with every photo
+labelled, the photos a few seconds either side of a frame vote on its
+people. A person the teacher found in fewer than half of them is set aside
+as uncertain (most likely a one-photo mistake), and a person it found in at
+least half the photos before *and* half after, but missed in this one,
+becomes a target. Votes never turn anyone into "nobody".
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
+import math
 import os
 
 import numpy as np
@@ -49,6 +58,8 @@ MIN_BRIGHTNESS = 105.0   # mean grey of the darkest hand-labelled photo: the tea
 # seated at the bottom edge was found by both thermal detectors and by no RGB
 # detector, so a band this wide inside the photo's border is unknown, not empty.
 FOOTPRINT_MARGIN_PX = 60
+VOTE_WINDOW_S = 3.0      # photos this close in time vote on a frame's people (about 3 each side at 1 Hz)
+VOTE_PX = 1.5            # the same seated person in two photos seconds apart, in thermal px
 
 
 def footprint(m: dict, margin: float = FOOTPRINT_MARGIN_PX) -> np.ndarray:
@@ -104,6 +115,73 @@ def label_frames(rid_of: dict[str, str], boxes: dict[str, list], bright: dict[st
     return frames, dark
 
 
+def vote(frames: dict[str, dict], at: dict[str, int], window_s: float = VOTE_WINDOW_S,
+         radius: float = VOTE_PX) -> tuple[dict[str, dict], dict[str, int]]:
+    """Each labelled frame's people put to a vote of the labelled frames within window_s.
+
+    Returns the new labels and what changed: people kept, set aside, added,
+    and those left as they were because fewer than two photos were near.
+    """
+    order = sorted((at[t], t) for t in frames if t in at)
+    times = [a for a, _t in order]
+    win = int(window_s * 1000)
+    near = lambda p, pts: any(math.hypot(p[0] - q[0], p[1] - q[1]) <= radius for q in pts)
+    seen = lambda p, f: near(p, f['pts']) or near(p, f['ign'])
+    most = lambda p, side: 2 * sum(near(p, f['pts']) for f in side) >= len(side)
+    out, n = {}, {'kept': 0, 'setAside': 0, 'added': 0, 'unvoted': 0}
+    for k, (t0, tid) in enumerate(order):
+        f = frames[tid]
+        lo, hi = bisect.bisect_left(times, t0 - win), bisect.bisect_right(times, t0 + win)
+        before = [frames[order[j][1]] for j in range(lo, k)]
+        after = [frames[order[j][1]] for j in range(k + 1, hi)]
+        around = before + after
+        if len(around) < 2:
+            out[tid] = f
+            n['unvoted'] += len(f['pts'])
+            continue
+        pts, ign = [], [list(q) for q in f['ign']]
+        for p in f['pts']:
+            if 2 * sum(seen(p, g) for g in around) >= len(around):
+                pts.append(list(p))
+                n['kept'] += 1
+            else:
+                ign.append(list(p[:2]))
+                n['setAside'] += 1
+        if before and after:
+            for q in (q for g in around for q in g['pts']):
+                if seen(q, f) or near(q, pts) or near(q, ign) or not (most(q, before) and most(q, after)):
+                    continue
+                same = [r for g in around for r in g['pts'] if math.hypot(q[0] - r[0], q[1] - r[1]) <= radius]
+                pts.append([round(sum(r[i] for r in same) / len(same), 3) for i in range(3)])
+                n['added'] += 1
+        out[tid] = {'pts': pts, 'ign': ign}
+    return out, n
+
+
+def vote_build(src: str, shards_root: str, uid: str, day_list: list[str], out: str,
+               window_s: float = VOTE_WINDOW_S) -> list[str]:
+    """Voted labels for each day, from the plain labels in src and the frames' times in the shards."""
+    from .shards import read_shard
+    lines = []
+    for day in day_list:
+        days.assert_trainable([day])
+        doc = json.load(open(os.path.join(src, sensor_dir(uid), f'{day}.json')))
+        sh = read_shard(shards_root, uid, day)
+        frames, n = vote(doc['frames'], dict(zip(sh.ids, (int(v) for v in sh.at))), window_s)
+        doc['frames'] = frames
+        doc['teacher'] = {**doc.get('teacher', {}), 'vote': {'windowS': window_s, 'radiusPx': VOTE_PX, 'changes': n}}
+        dest = os.path.join(out, sensor_dir(uid), f'{day}.json')
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest + '.tmp', 'w') as f:
+            json.dump(doc, f, separators=(',', ':'))
+        os.replace(dest + '.tmp', dest)
+        voted = n['kept'] + n['setAside']
+        lines.append(f'{uid} {day}: of {voted} people put to the vote, {n["setAside"]} set aside '
+                     f'({n["setAside"] / voted:.1%})' if voted else f'{uid} {day}: nobody to vote on')
+        lines[-1] += f'; {n["added"]} one-photo misses added; {n["unvoted"]} people with too few photos near to vote'
+    return lines
+
+
 def brightness(path: str) -> float:
     import cv2
     img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
@@ -138,15 +216,23 @@ def build(teacher_dir: str, mapping_path: str, rgb_root: str, uid: str, day_list
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog='python -m tools.thermalml.labels')
-    p.add_argument('--teacher', required=True, help='a teacher output folder, or with --models the root holding several')
+    p.add_argument('--teacher', help='a teacher output folder, or with --models the root holding several')
     p.add_argument('--models', help='fuse these teachers under --teacher, e.g. yolo11s+yolo26s+fasterrcnn_v2')
-    p.add_argument('--mapping', required=True)
+    p.add_argument('--mapping')
+    p.add_argument('--vote-from', help='instead of a teacher: plain labels to put to the vote of nearby photos')
+    p.add_argument('--shards', default='data/ml/shards', help='with --vote-from: where the frames\' times are')
     p.add_argument('--uid', default='2c:cf:67:0b:c0:94')
     p.add_argument('--day', action='append', required=True)
     p.add_argument('--rgb', default='data/ml/rgb')
     p.add_argument('--out', required=True)
     a = p.parse_args(argv)
-    for line in build(a.teacher, a.mapping, a.rgb, a.uid, a.day, a.out, a.models.split('+') if a.models else None):
+    if a.vote_from:
+        lines = vote_build(a.vote_from, a.shards, a.uid, a.day, a.out)
+    elif a.teacher and a.mapping:
+        lines = build(a.teacher, a.mapping, a.rgb, a.uid, a.day, a.out, a.models.split('+') if a.models else None)
+    else:
+        p.error('give --teacher and --mapping, or --vote-from')
+    for line in lines:
         print(line)
     return 0
 

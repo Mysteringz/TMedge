@@ -3,6 +3,7 @@ The thermal people detector's labelling and training, as one SLURM job (module 0
 
     hpc_job.py --stage check | stage | label | train | all      (uploaded data, 1-in-5 photos)
     hpc_job.py --stage full                                       (every photo, fetched with a download key)
+    hpc_job.py --stage compare                                    (job 2: two recipes on the same teacher boxes)
 
 `full` needs nothing uploaded but this code: it fetches the newest export of
 training.frames and training.pairs from the edge with the download key saved
@@ -10,6 +11,12 @@ in ~/thermalml/download.key (ML Data page -> Download keys), then builds the
 shards, extracts every paired photo, runs all three teachers on every
 October photo, labels, trains, scores against today's edge detector, runs the
 hand-labelled test once, and deletes the photos it extracted.
+
+`compare` (job 2) prepares the same way under ~/thermalml/job2, then trains
+two recipes three times each from the same teacher boxes: today's recipe
+(job 1's), and a model with about twice the weights trained on labels the
+nearby photos voted on. Each recipe keeps its best run on the validation
+day; the hand-labelled test then compares the two, paired on its 400 frames.
 
 Uploads come from tools/thermalml/hpc_pack.py; each carries this file, the
 tools/thermalml code and one piece of data. Everything persistent lives under
@@ -169,7 +176,11 @@ def rocm_indexes(version: str | None) -> list[str]:
 
 
 def torch_indexes() -> list[str] | None:
-    """Where to get PyTorch here: THERMALML_TORCH_INDEX, the ROCm builds on an AMD machine, else PyPI (None)."""
+    """Where to get PyTorch here: THERMALML_TORCH_INDEX, the ROCm builds on an AMD machine, else PyPI (None).
+
+    The ROCm wheels carry their own runtime, so the kernel driver's /dev/kfd
+    is enough to call a machine AMD even where ROCm itself is not installed.
+    """
     if os.environ.get('THERMALML_TORCH_INDEX'):
         return [os.environ['THERMALML_TORCH_INDEX']]
     version = None
@@ -177,7 +188,7 @@ def torch_indexes() -> list[str] | None:
         if os.path.exists(f):
             version = open(f).read().strip()
             break
-    if version is None and not shutil.which('rocminfo'):
+    if version is None and not shutil.which('rocminfo') and not os.path.exists('/dev/kfd'):
         return None
     return rocm_indexes(version)
 
@@ -199,7 +210,7 @@ def ensure_torch() -> None:
         import numpy  # noqa: F401
         import torch  # noqa: F401
         import torchvision  # noqa: F401
-        if STAGE == 'full':
+        if STAGE in ('full', 'compare'):
             import cv2  # noqa: F401
             import ultralytics  # noqa: F401
         return
@@ -229,7 +240,7 @@ def ensure_torch() -> None:
                 break
         else:
             raise SystemExit('no PyTorch ROCm build installed; set THERMALML_TORCH_INDEX to a wheel index from pytorch.org')
-    if STAGE == 'full':
+    if STAGE in ('full', 'compare'):
         # Ultralytics pulls in opencv-python, whose GUI build needs libGL that a
         # server may not have; the headless build is the same library without it.
         subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'ultralytics'], check=True)
@@ -244,7 +255,15 @@ def device() -> str:
     cpus = int(os.environ.get('SLURM_CPUS_PER_TASK', os.cpu_count() or 1))
     torch.set_num_threads(cpus)
     if torch.cuda.is_available():
+        log(f'GPU: {torch.cuda.get_device_name(0)}')
         return 'cuda'
+    if os.path.exists('/dev/kfd') and not os.environ.get('THERMALML_ALLOW_CPU'):
+        # An AMD GPU PyTorch cannot open would leave Faster R-CNN on the CPU for
+        # a day; nobody is watching overnight, so stop and say why instead.
+        raise SystemExit('this machine has an AMD GPU but PyTorch cannot use it. Usually the account is not in the '
+                         f'render and video groups (sudo usermod -aG render,video {os.environ.get("USER", "<user>")}, then log in '
+                         f'again); torch {torch.__version__}, HIP {getattr(torch.version, "hip", None)}. '
+                         'THERMALML_ALLOW_CPU=1 runs on the CPU anyway.')
     log(f'no usable GPU: running on {cpus} CPU threads')
     return 'cpu'
 
@@ -365,34 +384,79 @@ def keyed(path: str, key: str, extra: dict | None = None):
     return urllib.request.urlopen(req, timeout=60)
 
 
+class NotListed(SystemExit):
+    """The edge did not hand over an export list: no key, a refused key, no answer, or no export of a table."""
+
+
+def other_downloads() -> list[int]:
+    """Process ids of other runs of this job that may be downloading into ~/thermalml/data (Linux only)."""
+    found = []
+    for pid in (d for d in os.listdir('/proc') if d.isdigit()) if os.path.isdir('/proc') else []:
+        try:
+            argv = open(f'/proc/{pid}/cmdline', 'rb').read().split(b'\0')
+        except OSError:
+            continue
+        if int(pid) != os.getpid() and any(a.endswith(b'hpc_job.py') for a in argv) and \
+                any(a in (b'fetch', b'full', b'compare') for a in argv):
+            found.append(int(pid))
+    return found
+
+
+def local_export() -> str | None:
+    """The newest export already downloaded here. A ZIP gets its final name only after its checksum matched."""
+    folder = os.path.join(ROOT, 'data')
+    zips = [os.path.join(folder, f) for f in os.listdir(folder) if f.startswith('ml-data-') and f.endswith('.zip')] \
+        if os.path.isdir(folder) else []
+    return max(zips, key=os.path.getmtime) if zips else None
+
+
 def stage_fetch() -> dict[str, str]:
     """{table: local ZIP} for training.frames and training.pairs, downloaded (resumably) and checksummed."""
     if os.environ.get('THERMALML_ZIPS'):     # rehearsal: frames=path,pairs=path instead of downloading
         given = dict(item.split('=', 1) for item in os.environ['THERMALML_ZIPS'].split(','))
         return {'training.frames': given['frames'], 'training.pairs': given['pairs']}
+    # Two runs appending to the same partial download would corrupt it: a job
+    # started while the download runs waits for it, then finds the file here.
+    while other_downloads():
+        log(f'waiting for another run of this job to finish its download or its work (process {", ".join(map(str, other_downloads()))})')
+        time.sleep(300)
+    try:
+        return download()
+    except NotListed as e:
+        # Exports expire on the edge, and keys do; the copy here does not.
+        have = local_export()
+        if have is None:
+            raise
+        log(f'{e} -- using the export already downloaded here instead: {os.path.basename(have)}')
+        return {table: have for table in NEEDED}
+
+
+def download() -> dict[str, str]:
     key_file = os.path.join(ROOT, 'download.key')
     if not os.path.exists(key_file):
-        raise SystemExit('no download key: create one on the ML Data page and save it with the command shown there')
+        raise NotListed('no download key: create one on the ML Data page and save it with the command shown there')
     # A paste into a terminal can bring company (page text, a second paste): use
     # the one key-shaped token in the file, and say so if there is not exactly one.
     found = sorted(set(__import__('re').findall(r'tmdata_[0-9a-f]{64}', open(key_file).read())))
     if len(found) != 1:
-        raise SystemExit(f'~/thermalml/download.key holds {len(found)} download keys, not 1: save the key again')
+        raise NotListed(f'~/thermalml/download.key holds {len(found)} download keys, not 1: save the key again')
     key = found[0]
     try:
         with keyed('/exports', key) as r:
             jobs = json.load(r)['jobs']
-    except urllib.error.HTTPError as e:
+    except urllib.error.URLError as e:
+        if not isinstance(e, urllib.error.HTTPError):
+            raise NotListed(f'the edge could not be reached ({e.reason})')
         if e.code == 401:
-            raise SystemExit('the edge refused the download key (HTTP 401): it has expired, been revoked, or was saved wrongly '
+            raise NotListed('the edge refused the download key (HTTP 401): it has expired, been revoked, or was saved wrongly '
                              '(wc -c < ~/thermalml/download.key should print 71)')
-        raise SystemExit(f'the edge did not answer the request (HTTP {e.code}: {e.read()[:80]!r}); the key was not checked')
+        raise NotListed(f'the edge did not answer the request (HTTP {e.code}: {e.read()[:80]!r}); the key was not checked')
     done = sorted((j for j in jobs if j['state'] == 'completed'), key=lambda j: -j['createdAt'])
     picked: dict[str, dict] = {}
     for table in NEEDED:
         job = next((j for j in done if table in j['tables']), None)
         if job is None:
-            raise SystemExit(f'no completed export contains {table}: prepare one on the ML Data page (tick training.frames and training.pairs)')
+            raise NotListed(f'no completed export contains {table}: prepare one on the ML Data page (tick training.frames and training.pairs)')
         picked[table] = job
     os.makedirs(os.path.join(ROOT, 'data'), exist_ok=True)
     out: dict[str, str] = {}
@@ -427,15 +491,19 @@ TRAIN_DAYS = ['2026-10-06', '2026-10-07', '2026-10-11']
 VAL_DAYS = ['2026-10-10']
 
 
-def stage_full() -> None:
+def prepare(w: str) -> tuple[dict[str, str], str]:
+    """Data, inputs, every October photo's teacher boxes and labels under w, and the device to train on.
+
+    Each step is skipped when its output is already there, so a job that
+    was stopped resumes; Faster R-CNN also keeps its place within a day.
+    """
     os.environ.setdefault('YOLO_CONFIG_DIR', os.path.join(ROOT, 'ultralytics'))   # its settings stay under ~/thermalml
     os.makedirs(os.environ['YOLO_CONFIG_DIR'], exist_ok=True)
     ensure_torch()
     sys.path.insert(0, CODE)
     os.chdir(CODE)                       # assets (rigs/, data/ml/...) are found relative to the code
-    from tools.thermalml import __main__ as tm, dataset, evaluate, handtest, labels, teachers, train
+    from tools.thermalml import __main__ as tm, dataset, labels, teachers
     zips = stage_fetch()
-    w = os.path.join(ROOT, 'full')
     d = {k: os.path.join(w, k) for k in ('shards', 'rgb', 'features', 'teachers', 'labels', 'model', 'reports')}
     for v in d.values():
         os.makedirs(v, exist_ok=True)
@@ -463,6 +531,13 @@ def stage_full() -> None:
         # The photos were only ever needed to make labels.
         shutil.rmtree(d['rgb'], ignore_errors=True)
         log('photos deleted: the labels are kept')
+    return d, dev
+
+
+def stage_full() -> None:
+    w = os.path.join(ROOT, 'full')
+    d, dev = prepare(w)
+    from tools.thermalml import evaluate, handtest, train
     model_json = os.path.join(d['model'], 'model.json')
     if not os.path.exists(model_json):
         log(f'training on {TRAIN_DAYS}, validating on {VAL_DAYS} ({dev})')
@@ -486,20 +561,126 @@ def stage_full() -> None:
     log(f'everything is in {w}: model/model.json, reports/validation.json, reports/handtest.json')
 
 
+# --- compare: job 2, two recipes on the same teacher boxes ------------------
+
+# Decided with Kevin on 2026-10-14: recipe 2 changes two things at once, so a
+# win says the pair helped, not which half; the teacher boxes stay here, so
+# telling the halves apart is a training run, not another labelling.
+RECIPES = {
+    'recipe1': {'what': "today's recipe (job 1)", 'labels': 'labels', 'widths': '12,24,32'},
+    'recipe2': {'what': 'about twice the weights, labels voted on by the photos within 3 s',
+                'labels': 'labels-voted', 'widths': '16,32,48'},
+}
+SEEDS = (0, 1, 2)
+
+
+def stage_compare() -> None:
+    w = os.path.join(ROOT, 'job2')
+    d, dev = prepare(w)
+    from tools.thermalml import evaluate, handtest, labels, train
+    from tools.thermalml.metrics import paired_bootstrap
+    done = os.path.join(d['reports'], 'compare.json')
+    if os.path.exists(done):            # finished: say what it found, and leave the locked test alone
+        print_compare(json.load(open(done)))
+        return
+    d['labels-voted'] = os.path.join(w, 'labels-voted')
+    if not all(os.path.exists(os.path.join(d['labels-voted'], SENSOR, f'{day}.json')) for day in OCT_DAYS):
+        log('labels voted on by the photos within 3 s (recipe 2)')
+        window = float(os.environ.get('THERMALML_VOTE_S', labels.VOTE_WINDOW_S))   # wider only in rehearsals on every n-th photo
+        for line in labels.vote_build(d['labels'], d['shards'], UID, OCT_DAYS, d['labels-voted'], window):
+            log(line)
+
+    runs: dict[str, list[dict]] = {}
+    for name, r in RECIPES.items():
+        runs[name] = []
+        for seed in SEEDS:
+            out = os.path.join(w, 'models', name, f'seed{seed}')
+            model_json = os.path.join(out, 'model.json')
+            if not os.path.exists(model_json):
+                log(f'{name} ({r["what"]}), run {seed + 1} of {len(SEEDS)} ({dev})')
+                t0 = time.time()
+                train.main(['--labels', d[r['labels']], '--features', d['features'], '--shards', d['shards'], '--device', dev,
+                            '--out', out, '--widths', r['widths'], '--seed', str(seed)]
+                           + (['--epochs', '1', '--samples', '512'] if QUICK else [])
+                           + [x for day in TRAIN_DAYS for x in ('--train-day', day)] + [x for day in VAL_DAYS for x in ('--val-day', day)])
+                log(f'{name} run {seed + 1}: {(time.time() - t0) / 60:.1f} min')
+            m = json.load(open(model_json))
+            runs[name].append({'seed': seed, 'model': model_json, 'id': m['id'], 'weights': m.get('weights'),
+                               'validationF1': m['metrics']['validation']['f1']})
+
+    # Each recipe keeps the run its own validation day prefers, as it would in production.
+    pick = {name: max(rs, key=lambda x: x['validationF1'] if x['validationF1'] is not None else -1) for name, rs in runs.items()}
+    report: dict = {'recipes': {}, 'trainDays': TRAIN_DAYS, 'valDays': VAL_DAYS,
+                    'rule': 'docs/THERMAL_ML.md#job-2-two-recipes-compared'}
+    for name, r in RECIPES.items():
+        p = pick[name]
+        row = {'what': r['what'], 'widths': r['widths'], 'weights': p['weights'], 'runs': runs[name], 'picked': p, 'validation': {}}
+        # Scored against both label sets: each recipe is favoured by its own, so neither alone decides.
+        for lab in ('labels', 'labels-voted'):
+            dest = os.path.join(d['reports'], f'validation-{name}-on-{lab}.json')
+            evaluate.main(['--labels', d[lab], '--model', p['model'], '--features', d['features'], '--shards', d['shards'],
+                           '--replay', 'data/ml/replay', '--out', dest] + [x for day in VAL_DAYS for x in ('--day', day)])
+            row['validation'][lab] = json.load(open(dest))['days']
+        report['recipes'][name] = row
+
+    handtest.LEDGER = os.path.join(d['reports'], 'handtest-ledger.jsonl')
+    frames = {}
+    for name in RECIPES:
+        frames[name] = []
+        out = handtest.run(pick[name]['model'], f'job 2: {name}, the run its validation day picked', mapping_path='data/ml/mapping/2ccf670bc094-sept.json',
+                           labels_root='data/ml/handlabels/v1', features_root=d['features'], shards_root=d['shards'], frames_out=frames[name])
+        report['recipes'][name]['handTest'] = out['result']
+    report['handTestDifference'] = paired_bootstrap(frames['recipe1'], frames['recipe2'])
+    with open(done + '.tmp', 'w') as f:
+        json.dump(train.finite(report), f, indent=1, allow_nan=False)
+    os.replace(done + '.tmp', done)
+    print_compare(report)
+    log(f'everything is in {w}: reports/compare.json, models/<recipe>/seed<n>/model.json')
+
+
+def print_compare(report: dict) -> None:
+    fmt = lambda v: '-' if v is None or v != v else f'{v:.3f}'
+    ci = lambda c: f'[{fmt(c[0])}, {fmt(c[1])}]'
+    log('== JOB 2 RESULTS: two recipes, the same teacher boxes ==')
+    for name, row in report['recipes'].items():
+        h, hc = row['handTest']['all'], row['handTest']['ci95']
+        empty = row['handTest']['byTrueCount'].get('0', {}).get('falsePerFrame')
+        print(f'{name}: {row["what"]}; {row["weights"]} weights')
+        print(f'  validation F1 of its {len(row["runs"])} runs: {", ".join(fmt(x["validationF1"]) for x in row["runs"])} '
+              f'-> kept run {row["picked"]["seed"] + 1}')
+        for lab, days_ in row['validation'].items():
+            for day, v in days_.items():
+                print(f'  {day} against {lab}: F1 {fmt(v["model"]["all"]["f1"])} {ci(v["model"]["ci95"]["f1"])}, '
+                      f'count error {fmt(v["model"]["all"]["countMAE"])} (edge detector F1 {fmt(v["edge"]["all"]["f1"])})')
+        print(f'  HAND TEST: F1 {fmt(h["f1"])} {ci(hc["f1"])}, precision {fmt(h["precision"])}, recall {fmt(h["recall"])}, '
+              f'count error {fmt(h["countMAE"])}, false people per empty frame {fmt(empty)}')
+    diff = report['handTestDifference']
+    lo, hi = diff['f1ci95']
+    signed = lambda v: '-' if v is None or v != v else f'{v:+.3f}'
+    verdict = ('not measured' if lo is None or hi is None or lo != lo or hi != hi
+               else 'recipe 2 is better on the hand test' if lo > 0 else 'recipe 1 is better on the hand test' if hi < 0
+               else 'no measurable difference on the 400 hand-labelled frames')
+    print(f'recipe 2 minus recipe 1 on the hand test: F1 {signed(diff["f1"])} {ci(diff["f1ci95"])}, '
+          f'count error {signed(diff["countMAE"])} {ci(diff["countMAEci95"])} (paired, {diff["blocks"]} ten-minute blocks)')
+    log(f'VERDICT: {verdict}')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--stage', required=True, choices=('check', 'stage', 'label', 'train', 'all', 'fetch', 'full'))
+    ap.add_argument('--stage', required=True, choices=('check', 'stage', 'label', 'train', 'all', 'fetch', 'full', 'compare'))
     ap.add_argument('--quick', action='store_true', help='rehearsal: one short training epoch')
     a = ap.parse_args()
     global STAGE, QUICK
     STAGE, QUICK = a.stage, a.quick
     t0 = time.time()
-    if a.stage in ('check', 'all', 'full'):
+    if a.stage in ('check', 'all', 'full', 'compare'):
         stage_check()
     if a.stage == 'fetch':
         stage_fetch()
     if a.stage == 'full':
         stage_full()
+    if a.stage == 'compare':
+        stage_compare()
     if a.stage == 'stage':
         stage_stage()
     if a.stage in ('label', 'all'):

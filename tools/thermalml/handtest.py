@@ -37,7 +37,8 @@ LEDGER = os.path.join('data', 'ml', 'reports', 'handtest-ledger.jsonl')
 
 def run(model_path: str, why: str, mapping_path: str = 'data/ml/mapping/2ccf670bc094-sept.json',
         labels_root: str = 'data/ml/handlabels/v1', features_root: str = 'data/ml/features',
-        shards_root: str = 'data/ml/shards') -> dict:
+        shards_root: str = 'data/ml/shards', frames_out: list | None = None) -> dict:
+    """Score one model on the locked frames and append the use to the ledger; frames_out, if given, receives the per-frame scores."""
     model = json.load(open(model_path))
     m = json.load(open(mapping_path))
     labels = hand_labels(labels_root)
@@ -56,6 +57,8 @@ def run(model_path: str, why: str, mapping_path: str = 'data/ml/mapping/2ccf670b
             frames.append(Frame(int(f['at'][i]), len(truth), len(pred), tp, fp, fn, dists))
     if len(frames) != len(labels):
         raise SystemExit(f'only {len(frames)} of {len(labels)} hand-labelled frames were found')
+    if frames_out is not None:
+        frames_out.extend(frames)
     result = {'all': score_frames(frames), 'byTrueCount': by_true_count(frames), 'confusion': confusion(frames), 'ci95': bootstrap(frames)}
     entry = {'at': datetime.now(timezone(timedelta(hours=8))).isoformat(timespec='seconds'), 'model': model.get('id'),
              'modelFile': model_path, 'why': why, 'frames': len(frames), 'background': '19-Sept empty room',

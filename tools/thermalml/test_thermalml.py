@@ -315,6 +315,82 @@ class TrainingTargets(unittest.TestCase):
         self.assertEqual(np.argwhere(y2[0] == 1.0).tolist(), [[12, 20]])  # now 4 px right
 
 
+class VotedLabels(unittest.TestCase):
+    """Job 2's second recipe: nearby photos vote, and a vote never turns anyone into "nobody"."""
+
+    @staticmethod
+    def day(people_per_frame: list[list[tuple[float, float]]]) -> tuple[dict, dict]:
+        frames = {f't{i}': {'pts': [[x, y, 0.9] for x, y in pp], 'ign': []} for i, pp in enumerate(people_per_frame)}
+        return frames, {f't{i}': 1_000_000 + 1000 * i for i in range(len(people_per_frame))}   # one photo a second
+
+    def test_a_person_in_one_photo_only_is_set_aside_not_deleted(self) -> None:
+        from tools.thermalml.labels import vote
+        frames, at = self.day([[], [], [], [(10, 10)], [], [], []])
+        out, n = vote(frames, at)
+        self.assertEqual(out['t3']['pts'], [])
+        self.assertEqual(out['t3']['ign'], [[10, 10]])          # unknown, so the model is not punished either way
+        self.assertEqual(n['setAside'], 1)
+
+    def test_someone_seated_throughout_stays_a_target(self) -> None:
+        from tools.thermalml.labels import vote
+        frames, at = self.day([[(10, 10)], [(10.4, 10)], [(10, 10.3)], [(10.2, 10)], [(10, 10)], [(9.8, 10)], [(10, 10)]])
+        out, n = vote(frames, at)
+        self.assertEqual([len(f['pts']) for f in out.values()], [1] * 7)
+        self.assertEqual(n['setAside'], 0)
+
+    def test_a_one_photo_miss_between_sure_sightings_becomes_a_target(self) -> None:
+        from tools.thermalml.labels import vote
+        frames, at = self.day([[(10, 10)], [(10, 10)], [(10, 10)], [], [(10, 10)], [(10, 10)], [(10, 10)]])
+        out, n = vote(frames, at)
+        self.assertEqual(out['t3']['pts'], [[10.0, 10.0, 0.9]])
+        self.assertEqual(n['added'], 1)
+
+    def test_someone_who_only_just_arrived_is_not_invented_in_the_frame_before(self) -> None:
+        from tools.thermalml.labels import vote
+        frames, at = self.day([[], [], [], [], [(10, 10)], [(10, 10)], [(10, 10)], [(10, 10)]])
+        out, _n = vote(frames, at)
+        self.assertEqual(out['t3']['pts'], [])                  # seen after, never before: an arrival, not a miss
+        self.assertEqual(out['t4']['pts'], [[10, 10, 0.9]])     # 3 of the 6 photos near agree: half is enough
+
+    def test_photos_too_far_apart_to_vote_leave_the_labels_as_they_were(self) -> None:
+        from tools.thermalml.labels import vote
+        frames = {'a': {'pts': [[10, 10, 0.9]], 'ign': []}, 'b': {'pts': [], 'ign': []}}
+        out, n = vote(frames, {'a': 0, 'b': 60_000})
+        self.assertEqual(out['a']['pts'], [[10, 10, 0.9]])
+        self.assertEqual(n['unvoted'], 1)
+
+
+class Comparison(unittest.TestCase):
+    """Two models on the same frames are compared by their difference, resampled together."""
+
+    def test_the_difference_is_measured_on_the_same_blocks_of_time(self) -> None:
+        from tools.thermalml.metrics import Frame, paired_bootstrap
+        a = [Frame(600_000 * i, 1, 1, 1 if i % 2 else 0, 0 if i % 2 else 1, 0 if i % 2 else 1) for i in range(40)]
+        b = [Frame(600_000 * i, 1, 1, 1, 0, 0) for i in range(40)]
+        d = paired_bootstrap(a, b)
+        self.assertAlmostEqual(d['f1'], 0.5)
+        self.assertGreater(d['f1ci95'][0], 0)                   # b is better on every frame a missed
+        self.assertEqual(d['blocks'], 40)
+        with self.assertRaises(ValueError):
+            paired_bootstrap(a, b[:-1])
+
+    def test_a_job_started_during_the_download_uses_the_finished_file_after_the_export_expires(self) -> None:
+        from tools.thermalml import hpc_job
+        with tempfile.TemporaryDirectory() as home:
+            old = hpc_job.ROOT
+            hpc_job.ROOT = home
+            try:
+                os.makedirs(os.path.join(home, 'data'))
+                open(os.path.join(home, 'data', 'ml-data-abc.zip.part'), 'w').close()    # unfinished: never used
+                with self.assertRaises(SystemExit):
+                    hpc_job.stage_fetch()                       # no key, nothing finished here
+                open(os.path.join(home, 'data', 'ml-data-abc.zip'), 'w').close()
+                got = hpc_job.stage_fetch()                     # no key yet: the verified copy here is used
+                self.assertEqual(set(got.values()), {os.path.join(home, 'data', 'ml-data-abc.zip')})
+            finally:
+                hpc_job.ROOT = old
+
+
 class Cluster(unittest.TestCase):
     """The training job finds the right PyTorch on whatever machine runs it."""
 
@@ -324,6 +400,16 @@ class Cluster(unittest.TestCase):
         self.assertEqual(rocm_indexes('7.1.0')[0], 'https://download.pytorch.org/whl/rocm7.1')
         self.assertIn('https://download.pytorch.org/whl/rocm6.4', rocm_indexes('7.0.2'))
         self.assertTrue(rocm_indexes(None))     # rocminfo present but no version file: still ROCm builds
+
+    def test_the_amd_driver_alone_is_enough_to_choose_the_rocm_build(self) -> None:
+        from unittest import mock
+        from tools.thermalml import hpc_job
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch('shutil.which', return_value=None):
+            os.environ.pop('THERMALML_TORCH_INDEX', None)
+            with mock.patch('os.path.exists', side_effect=lambda f: f == '/dev/kfd'):
+                self.assertTrue(hpc_job.torch_indexes()[0].startswith('https://download.pytorch.org/whl/rocm'))
+            with mock.patch('os.path.exists', return_value=False):
+                self.assertIsNone(hpc_job.torch_indexes())          # no AMD driver: PyPI's build
 
 
 class Scoring(unittest.TestCase):

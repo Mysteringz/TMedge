@@ -226,6 +226,50 @@ so a random split scores near-copies of what the model trained on.
 - **Nightly:** train on every day up to the day before yesterday, test on
   yesterday. The series of those scores is the "is it getting better" curve.
 
+## Job 2: two recipes compared (decided 2026-10-14, before any result)
+
+Job 1 (iw-g2, CPU) trains today's recipe on every October photo. Job 2 runs
+on a team member's Linux PC with a 24 GB AMD GPU (`hpc_job.py --stage
+compare`) and trains two recipes from the **same teacher boxes**, so the
+labelling is done once and is identical for both:
+
+| | Recipe 1 (control) | Recipe 2 |
+|---|---|---|
+| Network | widths 12/24/32, 30,575 weights | widths 16/32/48, 60,115 weights |
+| Labels | the fused teacher, photo by photo | the same, voted on by the photos within ±3 s |
+| Everything else | the same days, inputs, augmentation, epochs, threshold search | the same |
+
+Kevin chose to change both at once. A win then says the pair helped, not
+which half; the teacher boxes stay on the PC, so separating the halves is a
+training run, not another labelling.
+
+**The vote** (`labels.vote`): a person the teacher found in fewer than half
+of the nearby photos is set aside as uncertain, and one it found in at least
+half the photos before *and* half after, but missed in this one, becomes a
+target. Nobody is ever turned into "no person"; frames with fewer than two
+photos nearby keep their labels. Measured beforehand on every fifth photo
+(about 4 s apart): 1.9% of 6 Oct's 513 labelled people and 6.9% of 7 Oct's
+58 appeared in neither neighbouring photo. The vote changes few labels, so
+recipe 2's difference may come mostly from the larger network.
+
+**Edge cost**, measured with the edge's own `heatForward` on the M4 (median
+of 5 x 1,000 frames): 4.5 ms per frame for recipe 1, 8.3 ms for recipe 2. The
+t3.micro is not measured yet; that comes before anything ships.
+
+**How the winner is chosen:**
+- Each recipe trains 3 times (seeds 0, 1, 2). Each keeps the run with the
+  best F1 on 10 Oct against **its own** labels, as it would in production.
+- Both kept models are scored on 10 Oct against **both** label sets, since
+  each label set favours its own recipe. This is reported, not used to decide.
+- **The hand test decides**, one use per recipe in the ledger. The two
+  models are compared by the difference in F1 on the same 400 frames, with a
+  95% interval from resampling the same 10-minute blocks for both
+  (`metrics.paired_bootstrap`).
+  - Interval above 0: recipe 2 is better.
+  - Interval below 0: recipe 1 is better.
+  - Otherwise: **no measurable difference on 400 frames**, which is reported
+    as such. Nobody rounds it into a win.
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 

@@ -141,3 +141,29 @@ def bootstrap(frames: list[Frame], block_ms: int = 600_000, n: int = 2000, seed:
         maes.append(s['countMAE'])
     q = lambda xs: [float(np.nanpercentile(xs, 2.5)), float(np.nanpercentile(xs, 97.5))]
     return {'f1': q(f1s), 'countMAE': q(maes), 'blocks': [len(keys)]}
+
+
+def paired_bootstrap(a: list[Frame], b: list[Frame], block_ms: int = 600_000, n: int = 2000, seed: int = 11) -> dict:
+    """b minus a on the same frames: the observed difference in F1 and count MAE, and 95% intervals.
+
+    Both are resampled with the same blocks of time, so what the two models
+    have in common (an easy evening, a crowded one) cancels out of the
+    difference instead of widening it.
+    """
+    if [f.at for f in a] != [f.at for f in b]:
+        raise ValueError('a paired comparison needs both models scored on the same frames, in the same order')
+    blocks: dict[int, list[int]] = {}
+    for i, f in enumerate(a):
+        blocks.setdefault(f.at // block_ms, []).append(i)
+    keys = list(blocks)
+    rng = np.random.default_rng(seed)
+    d_f1, d_mae = [], []
+    for _ in range(n):
+        idx = [i for k in rng.choice(len(keys), len(keys), replace=True) for i in blocks[keys[k]]]
+        sa, sb = score_frames([a[i] for i in idx]), score_frames([b[i] for i in idx])
+        d_f1.append(sb['f1'] - sa['f1'])
+        d_mae.append(sb['countMAE'] - sa['countMAE'])
+    q = lambda xs: [float(np.nanpercentile(xs, 2.5)), float(np.nanpercentile(xs, 97.5))]
+    sa, sb = score_frames(a), score_frames(b)
+    return {'f1': sb['f1'] - sa['f1'], 'f1ci95': q(d_f1), 'countMAE': sb['countMAE'] - sa['countMAE'],
+            'countMAEci95': q(d_mae), 'blocks': len(keys)}

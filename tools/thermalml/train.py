@@ -34,7 +34,7 @@ import numpy as np
 
 from . import days
 from .dataset import load as load_features
-from .heatnet import STRIDE, decode, export, torch_model
+from .heatnet import STRIDE, WIDTHS, decode, export, torch_model
 from .metrics import Frame, match, score_frames
 from .shards import read_shard, sensor_dir
 
@@ -253,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--batch', type=int, default=256)
     p.add_argument('--lr', type=float, default=2e-3)
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--widths', default=','.join(map(str, WIDTHS)), help='channels at full, half and quarter resolution')
     p.add_argument('--out', required=True)
     a = p.parse_args(argv)
 
@@ -269,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f'train {len(tr["at"])} frames ({int(with_people.sum())} with people), val {len(va["at"])}, donors {len(donors)}', flush=True)
 
     dev = torch.device(a.device)
-    model = torch_model().to(dev)
+    widths = tuple(int(v) for v in a.widths.split(','))
+    model = torch_model(widths).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     steps = a.epochs * math.ceil(a.samples / a.batch)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.1)
@@ -311,7 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     model.load_state_dict(torch.load(os.path.join(a.out, 'best.pt'), map_location=dev))
     model = model.cpu()
     meta = {'threshold': best['threshold'], 'trainedAt': int(time.time() * 1000), 'trainDays': a.train_day, 'valDays': a.val_day,
-            'labels': os.path.basename(os.path.normpath(a.labels)), 'metrics': {'validation': best}, 'seed': a.seed}
+            'labels': os.path.basename(os.path.normpath(a.labels)), 'metrics': {'validation': best}, 'seed': a.seed,
+            'widths': list(widths), 'weights': sum(int(t.numel()) for t in model.parameters())}
     doc = finite(export(model, meta))
     with open(os.path.join(a.out, 'model.json'), 'w') as f:
         json.dump(doc, f, separators=(',', ':'), allow_nan=False)
