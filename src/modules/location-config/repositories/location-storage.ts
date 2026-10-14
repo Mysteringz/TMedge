@@ -1,4 +1,4 @@
-import type { LocationAssetMetadata, LocationDraft, PublishedLocationRevision, PublishedLocationState } from '../domain/location-records.js';
+import type { FurnitureType, LocationAssetMetadata, LocationDraft, PublishedLocationRevision, PublishedLocationState } from '../domain/location-records.js';
 import type { LocationDocument, LocationSensorAssignment } from '../domain/location-document.js';
 import type { ValidatedLocationCandidate } from '../domain/location-candidate.js';
 import type { LegacySpatialProvenance } from '../domain/location-candidate.js';
@@ -104,6 +104,19 @@ export interface LocationAssetMetadataRepository {
 export interface LocationAssetStore {
   put(creatorId: string, purpose: LocationAssetMetadata['purpose'], declaredMediaType: string, bytes: Uint8Array, createdAt: number, displayName?: string): Promise<LocationAssetMetadata>;
   read(creatorId: string, assetId: string): Promise<{ metadata: LocationAssetMetadata; bytes: Buffer } | null>;
+}
+
+export type FurnitureLibraryMetadata = LocationAssetMetadata & {
+  purpose: 'furniture';
+  furnitureType: FurnitureType;
+  displayName: string;
+};
+
+export interface FurnitureLibraryStore {
+  createFurnitureItem(input: { creatorId: string; furnitureType: FurnitureType; displayName: string; bytes: Uint8Array; createdAt: number }): Promise<FurnitureLibraryMetadata>;
+  getFurnitureMetadata(assetId: string): Promise<FurnitureLibraryMetadata | null>;
+  listFurnitureMetadata(filter: { furnitureType?: FurnitureType; query?: string }): Promise<FurnitureLibraryMetadata[]>;
+  readFurnitureItem(assetId: string): Promise<{ metadata: FurnitureLibraryMetadata; bytes: Buffer } | null>;
 }
 
 /** Serializes provisioning, registration imports and location registry changes. */

@@ -515,7 +515,7 @@ async function run() {
   const publicationRuntime = new EdgeLocationPublicationRuntime(runtime, persistence.siteSeed);
   const locationApi = (auth) => createLocationRouter({
     auth, edgeId: cfg.edgeId, siteSeed: persistence.siteSeed, drafts: persistence.drafts, published: persistence.published,
-    snapshots: persistence.snapshots, assets: persistence.assets, assetMetadata: persistence.assetMetadata,
+    snapshots: persistence.snapshots, assets: persistence.assets, furnitureLibrary: persistence.furnitureLibrary, assetMetadata: persistence.assetMetadata,
     coordinator: persistence.coordinator, runtime: publicationRuntime, suggestCoverage: computeLocationCoverageSuggestions, now: Date.now,
   });
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({ SESSION_SECRET: sessionSecret, ALGO_USERS_FILE: usersPath }, cfg.adminPassword), undefined, { locationApi });

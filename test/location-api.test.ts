@@ -42,6 +42,7 @@ test('location routes enforce capability, write guard, ownership and immutable u
     edgeId: 'edge-api-test', siteSeed: siteJson(),
     ...persistence,
     assets: persistence.assets,
+    furnitureLibrary: persistence.assets,
     assetMetadata: persistence.assets,
     runtime: fakeRuntime as unknown as import('../src/modules/location-config/routes/location-router.js').LocationRouterDependencies['runtime'],
     suggestCoverage: computeLocationCoverageSuggestions,
@@ -311,7 +312,7 @@ test('legacy-static revision zero can switch to generated through start, save an
   let distributorCalls = 0;
   app.use('/api', createLocationRouter({
     auth, edgeId: 'edge-generated-transition', siteSeed, ...persistence,
-    assets: persistence.assets, assetMetadata: persistence.assets,
+    assets: persistence.assets, furnitureLibrary: persistence.assets, assetMetadata: persistence.assets,
     runtime: fakeRuntime as unknown as import('../src/modules/location-config/routes/location-router.js').LocationRouterDependencies['runtime'],
     modelDistributor: { async acknowledge() { distributorCalls += 1; } },
     suggestCoverage: computeLocationCoverageSuggestions, now: () => 300,
@@ -414,7 +415,7 @@ test('legacy editor DTO round-trips exact inherited geometry through unchanged s
   persistence.setPublishedLocation(legacyState);
   app.use('/api', createLocationRouter({
     auth, edgeId: 'edge-legacy-api', siteSeed: siteJson(), ...persistence,
-    assets: persistence.assets, assetMetadata: persistence.assets,
+    assets: persistence.assets, furnitureLibrary: persistence.assets, assetMetadata: persistence.assets,
     runtime: fakeRuntime as unknown as import('../src/modules/location-config/routes/location-router.js').LocationRouterDependencies['runtime'],
     suggestCoverage: computeLocationCoverageSuggestions, now: () => 200,
   }));
@@ -614,3 +615,112 @@ function makeGlb(root: Record<string, unknown>): Buffer {
   json.copy(output, 20);
   return output;
 }
+
+test('shared furniture library is role-gated, cross-creator readable, and validated on every draft save', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'furniture-library-api-'));
+  const app = express();
+  const persistence = makePersistence(directory);
+  const users = new AlgoUsers(join(directory, 'algo-users.json'));
+  for (const [name, role] of [['uploader', 'operator'], ['manager', 'admin'], ['viewer', 'viewer']] as const) {
+    await users.add(name, 'correct horse battery', role);
+  }
+  const auth = createAlgoAuth(loadAlgoAuthConfig({ SESSION_SECRET: 'f'.repeat(40), ALGO_USERS_FILE: users.path }, 'test-admin-password'));
+  app.use('/api', createLocationRouter({
+    auth, edgeId: 'furniture-test-edge', siteSeed: siteJson(), ...persistence,
+    assets: persistence.assets, furnitureLibrary: persistence.assets, assetMetadata: persistence.assets,
+    runtime: fakeRuntime as unknown as import('../src/modules/location-config/routes/location-router.js').LocationRouterDependencies['runtime'],
+    suggestCoverage: computeLocationCoverageSuggestions, now: () => 700,
+  }));
+  app.use(auth.router);
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const login = async (username: string) => {
+      const response = await fetch(`${base}/auth/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username, password: 'correct horse battery' }),
+      });
+      assert.equal(response.status, 200);
+      return (response.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    };
+    const [uploaderCookie, managerCookie, viewerCookie] = await Promise.all([login('uploader'), login('manager'), login('viewer')]);
+    const json = (method: string, path: string, cookie: string, body?: unknown) => fetch(`${base}${path}`, {
+      method, headers: { cookie, accept: 'application/json', 'content-type': 'application/json', 'x-tm-algo': '1', origin: base },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    assert.equal((await fetch(`${base}/api/furniture-library`)).status, 401);
+    assert.equal((await json('GET', '/api/furniture-library', viewerCookie)).status, 403);
+
+    const glb = makeGlb({ asset: { version: '2.0' }, buffers: [] });
+    const upload = async (cookie: string, type: string, name: string) => fetch(`${base}/api/furniture-library`, {
+      method: 'POST', headers: {
+        cookie, origin: base, 'x-tm-algo': '1', 'content-type': 'model/gltf-binary',
+        'x-furniture-type': type, 'x-asset-display-name': encodeURIComponent(name),
+      }, body: glb,
+    });
+    const missingOrigin = await fetch(`${base}/api/furniture-library`, {
+      method: 'POST', headers: { cookie: uploaderCookie, 'x-tm-algo': '1', 'content-type': 'model/gltf-binary', 'x-furniture-type': 'table', 'x-asset-display-name': 'Table.glb' }, body: glb,
+    });
+    assert.equal(missingOrigin.status, 403);
+    assert.equal((await upload(uploaderCookie, 'table', 'Table% Chair.glb')).status, 201);
+    const uploadedResponse = await upload(uploaderCookie, 'table', 'Oak table.glb');
+    assert.equal(uploadedResponse.status, 201);
+    assert.equal(uploadedResponse.headers.get('location')?.startsWith('/api/furniture-library/'), true);
+    const uploaded = (await uploadedResponse.json() as { data: { assetId: string; type: string; displayName: string; [key: string]: unknown } }).data;
+    assert.deepEqual(Object.keys(uploaded).sort(), ['assetId', 'displayName', 'type']);
+    assert.equal(uploaded.type, 'table');
+    assert.equal(uploaded.displayName, 'Oak table.glb');
+
+    const listedResponse = await json('GET', '/api/furniture-library?type=table&q=oak', managerCookie);
+    assert.equal(listedResponse.status, 200);
+    const listed = (await listedResponse.json() as { data: { items: Array<{ assetId: string }> } }).data.items;
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]!.assetId, uploaded.assetId, 'another manager can list a creator-independent library item');
+    assert.equal((await json('GET', '/api/furniture-library?type=table&type=chair', managerCookie)).status, 400);
+    assert.equal((await json('GET', '/api/furniture-library?unexpected=1', managerCookie)).status, 400);
+    assert.equal((await json('GET', '/api/furniture-library?q=%FF', managerCookie)).status, 400);
+    assert.equal((await json('GET', '/api/furniture-library?q=a=%', managerCookie)).status, 400);
+    assert.equal((await json('GET', '/api/furniture-library?q=a%3Db', managerCookie)).status, 200);
+    assert.equal((await json('GET', '/api/furniture-library?q=Oak%20table.glb', managerCookie)).status, 200);
+
+    const read = await fetch(`${base}/api/furniture-library/${uploaded.assetId}`, { headers: { cookie: managerCookie } });
+    assert.equal(read.status, 200);
+    assert.equal(read.headers.get('content-type'), 'model/gltf-binary');
+    assert.equal(read.headers.get('content-length'), String(glb.byteLength));
+    assert.equal(read.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(read.headers.get('cache-control'), 'private, no-store');
+    assert.deepEqual(Buffer.from(await read.arrayBuffer()), glb);
+
+    const chairUpload = await upload(uploaderCookie, 'chair', 'Chair.glb');
+    assert.equal(chairUpload.status, 201);
+    const chair = (await chairUpload.json() as { data: { assetId: string } }).data;
+    const draftResponse = await json('POST', '/api/locations/drafts', managerCookie, {
+      name: 'Furniture room', building: 'North', widthCm: 400, heightCm: 300,
+    });
+    assert.equal(draftResponse.status, 201);
+    const draft = (await draftResponse.json() as { data: { draftId: string; document: Record<string, unknown> } }).data;
+    const validDocument = { ...draft.document, furnitureDefaults: { table: { assetId: uploaded.assetId, scale: 1, yawDeg: 0, elevationM: 0 } } };
+    const saved = await json('PUT', `/api/locations/drafts/${draft.draftId}`, managerCookie, { expectedDraftRevision: 1, document: validDocument });
+    assert.equal(saved.status, 200, 'a different manager may assign the shared item');
+    const savedBody = (await saved.json() as { data: { document: Record<string, unknown> } }).data;
+    assert.deepEqual(savedBody.document.furnitureDefaults, validDocument.furnitureDefaults);
+    const detail = await json('GET', `/api/locations/drafts/${draft.draftId}`, managerCookie);
+    assert.deepEqual((await detail.json() as { data: { assetCapabilities: object } }).data.assetCapabilities, {}, 'furniture does not enter plan/model capability metadata');
+
+    const missing = { ...validDocument, furnitureDefaults: { table: { assetId: '00000000-0000-4000-8000-000000000099', scale: 1, yawDeg: 0, elevationM: 0 } } };
+    assert.equal((await json('PUT', `/api/locations/drafts/${draft.draftId}`, managerCookie, { expectedDraftRevision: 2, document: missing })).status, 404);
+    const wrongType = { ...validDocument, furnitureDefaults: { table: { assetId: chair.assetId, scale: 1, yawDeg: 0, elevationM: 0 } } };
+    assert.equal((await json('PUT', `/api/locations/drafts/${draft.draftId}`, managerCookie, { expectedDraftRevision: 2, document: wrongType })).status, 422);
+    const publish = await json('POST', `/api/locations/drafts/${draft.draftId}/publications`, managerCookie, {
+      expectedDraftRevision: 2, expectedPublishedRevision: null,
+    });
+    assert.equal(publish.status, 422);
+    assert.equal((await publish.json() as { error: { code: string } }).error.code, 'FURNITURE_PUBLICATION_UNAVAILABLE');
+    assert.equal((await persistence.published.listActive()).length, 0, 'the temporary guard does not change public state');
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

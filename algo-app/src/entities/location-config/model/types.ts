@@ -8,8 +8,12 @@ export interface Seat { id: string; x: number; y: number; neighbors: string[]; s
 export interface Zone { id: string; name: string; polygon: Point[] }
 export interface Table {
   id: string; name: string; zoneId: string; capacity: number; seats: Seat[];
-  shape?: TableShape; rect?: Rect; seatRadiusCm?: number;
+  shape?: TableShape; rect?: Rect; seatRadiusCm?: number; furnitureOverrides?: FurnitureSlots;
 }
+export type FurnitureType = 'table' | 'chair';
+export interface FurnitureAssignment { assetId: string; scale: number; yawDeg: number; elevationM: number }
+export interface FurnitureSlots { table?: FurnitureAssignment; chair?: FurnitureAssignment }
+export interface FurnitureLibraryItem { assetId: string; type: FurnitureType; displayName: string }
 export interface SensorAssignment {
   uid: string;
   pose: { x: number; y: number; heightCm: number; yawDeg: number; mirror: boolean };
@@ -39,6 +43,7 @@ export interface LocationDocument {
   zones: Zone[]; tables: Table[]; sensorAssignments: SensorAssignment[];
   planAssetId?: string; modelAssetId?: string; modelTransform?: ModelTransform;
   proceduralRoom?: 'simple-rectangle-v1';
+  furnitureDefaults?: FurnitureSlots;
 }
 export interface PublishedSummary {
   locationId: string; name: string; building: string; visibility: 'public' | 'console'; activeRevision: number;

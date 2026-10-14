@@ -5,7 +5,7 @@ import { activeLocationModelDispositions, legacyStaticModelProvenance, locationM
 import { legacyFloorToBaseline } from './legacy-location-mapper.js';
 import { parseNodesConfig, type NodesConfigV2 } from '../../modules/location-config/domain/nodes-config.js';
 import { LocationConflictError, type PublishedLocationRevision, type PublishedLocationState } from '../../modules/location-config/domain/location-records.js';
-import type { LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, LocationRegistrySnapshot, LocationRegistrySnapshotRepository, PublishedLocationRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
+import type { FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, LocationRegistrySnapshot, LocationRegistrySnapshotRepository, PublishedLocationRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
 import { buildRegistry, buildRegistryFromLocationDocuments, type FloorDef, type Registry } from '../../edge/registry.js';
 import { FileLocationAssetStore } from './file-location-asset-store.js';
 import { FileLocationDraftRepository } from './file-location-draft-repository.js';
@@ -20,7 +20,8 @@ export interface FileLocationPersistence {
   drafts: LocationDraftRepository;
   published: PublishedLocationRepository;
   snapshots: LocationRegistrySnapshotRepository;
-  assets: LocationAssetStore;
+  assets: LocationAssetStore & FurnitureLibraryStore;
+  furnitureLibrary: FurnitureLibraryStore;
   assetMetadata: LocationAssetMetadataRepository;
   close(): void;
 }
@@ -62,7 +63,7 @@ export function initializeFileLocationPersistence(sitePath: string, nodesPath: s
   const active = activeDocuments(initial);
   const registry = buildRegistryFromLocationDocuments(siteJson, nodesConfigFor(initial), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation);
   return {
-    siteSeed: siteJson, registry, coordinator, drafts, published, snapshots, assets: assetStore, assetMetadata: assetStore,
+    siteSeed: siteJson, registry, coordinator, drafts, published, snapshots, assets: assetStore, furnitureLibrary: assetStore, assetMetadata: assetStore,
     close: () => coordinator.close(),
   };
 }

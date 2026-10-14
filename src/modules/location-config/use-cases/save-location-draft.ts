@@ -1,7 +1,10 @@
 import { parseLocationCandidate } from '../domain/location-candidate.js';
 import { LocationConflictError, LocationDraftNotFoundError } from '../domain/location-records.js';
 import { resolveLocationAssetProvenance } from './resolve-location-asset-provenance.js';
-import type { LocationAssetMetadataRepository, LocationDraftRepository, PublishedLocationRepository } from '../repositories/location-storage.js';
+import { furnitureAssetReferences } from '../domain/furniture-assets.js';
+import { InvalidLocationAssetReferenceError } from '../domain/location-assets.js';
+import { InvalidLocationDocumentError } from '../domain/location-document.js';
+import type { FurnitureLibraryStore, LocationAssetMetadataRepository, LocationDraftRepository, PublishedLocationRepository } from '../repositories/location-storage.js';
 
 export interface SaveLocationDraftInput {
   creatorId: string;
@@ -15,6 +18,7 @@ export class SaveLocationDraftUseCase {
     drafts: LocationDraftRepository;
     published: PublishedLocationRepository;
     assetMetadata?: LocationAssetMetadataRepository;
+    furnitureLibrary?: Pick<FurnitureLibraryStore, 'getFurnitureMetadata'>;
     now?: () => number;
   }) {}
 
@@ -44,6 +48,12 @@ export class SaveLocationDraftUseCase {
     const assetProvenance = await resolveLocationAssetProvenance(input.creatorId, candidate.document, base ? {
       revision: base.revision, document: base.document, assetProvenance: base.assetProvenance,
     } : null, this.dependencies.assetMetadata);
+    for (const reference of furnitureAssetReferences(candidate.document)) {
+      const metadata = await this.dependencies.furnitureLibrary?.getFurnitureMetadata(reference.assetId);
+      if (!metadata) throw new InvalidLocationAssetReferenceError('The referenced furniture asset is not available.');
+      if (metadata.purpose !== 'furniture') throw new InvalidLocationAssetReferenceError('The referenced asset is not furniture.');
+      if (metadata.furnitureType !== reference.furnitureType) throw new InvalidLocationDocumentError('The furniture asset type does not match its slot.');
+    }
     return this.dependencies.drafts.saveDraft(
       input.creatorId, input.draftId, input.expectedDraftRevision, { ...candidate, assetProvenance },
       (this.dependencies.now ?? Date.now)(),
@@ -53,7 +63,7 @@ export class SaveLocationDraftUseCase {
 
 const AUTHORED_KEYS = [
   'name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments',
-  'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom',
+  'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom', 'furnitureDefaults',
 ];
 const REQUIRED_AUTHORED_KEYS = ['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments'];
 

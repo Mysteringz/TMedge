@@ -34,7 +34,7 @@ import type { RolloutRepository } from '../modules/rollouts/repositories/rollout
 import { postgresAvailability } from '../infrastructure/postgres/data-source.js';
 import type { RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import type { LocationDraftRepository, LocationRegistrySnapshotRepository, PublishedLocationRepository, PublishedModelDistributor } from '../modules/location-config/repositories/location-storage.js';
-import type { LocationAssetMetadataRepository, LocationAssetStore } from '../modules/location-config/repositories/location-storage.js';
+import type { FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore } from '../modules/location-config/repositories/location-storage.js';
 import { PublishLocationUseCase } from '../modules/location-config/use-cases/publish-location.js';
 import { EdgeLocationPublicationRuntime } from './location-publication-runtime.js';
 import { HttpPublishedModelDistributor } from '../infrastructure/location-config/http-published-model-distributor.js';
@@ -143,7 +143,7 @@ export interface EdgeApplicationOptions {
     drafts: LocationDraftRepository;
     published: PublishedLocationRepository;
     snapshots: LocationRegistrySnapshotRepository;
-    assets: LocationAssetStore;
+    assets: LocationAssetStore & FurnitureLibraryStore;
     assetMetadata: LocationAssetMetadataRepository;
     modelDistributor?: PublishedModelDistributor;
   };
@@ -197,6 +197,7 @@ export function createEdgeApplication(cfg: EdgeConfig, reg: Registry, options: E
         auth, edgeId: cfg.edgeId, siteSeed: options.locationPublication!.siteSeed,
         drafts: options.locationPublication!.drafts, published: options.locationPublication!.published,
         snapshots: options.locationPublication!.snapshots, assets: options.locationPublication!.assets,
+        furnitureLibrary: options.locationPublication!.assets,
         assetMetadata: options.locationPublication!.assetMetadata, coordinator: options.registryMutationCoordinator!,
         runtime: publicationRuntime, modelDistributor, suggestCoverage: computeLocationCoverageSuggestions, now: Date.now,
       }) : undefined,

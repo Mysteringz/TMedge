@@ -33,6 +33,19 @@ export interface LocationTable {
   shape: TableShape;
   seats: LocationSeat[];
   seatRadiusCm?: number;
+  furnitureOverrides?: FurnitureSlots;
+}
+
+export interface FurnitureAssignment {
+  assetId: string;
+  scale: number;
+  yawDeg: number;
+  elevationM: number;
+}
+
+export interface FurnitureSlots {
+  table?: FurnitureAssignment;
+  chair?: FurnitureAssignment;
 }
 
 export interface LocationSensorAssignment {
@@ -64,6 +77,7 @@ export interface LocationDocument {
   modelAssetId?: string;
   modelTransform?: LocationModelTransform;
   proceduralRoom?: ProceduralRoom;
+  furnitureDefaults?: FurnitureSlots;
 }
 
 /**
@@ -103,7 +117,7 @@ export function parseLocationDocument(value: unknown): LocationDocument {
     fail(`location: document exceeds the ${MAX_LOCATION_DOCUMENT_BYTES}-byte limit`);
   }
   const root = record(value, 'location');
-  only(root, 'location', ['schemaVersion', 'locationId', 'name', 'building', 'visibility', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom']);
+  only(root, 'location', ['schemaVersion', 'locationId', 'name', 'building', 'visibility', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom', 'furnitureDefaults']);
   if (root.schemaVersion !== 1) fail('location.schemaVersion: expected 1');
   const visibility = root.visibility === undefined ? 'public' : root.visibility;
   if (visibility !== 'public' && visibility !== 'console') fail('location.visibility: expected public or console');
@@ -128,6 +142,7 @@ export function parseLocationDocument(value: unknown): LocationDocument {
   };
   addAssetFields(root, result);
   addProceduralRoom(root, result);
+  if (root.furnitureDefaults !== undefined) result.furnitureDefaults = parseFurnitureSlots(root.furnitureDefaults, 'location.furnitureDefaults');
   return result;
 }
 
@@ -156,7 +171,7 @@ function parseZone(value: unknown, index: number, width: number, height: number)
 function parseTable(value: unknown, index: number, zones: LocationZone[], width: number, height: number): LocationTable {
   const where = `location.tables[${index}]`;
   const input = record(value, where);
-  only(input, where, ['id', 'name', 'zoneId', 'capacity', 'shape', 'seats', 'seatRadiusCm']);
+  only(input, where, ['id', 'name', 'zoneId', 'capacity', 'shape', 'seats', 'seatRadiusCm', 'furnitureOverrides']);
   const capacity = integer(input.capacity, `${where}.capacity`, 1, 20);
   const zoneId = safeId(input.zoneId, `${where}.zoneId`);
   if (!zones.some((zone) => zone.id === zoneId)) fail(`${where}.zoneId: no zone ${zoneId}`);
@@ -171,7 +186,31 @@ function parseTable(value: unknown, index: number, zones: LocationZone[], width:
   }
   const result: LocationTable = { id: safeId(input.id, `${where}.id`), name: nonEmpty(input.name, `${where}.name`), zoneId, capacity, shape, seats };
   if (input.seatRadiusCm !== undefined) result.seatRadiusCm = number(input.seatRadiusCm, `${where}.seatRadiusCm`, 20, 150);
+  if (input.furnitureOverrides !== undefined) result.furnitureOverrides = parseFurnitureSlots(input.furnitureOverrides, `${where}.furnitureOverrides`);
   return result;
+}
+
+function parseFurnitureSlots(value: unknown, where: string): FurnitureSlots {
+  const input = record(value, where);
+  only(input, where, ['table', 'chair']);
+  if (!Object.hasOwn(input, 'table') && !Object.hasOwn(input, 'chair')) fail(`${where}: expected at least one furniture slot`);
+  const result: FurnitureSlots = {};
+  for (const slot of ['table', 'chair'] as const) {
+    if (Object.hasOwn(input, slot)) result[slot] = parseFurnitureAssignment(input[slot], `${where}.${slot}`);
+  }
+  return result;
+}
+
+function parseFurnitureAssignment(value: unknown, where: string): FurnitureAssignment {
+  const input = record(value, where);
+  only(input, where, ['assetId', 'scale', 'yawDeg', 'elevationM']);
+  if (typeof input.assetId !== 'string' || !UUID_RE.test(input.assetId)) fail(`${where}.assetId: expected an opaque UUID`);
+  return {
+    assetId: input.assetId.toLowerCase(),
+    scale: number(input.scale, `${where}.scale`, 0.01, 100),
+    yawDeg: number(input.yawDeg, `${where}.yawDeg`, -360, 360),
+    elevationM: number(input.elevationM, `${where}.elevationM`, 0, 10),
+  };
 }
 
 function parseShape(value: unknown, where: string, width: number, height: number): TableShape {

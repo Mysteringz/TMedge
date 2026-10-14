@@ -2,7 +2,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import type { AlgoAuth } from '../../../algo/auth.js';
 import { routeParam } from '../../../shared/http.js';
 import type { LocationAssetSlot } from '../domain/location-assets.js';
-import { InvalidLocationAssetReferenceError } from '../domain/location-assets.js';
+import { InvalidLocationAssetReferenceError, normalizeLocationAssetDisplayName } from '../domain/location-assets.js';
 import { exposeAuthoredLocationCandidate, parseLocationCandidate, revalidateLocationCandidate } from '../domain/location-candidate.js';
 import { InvalidLocationDocumentError, parseLocationDocument, type LocationDocument, type LocationSensorAssignment } from '../domain/location-document.js';
 import type { LocationDraft } from '../domain/location-records.js';
@@ -10,15 +10,16 @@ import {
   LocationConflictError, LocationDraftNotFoundError, LocationStorageUnavailableError, UnknownRegistryCommitOutcomeError,
 } from '../domain/location-records.js';
 import type {
-  LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, LocationRegistrySnapshotRepository,
+  FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, LocationRegistrySnapshotRepository,
   PublishedLocationRepository, PublishedModelDistributor, RegistryMutationCoordinator,
 } from '../repositories/location-storage.js';
 import { CreateLocationDraftUseCase } from '../use-cases/create-location-draft.js';
 import { StartLocationEditDraftUseCase } from '../use-cases/start-location-edit-draft.js';
 import { SaveLocationDraftUseCase } from '../use-cases/save-location-draft.js';
-import { PublishLocationUseCase, PublishedModelDistributionFailedError, PublishedModelDistributionUnavailableError } from '../use-cases/publish-location.js';
+import { FurniturePublicationUnavailableError, PublishLocationUseCase, PublishedModelDistributionFailedError, PublishedModelDistributionUnavailableError } from '../use-cases/publish-location.js';
 import { UploadLocationAssetUseCase } from '../use-cases/upload-location-asset.js';
 import { ReadLocationDraftAssetUseCase } from '../use-cases/read-location-draft-asset.js';
+import { FurnitureLibraryUseCase } from '../use-cases/furniture-library.js';
 import type { SuggestLocationCoverage } from '../use-cases/location-coverage-contract.js';
 import type { PreparedRuntimeGeneration } from '../../../edge/runtime.js';
 
@@ -30,6 +31,7 @@ export interface LocationRouterDependencies {
   published: PublishedLocationRepository;
   snapshots: LocationRegistrySnapshotRepository;
   assets: LocationAssetStore;
+  furnitureLibrary: FurnitureLibraryStore;
   assetMetadata: LocationAssetMetadataRepository;
   coordinator: RegistryMutationCoordinator;
   runtime: import('../repositories/location-storage.js').PreparedLocationRuntime<PreparedRuntimeGeneration>;
@@ -39,7 +41,7 @@ export interface LocationRouterDependencies {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const DOC_KEYS = ['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom'];
+const DOC_KEYS = ['name', 'building', 'widthCm', 'heightCm', 'outline', 'zones', 'tables', 'sensorAssignments', 'planAssetId', 'modelAssetId', 'modelTransform', 'proceduralRoom', 'furnitureDefaults'];
 
 export function createLocationRouter(dependencies: LocationRouterDependencies): Router {
   const router = Router();
@@ -51,7 +53,8 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     drafts: dependencies.drafts, snapshots: dependencies.snapshots, mutationCoordinator: dependencies.coordinator, now: dependencies.now,
   });
   const save = new SaveLocationDraftUseCase({
-    drafts: dependencies.drafts, published: dependencies.published, assetMetadata: dependencies.assetMetadata, now: dependencies.now,
+    drafts: dependencies.drafts, published: dependencies.published, assetMetadata: dependencies.assetMetadata,
+    furnitureLibrary: dependencies.furnitureLibrary, now: dependencies.now,
   });
   const publish = new PublishLocationUseCase<PreparedRuntimeGeneration>({
     drafts: dependencies.drafts, published: dependencies.published, snapshots: dependencies.snapshots,
@@ -63,11 +66,12 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     drafts: dependencies.drafts, published: dependencies.published,
     metadata: dependencies.assetMetadata, assets: dependencies.assets,
   });
+  const furnitureLibrary = new FurnitureLibraryUseCase(dependencies.furnitureLibrary, dependencies.now);
 
   // This router is mounted at `/api`, so keep every middleware and fallback
   // inside its own namespace. A broad gate here would intercept shell APIs
   // such as `/api/me` before their normal handlers can run.
-  router.use('/locations', (req, res, next) => {
+  router.use(['/locations', '/furniture-library'], (req, res, next) => {
     const principal = dependencies.auth.principalOf(req);
     if (!principal) return fail(res, 401, 'UNAUTHENTICATED', 'Sign in again.');
     if (!principal.capabilities.includes('locations.manage')) return fail(res, 403, 'FORBIDDEN', 'Location management is unavailable to this account.');
@@ -75,6 +79,35 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     return next();
   });
   router.use('/locations', express.json({ limit: '1mb', strict: true }));
+
+  router.get('/furniture-library', asyncRoute(async (req, res) => {
+    const filter = parseFurnitureLibraryQuery(req.originalUrl);
+    const items = await furnitureLibrary.list(filter);
+    return send(res, 200, { items: items.map(furnitureLibraryItemDto) });
+  }));
+
+  router.post('/furniture-library', writeGuard, (req, res, next) => {
+    if (req.get('content-type')?.trim() !== 'model/gltf-binary') return fail(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'The asset media type is not supported.');
+    return express.raw({ type: () => true, limit: '128mb' })(req, res, next);
+  }, asyncRoute(async (req, res) => {
+    const furnitureType = req.get('x-furniture-type');
+    if (furnitureType !== 'table' && furnitureType !== 'chair') throw new FurnitureLibraryRequestError();
+    const displayName = decodeFurnitureDisplayName(req.get('x-asset-display-name'));
+    if (!Buffer.isBuffer(req.body)) throw new FurnitureLibraryRequestError();
+    const metadata = await furnitureLibrary.create({ creatorId: actor(req), furnitureType, displayName, bytes: req.body });
+    const dto = furnitureLibraryItemDto(metadata);
+    return res.status(201).location(`/api/furniture-library/${metadata.assetId}`).json({ data: dto, error: null });
+  }));
+
+  router.get('/furniture-library/:assetId', asyncRoute(async (req, res) => {
+    const item = await furnitureLibrary.read(routeParam(req.params, 'assetId'));
+    return res.status(200).set({
+      'Content-Type': 'model/gltf-binary',
+      'Content-Length': String(item.bytes.byteLength),
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store',
+    }).send(item.bytes);
+  }));
 
   router.get('/locations', asyncRoute(async (req, res) => {
     const creatorId = actor(req);
@@ -194,7 +227,7 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     return send(res, 200, result);
   }));
 
-  router.use('/locations', (_req, res) => fail(res, 404, 'NOT_FOUND', 'No such location endpoint.'));
+  router.use(['/locations', '/furniture-library'], (_req, res) => fail(res, 404, 'NOT_FOUND', 'No such location endpoint.'));
   router.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => handleError(res, error));
   return router;
 }
@@ -240,6 +273,44 @@ function authoredDocument(value: unknown): Record<string, unknown> {
     throw new TypeError('The authored location document is incomplete.');
   }
   return input;
+}
+
+class FurnitureLibraryRequestError extends Error {
+  constructor() { super('Furniture library request is invalid.'); this.name = 'FurnitureLibraryRequestError'; }
+}
+
+function parseFurnitureLibraryQuery(originalUrl: string): { furnitureType?: 'table' | 'chair'; query?: string } {
+  const rawQuery = originalUrl.split('?', 2)[1] ?? '';
+  if (/%(?![0-9a-f]{2})/i.test(rawQuery)) throw new FurnitureLibraryRequestError();
+  if (rawQuery && rawQuery.split('&').some((part) => part === '')) throw new FurnitureLibraryRequestError();
+  try {
+    for (const part of rawQuery.split('&').filter(Boolean)) {
+      const separator = part.indexOf('=');
+      const key = separator < 0 ? part : part.slice(0, separator);
+      const value = separator < 0 ? '' : part.slice(separator + 1);
+      decodeURIComponent(key.replace(/\+/g, ' '));
+      decodeURIComponent(value.replace(/\+/g, ' '));
+    }
+  } catch { throw new FurnitureLibraryRequestError(); }
+  const parameters = new URLSearchParams(rawQuery);
+  for (const key of parameters.keys()) if (key !== 'type' && key !== 'q') throw new FurnitureLibraryRequestError();
+  if (parameters.getAll('type').length > 1 || parameters.getAll('q').length > 1) throw new FurnitureLibraryRequestError();
+  const rawType = parameters.get('type');
+  const query = parameters.get('q') ?? undefined;
+  if (rawType !== null && rawType !== 'table' && rawType !== 'chair') throw new FurnitureLibraryRequestError();
+  if (query !== undefined && (query.length < 1 || Array.from(query).length > 128)) throw new FurnitureLibraryRequestError();
+  return { ...(rawType ? { furnitureType: rawType } : {}), ...(query === undefined ? {} : { query }) };
+}
+
+function decodeFurnitureDisplayName(value: string | undefined): string {
+  if (value === undefined || value.length < 1 || value.length > 2048) throw new FurnitureLibraryRequestError();
+  let decoded: string;
+  try { decoded = decodeURIComponent(value); } catch { throw new FurnitureLibraryRequestError(); }
+  try { return normalizeLocationAssetDisplayName(decoded); } catch { throw new FurnitureLibraryRequestError(); }
+}
+
+function furnitureLibraryItemDto(metadata: { assetId: string; furnitureType: 'table' | 'chair'; displayName: string }) {
+  return { assetId: metadata.assetId, type: metadata.furnitureType, displayName: metadata.displayName };
 }
 
 function parseProposedSensors(value: unknown, document: LocationDocument): LocationSensorAssignment[] {
@@ -346,6 +417,8 @@ function handleError(res: Response, error: unknown): Response {
   }
   if (error instanceof SyntaxError) return fail(res, 400, 'INVALID_JSON', 'The request body is malformed.');
   if (error instanceof LocationConflictError) return fail(res, 409, 'CONFLICT', error.message);
+  if (error instanceof FurnitureLibraryRequestError) return fail(res, 400, 'VALIDATION', 'The furniture library request is invalid.');
+  if (error instanceof FurniturePublicationUnavailableError) return fail(res, 422, 'FURNITURE_PUBLICATION_UNAVAILABLE', 'Furniture publication is not available yet.');
   if (error instanceof LocationDraftNotFoundError) return fail(res, 404, 'NOT_FOUND', 'Location draft was not found.');
   if (error instanceof UnknownRegistryCommitOutcomeError) return fail(res, 503, 'COMMIT_OUTCOME_UNKNOWN', 'Publication outcome is unknown; reload after registry recovery.');
   if (error instanceof PublishedModelDistributionUnavailableError || error instanceof PublishedModelDistributionFailedError) return fail(res, 503, 'MODEL_DISTRIBUTION_FAILED', 'The model was not acknowledged by every student site; the location was not published.');

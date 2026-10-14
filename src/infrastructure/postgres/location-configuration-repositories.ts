@@ -5,10 +5,10 @@ import { parseLegacySpatialProvenance, revalidateLocationCandidate, type Validat
 import { normalizeLocationAssetDisplayName, parseLocationAssetProvenance, validateLocationAssetProvenanceTransition, legacyStaticModelProvenance, sameLocationAssetProvenance } from '../../modules/location-config/domain/location-assets.js';
 import {
   LocationConflictError, LocationDraftNotFoundError, LocationStorageUnavailableError, UnknownRegistryCommitOutcomeError,
-  type LocationAssetMetadata, type LocationDraft, type PublishedLocationRevision, type PublishedLocationState,
+  type FurnitureType, type LocationAssetMetadata, type LocationDraft, type PublishedLocationRevision, type PublishedLocationState,
 } from '../../modules/location-config/domain/location-records.js';
 import type {
-  LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, PublishedLocationRepository, RegistryMutationCoordinator,
+  FurnitureLibraryMetadata, FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, PublishedLocationRepository, RegistryMutationCoordinator,
   DraftWriteOutcome, RegistryCommitOutcome,
 } from '../../modules/location-config/repositories/location-storage.js';
 import { DEFAULT_IMAGE_LIMIT, DEFAULT_MODEL_LIMIT, FileLocationAssetStore, validateAsset } from '../location-config/file-location-asset-store.js';
@@ -23,7 +23,7 @@ interface DraftRow {
 }
 interface PublishedRow { location_id: string; revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial?: unknown; asset_provenance?: unknown; }
 interface ActivePublishedRow extends PublishedRow { active_revision: number | string; }
-interface AssetRow { asset_id: string; creator_id: string; purpose: 'floor-plan' | 'model'; media_type: LocationAssetMetadata['mediaType']; display_name?: string | null; sha256: string; byte_length: number | string; created_at: number | string; }
+interface AssetRow { asset_id: string; creator_id: string; purpose: LocationAssetMetadata['purpose']; media_type: LocationAssetMetadata['mediaType']; display_name?: string | null; furniture_type?: FurnitureType | null; sha256: string; byte_length: number | string; created_at: number | string; }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** PostgreSQL CAS adapter. A missing or foreign-owned row has the same result. */
@@ -118,9 +118,9 @@ export class PostgresLocationAssetMetadataRepository implements LocationAssetMet
     validateAssetMetadata(metadata);
     try {
       const result: unknown = await this.source.query(
-        `INSERT INTO public.location_assets (asset_id, creator_id, purpose, media_type, display_name, sha256, byte_length, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (asset_id) DO NOTHING RETURNING asset_id`,
-        [metadata.assetId, metadata.creatorId, metadata.purpose, metadata.mediaType, metadata.displayName ?? null, metadata.sha256, metadata.byteLength, metadata.createdAt],
+        `INSERT INTO public.location_assets (asset_id, creator_id, purpose, media_type, display_name, furniture_type, sha256, byte_length, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (asset_id) DO NOTHING RETURNING asset_id`,
+        [metadata.assetId, metadata.creatorId, metadata.purpose, metadata.mediaType, metadata.displayName ?? null, metadata.furnitureType ?? null, metadata.sha256, metadata.byteLength, metadata.createdAt],
       );
       const rows = queryRows<{ asset_id: string }>(result);
       if (!rows[0]) throw new LocationConflictError('Asset metadata is immutable and already exists.');
@@ -132,16 +132,43 @@ export class PostgresLocationAssetMetadataRepository implements LocationAssetMet
     if (!UUID_RE.test(assetId)) return null;
     try {
       const rows = await this.source.query(
-        `SELECT asset_id, creator_id, purpose, media_type, display_name, sha256, byte_length, created_at
+        `SELECT asset_id, creator_id, purpose, media_type, display_name, furniture_type, sha256, byte_length, created_at
          FROM public.location_assets WHERE creator_id = $1 AND asset_id = $2`, [creatorId, assetId],
       ) as AssetRow[];
       return rows[0] ? mapAsset(rows[0]) : null;
     } catch (error) { throw storageError(error); }
   }
+
+  async getFurnitureMetadata(assetId: string): Promise<FurnitureLibraryMetadata | null> {
+    if (!UUID_RE.test(assetId)) return null;
+    try {
+      const rows = await this.source.query(
+        `SELECT asset_id, creator_id, purpose, media_type, display_name, furniture_type, sha256, byte_length, created_at
+         FROM public.location_assets WHERE purpose = 'furniture' AND asset_id = $1`, [assetId],
+      ) as AssetRow[];
+      const metadata = rows[0] ? mapAsset(rows[0]) : null;
+      return metadata?.purpose === 'furniture' ? metadata as FurnitureLibraryMetadata : null;
+    } catch (error) { throw storageError(error); }
+  }
+
+  async listFurnitureMetadata(filter: { furnitureType?: FurnitureType; query?: string }): Promise<FurnitureLibraryMetadata[]> {
+    try {
+      const rows = await this.source.query(
+        `SELECT asset_id, creator_id, purpose, media_type, display_name, furniture_type, sha256, byte_length, created_at
+         FROM public.location_assets
+         WHERE purpose = 'furniture'
+           AND ($1::text IS NULL OR furniture_type = $1)
+           AND ($2::text IS NULL OR strpos(lower(display_name), lower($2)) > 0)
+         ORDER BY created_at DESC, asset_id ASC`,
+        [filter.furnitureType ?? null, filter.query ?? null],
+      ) as AssetRow[];
+      return rows.map(mapAsset).filter((metadata) => metadata.purpose === 'furniture') as FurnitureLibraryMetadata[];
+    } catch (error) { throw storageError(error); }
+  }
 }
 
 /** Stores immutable bytes in persistent DATA_DIR and metadata in PostgreSQL. */
-export class PostgresLocationAssetStore implements LocationAssetStore {
+export class PostgresLocationAssetStore implements LocationAssetStore, FurnitureLibraryStore {
   private readonly bytes: FileLocationAssetStore;
   private readonly metadata: PostgresLocationAssetMetadataRepository;
   constructor(source: DataSource, dataDir: string) {
@@ -162,6 +189,28 @@ export class PostgresLocationAssetStore implements LocationAssetStore {
     const stored = await this.bytes.read(creatorId, assetId);
     if (!stored) throw new LocationStorageUnavailableError();
     if (!sameAssetMetadata(metadata, stored.metadata)) throw new LocationStorageUnavailableError();
+    return { metadata, bytes: stored.bytes };
+  }
+
+  async createFurnitureItem(input: { creatorId: string; furnitureType: FurnitureType; displayName: string; bytes: Uint8Array; createdAt: number }): Promise<FurnitureLibraryMetadata> {
+    const metadata = await this.bytes.createFurnitureItem(input);
+    await this.metadata.saveAssetMetadata(metadata);
+    return metadata;
+  }
+
+  getFurnitureMetadata(assetId: string): Promise<FurnitureLibraryMetadata | null> {
+    return this.metadata.getFurnitureMetadata(assetId);
+  }
+
+  listFurnitureMetadata(filter: { furnitureType?: FurnitureType; query?: string }): Promise<FurnitureLibraryMetadata[]> {
+    return this.metadata.listFurnitureMetadata(filter);
+  }
+
+  async readFurnitureItem(assetId: string): Promise<{ metadata: FurnitureLibraryMetadata; bytes: Buffer } | null> {
+    const metadata = await this.metadata.getFurnitureMetadata(assetId);
+    if (!metadata) return null;
+    const stored = await this.bytes.readFurnitureItem(assetId);
+    if (!stored || !sameAssetMetadata(metadata, stored.metadata)) throw new LocationStorageUnavailableError();
     return { metadata, bytes: stored.bytes };
   }
 }
@@ -475,6 +524,7 @@ function mapAsset(row: AssetRow): LocationAssetMetadata {
     mediaType: row.media_type, sha256: row.sha256, byteLength: toSafeInteger(row.byte_length, 'asset size'),
     createdAt: toSafeInteger(row.created_at, 'asset creation time'),
     ...(typeof row.display_name === 'string' ? { displayName: row.display_name } : {}),
+    ...(row.furniture_type === 'table' || row.furniture_type === 'chair' ? { furnitureType: row.furniture_type } : {}),
   };
   validateAssetMetadata(metadata);
   return metadata;
@@ -543,16 +593,18 @@ function validatePublishedHistory(history: readonly PublishedLocationRevision[])
 function validateAssetMetadata(metadata: LocationAssetMetadata): void {
   if (!metadata || typeof metadata !== 'object' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(metadata.assetId)
     || typeof metadata.creatorId !== 'string' || metadata.creatorId.trim() === '' || metadata.creatorId.length > 256
-    || (metadata.purpose !== 'floor-plan' && metadata.purpose !== 'model') || !/^[0-9a-f]{64}$/.test(metadata.sha256)
+    || (metadata.purpose !== 'floor-plan' && metadata.purpose !== 'model' && metadata.purpose !== 'furniture') || !/^[0-9a-f]{64}$/.test(metadata.sha256)
     || !Number.isSafeInteger(metadata.byteLength) || metadata.byteLength < 1
     || (metadata.purpose === 'floor-plan' && metadata.byteLength > DEFAULT_IMAGE_LIMIT)
-    || (metadata.purpose === 'model' && metadata.byteLength > DEFAULT_MODEL_LIMIT)
+    || ((metadata.purpose === 'model' || metadata.purpose === 'furniture') && metadata.byteLength > DEFAULT_MODEL_LIMIT)
     || !Number.isSafeInteger(metadata.createdAt) || metadata.createdAt < 0
-    || (metadata.purpose === 'model' && metadata.mediaType !== 'model/gltf-binary')
+    || ((metadata.purpose === 'model' || metadata.purpose === 'furniture') && metadata.mediaType !== 'model/gltf-binary')
     || (metadata.purpose === 'floor-plan' && metadata.mediaType !== 'image/png' && metadata.mediaType !== 'image/jpeg')) {
     throw new TypeError('Asset metadata is invalid.');
   }
-  if (metadata.displayName !== undefined && (metadata.purpose !== 'model'
+  if ((metadata.purpose === 'furniture' && (metadata.furnitureType !== 'table' && metadata.furnitureType !== 'chair' || metadata.displayName === undefined))
+    || (metadata.purpose !== 'furniture' && metadata.furnitureType !== undefined)) throw new TypeError('Furniture asset metadata is invalid.');
+  if (metadata.displayName !== undefined && (metadata.purpose !== 'model' && metadata.purpose !== 'furniture'
     || normalizeLocationAssetDisplayName(metadata.displayName) !== metadata.displayName)) {
     throw new TypeError('Asset display name is invalid.');
   }
@@ -564,7 +616,7 @@ function validateCreatorId(value: string): void {
 
 function sameAssetMetadata(a: LocationAssetMetadata, b: LocationAssetMetadata): boolean {
   return a.assetId === b.assetId && a.creatorId === b.creatorId && a.purpose === b.purpose && a.mediaType === b.mediaType
-    && a.displayName === b.displayName && a.sha256 === b.sha256 && a.byteLength === b.byteLength && a.createdAt === b.createdAt;
+    && a.displayName === b.displayName && a.furnitureType === b.furnitureType && a.sha256 === b.sha256 && a.byteLength === b.byteLength && a.createdAt === b.createdAt;
 }
 function sameAssignments(a: readonly LocationSensorAssignment[], b: readonly LocationSensorAssignment[]): boolean {
   const normalize = (rows: readonly LocationSensorAssignment[]) => [...rows].map((row) => ({

@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { link, lstat, mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { syncDirectory, syncFileHandle } from '../../shared/directory-sync.js';
-import type { LocationAssetMetadata, LocationAssetPurpose } from '../../modules/location-config/domain/location-records.js';
+import type { FurnitureType, LocationAssetMetadata, LocationAssetPurpose } from '../../modules/location-config/domain/location-records.js';
 import { normalizeLocationAssetDisplayName } from '../../modules/location-config/domain/location-assets.js';
 import { LocationStorageUnavailableError } from '../../modules/location-config/domain/location-records.js';
-import type { LocationAssetMetadataRepository, LocationAssetStore } from '../../modules/location-config/repositories/location-storage.js';
+import type { FurnitureLibraryMetadata, FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore } from '../../modules/location-config/repositories/location-storage.js';
 
 export interface FileLocationAssetStoreOptions {
   maxImageBytes?: number;
@@ -19,7 +19,7 @@ export const DEFAULT_IMAGE_LIMIT = 20 * 1024 * 1024;
 export const DEFAULT_MODEL_LIMIT = 128 * 1024 * 1024;
 
 /** Immutable owner-scoped bytes and metadata beneath the persistent edge data directory. */
-export class FileLocationAssetStore implements LocationAssetStore, LocationAssetMetadataRepository {
+export class FileLocationAssetStore implements LocationAssetStore, LocationAssetMetadataRepository, FurnitureLibraryStore {
   private readonly now: () => number;
   private readonly uuid: () => string;
   private readonly maxImageBytes: number;
@@ -37,6 +37,7 @@ export class FileLocationAssetStore implements LocationAssetStore, LocationAsset
 
   async put(creatorId: string, purpose: LocationAssetPurpose, declaredMediaType: string, bytes: Uint8Array, createdAt = this.now(), displayName?: string): Promise<LocationAssetMetadata> {
     validateCreator(creatorId);
+    if (purpose === 'furniture') throw new TypeError('Furniture uploads must use the shared furniture library path.');
     if (!(bytes instanceof Uint8Array)) throw new TypeError('Asset bytes must be a byte array.');
     const mediaType = validateAsset(purpose, declaredMediaType, bytes, this.maxImageBytes, this.maxModelBytes);
     if (displayName !== undefined && purpose !== 'model') throw new TypeError('Only model uploads may have a display name.');
@@ -81,6 +82,105 @@ export class FileLocationAssetStore implements LocationAssetStore, LocationAsset
       throw safeStorageError(error);
     }
     return metadata;
+  }
+
+  async createFurnitureItem(input: { creatorId: string; furnitureType: FurnitureType; displayName: string; bytes: Uint8Array; createdAt: number }): Promise<FurnitureLibraryMetadata> {
+    validateCreator(input.creatorId);
+    if (input.furnitureType !== 'table' && input.furnitureType !== 'chair') throw new TypeError('Furniture type is invalid.');
+    if (!(input.bytes instanceof Uint8Array)) throw new TypeError('Asset bytes must be a byte array.');
+    const displayName = normalizeLocationAssetDisplayName(input.displayName);
+    const mediaType = validateAsset('furniture', 'model/gltf-binary', input.bytes, this.maxImageBytes, this.maxModelBytes);
+    const assetId = this.uuid().toLowerCase();
+    if (!UUID_RE.test(assetId)) throw new Error('Asset ID generator returned an invalid UUID.');
+    const metadata: FurnitureLibraryMetadata = {
+      assetId, creatorId: input.creatorId, purpose: 'furniture', furnitureType: input.furnitureType,
+      mediaType, displayName, sha256: createHash('sha256').update(input.bytes).digest('hex'),
+      byteLength: input.bytes.byteLength, createdAt: validTimestamp(input.createdAt),
+    };
+    const directory = sharedFurnitureDirectory(this.root);
+    try {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await assertPrivateDirectory(join(this.root, 'location-assets'));
+      await assertPrivateDirectory(directory);
+      const bytesPath = join(directory, `${assetId}.bin`);
+      const metadataPath = join(directory, `${assetId}.json`);
+      const bytesTemporary = join(directory, `.${assetId}.${randomUUID()}.bin.tmp`);
+      let bytesLinked = false;
+      try {
+        await writeFile(bytesTemporary, input.bytes, { mode: 0o600, flag: 'wx' });
+        const handle = await open(bytesTemporary, 'r+');
+        try { await syncFileHandle(handle); } finally { await handle.close(); }
+        await link(bytesTemporary, bytesPath);
+        bytesLinked = true;
+        await unlink(bytesTemporary);
+        syncDirectory(directory);
+        await writeAtomicJson(metadataPath, metadata);
+      } catch (error) {
+        try { await unlink(bytesTemporary); } catch { /* temporary file may already be removed */ }
+        if (bytesLinked) {
+          try { await unlink(bytesPath); syncDirectory(directory); } catch { /* Preserve original failure. */ }
+        }
+        throw error;
+      }
+    } catch (error) { throw storedAssetReadError(error); }
+    return metadata;
+  }
+
+  async getFurnitureMetadata(assetId: string): Promise<FurnitureLibraryMetadata | null> {
+    if (!UUID_RE.test(assetId)) return null;
+    try {
+      const directory = sharedFurnitureDirectory(this.root);
+      if (!(await assertPrivateDirectoryIfPresent(join(this.root, 'location-assets')))
+        || !(await assertPrivateDirectoryIfPresent(directory))) return null;
+      const metadata = await readMetadata(join(directory, `${assetId.toLowerCase()}.json`), this.maxImageBytes, this.maxModelBytes);
+      if (!metadata) return null;
+      if (metadata.purpose !== 'furniture' || metadata.assetId !== assetId.toLowerCase()) throw new Error('Stored furniture metadata does not match its library scope.');
+      return metadata as FurnitureLibraryMetadata;
+    } catch (error) { throw storedAssetReadError(error); }
+  }
+
+  async listFurnitureMetadata(filter: { furnitureType?: FurnitureType; query?: string }): Promise<FurnitureLibraryMetadata[]> {
+    try {
+      const directory = sharedFurnitureDirectory(this.root);
+      if (!(await assertPrivateDirectoryIfPresent(join(this.root, 'location-assets')))
+        || !(await assertPrivateDirectoryIfPresent(directory))) return [];
+      const names = await readdir(directory);
+      const items: FurnitureLibraryMetadata[] = [];
+      for (const name of names) {
+        if (!/^[0-9a-f-]{36}\.json$/i.test(name)) continue;
+        const metadata = await readMetadata(join(directory, name), this.maxImageBytes, this.maxModelBytes);
+        if (!metadata) continue;
+        if (metadata.purpose !== 'furniture') throw new Error('Non-furniture metadata was found in the shared library scope.');
+        if (metadata.assetId !== name.slice(0, -5).toLowerCase()) throw new Error('Stored furniture filename does not match its metadata.');
+        if (filter.furnitureType && metadata.furnitureType !== filter.furnitureType) continue;
+        if (filter.query && !metadata.displayName!.toLocaleLowerCase('en-US').includes(filter.query.toLocaleLowerCase('en-US'))) continue;
+        items.push(metadata as FurnitureLibraryMetadata);
+      }
+      return items.sort((a, b) => b.createdAt - a.createdAt || (a.assetId < b.assetId ? -1 : a.assetId > b.assetId ? 1 : 0));
+    } catch (error) { throw storedAssetReadError(error); }
+  }
+
+  async readFurnitureItem(assetId: string): Promise<{ metadata: FurnitureLibraryMetadata; bytes: Buffer } | null> {
+    if (!UUID_RE.test(assetId)) return null;
+    try {
+      const directory = sharedFurnitureDirectory(this.root);
+      if (!(await assertPrivateDirectoryIfPresent(join(this.root, 'location-assets')))
+        || !(await assertPrivateDirectoryIfPresent(directory))) return null;
+      const metadata = await readMetadata(join(directory, `${assetId.toLowerCase()}.json`), this.maxImageBytes, this.maxModelBytes);
+      if (!metadata) return null;
+      if (metadata.purpose !== 'furniture' || metadata.assetId !== assetId.toLowerCase()) throw new Error('Stored furniture metadata does not match its library scope.');
+      const bytesPath = join(directory, `${metadata.assetId}.bin`);
+      const fileInfo = await lstat(bytesPath);
+      validatePrivateFile(fileInfo);
+      if (fileInfo.size !== metadata.byteLength) throw new Error('Stored asset length does not match its metadata.');
+      const bytes = await readFile(bytesPath);
+      if (createHash('sha256').update(bytes).digest('hex') !== metadata.sha256) throw new Error('Stored asset digest does not match its metadata.');
+      validateAsset('furniture', metadata.mediaType, bytes, this.maxImageBytes, this.maxModelBytes);
+      return { metadata: metadata as FurnitureLibraryMetadata, bytes };
+    } catch (error) {
+      if (isNotFound(error)) throw new LocationStorageUnavailableError();
+      throw storedAssetReadError(error);
+    }
   }
 
   async read(creatorId: string, assetId: string): Promise<{ metadata: LocationAssetMetadata; bytes: Buffer } | null> {
@@ -142,7 +242,7 @@ export function validateAsset(
   maxImageBytes = DEFAULT_IMAGE_LIMIT,
   maxModelBytes = DEFAULT_MODEL_LIMIT,
 ): 'image/png' | 'image/jpeg' | 'model/gltf-binary' {
-  if (purpose !== 'floor-plan' && purpose !== 'model') throw new TypeError('Invalid asset purpose.');
+  if (purpose !== 'floor-plan' && purpose !== 'model' && purpose !== 'furniture') throw new TypeError('Invalid asset purpose.');
   if (bytes.byteLength === 0) throw new TypeError('Asset must not be empty.');
   if (purpose === 'floor-plan') {
     if (bytes.byteLength > maxImageBytes) throw new RangeError('Floor plan exceeds the configured image limit.');
@@ -216,6 +316,7 @@ function ownerDirectory(root: string, creatorId: string): string {
   const ownerHash = createHash('sha256').update(creatorId).digest('hex');
   return join(root, 'location-assets', ownerHash);
 }
+function sharedFurnitureDirectory(root: string): string { return join(root, 'location-assets', 'furniture-library'); }
 function validateCreator(value: string): void {
   if (typeof value !== 'string' || value.trim() === '' || value.length > 256) throw new TypeError('Creator ID is invalid.');
 }
@@ -225,23 +326,28 @@ function validTimestamp(value: number): number {
 }
 function validateMetadata(value: LocationAssetMetadata, maxImageBytes = DEFAULT_IMAGE_LIMIT, maxModelBytes = DEFAULT_MODEL_LIMIT): void {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).some((key) => !['assetId', 'creatorId', 'purpose', 'mediaType', 'displayName', 'sha256', 'byteLength', 'createdAt'].includes(key))) {
+    || Object.keys(value).some((key) => !['assetId', 'creatorId', 'purpose', 'mediaType', 'displayName', 'furnitureType', 'sha256', 'byteLength', 'createdAt'].includes(key))) {
     throw new TypeError('Asset metadata is invalid.');
   }
   if (!value || typeof value !== 'object' || !UUID_RE.test(value.assetId) || typeof value.creatorId !== 'string'
     || value.creatorId.trim() === '' || value.creatorId.length > 256
-    || (value.purpose !== 'floor-plan' && value.purpose !== 'model') || typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)
+    || (value.purpose !== 'floor-plan' && value.purpose !== 'model' && value.purpose !== 'furniture') || typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)
     || !Number.isSafeInteger(value.byteLength) || value.byteLength < 1
     || (value.purpose === 'floor-plan' && value.byteLength > maxImageBytes)
-    || (value.purpose === 'model' && value.byteLength > maxModelBytes)
+    || ((value.purpose === 'model' || value.purpose === 'furniture') && value.byteLength > maxModelBytes)
     || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0) {
     throw new TypeError('Asset metadata is invalid.');
   }
-  if ((value.purpose === 'model' && value.mediaType !== 'model/gltf-binary')
+  if (((value.purpose === 'model' || value.purpose === 'furniture') && value.mediaType !== 'model/gltf-binary')
     || (value.purpose === 'floor-plan' && value.mediaType !== 'image/png' && value.mediaType !== 'image/jpeg')) {
     throw new TypeError('Asset media type does not match its purpose.');
   }
-  if (value.displayName !== undefined && (value.purpose !== 'model'
+  if ((value.purpose === 'furniture' && (value.furnitureType !== 'table' && value.furnitureType !== 'chair'))
+    || (value.purpose !== 'furniture' && value.furnitureType !== undefined)
+    || (value.purpose === 'furniture' && (value.displayName === undefined || normalizeLocationAssetDisplayName(value.displayName) !== value.displayName))) {
+    throw new TypeError('Furniture asset metadata is invalid.');
+  }
+  if (value.displayName !== undefined && ((value.purpose !== 'model' && value.purpose !== 'furniture')
     || normalizeLocationAssetDisplayName(value.displayName) !== value.displayName)) {
     throw new TypeError('Asset display name is invalid.');
   }
@@ -304,5 +410,8 @@ function validatePrivateFile(info: Awaited<ReturnType<typeof lstat>>): void {
 function safeStorageError(error: unknown): Error {
   return error instanceof TypeError || error instanceof RangeError || error instanceof LocationStorageUnavailableError
     ? error : new LocationStorageUnavailableError();
+}
+function storedAssetReadError(error: unknown): LocationStorageUnavailableError {
+  return error instanceof LocationStorageUnavailableError ? error : new LocationStorageUnavailableError();
 }
 function isNotFound(error: unknown): boolean { return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === 'ENOENT'; }

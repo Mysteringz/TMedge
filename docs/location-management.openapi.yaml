@@ -38,6 +38,104 @@ paths:
         '403': { $ref: '#/components/responses/ConsoleForbidden' }
         '503': { $ref: '#/components/responses/ConsoleUnavailable' }
 
+  /api/furniture-library:
+    get:
+      tags: [Location management]
+      summary: List items in the shared furniture library
+      description: >-
+        Requires locations.manage. Results include only safe picker metadata and
+        are shared across creators. Search is a case-insensitive literal
+        substring of the sanitized display name, ordered by creation time
+        descending and asset ID ascending.
+      security: [{ algoCookie: [] }]
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema: { type: string, enum: [table, chair] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Shared library items.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleEnvelopeFurnitureItems' }
+        '400': { $ref: '#/components/responses/ConsoleValidation' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+    post:
+      tags: [Location management]
+      summary: Upload a shared furniture GLB
+      description: >-
+        Creates an immutable library item. The GLB is validated as a
+        self-contained glTF 2.0 file with external resource URIs rejected.
+        The creator is retained for audit only and does not restrict reuse.
+      security: [{ algoCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+        - name: X-Furniture-Type
+          in: header
+          required: true
+          schema: { type: string, enum: [table, chair] }
+        - name: X-Asset-Display-Name
+          in: header
+          required: true
+          description: URI-component encoded sanitized display name, 1 to 128 Unicode code points after decoding.
+          schema: { type: string, minLength: 1, maxLength: 2048 }
+      requestBody:
+        required: true
+        content:
+          model/gltf-binary:
+            schema: { type: string, format: binary, maxLength: 134217728 }
+      responses:
+        '201':
+          description: Immutable shared item created.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleEnvelopeFurnitureItem' }
+        '400': { $ref: '#/components/responses/ConsoleValidation' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '413': { $ref: '#/components/responses/ConsoleTooLarge' }
+        '415': { $ref: '#/components/responses/ConsoleUnsupportedMedia' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
+  /api/furniture-library/{assetId}:
+    get:
+      tags: [Location management]
+      summary: Read shared furniture GLB bytes
+      description: >-
+        Requires locations.manage. Any manager may read any library item;
+        creator identity and draft assignment are not required.
+      security: [{ algoCookie: [] }]
+      parameters:
+        - name: assetId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Exact validated GLB bytes.
+          headers:
+            Content-Length: { schema: { type: integer, minimum: 1, maximum: 134217728 } }
+            X-Content-Type-Options: { schema: { type: string, enum: [nosniff] } }
+            Cache-Control: { schema: { type: string, enum: ['private, no-store'] } }
+          content:
+            model/gltf-binary:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
   /api/locations/drafts:
     post:
       tags: [Location management]
@@ -375,7 +473,11 @@ paths:
         '404': { $ref: '#/components/responses/ConsoleNotFound' }
         '409': { $ref: '#/components/responses/ConsoleConflict' }
         '413': { $ref: '#/components/responses/ConsoleTooLarge' }
-        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '422':
+          description: Invalid request or furniture references are unavailable to public receivers in this release.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleErrorEnvelope' }
         '503':
           description: Storage unavailable, model distribution failed before commit, or PostgreSQL commit outcome is unknown.
           content:
@@ -633,6 +735,7 @@ components:
             Explicit built-in rectangular room source. Requires outline
             [[0,0],[widthCm,0],[widthCm,heightCm],[0,heightCm]] and forbids
             modelAssetId/modelTransform. No room geometry or asset is uploaded.
+        furnitureDefaults: { $ref: '#/components/schemas/FurnitureSlots' }
     LocationDocumentView:
       type: object
       description: >-
@@ -668,6 +771,7 @@ components:
           type: string
           enum: [simple-rectangle-v1]
           description: Present only when this revision explicitly uses the generated rectangular room source.
+        furnitureDefaults: { $ref: '#/components/schemas/FurnitureSlots' }
     Zone:
       type: object
       additionalProperties: false
@@ -707,6 +811,7 @@ components:
               side: { type: string, enum: [L, R, T, B] }
               index: { type: integer }
         seatRadiusCm: { type: number }
+        furnitureOverrides: { $ref: '#/components/schemas/FurnitureSlots' }
     TableShape:
       oneOf:
         - type: object
@@ -817,6 +922,31 @@ components:
               side: { type: string, enum: [L, R, T, B] }
               index: { type: integer, minimum: 0, maximum: 10000 }
         seatRadiusCm: { type: number, minimum: 20, maximum: 150 }
+        furnitureOverrides: { $ref: '#/components/schemas/FurnitureSlots' }
+    FurnitureSlots:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        table: { $ref: '#/components/schemas/FurnitureAssignment' }
+        chair: { $ref: '#/components/schemas/FurnitureAssignment' }
+    FurnitureAssignment:
+      type: object
+      additionalProperties: false
+      required: [assetId, scale, yawDeg, elevationM]
+      properties:
+        assetId: { type: string, format: uuid }
+        scale: { type: number, minimum: 0.01, maximum: 100, description: Uniform physical scale. }
+        yawDeg: { type: number, minimum: -360, maximum: 360, description: Vertical-axis yaw in degrees. }
+        elevationM: { type: number, minimum: 0, maximum: 10, description: Model base above the floor in metres. }
+    FurnitureLibraryItem:
+      type: object
+      additionalProperties: false
+      required: [assetId, type, displayName]
+      properties:
+        assetId: { type: string, format: uuid }
+        type: { type: string, enum: [table, chair] }
+        displayName: { type: string, minLength: 1, maxLength: 128 }
     SensorPose:
       type: object
       additionalProperties: false
@@ -991,6 +1121,22 @@ components:
           properties:
             published: { type: array, items: { $ref: '#/components/schemas/LocationSummary' } }
             drafts: { type: array, items: { $ref: '#/components/schemas/DraftSummary' } }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopeFurnitureItems:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/FurnitureLibraryItem' } }
+        error: { type: object, nullable: true, description: Always null on success. }
+    ConsoleEnvelopeFurnitureItem:
+      type: object
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/FurnitureLibraryItem' }
         error: { type: object, nullable: true, description: Always null on success. }
     ConsoleEnvelopeDraftWrite:
       type: object

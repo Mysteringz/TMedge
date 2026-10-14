@@ -1,6 +1,7 @@
 import { type LocationSensorAssignment } from '../domain/location-document.js';
 import { revalidateLocationCandidate } from '../domain/location-candidate.js';
 import { locationModelPresentationDisposition } from '../domain/location-assets.js';
+import { furnitureAssetReferences } from '../domain/furniture-assets.js';
 import { LocationConflictError, LocationDraftNotFoundError, UnknownRegistryCommitOutcomeError, RegistryMutationQuarantinedError, type PublishedLocationRevision } from '../domain/location-records.js';
 import { resolveLocationAssetProvenance, sameResolvedLocationAssetProvenance } from './resolve-location-asset-provenance.js';
 import type {
@@ -36,6 +37,13 @@ export class PublishedModelDistributionFailedError extends Error {
   constructor(cause: unknown) {
     super('A student web tier did not acknowledge the published GLB.', { cause });
     this.name = 'PublishedModelDistributionFailedError';
+  }
+}
+
+export class FurniturePublicationUnavailableError extends Error {
+  constructor() {
+    super('Furniture publication is not available until every public receiver supports the furniture snapshot contract.');
+    this.name = 'FurniturePublicationUnavailableError';
   }
 }
 
@@ -86,6 +94,7 @@ export class PublishLocationUseCase<Prepared> {
     );
     const document = validated.document;
     if (document.locationId !== draft.locationId) throw new LocationConflictError('The draft location identity is invalid.');
+    if (furnitureAssetReferences(document).length > 0) throw new FurniturePublicationUnavailableError();
     const assetProvenance = await resolveLocationAssetProvenance(input.creatorId, document, basePublishedRevision ? {
       revision: basePublishedRevision.revision,
       document: basePublishedRevision.document,

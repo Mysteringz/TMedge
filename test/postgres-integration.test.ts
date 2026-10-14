@@ -1603,7 +1603,7 @@ test('location PostgreSQL storage bootstraps legacy state idempotently and commi
             ? principal('pg-route-other', 'operator') : null,
       },
       edgeId: 'pg-route-test', siteSeed: site, drafts, published, snapshots: locationSnapshots,
-      assets: assetStore, assetMetadata: new PostgresLocationAssetMetadataRepository(runtime), coordinator: mutationCoordinator,
+      assets: assetStore, furnitureLibrary: assetStore, assetMetadata: new PostgresLocationAssetMetadataRepository(runtime), coordinator: mutationCoordinator,
       runtime: {
         prepare: () => ({}), refresh: (prepared: object) => prepared,
         activate: () => undefined, quarantine: () => undefined,

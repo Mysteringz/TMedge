@@ -29,7 +29,8 @@ export interface PublishedLocationRevision {
   assetProvenance?: LocationAssetProvenance;
 }
 
-export type LocationAssetPurpose = 'floor-plan' | 'model';
+export type LocationAssetPurpose = 'floor-plan' | 'model' | 'furniture';
+export type FurnitureType = 'table' | 'chair';
 export type LocationAssetMediaType = 'image/png' | 'image/jpeg' | 'model/gltf-binary';
 
 export interface LocationAssetMetadata {
@@ -39,6 +40,8 @@ export interface LocationAssetMetadata {
   mediaType: LocationAssetMediaType;
   /** Sanitized user-facing label; never used for authorization or storage paths. */
   displayName?: string;
+  /** Required for furniture; absent for room models and floor plans. */
+  furnitureType?: FurnitureType;
   sha256: string;
   byteLength: number;
   createdAt: number;

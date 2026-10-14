@@ -1,5 +1,5 @@
 import { permissionChanged } from '../../admin-session/index.tsx';
-import type { AssetUploadResult, CoverageSuggestionResponse, DraftDetail, DraftSummary, DraftWriteResult, EligibleSensorsResponse, LocationDocument, LocationList, ProposedSensor, PublicationResult, PublishedSummary } from '../model/types.ts';
+import type { AssetUploadResult, CoverageSuggestionResponse, DraftDetail, DraftSummary, DraftWriteResult, EligibleSensorsResponse, FurnitureLibraryItem, FurnitureType, LocationDocument, LocationList, ProposedSensor, PublicationResult, PublishedSummary } from '../model/types.ts';
 
 export class LocationApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); this.name = 'LocationApiError'; }
@@ -22,6 +22,47 @@ async function jsonRequest<T>(path: string, method = 'GET', body?: unknown): Pro
 }
 
 export function listLocations(): Promise<LocationList> { return jsonRequest('/api/locations'); }
+
+export function listFurnitureLibrary(filter: { type?: FurnitureType; q?: string } = {}): Promise<{ items: FurnitureLibraryItem[] }> {
+  const query = new URLSearchParams();
+  if (filter.type) query.set('type', filter.type);
+  if (filter.q !== undefined) query.set('q', filter.q);
+  return jsonRequest(`/api/furniture-library${query.size ? `?${query}` : ''}`);
+}
+
+/** Uploads a self-contained GLB into the shared role-gated furniture library. */
+export async function uploadFurnitureLibraryItem(type: FurnitureType, file: File): Promise<FurnitureLibraryItem> {
+  const maxBytes = 128 * 1024 * 1024;
+  if (!file.name.toLowerCase().endsWith('.glb') || file.size < 1 || file.size > maxBytes) {
+    throw new TypeError('Choose a non-empty GLB no larger than 128 MiB.');
+  }
+  const response = await fetch('/api/furniture-library', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {
+      'x-tm-algo': '1', 'content-type': 'model/gltf-binary',
+      'x-furniture-type': type, 'x-asset-display-name': encodeURIComponent(file.name),
+    },
+    body: file,
+  });
+  permissionChanged(response.status);
+  const envelope = await response.json().catch(() => null) as { data?: FurnitureLibraryItem; error?: { code?: string; message?: string } } | null;
+  if (!response.ok || envelope?.error || !envelope?.data) {
+    throw new LocationApiError(response.status, envelope?.error?.code ?? 'FURNITURE_UPLOAD_FAILED', envelope?.error?.message ?? 'Furniture upload failed.');
+  }
+  return envelope.data;
+}
+
+/** Reads an item by immutable library ID, independent of its uploader or draft usage. */
+export async function readFurnitureLibraryItem(assetId: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  const response = await fetch(`/api/furniture-library/${encodeURIComponent(assetId)}`, {
+    credentials: 'same-origin', headers: { accept: 'model/gltf-binary' }, signal,
+  });
+  permissionChanged(response.status);
+  if (!response.ok) throw new LocationApiError(response.status, response.status === 404 ? 'ASSET_NOT_FOUND' : 'FURNITURE_READ_FAILED', 'Furniture asset is unavailable.');
+  const mediaType = response.headers.get('content-type')?.split(';', 1)[0]?.trim();
+  if (mediaType !== 'model/gltf-binary') throw new LocationApiError(502, 'INVALID_FURNITURE_RESPONSE', 'Location service returned an invalid furniture asset.');
+  return response.arrayBuffer();
+}
 
 export function createLocationDraft(input: { name: string; building: string; widthCm: number; heightCm: number }): Promise<DraftWriteResult> {
   return jsonRequest('/api/locations/drafts', 'POST', input);
