@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getEligibleDraftSensors, getLocationDraft, LocationApiError, publishLocationDraft, readDraftPlan, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
 import type { DraftDetail, LocationDocument, Point, Table, TableShape } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
@@ -38,18 +39,36 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   const [announcement, setAnnouncement] = useState('');
   const [transientInputs, setTransientInputs] = useState<Record<string, boolean>>({});
   const [previewRetry, setPreviewRetry] = useState(0);
-  const [previewExpanded, setPreviewExpanded] = useState(true);
+  const [canvasMode, setCanvasMode] = useState<'2d' | '3d'>('2d');
+  const [viewportMount, setViewportMount] = useState<HTMLDivElement | null>(null);
   const [sensorLabels, setSensorLabels] = useState<ReadonlyMap<string, string>>(() => new Map());
   const drag = useRef<DragStart | null>(null);
   const drawingOrigin = useRef<string | null>(null);
   const sensorLabelRequestId = useRef(0);
   const wizard = useRef<HTMLElement>(null);
+  const workspace = useRef<HTMLDivElement>(null);
+  const inspectorScroll = useRef<HTMLDivElement>(null);
+  const roomSettingsOpen = useRef(false);
+  const roomSettingsDraftId = useRef(draftId);
+  const pendingCanvasModeScroll = useRef<number | null>(null);
+  const canvasModeScrollVersion = useRef(0);
+  const changeCanvasMode = (mode: '2d' | '3d') => {
+    if (mode !== canvasMode) {
+      pendingCanvasModeScroll.current = inspectorScroll.current?.scrollTop ?? 0;
+      canvasModeScrollVersion.current += 1;
+    }
+    setCanvasMode(mode);
+  };
   useEffect(() => {
     const url = pendingPlan?.url;
     return () => { if (url) URL.revokeObjectURL(url); };
   }, [pendingPlan?.url]);
 
   const load = async (preserveLocal = false): Promise<boolean> => {
+    if (roomSettingsDraftId.current !== draftId) {
+      roomSettingsDraftId.current = draftId;
+      roomSettingsOpen.current = false;
+    }
     setLoading(true); setProblem('');
     try {
       const result = await getLocationDraft(draftId);
@@ -74,6 +93,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
     return false;
   };
   useEffect(() => { void load(); }, [draftId]);
+  useEffect(() => { pendingCanvasModeScroll.current = null; canvasModeScrollVersion.current += 1; setCanvasMode('2d'); }, [draftId]);
   useEffect(() => {
     if (!loading) wizard.current?.querySelector<HTMLElement>('[data-location-step-heading]')?.focus();
   }, [step, loading]);
@@ -106,16 +126,82 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   const generatedEligible = document ? canSelectGeneratedRoom(document) : false;
   const hasTransientInvalid = Object.values(transientInputs).some(Boolean);
   const previewInvalid = errors.length > 0 || hasTransientInvalid || !candidateScene || (source === 'generated' && !generatedEligible);
-  const [lastValidScene, setLastValidScene] = useState<ModelSceneDocument | null>(null);
+  const [lastValidPreview, setLastValidPreview] = useState<{ draftId: string; scene: ModelSceneDocument } | null>(null);
   useEffect(() => {
-    if (!previewInvalid && candidateScene) setLastValidScene(candidateScene);
-  }, [previewInvalid, candidateScene]);
-  const currentScene = previewInvalid ? lastValidScene ?? candidateScene : candidateScene;
+    if (!previewInvalid && candidateScene) setLastValidPreview({ draftId, scene: candidateScene });
+  }, [draftId, previewInvalid, candidateScene]);
+  const lastValidScene = lastValidPreview?.draftId === draftId ? lastValidPreview.scene : null;
+  const currentScene = previewInvalid ? lastValidScene : candidateScene;
   const displayScene: ModelSceneDocument = currentScene
     ? { ...currentScene, source }
     : { source, widthM: Math.max(0.1, (document?.widthCm ?? 1000) / 100), heightM: Math.max(0.1, (document?.heightCm ?? 1000) / 100), wallHeightM: SIMPLE_ROOM_WALL_HEIGHT_M, tableHeightM: SIMPLE_ROOM_TABLE_HEIGHT_M, tables: [], sensors: [] };
   const previewStale = previewInvalid && !!currentScene;
-  const previewHasError = !candidateScene;
+
+  useLayoutEffect(() => {
+    if (pendingCanvasModeScroll.current !== null && inspectorScroll.current) {
+      const scrollTop = pendingCanvasModeScroll.current;
+      const version = canvasModeScrollVersion.current;
+      inspectorScroll.current.scrollTop = scrollTop;
+      pendingCanvasModeScroll.current = null;
+      window.requestAnimationFrame(() => {
+        if (canvasModeScrollVersion.current === version && inspectorScroll.current) inspectorScroll.current.scrollTop = scrollTop;
+      });
+    }
+  }, [canvasMode]);
+
+  useLayoutEffect(() => {
+    if (loading || step !== 'details' || !roomSettingsOpen.current) return;
+    const details = wizard.current?.querySelector<HTMLDetailsElement>('[data-testid="location-room-settings"]');
+    if (details && !details.open) details.open = true;
+  }, [draftId, loading, step]);
+
+  useLayoutEffect(() => {
+    const element = workspace.current;
+    if (!element || (step !== 'details' && step !== 'sensors')) return;
+    const measure = () => {
+      if (window.matchMedia('(max-width: 1024px)').matches) {
+        element.style.removeProperty('--loc-workspace-height');
+        element.style.removeProperty('--loc-workspace-min-height');
+        element.style.removeProperty('--loc-room-settings-max-height');
+        element.classList.remove('has-bounded-room-settings');
+        return;
+      }
+      const toolbar = element.querySelector<HTMLElement>('.loc-viewport-toolbar');
+      const livePreview = element.querySelector<HTMLElement>('.loc-live-preview');
+      const viewportGap = livePreview ? Number.parseFloat(getComputedStyle(livePreview).rowGap) || 0 : 0;
+      const previewMinimum = 300 + (toolbar?.getBoundingClientRect().height ?? 0) + viewportGap;
+      const fieldset = element.querySelector<HTMLElement>('.loc-editor-fieldset');
+      const details = fieldset?.querySelector<HTMLDetailsElement>('[data-testid="location-room-settings"]');
+      const summaryHeight = details?.querySelector('summary')?.getBoundingClientRect().height ?? 0;
+      const inspectorMinimum = 200;
+      const footerHeight = fieldset?.querySelector<HTMLElement>(':scope > .loc-footer')?.getBoundingClientRect().height ?? 0;
+      const validationHeight = fieldset?.querySelector<HTMLElement>(':scope > .loc-validation')?.getBoundingClientRect().height ?? 0;
+      const fieldsetGap = fieldset ? Number.parseFloat(getComputedStyle(fieldset).rowGap) || 0 : 0;
+      const minimumMainHeight = summaryHeight + inspectorMinimum + footerHeight + validationHeight + fieldsetGap * 3;
+      const detailsScrollMinimum = details?.open ? 100 : 0;
+      const minimumWorkspaceHeight = Math.ceil(Math.max(previewMinimum, minimumMainHeight + detailsScrollMinimum));
+      const available = Math.max(0, Math.floor(window.innerHeight - element.getBoundingClientRect().top - 20));
+      const workspaceHeight = Math.min(available, window.innerHeight * 0.72, 720);
+      const boundedHeight = Math.max(workspaceHeight, minimumWorkspaceHeight);
+      element.style.setProperty('--loc-workspace-height', `${workspaceHeight}px`);
+      element.style.setProperty('--loc-workspace-min-height', `${minimumWorkspaceHeight}px`);
+
+      const detailsSpace = Math.floor(boundedHeight - minimumMainHeight);
+      const canScrollDetails = !!details?.open;
+      element.classList.toggle('has-bounded-room-settings', canScrollDetails);
+      if (canScrollDetails) element.style.setProperty('--loc-room-settings-max-height', `${detailsSpace}px`);
+      else element.style.removeProperty('--loc-room-settings-max-height');
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    for (const target of element.querySelectorAll<HTMLElement>([
+      '.loc-viewport-toolbar', '.loc-live-preview', '.loc-editor-fieldset', '.loc-room-settings',
+      '.loc-room-settings-content', '.loc-footer', '.loc-validation',
+    ].join(','))) observer.observe(target);
+    window.addEventListener('resize', measure);
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
+  }, [step, loading]);
   useEffect(() => {
     const fields = [...(wizard.current?.querySelectorAll<HTMLElement>('[data-location-field]') ?? [])];
     for (const field of fields) {
@@ -494,74 +580,91 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
     </div>}
     {message && <p className="loc-status" role="status" aria-live="polite">{message}</p>}
 
-    <div className={`loc-step-layout is-${step}`}>
-    <div className="loc-step-main">
-    {step === 'details' ? <fieldset className="loc-editor-fieldset" disabled={busy !== '' || mustReload} inert={busy !== '' || mustReload} aria-busy={busy !== ''}>
-      <div className="loc-metadata card">
-        <Field label="Location name" value={document.name} onChange={(name) => update((current) => ({ ...current, name }))} />
-        <Field label="Building" value={document.building} onChange={(building) => update((current) => ({ ...current, building }))} />
-        <Field label="Floor width (m)" fieldPath="floor.width" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.widthCm))} onChange={(value) => editDimensions('widthCm', value)} onTransientInvalid={(invalid) => reportTransientInput('floor.width', invalid)} />
-        <Field label="Floor height (m)" fieldPath="floor.height" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.heightCm))} onChange={(value) => editDimensions('heightCm', value)} onTransientInvalid={(invalid) => reportTransientInput('floor.height', invalid)} />
-        <p className="loc-visibility"><b>Visibility · read-only</b><span>{draft.basePublishedRevision === null ? 'Public · server default' : draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'}</span></p>
-      </div>
-      <section className="loc-plan-section card" aria-labelledby="loc-plan-title">
-        <div><h2 id="loc-plan-title">Floor plan</h2><p className="cx-muted">Blank canvas or a private PNG/JPEG background. Plan images are not shown to students.</p></div>
-        {document.planAssetId || pendingPlan ? <div className="loc-plan-state">
-          {pendingPlan ? <img src={pendingPlan.url} alt="Selected floor plan preview; not uploaded" />
-            : planUrl ? <img src={planUrl} alt="Private floor plan background preview" />
-              : planPreviewFailed ? <p role="status">The saved plan preview is unavailable; its reference is preserved. <button type="button" className="btn btn-ghost" data-testid="location-plan-preview-retry" onClick={() => setPlanRetry((value) => value + 1)}>Retry preview</button></p>
-                : <p role="status">{draft.assetCapabilities?.planAssetId?.previewAvailable ? 'Loading private floor plan…' : 'The saved plan preview is unavailable; its reference is preserved.'}</p>}
-          <span className="cx-muted">{pendingPlan ? `${pendingPlan.file.name} · selected, not uploaded` : planFileName || 'Saved private plan image'}</span>
-          {pendingPlan && <button type="button" className="btn btn-secondary" data-testid="location-plan-upload-retry" disabled={busy !== '' || conflict || mustReload} onClick={() => void uploadPlan(pendingPlan.file)}>Retry plan upload</button>}
-          <button type="button" className="btn btn-ghost" data-testid="location-plan-use-blank" onClick={() => { setPendingPlan(null); setPlanFileName(''); update((current) => { const next = { ...current }; delete next.planAssetId; return next; }); }}>Use blank canvas</button>
-        </div> : <p className="cx-muted">Blank canvas selected.</p>}
-        <label className="loc-upload"><span>{document.planAssetId ? 'Replace plan (PNG or JPEG)' : 'Upload floor plan (PNG or JPEG)'}</span>
-          <input type="file" accept="image/png,image/jpeg" aria-label="Upload floor plan (PNG or JPEG)" data-testid="location-plan-upload" disabled={busy !== '' || mustReload} onChange={(event) => { const file = event.target.files?.[0]; if (file) { setPendingPlan({ file, url: URL.createObjectURL(file) }); setPlanFileName(file.name); void uploadPlan(file); } event.currentTarget.value = ''; }} />
-        </label>
-      </section>
-      <div className="loc-editor-toolbar" aria-label="Layout tools">
-      <button type="button" className="btn btn-secondary" data-testid="location-tool-add-zone" data-location-tool id="loc-add-zone" onClick={addZone}>Add zone</button>
-        <button type="button" className="btn btn-secondary" data-testid="location-tool-add-rectangle" onClick={() => addTable('rect')}>Add rectangle table</button>
-        <button type="button" className="btn btn-secondary" data-testid="location-tool-add-circle" onClick={() => addTable('circle')}>Add round table</button>
-        <button type="button" className="btn btn-secondary" data-testid="location-tool-add-polygon-table" data-location-tool id="loc-add-polygon-table" onClick={() => addTable('polygon')}>Draw polygon table</button>
-        {drawing && <><button type="button" className="btn btn-primary" data-testid="location-tool-finish-polygon" onClick={finishDrawing}>Finish polygon</button><button type="button" className="btn btn-ghost" data-testid="location-tool-cancel-sketch" onClick={cancelDrawing}>Cancel sketch</button></>}
-      </div>
-      <div className="loc-editor-grid">
-        <section className="loc-canvas-panel card" aria-label="Floor plan canvas">
+    <div className={`loc-step-layout is-${step}`} ref={workspace}>
+      <aside className="loc-live-preview" aria-label="Live room preview" data-testid="location-room-live-preview">
+        {(step === 'details' || step === 'sensors') && <div className="loc-viewport-toolbar">
+          <fieldset className="loc-canvas-mode" disabled={busy !== '' || mustReload}>
+            <legend>Room canvas</legend>
+            <label><input type="radio" name={`location-canvas-${draftId}`} value="2d" data-testid="location-canvas-mode-2d" checked={canvasMode === '2d'} onChange={() => changeCanvasMode('2d')} />2D editor</label>
+            <label><input type="radio" name={`location-canvas-${draftId}`} value="3d" data-testid="location-canvas-mode-3d" checked={canvasMode === '3d'} onChange={() => changeCanvasMode('3d')} />3D preview</label>
+          </fieldset>
+          {step === 'details' && canvasMode === '2d' && <fieldset className="loc-viewport-tools" disabled={busy !== '' || mustReload}>
+            <legend className="loc-sr">2D layout tools</legend>
+            <button type="button" className="btn btn-secondary" data-testid="location-tool-add-zone" data-location-tool id="loc-add-zone" onClick={addZone}>Add zone</button>
+            <button type="button" className="btn btn-secondary" data-testid="location-tool-add-rectangle" onClick={() => addTable('rect')}>Add rectangle table</button>
+            <button type="button" className="btn btn-secondary" data-testid="location-tool-add-circle" onClick={() => addTable('circle')}>Add round table</button>
+            <button type="button" className="btn btn-secondary" data-testid="location-tool-add-polygon-table" data-location-tool id="loc-add-polygon-table" onClick={() => addTable('polygon')}>Draw polygon table</button>
+            {drawing && <><button type="button" className="btn btn-primary" data-testid="location-tool-finish-polygon" onClick={finishDrawing}>Finish polygon</button><button type="button" className="btn btn-ghost" data-testid="location-tool-cancel-sketch" onClick={cancelDrawing}>Cancel sketch</button></>}
+          </fieldset>}
+        </div>}
+        <div className="loc-shared-viewport" data-testid="location-shared-viewport">
+          <div className={`loc-viewport-model ${((step !== 'details' && step !== 'sensors') || canvasMode === '3d') ? 'is-active' : ''}`} aria-hidden={step === 'details' || step === 'sensors' ? canvasMode !== '3d' : undefined} inert={step === 'details' || step === 'sensors' ? canvasMode !== '3d' : undefined}>
+            <ModelPreview draft={draft} document={document} scene={displayScene} capability={modelCapability} retry={previewRetry} stale={previewStale}
+              empty={previewInvalid && !lastValidScene} onUse2d={() => changeCanvasMode('2d')} onRetry={() => setPreviewRetry((value) => value + 1)} />
+          </div>
+          <div className={`loc-viewport-canvas ${(step === 'details' || step === 'sensors') && canvasMode === '2d' ? 'is-active' : ''}`} aria-hidden={!((step === 'details' || step === 'sensors') && canvasMode === '2d') || busy !== '' || mustReload} inert={!((step === 'details' || step === 'sensors') && canvasMode === '2d') || busy !== '' || mustReload}>
+            <div className="loc-viewport-canvas-mount" ref={setViewportMount} />
+          </div>
+        </div>
+        {step === 'details' && canvasMode === '2d' && viewportMount && createPortal(<section className="loc-canvas-panel card" aria-label="Floor plan canvas">
           <EditorCanvas document={document} selected={selection} drawing={drawing} planUrl={planUrl} onSelect={setSelection}
             onSketchPoint={(point) => setDrawing((current) => current ? { ...current, points: [...current.points, point] } : current)}
             onDragStart={(value) => { drag.current = value; }} onDragTo={dragTo} onDragEnd={() => { drag.current = null; }} onNudge={nudge}
             onFinishDrawing={finishDrawing} onCancelDrawing={cancelDrawing} />
           <p className="loc-canvas-live" aria-live="polite">{announcement}</p>
-        </section>
-        <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput} />
+        </section>, viewportMount)}
+      </aside>
+      <div className="loc-step-main">
+        {step === 'details' && <fieldset className="loc-editor-fieldset" disabled={busy !== '' || mustReload} inert={busy !== '' || mustReload} aria-busy={busy !== ''}>
+          <details className="loc-room-settings" data-testid="location-room-settings" onToggle={(event) => { roomSettingsOpen.current = event.currentTarget.open; }}>
+            <summary id="loc-room-settings-heading">Location details and floor plan</summary>
+            <div className="loc-room-settings-content" role="region" aria-labelledby="loc-room-settings-heading" tabIndex={0}>
+              <div className="loc-metadata card">
+                <Field label="Location name" value={document.name} onChange={(name) => update((current) => ({ ...current, name }))} />
+                <Field label="Building" value={document.building} onChange={(building) => update((current) => ({ ...current, building }))} />
+                <Field label="Floor width (m)" fieldPath="floor.width" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.widthCm))} onChange={(value) => editDimensions('widthCm', value)} onTransientInvalid={(invalid) => reportTransientInput('floor.width', invalid)} />
+                <Field label="Floor height (m)" fieldPath="floor.height" type="number" min={1} max={1000} step={0.01} value={String(cmToMetres(document.heightCm))} onChange={(value) => editDimensions('heightCm', value)} onTransientInvalid={(invalid) => reportTransientInput('floor.height', invalid)} />
+                <p className="loc-visibility"><b>Visibility · read-only</b><span>{draft.basePublishedRevision === null ? 'Public · server default' : draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'}</span></p>
+              </div>
+              <section className="loc-plan-section card" aria-labelledby="loc-plan-title">
+                <div><h2 id="loc-plan-title">Floor plan</h2><p className="cx-muted">Blank canvas or a private PNG/JPEG background. Plan images are not shown to students.</p></div>
+                {document.planAssetId || pendingPlan ? <div className="loc-plan-state">
+                  {pendingPlan ? <img src={pendingPlan.url} alt="Selected floor plan preview; not uploaded" />
+                    : planUrl ? <img src={planUrl} alt="Private floor plan background preview" />
+                      : planPreviewFailed ? <p role="status">The saved plan preview is unavailable; its reference is preserved. <button type="button" className="btn btn-ghost" data-testid="location-plan-preview-retry" onClick={() => setPlanRetry((value) => value + 1)}>Retry preview</button></p>
+                        : <p role="status">{draft.assetCapabilities?.planAssetId?.previewAvailable ? 'Loading private floor plan…' : 'The saved plan preview is unavailable; its reference is preserved.'}</p>}
+                  <span className="cx-muted">{pendingPlan ? `${pendingPlan.file.name} · selected, not uploaded` : planFileName || 'Saved private plan image'}</span>
+                  {pendingPlan && <button type="button" className="btn btn-secondary" data-testid="location-plan-upload-retry" disabled={busy !== '' || conflict || mustReload} onClick={() => void uploadPlan(pendingPlan.file)}>Retry plan upload</button>}
+                  <button type="button" className="btn btn-ghost" data-testid="location-plan-use-blank" onClick={() => { setPendingPlan(null); setPlanFileName(''); update((current) => { const next = { ...current }; delete next.planAssetId; return next; }); }}>Use blank canvas</button>
+                </div> : <p className="cx-muted">Blank canvas selected.</p>}
+                <label className="loc-upload"><span>{document.planAssetId ? 'Replace plan (PNG or JPEG)' : 'Upload floor plan (PNG or JPEG)'}</span>
+                  <input type="file" accept="image/png,image/jpeg" aria-label="Upload floor plan (PNG or JPEG)" data-testid="location-plan-upload" disabled={busy !== '' || mustReload} onChange={(event) => { const file = event.target.files?.[0]; if (file) { setPendingPlan({ file, url: URL.createObjectURL(file) }); setPlanFileName(file.name); void uploadPlan(file); } event.currentTarget.value = ''; }} />
+                </label>
+              </section>
+            </div>
+          </details>
+          <div className="loc-inspector-scroll" ref={inspectorScroll} role="region" aria-labelledby="loc-inspector-heading" tabIndex={0} data-testid="location-editor-inspector">
+            <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput} />
+          </div>
+          {!!errors.length && <div className="loc-validation" role="status" tabIndex={-1}><b>Review the layout</b><ul>{errors.map((item, index) => <li key={`${item.field}:${item.message}`} id={`loc-validation-${index}`}>{item.message}</li>)}</ul></div>}
+          <footer className="loc-footer">
+            <button type="button" className="btn btn-ghost" data-testid="location-details-back" onClick={() => navigate('/locations')}>Back</button>
+            <span>{dirty ? 'Unsaved local changes' : `Draft revision ${draft.draftRevision} · private`}</span>
+            <button type="button" className="btn btn-secondary" data-testid="location-save-draft" disabled={busy !== '' || mustReload} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : 'Save draft'}</button>
+            <button type="button" className="btn btn-primary" data-testid="location-continue-sensors" disabled={busy !== '' || mustReload} onClick={() => void changeStep('sensors')}>Continue to sensors</button>
+          </footer>
+        </fieldset>}
+        <div className="loc-sensor-step-host" hidden={step !== 'sensors'} aria-hidden={step !== 'sensors'} inert={step !== 'sensors'}>
+          <SensorPlacementStep key={draftId} draft={draft} document={document} onUpdate={update} onSave={() => save()}
+            canvasTarget={viewportMount} canvasMode={canvasMode} active={step === 'sensors'}
+            onTransientValidityChange={(field, invalid) => reportTransientInput(field, invalid)}
+            onSensorLabelsChange={(sensors) => setSensorLabels(new Map(sensors.map((sensor) => [sensor.uid.toLowerCase(), sensor.label])))}
+            onBack={() => onStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
+        </div>
+        {step === 'model' && <ModelAlignmentStep draft={draft} document={document} busy={busy} mustReload={mustReload} onUpdate={update}
+          onSelectSource={selectRoomSource} onUpload={uploadModel} onSave={() => void save()} onBack={() => void changeStep('sensors')} onContinue={() => void changeStep('review')} onPreflightBlockedChange={setModelPreflightBlocked} />}
+        {step === 'review' && <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onEditModel={() => onStep('model')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />}
       </div>
-      {!!errors.length && <div className="loc-validation" role="status" tabIndex={-1}><b>Review the layout</b><ul>{errors.map((item, index) => <li key={`${item.field}:${item.message}`} id={`loc-validation-${index}`}>{item.message}</li>)}</ul></div>}
-      <footer className="loc-footer">
-        <button type="button" className="btn btn-ghost" data-testid="location-details-back" onClick={() => navigate('/locations')}>Back</button>
-        <span>{dirty ? 'Unsaved local changes' : `Draft revision ${draft.draftRevision} · private`}</span>
-        <button type="button" className="btn btn-secondary" data-testid="location-save-draft" disabled={busy !== '' || mustReload} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : 'Save draft'}</button>
-        <button type="button" className="btn btn-primary" data-testid="location-continue-sensors" disabled={busy !== '' || mustReload} onClick={() => void changeStep('sensors')}>Continue to sensors</button>
-      </footer>
-    </fieldset> : step === 'sensors' ? <SensorPlacementStep draft={draft} document={document} onUpdate={update} onSave={() => save()}
-      onTransientValidityChange={(field, invalid) => reportTransientInput(field, invalid)}
-      onSensorLabelsChange={(sensors) => setSensorLabels(new Map(sensors.map((sensor) => [sensor.uid.toLowerCase(), sensor.label])))}
-      onBack={() => onStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
-      : step === 'model' ? <ModelAlignmentStep draft={draft} document={document} busy={busy} mustReload={mustReload} onUpdate={update}
-        onSelectSource={selectRoomSource} onUpload={uploadModel} onSave={() => void save()} onBack={() => void changeStep('sensors')} onContinue={() => void changeStep('review')} onPreflightBlockedChange={setModelPreflightBlocked} />
-        : <Review document={document} draft={draft} dirty={dirty} busy={busy} mustReload={mustReload} onEdit={() => onStep('details')} onEditCoverage={() => onStep('sensors')} onEditModel={() => onStep('model')} onSave={() => void save()} onPublish={() => void publish()} onBack={() => onStep('model')} />}
-    </div>
-    <aside className="loc-live-preview" aria-label="Live room preview" data-testid="location-room-live-preview">
-      {(step === 'details' || step === 'sensors') && <button type="button" className="btn btn-secondary loc-live-preview-toggle" data-testid="location-room-live-preview-toggle"
-        aria-expanded={previewExpanded} aria-controls="location-room-preview-panel" onClick={() => setPreviewExpanded((expanded) => !expanded)}>
-        {previewExpanded ? 'Hide 3D preview' : 'Show 3D preview'}
-      </button>}
-      <div id="location-room-preview-panel" className={`loc-live-preview-panel ${(step === 'details' || step === 'sensors') && !previewExpanded ? 'is-collapsed' : ''}`}>
-        <ModelPreview draft={draft} document={document} scene={displayScene} capability={modelCapability} retry={previewRetry} stale={previewStale}
-          onRetry={() => setPreviewRetry((value) => value + 1)} />
-      </div>
-      {previewHasError && <p className="loc-alert" role="alert">The last valid room preview could not be built. Retry the preview or continue editing with the 2D tools.</p>}
-    </aside>
     </div>
   </main>;
 }
@@ -678,8 +781,12 @@ function messageFor(error: unknown, fallback: string): string { return error ins
 function focusInvalidField(issue: EditorValidationIssue, root: HTMLElement | null): void {
   const target = [...(root?.querySelectorAll<HTMLElement>('[data-location-field]') ?? [])]
     .find((element) => element.dataset.locationField === issue.field);
-  target?.focus();
-  target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (!target) return;
+  for (let parent = target.parentElement; parent && parent !== root; parent = parent.parentElement) {
+    if (parent.tagName === 'DETAILS') (parent as HTMLDetailsElement).open = true;
+  }
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
 }
 
 function selectionForField(field: string, document: LocationDocument): Selection | null {

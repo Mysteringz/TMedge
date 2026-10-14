@@ -183,6 +183,331 @@ const assertImageDecoded = async (page, image) => {
   const dimensions = await image.evaluate((element) => ({ width: element.naturalWidth, height: element.naturalHeight }));
   assert.ok(dimensions.width > 0 && dimensions.height > 0, 'PNG/JPEG preview decoded without a CSP image failure');
 };
+const assertOnlyCanvasModeVisible = async (page, expectedMode) => {
+  if (expectedMode === '3d') await page.waitForFunction(() => {
+    const preview = document.querySelector('.loc-viewport-model.is-active [data-preview-canvas]');
+    return !!preview?.querySelector('tm-location-model-viewer canvas');
+  });
+  const state = await page.evaluate(() => {
+    const visible = (element) => {
+      if (!element || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    return {
+      activeLayers: [...document.querySelectorAll('.loc-viewport-canvas.is-active, .loc-viewport-model.is-active')].filter(visible).length,
+      canvas2d: [...document.querySelectorAll('.loc-viewport-canvas.is-active .loc-canvas')].filter(visible).length,
+      canvas3d: [...document.querySelectorAll('.loc-viewport-model.is-active [data-preview-canvas]')]
+        .filter((element) => visible(element) && !!element.querySelector('tm-location-model-viewer canvas')).length,
+    };
+  });
+  assert.equal(state.activeLayers, 1, 'only one 2D/3D viewport layer is active');
+  assert.equal(state.canvas2d, expectedMode === '2d' ? 1 : 0, 'the 2D placement canvas is visible only in 2D mode');
+  assert.equal(state.canvas3d, expectedMode === '3d' ? 1 : 0, 'the WebGL preview canvas is visible only in 3D mode');
+};
+const setDetailsOpen = async (details, open) => {
+  if (await details.evaluate((element) => element.open) !== open) await details.locator('summary').click();
+};
+const readDesktopWorkspace = async (page) => page.evaluate(() => {
+  const bounds = (selector) => {
+    const element = document.querySelector(selector);
+    if (!element) return null;
+    const { x, y, width, height, bottom, right } = element.getBoundingClientRect();
+    return { x, y, width, height, bottom, right };
+  };
+  const inspector = document.querySelector('[data-testid="location-editor-inspector"]');
+  const inspectorRect = inspector?.getBoundingClientRect();
+  const tableNameInput = inspector?.querySelector('input[aria-label="Table name"]');
+  const tableNameField = tableNameInput?.closest('.loc-field');
+  const tableNameInputRect = tableNameInput?.getBoundingClientRect();
+  const tableNameFieldRect = tableNameField?.getBoundingClientRect();
+  const tableNameCenterHit = tableNameInputRect
+    ? document.elementFromPoint(tableNameInputRect.left + tableNameInputRect.width / 2, tableNameInputRect.top + tableNameInputRect.height / 2)
+    : null;
+  const selectedTableName = tableNameInput && tableNameField && tableNameInputRect && tableNameFieldRect && inspectorRect
+    ? {
+      field: { x: tableNameFieldRect.x, y: tableNameFieldRect.y, width: tableNameFieldRect.width, height: tableNameFieldRect.height, bottom: tableNameFieldRect.bottom },
+      input: { x: tableNameInputRect.x, y: tableNameInputRect.y, width: tableNameInputRect.width, height: tableNameInputRect.height, bottom: tableNameInputRect.bottom },
+      fieldInsidePane: tableNameFieldRect.left >= inspectorRect.left - 1 && tableNameFieldRect.right <= inspectorRect.right + 1
+        && tableNameFieldRect.top >= inspectorRect.top - 1 && tableNameFieldRect.bottom <= inspectorRect.bottom + 1,
+      inputInsidePane: tableNameInputRect.left >= inspectorRect.left - 1 && tableNameInputRect.right <= inspectorRect.right + 1
+        && tableNameInputRect.top >= inspectorRect.top - 1 && tableNameInputRect.bottom <= inspectorRect.bottom + 1,
+      hitAtCenter: tableNameCenterHit === tableNameInput,
+    }
+    : null;
+  const visibleInspectorControl = inspector && inspectorRect
+    ? [...inspector.querySelectorAll('button, input, select')].find((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.bottom > inspectorRect.top && rect.top < inspectorRect.bottom;
+    })
+    : null;
+  const visibleInspectorControlRect = visibleInspectorControl?.getBoundingClientRect();
+  return {
+    workspace: bounds('.loc-step-layout'),
+    viewport: bounds('[data-testid="location-room-live-preview"]'),
+    canvas: bounds('[data-testid="location-shared-viewport"]'),
+    modeControls: bounds('.loc-canvas-mode'),
+    placementTools: bounds('.loc-viewport-tools'),
+    inspector: bounds('[data-testid="location-editor-inspector"]'),
+    inspectorSelection: bounds('.loc-inspector-selection'),
+    selectedTableName,
+    footer: bounds('.loc-step-main .loc-footer'),
+    detailsContent: bounds('.loc-room-settings-content'),
+    inspectorClientHeight: inspector?.clientHeight ?? 0,
+    inspectorScrollHeight: inspector?.scrollHeight ?? 0,
+    inspectorScrollTop: inspector?.scrollTop ?? 0,
+    detailsScrollHeight: document.querySelector('.loc-room-settings-content')?.scrollHeight ?? 0,
+    detailsClientHeight: document.querySelector('.loc-room-settings-content')?.clientHeight ?? 0,
+    detailsOverflowY: getComputedStyle(document.querySelector('.loc-room-settings-content') ?? document.body).overflowY,
+    boundedDetails: document.querySelector('.loc-step-layout')?.classList.contains('has-bounded-room-settings') ?? false,
+    pageScrollHeight: document.documentElement.scrollHeight,
+    inspectorAnchor: visibleInspectorControl ? {
+      key: visibleInspectorControl.getAttribute('data-location-field')
+        ?? visibleInspectorControl.getAttribute('data-testid')
+        ?? visibleInspectorControl.getAttribute('aria-label')
+        ?? visibleInspectorControl.textContent?.trim()
+        ?? '',
+      text: visibleInspectorControl.getAttribute('aria-label') ?? visibleInspectorControl.textContent?.trim() ?? '',
+      top: visibleInspectorControlRect?.top ?? 0,
+    } : null,
+    pageScrollY: window.scrollY,
+    pageWidth: document.documentElement.scrollWidth,
+    innerHeight: window.innerHeight,
+  };
+});
+const waitForInspectorScrollToSettle = async (page) => {
+  const result = await page.evaluate(() => new Promise((resolve) => {
+    const inspector = document.querySelector('[data-testid="location-editor-inspector"]');
+    let previous;
+    let stableFrames = 0;
+    let frames = 0;
+    const sample = () => {
+      frames += 1;
+      const current = inspector?.scrollTop ?? 0;
+      if (previous !== undefined && Math.abs(current - previous) <= 0.5) stableFrames += 1;
+      else stableFrames = 0;
+      if (stableFrames >= 2 || frames >= 120) {
+        resolve({ settled: stableFrames >= 2, scrollTop: current, frames });
+        return;
+      }
+      previous = current;
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }));
+  assert.equal(result.settled, true, `inspector scrolling settles before measurement: ${JSON.stringify(result)}`);
+  return result;
+};
+const assertDesktopRoomWorkspace = async (page, width, height, roomSettings) => {
+  await page.setViewportSize({ width, height });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await setDetailsOpen(roomSettings, false);
+  await page.waitForFunction(() => !document.querySelector('.loc-step-layout')?.classList.contains('has-bounded-room-settings'));
+  const inspectorRegion = page.getByTestId('location-editor-inspector');
+  await inspectorRegion.evaluate((element) => { element.scrollTop = 0; });
+  await waitForInspectorScrollToSettle(page);
+  const state = await readDesktopWorkspace(page);
+  await page.screenshot({ path: join(artifacts, `room-editor-${width}x${height}-layout-debug.png`) });
+  assert.ok(state.viewport && state.canvas && state.inspector && state.footer, 'bounded desktop workspace exposes viewport, inspector, and footer');
+  assert.ok(state.viewport.x < state.inspector.x && state.viewport.right <= state.inspector.x + 1, 'the dominant viewport sits beside the inspector');
+  assert.ok(state.canvas.width > state.inspector.width * 1.15, 'the room viewport is wider than the selected-item inspector');
+  assert.ok(state.canvas.height >= 300, `the desktop viewport keeps a practical editing height (${JSON.stringify(state)})`);
+  assert.ok(state.inspector.width >= 320 && state.inspector.height >= 200
+    && state.inspector.y >= 0 && state.inspector.bottom <= state.innerHeight + 1,
+  'the default inspector keeps usable width and height inside the desktop viewport');
+  assert.ok(Math.abs(state.inspectorScrollTop) <= 0.5, 'the default controls are measured at inspector scrollTop 0');
+  if (state.footer.bottom > state.innerHeight + 1) {
+    assert.ok(state.pageScrollHeight > state.innerHeight,
+      `page scrolling reaches the footer when the measured viewport cannot fit the minimum workspace (${JSON.stringify(state)})`);
+    const detailsFooter = page.locator('.loc-editor-fieldset > .loc-footer');
+    await detailsFooter.scrollIntoViewIfNeeded();
+    const footerInView = await detailsFooter.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= innerHeight;
+    });
+    assert.equal(footerInView, true, 'the save and navigation footer remains reachable by normal page scrolling');
+    await page.evaluate(() => window.scrollTo(0, 0));
+  }
+  assert.ok(state.inspectorScrollHeight > state.inspectorClientHeight, 'long seat and polygon fields overflow inside the inspector');
+  await page.getByTestId('location-editor-inspector').evaluate((element) => { element.scrollTop = 0; });
+  const tableSwitcher = page.getByTestId('location-inspector-table-select');
+  assert.equal(await tableSwitcher.locator('option:checked').innerText(), 'East polygon table',
+    'the selected table is represented in the compact inspector selector');
+  assert.ok(state.selectedTableName?.fieldInsidePane && state.selectedTableName.inputInsidePane && state.selectedTableName.hitAtCenter,
+    'the complete Table name label and input are inside the inspector and directly hit-testable without scrolling');
+  const tableNameBounds = await page.getByLabel('Table name').boundingBox();
+  assert.ok(tableNameBounds && tableNameBounds.y >= state.inspector.y && tableNameBounds.y + tableNameBounds.height <= state.inspector.bottom + 1,
+    `the selected table controls start at the top of the bounded inspector (${JSON.stringify({ tableNameBounds, inspector: state.inspector })})`);
+  await assertOnlyCanvasModeVisible(page, '2d');
+
+  await setDetailsOpen(roomSettings, true);
+  await page.waitForFunction(() => document.querySelector('.loc-step-layout')?.classList.contains('has-bounded-room-settings'));
+  await roomSettings.locator('.loc-room-settings-content').evaluate((element) => { element.scrollTop = 0; });
+  await inspectorRegion.evaluate((element) => { element.scrollTop = 0; });
+  await waitForInspectorScrollToSettle(page);
+  let expanded = await readDesktopWorkspace(page);
+  const primaryScroll = Math.max(0, expanded.canvas.bottom - expanded.innerHeight, expanded.inspector.bottom - expanded.innerHeight);
+  if (primaryScroll > 0) {
+    await page.evaluate((scrollBy) => window.scrollBy(0, scrollBy), primaryScroll);
+    expanded = await readDesktopWorkspace(page);
+  }
+  await page.screenshot({ path: join(artifacts, `room-editor-${width}x${height}-details-expanded.png`) });
+  assert.ok(expanded.canvas.height >= 300 && expanded.canvas.y >= 0 && expanded.canvas.bottom <= expanded.innerHeight + 1,
+    `expanded location metadata leaves at least 300px for the shared room canvas (${JSON.stringify(expanded)})`);
+  assert.ok(expanded.inspector.height >= 200 && expanded.inspector.y >= 0 && expanded.inspector.bottom <= expanded.innerHeight + 1,
+    `expanded location metadata leaves a usable 200px inspector region (${JSON.stringify(expanded)})`);
+  assert.ok(expanded.footer.y >= expanded.inspector.bottom - 1,
+    `save controls remain after the inspector without overlapping it (${JSON.stringify(expanded)})`);
+  assert.ok(expanded.inspectorScrollHeight > expanded.inspectorClientHeight,
+    `long seat fields remain bounded and independently scrollable with metadata open (${JSON.stringify(expanded)})`);
+  assert.ok(expanded.inspector.width >= 320 && Math.abs(expanded.inspectorScrollTop) <= 0.5
+    && expanded.selectedTableName?.fieldInsidePane && expanded.selectedTableName.inputInsidePane && expanded.selectedTableName.hitAtCenter,
+  'expanded metadata preserves the complete, hit-testable Table name field at inspector scrollTop 0');
+  const detailsRegion = roomSettings.locator('.loc-room-settings-content');
+  assert.equal(await detailsRegion.getAttribute('role'), 'region', 'expanded location metadata has a named region');
+  assert.equal(await detailsRegion.getAttribute('aria-labelledby'), 'loc-room-settings-heading',
+    'the location metadata region is named by its visible disclosure summary');
+  assert.equal(await detailsRegion.getAttribute('tabindex'), '0', 'the location metadata region accepts keyboard focus');
+  assert.match(expanded.detailsOverflowY, /auto|scroll/, 'bounded desktop metadata exposes its own scroll region');
+  assert.ok(expanded.detailsClientHeight >= 100 && expanded.detailsScrollHeight >= expanded.detailsClientHeight,
+    'expanded metadata keeps at least 100px of measured scroll viewport');
+  if (expanded.detailsScrollHeight > expanded.detailsClientHeight + 1) {
+    await detailsRegion.focus();
+    assert.equal(await detailsRegion.evaluate((element) => element === document.activeElement), true,
+      'keyboard users can focus the expanded metadata scroll region');
+    const pageY = await page.evaluate(() => window.scrollY);
+    await page.keyboard.press('PageDown');
+    await page.waitForFunction(() => (document.querySelector('.loc-room-settings-content')?.scrollTop ?? 0) > 0);
+    assert.equal(await page.evaluate(() => window.scrollY), pageY,
+      'PageDown scrolls expanded metadata without trapping or moving page scroll');
+    await detailsRegion.evaluate((element) => { element.scrollTop = 0; });
+  }
+  const detailsFooter = page.locator('.loc-editor-fieldset > .loc-footer');
+  const footerVisibleBeforeScroll = await detailsFooter.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.top >= 0 && rect.bottom <= innerHeight;
+  });
+  if (!footerVisibleBeforeScroll) {
+    assert.ok(expanded.pageScrollHeight > expanded.innerHeight,
+      `page scroll remains available when the minimum workspace extends below the viewport (${JSON.stringify(expanded)})`);
+    await detailsFooter.scrollIntoViewIfNeeded();
+    assert.equal(await detailsFooter.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= innerHeight;
+    }), true, 'the save and navigation footer remains reachable by normal page scrolling');
+  }
+  await setDetailsOpen(roomSettings, false);
+  await page.waitForFunction(() => !document.querySelector('.loc-step-layout')?.classList.contains('has-bounded-room-settings'));
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  const mode2d = page.getByTestId('location-canvas-mode-2d');
+  await mode2d.focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'loc-add-zone', 'keyboard focus moves from the selected canvas mode to its first layout tool');
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await mode2d.evaluate((element) => element === document.activeElement), true, 'reverse tab order returns from the layout tool to the selected canvas mode');
+
+  const inspector = page.getByTestId('location-editor-inspector');
+  const inspectorHandle = await inspector.elementHandle();
+  const selectedSeat = inspector.locator('.loc-seat-list [aria-pressed="true"]');
+  const inspectorScrollContract = await inspector.evaluate((element) => ({
+    overflowY: getComputedStyle(element).overflowY,
+    childOverflowY: getComputedStyle(element.querySelector('.loc-inspector') ?? element).overflowY,
+  }));
+  assert.match(inspectorScrollContract.overflowY, /auto|scroll/, 'the named inspector region owns its bounded scroll');
+  assert.doesNotMatch(inspectorScrollContract.childOverflowY, /auto|scroll/, 'inspector content does not create a nested scroll container');
+  const openState = await page.evaluate(() => ({
+    polygon: [...document.querySelectorAll('.loc-inspector-disclosure')].find((item) => item.querySelector('summary')?.textContent?.startsWith('Polygon vertices'))?.open ?? false,
+    seats: [...document.querySelectorAll('.loc-inspector-disclosure')].find((item) => item.querySelector('summary')?.textContent?.startsWith('Seats'))?.open ?? false,
+  }));
+  await inspector.evaluate((element) => { element.scrollTop = 0; });
+  const pageScrollBeforeKey = await page.evaluate(() => window.scrollY);
+  await inspector.focus();
+  assert.equal(await inspector.evaluate((element) => element === document.activeElement), true,
+    'the named inspector region itself can receive keyboard focus');
+  await page.keyboard.press('PageDown');
+  await page.waitForFunction(() => (document.querySelector('[data-testid="location-editor-inspector"]')?.scrollTop ?? 0) > 100);
+  await waitForInspectorScrollToSettle(page);
+  const scrollAfterKey = await readDesktopWorkspace(page);
+  assert.equal(await inspector.locator('.loc-inspector').evaluate((element) => element.scrollTop), 0,
+    'the inspector content does not create a nested scroll area');
+  assert.equal(scrollAfterKey.pageScrollY, pageScrollBeforeKey, 'PageDown scrolls the inspector without moving the page');
+  assert.ok(scrollAfterKey.inspectorSelection && scrollAfterKey.inspector
+    && scrollAfterKey.inspectorSelection.y >= scrollAfterKey.inspector.y + 40
+    && scrollAfterKey.inspectorSelection.y <= scrollAfterKey.inspector.y + 60
+    && scrollAfterKey.inspectorSelection.bottom <= scrollAfterKey.inspector.bottom,
+  `zone and table selectors stay visible under the sticky inspector heading after long-list scrolling (${JSON.stringify({ selection: scrollAfterKey.inspectorSelection, inspector: scrollAfterKey.inspector })})`);
+  const headingBounds = await page.locator('#loc-inspector-heading').boundingBox();
+  assert.ok(headingBounds && headingBounds.y >= state.inspector.y - 1 && headingBounds.y < state.inspector.bottom,
+    'the inspector heading stays available while the region scrolls');
+  assert.equal(await selectedSeat.count(), 1, 'the selected seat context remains active');
+  assert.match(await inspector.locator('#loc-inspector-heading').innerText(), /Table details · East polygon table/);
+  await page.screenshot({ path: join(artifacts, `room-editor-${width}x${height}-2d.png`) });
+
+  const mode3d = page.getByTestId('location-canvas-mode-3d');
+  const beforeClickContext = await readDesktopWorkspace(page);
+  await mode3d.click();
+  await assertOnlyCanvasModeVisible(page, '3d');
+  await waitForInspectorScrollToSettle(page);
+  const afterClickContext = await readDesktopWorkspace(page);
+  assert.ok(Math.abs(afterClickContext.inspectorScrollTop - beforeClickContext.inspectorScrollTop) <= 12,
+    `a normal 3D mode click preserves the scrolled inspector context (${JSON.stringify({ before: beforeClickContext, after: afterClickContext })})`);
+  assert.equal(afterClickContext.inspectorAnchor?.key, beforeClickContext.inspectorAnchor?.key,
+    'a normal 3D mode click leaves the same inspector control in view');
+  assert.ok(Math.abs((afterClickContext.inspectorAnchor?.top ?? 0) - (beforeClickContext.inspectorAnchor?.top ?? 0)) <= 12,
+    'a normal 3D mode click keeps the visible inspector control in the same context');
+
+  const selectedTableBeforeSwitch = await tableSwitcher.inputValue();
+  const selectionBeforeSwitch = await readDesktopWorkspace(page);
+  await tableSwitcher.selectOption({ label: 'East round table' });
+  assert.match(await inspector.locator('#loc-inspector-heading').innerText(), /Table details · East round table/,
+    'the sticky table selector changes the selected object while 3D is active');
+  await tableSwitcher.selectOption({ value: selectedTableBeforeSwitch });
+  const polygonSeats = inspector.locator('.loc-inspector-disclosure').filter({ hasText: 'Seats (20)' });
+  await setDetailsOpen(polygonSeats, true);
+  assert.equal(await polygonSeats.evaluate((element) => element.open), true,
+    'the prior table seat controls can be restored after choosing another table from the sticky selector');
+  await inspector.getByRole('button', { name: 'Seat 1', exact: true }).click();
+  await assertOnlyCanvasModeVisible(page, '3d');
+
+  await page.getByTestId('location-canvas-mode-2d').click();
+  await assertOnlyCanvasModeVisible(page, '2d');
+  const contextBeforeFocus = await readDesktopWorkspace(page);
+  await mode3d.focus();
+  await waitForInspectorScrollToSettle(page);
+  const contextAfterFocus = await readDesktopWorkspace(page);
+  assert.ok(Math.abs(contextAfterFocus.inspectorScrollTop - contextBeforeFocus.inspectorScrollTop) <= 12,
+    `focusing the 3D radio preserves the scrolled inspector context (${JSON.stringify({ before: contextBeforeFocus, after: contextAfterFocus })})`);
+  assert.equal(contextAfterFocus.inspectorAnchor?.key, contextBeforeFocus.inspectorAnchor?.key,
+    'focusing the 3D radio leaves the same inspector control in view');
+  assert.ok(Math.abs((contextAfterFocus.inspectorAnchor?.top ?? 0) - (contextBeforeFocus.inspectorAnchor?.top ?? 0)) <= 12,
+    'focusing the 3D radio keeps the visible inspector control in the same context');
+  const scrollBeforeModeChange = contextAfterFocus;
+  await page.keyboard.press('Space');
+  await assertOnlyCanvasModeVisible(page, '3d');
+  assert.equal(await mode3d.evaluate((element) => element === document.activeElement), true,
+    'keyboard mode switching keeps focus on the selected mode');
+  await waitForInspectorScrollToSettle(page);
+  const afterMode = await readDesktopWorkspace(page);
+  assert.equal(await inspector.evaluate((element) => element === document.querySelector('[data-testid="location-editor-inspector"]')), true,
+    'changing modes keeps the same inspector DOM and selection');
+  assert.ok(Math.abs(afterMode.inspectorScrollTop - scrollBeforeModeChange.inspectorScrollTop) <= 12,
+    `mode switching preserves the current inspector context within 12px (${scrollBeforeModeChange.inspectorScrollTop}px to ${afterMode.inspectorScrollTop}px; before=${JSON.stringify({ clientHeight: scrollBeforeModeChange.inspectorClientHeight, scrollHeight: scrollBeforeModeChange.inspectorScrollHeight, bounds: scrollBeforeModeChange.inspector, anchor: scrollBeforeModeChange.inspectorAnchor })}; after=${JSON.stringify({ clientHeight: afterMode.inspectorClientHeight, scrollHeight: afterMode.inspectorScrollHeight, bounds: afterMode.inspector, anchor: afterMode.inspectorAnchor, pageScrollY: afterMode.pageScrollY })})`);
+  assert.equal(afterMode.inspectorAnchor?.key, scrollBeforeModeChange.inspectorAnchor?.key,
+    'mode switching leaves the same inspector control in view');
+  assert.ok(Math.abs((afterMode.inspectorAnchor?.top ?? 0) - (scrollBeforeModeChange.inspectorAnchor?.top ?? 0)) <= 12,
+    'mode switching keeps the in-view inspector control in the same context');
+  assert.deepEqual(await page.evaluate(() => ({
+    polygon: [...document.querySelectorAll('.loc-inspector-disclosure')].find((item) => item.querySelector('summary')?.textContent?.startsWith('Polygon vertices'))?.open ?? false,
+    seats: [...document.querySelectorAll('.loc-inspector-disclosure')].find((item) => item.querySelector('summary')?.textContent?.startsWith('Seats'))?.open ?? false,
+  })), openState, 'polygon and seat disclosures stay open when changing canvas modes');
+  await page.screenshot({ path: join(artifacts, `room-editor-${width}x${height}-3d.png`) });
+  await mode2d.focus();
+  await page.keyboard.press('Space');
+  await assertOnlyCanvasModeVisible(page, '2d');
+  await inspectorHandle?.dispose();
+  await inspector.evaluate((element) => { element.scrollTop = 0; });
+};
 
 async function run() {
   persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDir, draftWriteOperations);
@@ -316,12 +641,25 @@ async function run() {
   await page.waitForURL(/\/locations\/[^/]+\/details$/);
   const draftId = decodeURIComponent(new URL(page.url()).pathname.split('/')[2]);
   await page.getByRole('heading', { name: 'QA Editor Suite', exact: true }).waitFor();
+  const roomSettings = page.getByTestId('location-room-settings');
+  assert.equal(await roomSettings.evaluate((element) => element.open), false, 'location details start collapsed in a new editor session');
+  await setDetailsOpen(roomSettings, true);
   assert.equal(await page.getByLabel('Floor width (m)').inputValue(), '12.34');
   assert.equal(await page.getByLabel('Floor height (m)').inputValue(), '8.76');
   assert.equal(await page.getByRole('button', { name: 'Main area', exact: true }).count(), 1);
   const initialRoomDraft = await readDraft(adminContext, base, draftId);
   assert.equal(initialRoomDraft.document.proceduralRoom, 'simple-rectangle-v1', 'a new rectangular draft selects the persisted built-in room source');
+  await setDetailsOpen(roomSettings, false);
+  assert.equal(await page.getByTestId('location-canvas-mode-2d').isChecked(), true, 'a new editor session starts in 2D');
+  await assertOnlyCanvasModeVisible(page, '2d');
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.screenshot({ path: join(artifacts, 'room-editor-1366x768-default-2d.png') });
+  const modeWriteCount = network.filter((request) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) && request.path.includes(`/drafts/${draftId}`)).length;
+  await page.getByTestId('location-canvas-mode-3d').check();
+  await assertOnlyCanvasModeVisible(page, '3d');
   await page.getByTestId('location-room-preview-status').filter({ hasText: 'Built-in room preview ready.' }).waitFor();
+  assert.equal(network.filter((request) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) && request.path.includes(`/drafts/${draftId}`)).length, modeWriteCount,
+    'switching canvas modes does not write the private draft');
   const generatedViewer = page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer');
   await page.waitForFunction(() => {
     const viewer = document.querySelector('[data-testid="location-room-preview-canvas"] tm-location-model-viewer');
@@ -337,12 +675,17 @@ async function run() {
   assert.equal(initialRoomGeometry.wallCount, 4, 'the empty built-in scene includes all four walls');
   assert.equal(initialRoomGeometry.hiddenWalls, 1, 'the initial cardinal camera view hides one camera-facing wall');
   assert.ok(initialRoomGeometry.wallHeights.every((height) => Math.abs(height - 3) < 1e-6), 'every wall mesh is exactly 3.0 m high');
+  await page.screenshot({ path: join(artifacts, 'room-editor-1366x768-3d.png') });
   assert.equal(network.filter((request) => request.method === 'GET' && request.path.startsWith(`/api/locations/drafts/${draftId}/assets/`)).length, 0,
     'the generated source loads no model or asset bytes');
   await page.screenshot({ path: join(artifacts, 'location-generated-room-details-desktop.png'), fullPage: true });
+  await page.getByTestId('location-canvas-mode-2d').check();
+  await assertOnlyCanvasModeVisible(page, '2d');
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.screenshot({ path: join(artifacts, 'location-editor-desktop.png'), fullPage: true });
 
   // Dimension input remains decimal text through real sequential key events.
+  await setDetailsOpen(roomSettings, true);
   const widthEditor = page.getByLabel('Floor width (m)');
   await typeSequentially(widthEditor, '12.34');
   await widthEditor.press('ArrowLeft');
@@ -350,6 +693,7 @@ async function run() {
   await widthEditor.press('Tab');
   const heightEditor = page.getByLabel('Floor height (m)');
   await typeSequentially(heightEditor, '8.76'); await heightEditor.press('Tab');
+  await setDetailsOpen(roomSettings, false);
 
   // Draw an additional named zone entirely with the keyboard and select a vertex to nudge.
   await page.getByRole('button', { name: 'Add zone' }).click();
@@ -413,9 +757,12 @@ async function run() {
   let rect = await page.getByLabel('Table X (m)').inputValue();
   assert.equal(rect, '2.5');
   await page.getByRole('button', { name: 'West rectangle', exact: true }).click();
+  await page.getByText('Seats (4)', { exact: true }).click();
   const seatX = page.getByLabel('Seat 1 X (m)'), seatY = page.getByLabel('Seat 1 Y (m)');
   await typeSequentially(seatX, '1.75'); await seatX.press('Tab');
   await typeSequentially(seatY, '0.9'); await seatY.press('Tab');
+  await page.getByTestId('location-canvas-mode-3d').check();
+  await assertOnlyCanvasModeVisible(page, '3d');
   await page.getByTestId('location-model-zoom-in').click();
   await page.waitForTimeout(250);
   const cameraBeforeLiveTableEdit = await generatedViewer.evaluate((viewer) => ({ position: viewer.scene.camera.position.toArray(), target: viewer.scene.controls.target.toArray() }));
@@ -464,6 +811,8 @@ async function run() {
   assert.deepEqual(wallVisibility.opposite, ['south'], 'camera-facing walls restore as the orbit crosses the room');
   await generatedViewer.evaluate((viewer) => viewer.scene.resetCamera());
   await rectWidth.fill('2.5'); await rectWidth.press('Tab');
+  await page.getByTestId('location-canvas-mode-2d').check();
+  await assertOnlyCanvasModeVisible(page, '2d');
   checks.push('generated preview starts with four exact-height walls, updates exact table/seat meshes immediately, retains camera state, and hides/restores cardinal/diagonal camera-facing walls');
 
   // Distinct round-table center/radius and polygon-table vertex edit.
@@ -491,14 +840,35 @@ async function run() {
   const polygonVertexY = Number((Number(await tableVertexY.inputValue()) + 0.01).toFixed(2));
   await typeSequentially(tableVertexY, polygonVertexY.toFixed(2)); await tableVertexY.press('Tab');
 
+  // Long polygon and seat lists stay inside the independently scrolling inspector.
+  for (let index = 0; index < 16; index++) await page.getByRole('button', { name: 'Add vertex' }).last().click();
+  await page.getByLabel('Capacity').fill('20'); await page.getByLabel('Capacity').press('Tab');
+  await page.getByRole('button', { name: 'Generate seats' }).click();
+  const seatsSummary = page.locator('.loc-inspector-disclosure > summary').filter({ hasText: 'Seats (20)' });
+  await seatsSummary.click();
+  assert.equal(await seatsSummary.evaluate((element) => element.parentElement?.open), true, 'the seat disclosure opens from its native summary');
+  assert.equal(await page.getByRole('button', { name: 'Seat 1', exact: true }).count(), 1, 'the expanded seat editor exposes its first selected-item action');
+  await page.getByRole('button', { name: 'Seat 1', exact: true }).click();
+  assert.equal(await page.getByText('Polygon vertices (20)', { exact: true }).evaluate((element) => element.closest('details')?.open), true,
+    'a selected polygon automatically exposes its vertex editor');
+  await assertDesktopRoomWorkspace(page, 1366, 768, roomSettings);
+  await assertDesktopRoomWorkspace(page, 1440, 900, roomSettings);
+  const restorePolygonCapacity = page.getByLabel('Capacity');
+  await restorePolygonCapacity.fill('5'); await restorePolygonCapacity.press('Tab');
+  await page.getByRole('button', { name: 'Generate seats' }).click();
+  checks.push('1366×768 and 1440×900 share one visible 2D/3D room viewport, keep selected polygon and 20-seat controls beside it, and scroll the inspector independently');
+
   // Field-specific error paths: width, height, table shape, seat and zone vertex.
   const saveButton = page.getByRole('button', { name: 'Save draft', exact: true });
+  await page.getByTestId('location-canvas-mode-3d').check();
+  await assertOnlyCanvasModeVisible(page, '3d');
+  await setDetailsOpen(roomSettings, true);
   const incompleteWidth = page.getByLabel('Floor width (m)');
   await incompleteWidth.fill('12.');
-  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Last valid preview. Fix the highlighted 2D fields to update the preview.' }).waitFor();
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Showing the last valid 3D preview. Fix the highlighted layout fields to update it.' }).waitFor();
   assert.equal(await incompleteWidth.getAttribute('aria-invalid'), 'true', 'an incomplete decimal is exposed as invalid before blur');
   await incompleteWidth.fill('12.34'); await incompleteWidth.press('Tab');
-  await page.waitForFunction(() => !document.querySelector('[data-testid="location-room-preview-status"]')?.textContent?.includes('Last valid preview'));
+  await page.waitForFunction(() => !document.querySelector('[data-testid="location-room-preview-status"]')?.textContent?.includes('Showing the last valid 3D preview'));
   for (const [label, invalid, restore] of [
     ['Floor width (m)', '0.5', '12.34'], ['Floor height (m)', '0.5', '8.76'],
   ]) {
@@ -508,13 +878,15 @@ async function run() {
     await page.waitForFunction((element) => element === document.activeElement, await field.elementHandle());
     await field.fill(restore); await field.press('Tab');
   }
+  await setDetailsOpen(roomSettings, false);
 
   await page.getByRole('button', { name: 'West rectangle', exact: true }).click();
   const badRectX = page.getByLabel('Table X (m)'); await badRectX.fill('-0.1');
-  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Last valid preview. Fix the highlighted 2D fields to update the preview.' }).waitFor();
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Showing the last valid 3D preview. Fix the highlighted layout fields to update it.' }).waitFor();
   await badRectX.press('Tab'); await saveButton.click();
   await assertErrorAssociation(page, badRectX, 'X must be inside');
   await badRectX.fill('2.5'); await badRectX.press('Tab');
+  await page.locator('.loc-inspector-disclosure > summary').filter({ hasText: /^Seats \(\d+\)$/ }).click();
   const badSeat = page.getByLabel('Seat 1 X (m)'); await badSeat.fill('-0.5'); await badSeat.press('Tab'); await saveButton.click();
   await assertErrorAssociation(page, badSeat, 'Seat X must be inside');
   await badSeat.fill('1.75'); await badSeat.press('Tab');
@@ -527,6 +899,8 @@ async function run() {
   // The Sensors step reads the current eligible registry list, but edits only
   // the private authored document. A public draft never offers the console
   // RGB sensor that is attached to the seeded console-only legacy floor.
+  await page.getByTestId('location-canvas-mode-2d').check();
+  await assertOnlyCanvasModeVisible(page, '2d');
   await page.getByTestId('location-step-sensors').click();
   await page.waitForURL(new RegExp(`/locations/${draftId}/sensors$`));
   await page.getByRole('heading', { name: 'Sensors', exact: true }).waitFor();
@@ -543,10 +917,12 @@ async function run() {
   assert.equal(await page.getByLabel('Position Y (m)').inputValue(), '');
   assert.equal(await page.getByLabel('Height (m)').inputValue(), '', 'mounting height must be entered explicitly');
   const sensorX = page.getByLabel('Position X (m)'), sensorY = page.getByLabel('Position Y (m)'), sensorHeight = page.getByLabel('Height (m)');
+  await page.getByTestId('location-canvas-mode-3d').check();
+  await assertOnlyCanvasModeVisible(page, '3d');
   await typeSequentially(sensorX, '3.75'); await sensorX.press('Tab');
   await typeSequentially(sensorY, '2.5'); await sensorY.press('Tab');
   await typeSequentially(sensorHeight, '1.49'); await sensorHeight.press('Tab');
-  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Last valid preview. Fix the highlighted 2D fields to update the preview.' }).waitFor();
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'Showing the last valid 3D preview. Fix the highlighted layout fields to update it.' }).waitFor();
   await assertInlineErrorAssociation(page, sensorHeight, '(?:mounting height|value).*1\\.5.*15');
   await typeSequentially(sensorHeight, '15.01'); await sensorHeight.press('Tab');
   await assertInlineErrorAssociation(page, sensorHeight, '(?:mounting height|value).*1\\.5.*15');
@@ -557,6 +933,8 @@ async function run() {
   await typeSequentially(sensorHeight, '3.5'); await sensorHeight.press('Tab');
   const yaw = page.getByLabel('Yaw (°)'); await typeSequentially(yaw, '15.5'); await yaw.press('Tab');
   await page.getByLabel('Mirror orientation').check();
+  await page.getByTestId('location-canvas-mode-2d').check();
+  await assertOnlyCanvasModeVisible(page, '2d');
   await page.getByTestId('location-sensor-add').click();
   await page.getByTestId('location-canvas-sensor-aa-bb-cc-dd-ee-21').waitFor();
   await page.getByText('Available for this location · In this draft').waitFor();
@@ -770,6 +1148,8 @@ async function run() {
   assert.deepEqual(sensorSceneEvidence.position, [9.25, 4, -2.5], 'the generated sensor mesh keeps authored X/Y and its exact 4 m height above the wall top');
   assert.ok(Math.abs(sensorSceneEvidence.yawDirection[0] - 1) < 1e-6 && Math.abs(sensorSceneEvidence.yawDirection[2]) < 1e-6,
     'the sensor orientation arrow follows the authored zero-degree yaw');
+  await page.getByTestId('location-canvas-mode-3d').check();
+  await assertOnlyCanvasModeVisible(page, '3d');
   await page.getByTestId('location-room-preview-object-list').getByText('QA Ceiling Sensor B', { exact: false }).waitFor();
   assert.match(await page.getByTestId('location-room-preview-object-list').innerText(), /4\.00 m high/,
     'the text alternative exposes a sensor height above the 3 m wall top');
@@ -792,13 +1172,53 @@ async function run() {
   staleNodesConfig.revision += 1;
   writeFileSync(nodesPath, JSON.stringify(staleNodesConfig));
   try {
-    const staleProposalRequest = page.waitForRequest((request) => request.method() === 'POST'
-      && new URL(request.url()).pathname.endsWith('/coverage-suggestions'));
+    const refreshedEligibilityResponse = await adminContext.request.get(`${base}/api/locations/drafts/${encodeURIComponent(draftId)}/sensors`);
+    assert.equal(refreshedEligibilityResponse.status(), 200, 'the live registry refresh is visible before checking the browser proposal');
+    const refreshedEligibility = await jsonFrom(refreshedEligibilityResponse);
+    assert.ok(refreshedEligibility.sensors.some((sensor) => sensor.uid === SENSOR_A), 'the still-eligible sensor remains in the refreshed list');
+    assert.ok(!refreshedEligibility.sensors.some((sensor) => sensor.uid === SENSOR_B), 'the newly stale sensor is absent from the refreshed list');
+    let browserEventSequence = 0;
+    let browserEligibilityResponseSequence = null;
+    const browserProposalAttempts = [];
+    const recordProposalRequest = (request) => {
+      if (request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/coverage-suggestions')) return;
+      try {
+        browserProposalAttempts.push({ sequence: ++browserEventSequence, uids: request.postDataJSON().proposedSensors.map((item) => item.uid.toLowerCase()) });
+      } catch { browserProposalAttempts.push({ sequence: ++browserEventSequence, uids: [] }); }
+    };
+    const recordEligibilityResponse = (response) => {
+      const url = new URL(response.url());
+      if (response.request().method() === 'GET' && url.pathname.endsWith(`/drafts/${encodeURIComponent(draftId)}/sensors`)) browserEligibilityResponseSequence = ++browserEventSequence;
+    };
+    page.on('request', recordProposalRequest);
+    page.on('response', recordEligibilityResponse);
+    const staleProposalRequest = page.waitForRequest((request) => {
+      if (request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/coverage-suggestions')) return false;
+      try {
+        const proposed = request.postDataJSON().proposedSensors.map((item) => item.uid.toLowerCase());
+        return proposed.length === 1 && proposed[0] === SENSOR_A;
+      } catch { return false; }
+    });
     await page.reload();
     await page.getByRole('heading', { name: 'Sensors', exact: true }).waitFor();
     await page.getByTestId('location-sensor-stale-aa-bb-cc-dd-ee-22').waitFor();
-    await page.getByText(/no longer eligible/i).first().waitFor();
+    await page.getByTestId('location-sensor-stale-aa-bb-cc-dd-ee-22').getByText(/no longer eligible/i).waitFor();
     const staleProposal = await staleProposalRequest;
+    const proposalsAfterRefresh = browserProposalAttempts.filter((attempt) => attempt.sequence > (browserEligibilityResponseSequence ?? Number.MAX_SAFE_INTEGER));
+    assert.ok(browserEligibilityResponseSequence !== null, 'the browser receives the refreshed eligible-sensor response after reload');
+    assert.ok(proposalsAfterRefresh.length > 0, 'coverage is recomputed after the refreshed eligibility response');
+    assert.equal(proposalsAfterRefresh.some((attempt) => attempt.uids.includes(SENSOR_B)), false,
+      `no stale sensor is proposed after the refreshed eligible list arrives (${JSON.stringify({ browserEligibilityResponseSequence, browserProposalAttempts })})`);
+    await page.waitForFunction((testId) => {
+      const select = document.querySelector(`[data-testid="${testId}"] select`);
+      return !!select && !select.disabled;
+    }, roundCoverageTestId);
+    assert.equal(await page.getByLabel('Assigned owner for East round table').inputValue(), SENSOR_B,
+      'the refreshed proposal keeps the previously authored stale owner visible');
+    assert.match(await page.getByTestId(roundCoverageTestId).innerText(), /sensor no longer eligible/i,
+      'the refreshed coverage view applies the latest registry state to the retained draft owner');
+    page.off('request', recordProposalRequest);
+    page.off('response', recordEligibilityResponse);
     assert.deepEqual(staleProposal.postDataJSON().proposedSensors.map((item) => item.uid), [SENSOR_A],
       'the complete proposal retains eligible placements and excludes the stale assignment');
     const staleDraft = await readDraft(adminContext, base, draftId);
@@ -833,6 +1253,8 @@ async function run() {
   await page.getByTestId('location-step-details').click();
   await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
   await page.getByRole('button', { name: 'QA partition', exact: true }).click();
+  await setDetailsOpen(roomSettings, true);
+  assert.equal(await roomSettings.evaluate((element) => element.open), true, 'location details disclosure stays open for metadata and plan actions');
   checks.push('eligible sensor filtering; unplaced pose/height bounds/mirror; Arrow/Shift+Arrow keyboard nudges and pointer drag change only X/Y while preserving height/yaw/mirror; suggestion failure/retry retention; suggestion acceptance and clear-to-Unknown; unique owners; private reload; stale retention/proposal exclusion and publish revalidation with live state unchanged passed');
 
   // A saved plan gives the delayed standalone save a real blank-canvas action
@@ -844,6 +1266,20 @@ async function run() {
 
   // A delayed normal draft save locks controls until the submitted revision is applied.
   const beforeDelayedSave = await readDraft(adminContext, base, draftId);
+  await setDetailsOpen(roomSettings, true);
+  assert.equal(await roomSettings.evaluate((element) => element.open), true, 'metadata disclosure is open immediately before editing');
+  const locationNameVisibility = await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="location-field-location-name"]');
+    const bounds = (element) => {
+      const { x, y, width, height, bottom, right } = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return { x, y, width, height, bottom, right, display: style.display, visibility: style.visibility, overflow: style.overflow };
+    };
+    const ancestors = [];
+    for (let element = input; element && ancestors.length < 6; element = element.parentElement) ancestors.push({ tag: element.tagName, className: element.className, ...bounds(element) });
+    return { pathname: location.pathname, activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), detailsOpen: input?.closest('details')?.open, input: input ? bounds(input) : null, ancestors };
+  });
+  assert.equal(await page.getByLabel('Location name').isVisible(), true, `opened metadata input must be visible: ${JSON.stringify(locationNameVisibility)}`);
   await page.getByLabel('Location name').fill('QA Editor Suite · delayed save');
   let releaseDraftSave;
   let markDraftSaveStarted;
@@ -938,13 +1374,16 @@ async function run() {
   });
   assert.equal(remoteSave.status(), 200);
   expectHttpConsoleFailureAt('PUT', `/api/locations/drafts/${encodeURIComponent(draftId)}/assets/floor-plan`, 409);
+  await setDetailsOpen(roomSettings, true);
   await page.getByLabel('Upload floor plan (PNG or JPEG)').setInputFiles(planJpg);
   await page.getByText('This draft changed before the plan upload completed. Your selected image preview is retained. Reload latest before retrying.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Reload latest' }).isVisible(), true);
   assert.equal(await page.getByRole('button', { name: 'Keep my edits / copy changes' }).isVisible(), true);
+  await setDetailsOpen(roomSettings, true);
   assert.equal(await page.getByAltText('Selected floor plan preview; not uploaded').isVisible(), true);
   await page.screenshot({ path: join(artifacts, 'location-conflict-recovery.png'), fullPage: true });
   await page.getByRole('button', { name: 'Reload latest' }).click();
+  await setDetailsOpen(roomSettings, true);
   await page.getByLabel('Building').waitFor();
   assert.equal(await page.getByLabel('Building').inputValue(), 'Remote update');
   await page.getByRole('button', { name: 'Retry plan upload' }).click();
@@ -952,6 +1391,8 @@ async function run() {
 
   // A real post-rename draft directory-sync failure returns an applied result.
   // Keep the local image and revision until an explicit GET re-syncs the file.
+  await setDetailsOpen(roomSettings, true);
+  assert.equal(await roomSettings.evaluate((element) => element.open), true, 'floor-plan details are open before another upload');
   failDraftDirectorySync = true;
   const uncertainUploadResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname.endsWith(`/drafts/${encodeURIComponent(draftId)}/assets/floor-plan`));
@@ -960,6 +1401,26 @@ async function run() {
   assert.equal(uncertainResponse.status(), 200);
   const uncertainAlert = page.getByRole('alert').filter({ hasText: 'Floor plan attachment was applied to draft revision' });
   await uncertainAlert.waitFor();
+  const uncertainDisclosureState = await page.evaluate(() => {
+    const details = document.querySelector('[data-testid="location-room-settings"]');
+    const preview = document.querySelector('[data-testid="location-room-settings"] img[alt="Selected floor plan preview; not uploaded"]');
+    const rect = preview?.getBoundingClientRect();
+    const style = preview ? getComputedStyle(preview) : null;
+    return {
+      pathname: location.pathname,
+      detailsOpen: details?.open ?? false,
+      fieldsetDisabled: details?.closest('fieldset')?.disabled ?? false,
+      fieldsetInert: details?.closest('fieldset')?.inert ?? false,
+      currentStep: document.querySelector('[data-location-step-heading]')?.textContent?.trim() ?? '',
+      activeTag: document.activeElement?.tagName ?? '',
+      activeLabel: document.activeElement?.getAttribute('aria-label') ?? '',
+      previewVisible: !!preview && !!rect && rect.width > 0 && rect.height > 0 && style?.display !== 'none' && style?.visibility !== 'hidden',
+      previewRect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
+      previewDisplay: style?.display ?? null,
+      previewVisibility: style?.visibility ?? null,
+    };
+  });
+  assert.equal(uncertainDisclosureState.detailsOpen, true, `metadata and plan disclosure stays open after upload response: ${JSON.stringify(uncertainDisclosureState)}`);
   const uncertainRevision = Number(/draft revision (\d+)/i.exec(await uncertainAlert.innerText())?.[1]);
   const uncertainUpload = await persistence.drafts.getDraft('qa-admin', draftId);
   assert.ok(uncertainUpload);
@@ -969,7 +1430,7 @@ async function run() {
   assert.equal(await page.getByText(new RegExp(`Draft revision ${uncertainUpload.draftRevision} · private`)).count(), 1,
     'the returned applied draft revision is reflected in the editor');
   assert.equal(await page.getByAltText('Selected floor plan preview; not uploaded').isVisible(), true,
-    'the selected file preview remains visible while durability is uncertain');
+    `the selected file preview remains visible while durability is uncertain: ${JSON.stringify(uncertainDisclosureState)}`);
   assert.equal(await page.getByRole('button', { name: 'Retry plan upload' }).isDisabled(), true,
     'uncertain attachment is not blindly retried');
   assert.equal(await page.getByRole('button', { name: 'Save draft', exact: true }).isDisabled(), true,
@@ -996,6 +1457,7 @@ async function run() {
     && new URL(response.url()).pathname === `/api/locations/drafts/${encodeURIComponent(draftId)}`);
   await page.getByRole('button', { name: 'Reload latest' }).click();
   assert.equal((await recoveredResponse).status(), 200, 'explicit reload succeeds after exact file/directory recovery');
+  await setDetailsOpen(roomSettings, true);
   await page.getByAltText('Private floor plan background preview').waitFor();
   detail = await readDraft(adminContext, base, draftId);
   assert.equal(detail.durability, 'confirmed');
@@ -1019,11 +1481,14 @@ async function run() {
   });
   const confirmedUploadResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname.endsWith(`/drafts/${encodeURIComponent(draftId)}/assets/floor-plan`));
+  await setDetailsOpen(roomSettings, true);
   await page.getByLabel('Upload floor plan (PNG or JPEG)').setInputFiles(planJpg);
   const confirmedResponse = await confirmedUploadResponse;
   assert.equal(confirmedResponse.status(), 200);
   const confirmedAlert = page.getByRole('alert').filter({ hasText: 'latest draft details could not be reloaded' });
   await confirmedAlert.waitFor();
+  assert.equal(await roomSettings.evaluate((element) => element.open), true,
+    'metadata and plan disclosure stays open when readback requires an authoritative reload');
   const confirmedRevision = Number(/saved to draft revision (\d+)/i.exec(await confirmedAlert.innerText())?.[1]);
   const confirmedUpload = await persistence.drafts.getDraft('qa-admin', draftId);
   assert.ok(confirmedUpload);
@@ -1034,6 +1499,7 @@ async function run() {
   assert.equal(await page.getByRole('button', { name: 'Save draft', exact: true }).isDisabled(), true);
   await page.unroute('**/api/locations/drafts/**');
   await page.getByRole('button', { name: 'Reload latest' }).click();
+  await setDetailsOpen(roomSettings, true);
   await page.getByAltText('Private floor plan background preview').waitFor();
   detail = await readDraft(adminContext, base, draftId);
   assert.equal(detail.draftRevision, confirmedUpload.draftRevision);
@@ -1087,6 +1553,9 @@ async function run() {
     Object.defineProperty(globalThis, '__locationModelResourceEvidence', { value: evidence, configurable: false });
   });
   await page.reload();
+  await roomSettings.waitFor();
+  assert.equal(await roomSettings.evaluate((element) => element.open), false, 'a full reload starts a fresh collapsed disclosure session');
+  await setDetailsOpen(roomSettings, true);
   await page.getByLabel('Location name').waitFor();
   await page.evaluate(() => { globalThis.__failLocationModelRenderer = false; });
   let failModelRead = true;
@@ -1138,8 +1607,32 @@ async function run() {
   const publicUpload = uploadEvent.response;
   assert.equal(gatedModelUploadStatus, 200); assert.equal(publicUpload.status(), 200);
   await page.unroute(`**/api/locations/drafts/${draftId}/assets/model`);
-  await page.getByTestId('location-model-preview-retry').waitFor();
-  await page.getByTestId('location-model-preview-retry').click();
+  const modelPreviewRetry = page.getByTestId('location-model-preview-retry');
+  await modelPreviewRetry.waitFor();
+  await modelPreviewRetry.scrollIntoViewIfNeeded();
+  const modelRetryHitTarget = await page.evaluate(() => {
+    const button = document.querySelector('[data-testid="location-model-preview-retry"]');
+    if (!button) return null;
+    const rect = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const bounds = (element) => {
+      const { x, y, width, height, bottom, right } = element.getBoundingClientRect();
+      return { x, y, width, height, bottom, right, position: getComputedStyle(element).position, zIndex: getComputedStyle(element).zIndex, pointerEvents: getComputedStyle(element).pointerEvents };
+    };
+    return {
+      button: bounds(button),
+      hit: hit ? { tag: hit.tagName, className: typeof hit.className === 'string' ? hit.className : '', testId: hit.getAttribute('data-testid'), bounds: bounds(hit) } : null,
+      hitWithinButton: !!hit && (hit === button || button.contains(hit)),
+      sharedViewport: bounds(document.querySelector('[data-testid="location-shared-viewport"]')),
+      modelLayer: bounds(document.querySelector('.loc-viewport-model')),
+      livePreview: bounds(document.querySelector('.loc-live-preview')),
+      layout: bounds(document.querySelector('.loc-step-layout')),
+    };
+  });
+  await page.screenshot({ path: join(artifacts, 'model-preview-error-hit-target.png'), fullPage: true });
+  assert.equal(modelRetryHitTarget?.hitWithinButton, true,
+  `the retry button receives pointer input in its visible preview: ${JSON.stringify(modelRetryHitTarget)}`);
+  await modelPreviewRetry.click();
   await page.getByText('GLB preview loaded.', { exact: true }).waitFor();
   await page.waitForFunction(() => document.querySelector('[data-testid="location-model-viewer"] tm-location-model-viewer')?.scene?.modelRoot?.children?.length > 0);
   const firstModel = await readDraft(adminContext, base, draftId);
@@ -1199,20 +1692,25 @@ async function run() {
   await page.evaluate(() => sessionStorage.setItem('wizard-model-renderer-failure', 'pending'));
   await page.reload();
   await page.getByRole('heading', { name: 'Room view', exact: true }).waitFor();
-  await page.getByTestId('location-model-viewer-retry').waitFor();
+  await page.getByTestId('location-model-preview-retry').waitFor();
   assert.equal(expectedBrowserEvents.filter((item) => item.kind === 'viewer-module-503').length, 1, 'the route injects exactly one viewer module failure');
-  await page.getByTestId('location-model-viewer-retry').click();
+  await page.getByTestId('location-model-preview-retry').click();
   assert.equal(expectedBrowserEvents.filter((item) => item.kind === 'intercepted-http-error'
     && item.method === 'GET' && item.path === '/location-model-viewer.js' && item.status === 503).length, 1,
   'the deliberate module error is consumed once for its exact GET path and 503 response');
-  await page.getByRole('alert').filter({ hasText: /The 3D preview could not be started in this browser\..*2D editor and object list.*retry the viewer/i }).waitFor();
+  await page.getByTestId('location-room-preview-status').filter({ hasText: 'The 3D preview could not be started in this browser.' }).waitFor();
+  await page.getByRole('alert').filter({ hasText: '3D preview unavailable. Use the 2D editor or retry the preview.' }).waitFor();
+  assert.equal(await page.getByTestId('location-model-2d-fallback').isVisible(), true, 'the fallback floor geometry remains visible after renderer failure');
+  assert.equal(await page.getByTestId('location-room-preview-object-list').isVisible(), true, 'the accessible object list remains visible after renderer failure');
+  assert.equal(await page.getByTestId('location-model-use-2d').isVisible(), true, 'renderer failure offers the 2D editor action');
+  assert.equal(await page.getByTestId('location-model-preview-retry').isVisible(), true, 'renderer failure offers a viewer retry action');
   assert.equal(expectedBrowserEvents.filter((item) => item.kind === 'renderer-construction-failure').length, 1,
     'only the injected renderer-construction error is consumed; later WebGL errors remain unexpected');
   assert.equal(await page.evaluate(() => globalThis.__locationModelResourceEvidence.rendererContextFailureAttempts), 1,
     'the failure is injected into exactly one Three renderer context request');
   assert.equal(await page.evaluate(() => globalThis.__failLocationModelRenderer), false,
     'the injected failure is disarmed when the single renderer-construction stack ends, before user retry');
-  await page.getByTestId('location-model-viewer-retry').click();
+  await page.getByTestId('location-model-preview-retry').click();
   await page.waitForFunction(() => !!document.querySelector('[data-testid="location-model-viewer"] tm-location-model-viewer')?.scene);
   await page.getByText('GLB preview loaded.', { exact: true }).waitFor();
   expectRendererFailure = false;
@@ -1411,6 +1909,9 @@ async function run() {
   }));
   await page.getByTestId('location-step-details').click();
   await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
+  assert.equal(await roomSettings.evaluate((element) => element.open), false,
+    'the model-step page reload starts Details with its disclosure collapsed');
+  await setDetailsOpen(roomSettings, true);
   await page.getByAltText('Private floor plan background preview').waitFor();
   const retainedPlanPreviewUrl = await page.getByAltText('Private floor plan background preview').getAttribute('src');
   assert.ok(retainedPlanPreviewUrl?.startsWith('blob:'), 'the editor keeps its plan preview through model-step navigation');
@@ -1424,26 +1925,47 @@ async function run() {
     camera: viewer.scene.camera.position.toArray(),
     target: viewer.scene.controls.target.toArray(),
   }));
-  assert.equal(await page.getByTestId('location-room-live-preview-toggle').getAttribute('aria-expanded'), 'true',
-    'the mobile preview pane starts expanded');
-  await page.getByTestId('location-room-live-preview-toggle').click();
-  assert.equal(await page.getByTestId('location-room-live-preview-toggle').getAttribute('aria-expanded'), 'false');
-  assert.equal(await page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer').count(), 1,
-    'collapsing the mobile preview hides its pane without unmounting the viewer');
-  await page.getByTestId('location-room-live-preview-toggle').click();
-  const viewerAfterPaneToggle = await page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer').evaluate((viewer) => ({
+  const mobileWorkspace = await page.evaluate(() => {
+    const bounds = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const { y, bottom } = element.getBoundingClientRect();
+      return { y, bottom };
+    };
+    return {
+      viewport: bounds('[data-testid="location-room-live-preview"]'),
+      inspector: bounds('[data-testid="location-editor-inspector"]'),
+      pageWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+    };
+  });
+  assert.ok(mobileWorkspace.viewport && mobileWorkspace.inspector && mobileWorkspace.viewport.bottom <= mobileWorkspace.inspector.y + 1,
+    'the mobile editor uses normal page flow with the viewport before its details region');
+  assert.ok(mobileWorkspace.pageWidth <= mobileWorkspace.innerWidth, 'the mobile editor has no horizontal overflow');
+  assert.equal(await page.getByTestId('location-room-live-preview-toggle').count(), 0,
+    'the mobile editor keeps the room canvas in normal page flow');
+  await assertOnlyCanvasModeVisible(page, '2d');
+  const mobile2dMode = page.getByTestId('location-canvas-mode-2d');
+  await mobile2dMode.focus();
+  await page.keyboard.press('ArrowRight');
+  await assertOnlyCanvasModeVisible(page, '3d');
+  const viewerAfterModeChange = await page.locator('[data-testid="location-room-preview-canvas"] tm-location-model-viewer').evaluate((viewer) => ({
     sameViewer: viewer === globalThis.__retainedRoomViewer,
     sameScene: viewer.scene === globalThis.__retainedRoomScene,
     camera: viewer.scene.camera.position.toArray(),
     target: viewer.scene.controls.target.toArray(),
   }));
+  await page.getByTestId('location-canvas-mode-3d').focus();
+  await page.keyboard.press('ArrowLeft');
+  await assertOnlyCanvasModeVisible(page, '2d');
+  await page.screenshot({ path: join(artifacts, 'room-editor-mobile-2d.png'), fullPage: true });
   assert.equal(viewerAfterStepChange.sameViewer, true, 'step navigation retains the same mounted viewer element');
   assert.equal(viewerAfterStepChange.sameScene, true, 'step navigation retains the same Three.js scene instance');
-  assert.equal(viewerAfterPaneToggle.sameViewer, true, 'mobile hide/show retains the same mounted viewer element');
-  assert.equal(viewerAfterPaneToggle.sameScene, true, 'mobile hide/show retains the same Three.js scene instance');
+  assert.equal(viewerAfterModeChange.sameViewer, true, 'mobile mode switching retains the same mounted viewer element');
+  assert.equal(viewerAfterModeChange.sameScene, true, 'mobile mode switching retains the same Three.js scene instance');
   for (const axis of ['camera', 'target']) for (let index = 0; index < 3; index++) {
-    assert.ok(Math.abs(viewerAfterPaneToggle[axis][index] - retainedViewerState[axis][index]) < 0.03,
-      `step and pane changes retain ${axis} component ${index}`);
+    assert.ok(Math.abs(viewerAfterModeChange[axis][index] - retainedViewerState[axis][index]) < 0.03,
+      `step and mobile mode changes retain ${axis} component ${index}`);
   }
   const releasedResources = await page.evaluate(() => globalThis.__locationModelResourceEvidence);
   assert.ok(releasedResources.imageBitmapsClosed < releasedResources.imageBitmapsCreated,
@@ -1525,18 +2047,57 @@ async function run() {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'tablet has no horizontal overflow');
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile has no horizontal overflow');
+  assert.equal(await page.locator('.loc-editor-fieldset > .loc-footer').evaluate((element) => getComputedStyle(element).position), 'static',
+    'the mobile Details footer stays in normal page flow instead of covering editor controls');
   const addZoneBox = await page.getByRole('button', { name: 'Add zone' }).boundingBox();
   assert.ok(addZoneBox.height >= 44, 'mobile editor action has a 44px target');
   await page.getByTestId('location-canvas-zoom-in').click();
-  const canvasBox = await page.locator('.loc-canvas').boundingBox();
+  const canvasLocator = page.locator('.loc-canvas');
+  await canvasLocator.scrollIntoViewIfNeeded();
+  const canvasBox = await canvasLocator.boundingBox();
   assert.ok(canvasBox);
+  const visibleCanvas = await page.evaluate(() => {
+    const canvas = document.querySelector('.loc-canvas'), box = canvas?.getBoundingClientRect();
+    const height = window.visualViewport?.height ?? window.innerHeight;
+    const x = box ? box.x + box.width * 0.88 : 0, y = box ? box.y + box.height * 0.82 : 0;
+    const hit = document.elementFromPoint(x, y);
+    return { box: box ? { x: box.x, y: box.y, width: box.width, height: box.height, bottom: box.bottom } : null,
+      viewportHeight: height, pageScrollY: window.scrollY, hitCanvas: !!hit && !!canvas?.contains(hit) };
+  });
+  assert.ok(visibleCanvas.box && visibleCanvas.box.y >= -1 && visibleCanvas.box.bottom <= visibleCanvas.viewportHeight + 1,
+    `mobile canvas is scrolled fully into the visual viewport before touch (${JSON.stringify(visibleCanvas)})`);
+  assert.equal(visibleCanvas.hitCanvas, true, `the touch start point hits the visible canvas (${JSON.stringify(visibleCanvas)})`);
   const touch = await page.context().newCDPSession(page);
+  await touch.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
   const viewBeforeTouch = await page.locator('.loc-canvas').getAttribute('viewBox');
+  await page.evaluate(() => {
+    globalThis.__roomCanvasTouchEvents = [];
+    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'touchstart', 'touchmove', 'touchend']) {
+      document.addEventListener(type, (event) => {
+        if (!(event.target instanceof Element) || !event.target.closest('.loc-canvas')) return;
+        globalThis.__roomCanvasTouchEvents.push({ type, pointerType: event.pointerType, x: event.clientX, y: event.clientY, target: (event.target).tagName, trusted: event.isTrusted });
+      }, { capture: true });
+    }
+  });
   await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: canvasBox.x + canvasBox.width * 0.88, y: canvasBox.y + canvasBox.height * 0.82, id: 41 }] });
   await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: canvasBox.x + canvasBox.width * 0.72, y: canvasBox.y + canvasBox.height * 0.68, id: 41 }] });
   await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await page.waitForFunction((before) => document.querySelector('.loc-canvas')?.getAttribute('viewBox') !== before, viewBeforeTouch);
-  assert.notEqual(await page.locator('.loc-canvas').getAttribute('viewBox'), viewBeforeTouch, 'touch drag pans the zoomed mobile canvas');
+  await page.waitForFunction((before) => document.querySelector('.loc-canvas')?.getAttribute('viewBox') !== before, viewBeforeTouch, { timeout: 1500 }).catch(() => {});
+  const touchEvidence = await page.evaluate(() => {
+    const canvas = document.querySelector('.loc-canvas');
+    const box = canvas?.getBoundingClientRect();
+    const x = box ? box.x + box.width * 0.88 : 0, y = box ? box.y + box.height * 0.82 : 0;
+    const hit = document.elementFromPoint(x, y);
+    return { after: canvas?.getAttribute('viewBox'), box: box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null,
+      hit: hit ? { tag: hit.tagName, className: typeof hit.className === 'string' ? hit.className : '' } : null,
+      events: globalThis.__roomCanvasTouchEvents, maxTouchPoints: navigator.maxTouchPoints,
+      visualViewportHeight: window.visualViewport?.height ?? window.innerHeight, pageScrollY: window.scrollY };
+  });
+  assert.notEqual(touchEvidence.after, viewBeforeTouch, `touch drag pans the zoomed mobile canvas: ${JSON.stringify({ before: viewBeforeTouch, ...touchEvidence })}`);
+  assert.ok(touchEvidence.events.some((event) => event.type === 'pointerdown' && event.pointerType === 'touch')
+    && touchEvidence.events.some((event) => event.type === 'pointermove' && event.pointerType === 'touch')
+    && touchEvidence.events.some((event) => event.type === 'pointerup' && event.pointerType === 'touch'),
+  `the mobile gesture reaches the canvas through normal touch PointerEvents: ${JSON.stringify(touchEvidence.events)}`);
   assert.equal(await page.getByText('Zoom 1.25×').count(), 1, 'mobile zoom control changes the view scale');
   await touch.detach();
   await page.getByTestId('location-canvas-reset').click();
@@ -1582,6 +2143,9 @@ async function run() {
   assert.equal(await page.getByRole('button', { name: 'Retry', exact: true }).isVisible(), true,
     'an initial draft-load failure has an explicit retry action');
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  const publishRoomSettings = page.getByTestId('location-room-settings');
+  await publishRoomSettings.waitFor();
+  await setDetailsOpen(publishRoomSettings, true);
   await page.getByLabel('Location name').waitFor();
   await page.unroute('**/api/locations/drafts/**');
   await page.getByLabel('Upload floor plan (PNG or JPEG)').setInputFiles(planPng);
@@ -1635,6 +2199,10 @@ async function run() {
   await inheritedPlanCard.getByRole('button', { name: 'Edit', exact: true }).click();
   await operatorPage.waitForURL(/\/locations\/[^/]+\/details$/);
   const inheritedPlanDraftId = decodeURIComponent(new URL(operatorPage.url()).pathname.split('/')[2]);
+  const operatorRoomSettings = operatorPage.getByTestId('location-room-settings');
+  await operatorRoomSettings.waitFor();
+  assert.equal(await operatorRoomSettings.evaluate((element) => element.open), false, 'a new manager editor starts without disclosure state from another editor');
+  await setDetailsOpen(operatorRoomSettings, true);
   await operatorPage.getByAltText('Private floor plan background preview').waitFor();
   await assertImageDecoded(operatorPage, operatorPage.getByAltText('Private floor plan background preview'));
   let inheritedPlanDraft = await readDraft(operatorContext, base, inheritedPlanDraftId);
@@ -1651,6 +2219,7 @@ async function run() {
   await operatorPage.getByText('Draft saved · private', { exact: true }).waitFor();
   await operatorPage.reload();
   await operatorPage.getByRole('heading', { name: 'QA Published Location inherited by operator', exact: true }).waitFor();
+  await setDetailsOpen(operatorRoomSettings, true);
   await operatorPage.getByAltText('Private floor plan background preview').waitFor();
   const operatorAfterEditList = await jsonFrom(await operatorContext.request.get(`${base}/api/locations`));
   assert.ok(operatorAfterEditList.drafts.some((draft) => draft.name === 'QA Published Location inherited by operator'),
@@ -1667,6 +2236,8 @@ async function run() {
   await operatorPage.waitForURL(/\/locations\/[^/]+\/details$/);
   const legacyDraftId = decodeURIComponent(new URL(operatorPage.url()).pathname.split('/')[2]);
   await operatorPage.getByRole('heading', { name: 'Legacy room', exact: true }).waitFor();
+  assert.equal(await operatorPage.evaluate(() => window.innerWidth), 1440,
+    'the legacy selection and hit test are exercised at the actual desktop viewport width');
   assert.equal(await operatorPage.getByText('Console-only · not shown to students', { exact: true }).count(), 1);
   const legacySensorsResponse = await operatorContext.request.get(`${base}/api/locations/drafts/${encodeURIComponent(legacyDraftId)}/sensors`);
   assert.equal(legacySensorsResponse.status(), 200);
@@ -1688,10 +2259,12 @@ async function run() {
     'the original legacy perimeter seat is visibly included in exact 1/1 coverage');
   await operatorPage.getByTestId('location-step-details').click();
   await operatorPage.waitForURL(new RegExp(`/locations/${legacyDraftId}/details$`));
+  await setDetailsOpen(operatorRoomSettings, true);
   await operatorPage.getByLabel('Location name').fill('Legacy room renamed');
   await operatorPage.getByRole('button', { name: 'Save draft', exact: true }).click();
   await operatorPage.getByText(/Draft saved · private/i).waitFor();
   await operatorPage.reload(); await operatorPage.getByRole('heading', { name: 'Legacy room renamed', exact: true }).waitFor();
+  await setDetailsOpen(operatorRoomSettings, true);
   let legacy = await readDraft(operatorContext, base, legacyDraftId);
   assert.equal(legacy.document.outline.length, 257);
   assert.deepEqual(legacy.document.zones[0].polygon, [[-10, -10], [410, -10], [400, 300]]);
@@ -1699,7 +2272,39 @@ async function run() {
   assert.deepEqual(legacy.document.tables[0].rect, { x: 0, y: 100, width: 40, height: 60 });
   assert.equal(legacy.document.tables[0].seats[0].x, -35); assert.equal(legacy.document.tables[0].seats[0].y, 130);
   const legacySeat = operatorPage.getByLabel('Seat 1 X (m)');
-  await operatorPage.getByRole('button', { name: 'Legacy rectangle', exact: true }).click();
+  const legacyTable = operatorPage.getByRole('button', { name: 'Legacy rectangle', exact: true });
+  await legacyTable.scrollIntoViewIfNeeded();
+  const legacyHitTest = await operatorPage.evaluate(() => {
+    const button = document.querySelector('[data-testid="location-select-table-qa-legacy-table"]');
+    if (!button) return null;
+    const rect = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const geometry = (element) => {
+      if (!element) return null;
+      const bounds = element.getBoundingClientRect(), style = getComputedStyle(element);
+      return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height, bottom: bounds.bottom,
+        position: style.position, display: style.display, overflowY: style.overflowY, gridTemplateRows: style.gridTemplateRows };
+    };
+    return { hitWithinButton: !!hit && (hit === button || button.contains(hit)),
+      hit: hit ? { tag: hit.tagName, testId: hit.getAttribute('data-testid'), className: typeof hit.className === 'string' ? hit.className : '' } : null,
+      viewport: { height: window.visualViewport?.height ?? innerHeight, scrollY: window.scrollY },
+      target: geometry(button), fieldset: geometry(button.closest('fieldset')),
+      details: geometry(document.querySelector('[data-testid="location-room-settings"]')),
+      planSection: geometry(document.querySelector('.loc-plan-section')),
+      detailsContent: geometry(document.querySelector('.loc-room-settings-content')),
+      inspector: geometry(document.querySelector('[data-testid="location-editor-inspector"]')),
+      footer: geometry(document.querySelector('.loc-editor-fieldset > .loc-footer')) };
+  });
+  assert.ok((legacyHitTest?.inspector?.height ?? 0) > 0,
+    `the bounded Details panel leaves the desktop object inspector scrollable: ${JSON.stringify(legacyHitTest)}`);
+  assert.equal(legacyHitTest?.hitWithinButton, true,
+    `the legacy table control is directly hit-testable after normal scrolling: ${JSON.stringify(legacyHitTest)}`);
+  await legacyTable.click();
+  const legacySeatsSummary = operatorPage.locator('.loc-inspector-disclosure > summary').filter({ hasText: 'Seats (1)' });
+  const legacySeatsDisclosure = legacySeatsSummary.locator('xpath=..');
+  await setDetailsOpen(legacySeatsDisclosure, true);
+  assert.equal(await legacySeatsDisclosure.evaluate((element) => element.open), true,
+    'the native seat disclosure is opened before editing the legacy seat coordinate');
   await legacySeat.fill('-0.3'); await legacySeat.press('Tab');
   await operatorPage.getByRole('button', { name: 'Save draft', exact: true }).click();
   await assertErrorAssociation(operatorPage, legacySeat, 'Seat X must be inside');
@@ -1711,7 +2316,7 @@ async function run() {
   assert.equal(legacy.document.tables[0].shape, undefined);
   assert.equal(legacy.document.tables[0].seats[0].x, -35);
   await operatorPage.screenshot({ path: join(artifacts, 'legacy-edit-preserved.png'), fullPage: true });
-  checks.push('real operator legacy edit, exact 257-point/off-floor preservation, strict changed-seat rejection, exact 1/1 legacy coverage, and plan round-trip passed');
+  checks.push('real operator desktop legacy edit, exact 257-point/off-floor preservation, strict changed-seat rejection, exact 1/1 legacy coverage, and plan round-trip passed');
   checks.push('admin-uploaded published plan remains privately previewable by a second manager only through the exact owned base draft after save/reload');
 
   // Keep a minimal, sanitized result summary; never include cookies, request bodies, or auth data.

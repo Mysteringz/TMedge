@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getEligibleDraftSensors, LocationApiError, suggestDraftCoverage } from '../../../entities/location-config/api/index.ts';
 import type { DraftDetail, EligibleSensor, LocationDocument, SensorAssignment, TableCoverageSuggestion } from '../../../entities/location-config/model/types.ts';
 import { addSensorAssignment, changedPoseField, coverageState, ownerSeatCount, patchSensorPose, proposedSensors, removeSensorAssignment, setTableOwner, tableCoverageMap } from '../../../features/location-editor/index.ts';
@@ -14,7 +15,7 @@ type PoseErrors = Partial<Record<PoseFieldName, string>>;
  * transient sensor selection, eligibility reads and advisory coverage state.
  * @example <SensorPlacementStep draft={draft} document={document} onUpdate={update} onSave={save} ... />
  */
-export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack, onContinue, busy, mustReload, onTransientValidityChange, onSensorLabelsChange }: {
+export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack, onContinue, busy, mustReload, onTransientValidityChange, onSensorLabelsChange, canvasTarget, canvasMode, active }: {
   draft: DraftDetail;
   document: LocationDocument;
   onUpdate(change: (current: LocationDocument) => LocationDocument): void;
@@ -25,6 +26,9 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
   mustReload: boolean;
   onTransientValidityChange(field: string, invalid: boolean): void;
   onSensorLabelsChange(sensors: Array<Pick<EligibleSensor, 'uid' | 'label'>>): void;
+  canvasTarget: HTMLElement | null;
+  canvasMode: '2d' | '3d';
+  active: boolean;
 }) {
   const [eligible, setEligible] = useState<EligibleSensor[]>([]);
   const [loadingSensors, setLoadingSensors] = useState(true);
@@ -77,7 +81,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
     } finally { setLoadingSensors(false); }
   };
 
-  useEffect(() => { void loadSensors(); }, [draft.draftId]);
+  useEffect(() => { if (active) void loadSensors(); }, [draft.draftId, active]);
   useEffect(() => {
     if (!selectedUid) {
       setPoseInput({ x: '', y: '', height: '', yaw: '0', mirror: false }); setPoseErrors({}); return;
@@ -89,7 +93,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
   }, [selectedUid, assignmentsByUid, eligibleByUid]);
 
   useEffect(() => {
-    if (loadingSensors || sensorError) { setCoverageResult(null); return; }
+    if (!active || loadingSensors || sensorError) { setCoverageResult(null); return; }
     const id = ++requestId.current;
     const timer = window.setTimeout(async () => {
       setCoverageResult({ key: coverageKey, state: 'loading' });
@@ -103,7 +107,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
       }
     }, 180);
     return () => { window.clearTimeout(timer); };
-  }, [draft.draftId, document, proposal, coverageKey, loadingSensors, sensorError, coverageRetry]);
+  }, [draft.draftId, document, proposal, coverageKey, loadingSensors, sensorError, coverageRetry, active]);
 
   const markerRows = useMemo(() => {
     const markers = document.sensorAssignments.map((assignment) => {
@@ -188,7 +192,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
   };
   const retryCoverage = () => { setCoverageResult(null); setCoverageRetry((current) => current + 1); };
 
-  return <section className="loc-sensor-step" aria-labelledby="location-sensors-heading">
+  return <section className="loc-sensor-step" role="region" tabIndex={0} aria-labelledby="location-sensors-heading">
     <div className="loc-sensor-heading"><div><p className="cx-kicker">Private placement</p><h2 id="location-sensors-heading" tabIndex={-1} data-location-step-heading>Sensors</h2>
       <p className="cx-muted">Edit the draft only. Current live sensor assignments are unchanged until you publish.</p></div>
       <p className="loc-visibility"><b>Visibility · read-only</b><span>{draft.visibility === 'public' ? 'Public' : 'Console-only'}</span></p>
@@ -237,15 +241,6 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
         <p id="location-sensor-keyboard-help" className="loc-sr">Select a sensor and use arrow keys to move it. Hold Shift to move ten centimetres.</p>
       </section>
 
-      <section className="card loc-sensor-map" aria-label="Sensor placement map">
-        <div className="loc-canvas-panel">
-          <EditorCanvas document={document} selected={null} drawing={null} planUrl={null} sensors={markerRows} selectedSensorUid={selectedUid ?? undefined} coverageStatus={coverageOverlay}
-            onSensorSelect={setSelectedUid} onSensorMove={moveSensor} onSensorNudge={nudgeSelectedSensor}
-            onSelect={() => {}} onSketchPoint={() => {}} onDragStart={() => {}} onDragTo={() => {}} onDragEnd={() => {}} onNudge={() => {}} onFinishDrawing={() => {}} onCancelDrawing={() => {}} />
-        </div>
-        <p className="loc-canvas-caption">Top-left origin · position in metres; sensor markers can be selected from the list, dragged, or moved with arrow keys.</p>
-      </section>
-
       <aside className="card loc-sensor-inspector" aria-label="Selected sensor placement">
         <h3>Sensor placement</h3>
         {!selectedUid ? <p>Select an eligible sensor to place it.</p>
@@ -278,6 +273,14 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
               : <p>Select an eligible sensor to place it.</p>}
       </aside>
     </div>
+    {active && canvasTarget && canvasMode === '2d' && createPortal(<section className="card loc-sensor-map" aria-label="Sensor placement map">
+      <div className="loc-canvas-panel">
+        <EditorCanvas document={document} selected={null} drawing={null} planUrl={null} sensors={markerRows} selectedSensorUid={selectedUid ?? undefined} coverageStatus={coverageOverlay}
+          onSensorSelect={setSelectedUid} onSensorMove={moveSensor} onSensorNudge={nudgeSelectedSensor}
+          onSelect={() => {}} onSketchPoint={() => {}} onDragStart={() => {}} onDragTo={() => {}} onDragEnd={() => {}} onNudge={() => {}} onFinishDrawing={() => {}} onCancelDrawing={() => {}} />
+      </div>
+      <p className="loc-canvas-caption">Top-left origin · position in metres; sensor markers can be selected from the list, dragged, or moved with arrow keys.</p>
+    </section>, canvasTarget)}
 
     <section className="card loc-coverage-section" aria-labelledby="location-coverage-heading">
       <div className="loc-sensor-heading"><div><h3 id="location-coverage-heading">Table coverage and owners</h3><p className="cx-muted">Suggestions are advisory. One sensor can own multiple tables; each table has at most one owner.</p></div>

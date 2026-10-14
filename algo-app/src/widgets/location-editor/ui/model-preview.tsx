@@ -7,9 +7,9 @@ import { ensureLocationModelViewer, type LocationModelViewerElement } from '../m
 type PreviewState = 'loading' | 'ready' | 'error';
 
 /** One stable viewer for the Room view and the live Details/Sensors companion pane. */
-export function ModelPreview({ draft, document, scene, capability, retry, stale, onRetry }: {
+export function ModelPreview({ draft, document, scene, capability, retry, stale, empty, onRetry, onUse2d }: {
   draft: DraftDetail; document: LocationDocument; scene: ModelSceneDocument; capability?: AssetCapability;
-  retry: number; stale: boolean; onRetry(): void;
+  retry: number; stale: boolean; empty: boolean; onRetry(): void; onUse2d(): void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const viewer = useRef<LocationModelViewerElement | null>(null);
@@ -19,10 +19,10 @@ export function ModelPreview({ draft, document, scene, capability, retry, stale,
   const [moduleRetry, setModuleRetry] = useState(0);
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
   const [state, setState] = useState<PreviewState>('loading');
-  const [message, setMessage] = useState('Loading built-in room preview…');
+  const [message, setMessage] = useState('Loading 3D preview…');
   const transform = useMemo(() => modelRootTransform(document.modelTransform ?? defaultTransform()), [document.modelTransform]);
-  const uses3dViewer = scene.source === 'generated' || scene.source === 'custom';
-  const readsModel = scene.source === 'custom' && !!document.modelAssetId;
+  const uses3dViewer = !empty && (scene.source === 'generated' || scene.source === 'custom');
+  const readsModel = !empty && scene.source === 'custom' && !!document.modelAssetId;
 
   useEffect(() => {
     if (!uses3dViewer) { setViewerError(''); setState('ready'); return; }
@@ -39,7 +39,7 @@ export function ModelPreview({ draft, document, scene, capability, retry, stale,
         const detail = (event as CustomEvent<{ state: string; message: string }>).detail;
         if (!detail) return;
         if (detail.state === 'error' && /3d preview could not be started/i.test(detail.message)) {
-          setState('error'); setMessage(detail.message); setViewerError('The 3D preview could not be started in this browser. Use the 2D editor and object list, or retry the viewer.');
+          setState('error'); setMessage(detail.message); setViewerError('3D preview unavailable. Use the 2D editor or retry the preview.');
           setViewerReady(false); return;
         }
         setState(detail.state === 'error' ? 'error' : detail.state === 'loaded' ? 'ready' : 'loading');
@@ -51,7 +51,7 @@ export function ModelPreview({ draft, document, scene, capability, retry, stale,
       element.replaceChildren(customElement);
       setViewerReady(true);
     }).catch(() => {
-      if (active) setViewerError('The edge-hosted 3D viewer could not be loaded. Use the 2D editor and object list, or retry the viewer.');
+      if (active) { setState('error'); setViewerError('3D preview unavailable. Use the 2D editor or retry the preview.'); }
     });
     return () => { active = false; };
   }, [uses3dViewer, moduleRetry]);
@@ -87,16 +87,16 @@ export function ModelPreview({ draft, document, scene, capability, retry, stale,
   }, [draft.draftId, document.modelAssetId, capability?.source, capability?.previewAvailable, readsModel, retry, scene.source, uses3dViewer]);
 
   useEffect(() => {
-    if (!viewerReady) return;
+    if (!viewerReady || viewerError) return;
     viewer.current?.setFloor(scene);
     if (scene.source === 'generated') { setState('ready'); setMessage('Built-in room preview ready.'); }
-  }, [viewerReady, scene, retry]);
-  useEffect(() => { if (viewerReady && scene.source === 'custom') viewer.current?.setTransform(transform); }, [viewerReady, scene.source, transform]);
+  }, [viewerReady, viewerError, scene, retry]);
+  useEffect(() => { if (viewerReady && !viewerError && scene.source === 'custom') viewer.current?.setTransform(transform); }, [viewerReady, viewerError, scene.source, transform]);
   useEffect(() => {
-    if (!viewerReady || scene.source !== 'custom' || !buffer) return;
+    if (!viewerReady || viewerError || scene.source !== 'custom' || !buffer) return;
     setState('loading');
     void viewer.current?.loadModel(buffer);
-  }, [viewerReady, scene.source, buffer]);
+  }, [viewerReady, viewerError, scene.source, buffer]);
 
   const retryViewer = () => {
     const element = viewer.current;
@@ -104,14 +104,16 @@ export function ModelPreview({ draft, document, scene, capability, retry, stale,
     element?.remove(); viewer.current = null; listener.current = null;
     setViewerReady(false); setViewerError(''); setModuleRetry((value) => value + 1);
   };
-  const status = stale ? 'Last valid preview. Fix the highlighted 2D fields to update the preview.' : message;
-  const showFallback = !uses3dViewer || !!viewerError;
+  const status = stale ? 'Showing the last valid 3D preview. Fix the highlighted layout fields to update it.'
+    : empty ? 'No valid 3D preview yet. Correct the highlighted layout fields to preview this room.' : message;
+  const showFallback = !uses3dViewer || !!viewerError || (readsModel && state === 'error');
+  const showError = !!viewerError || (readsModel && state === 'error');
   return <section className="loc-room-preview-panel" aria-label="3D room preview">
     <header className="loc-room-preview-heading"><div><h2>3D room preview</h2>
       {scene.source === 'generated' && <p>Room height · 3.0 m <span aria-hidden="true">·</span> Table height · 0.75 m</p>}
     </div></header>
     <div className="loc-model-viewer-frame" aria-busy={uses3dViewer && (state === 'loading' || !viewerReady)} data-testid="location-room-preview-canvas">
-      {viewerError && <p className="loc-alert" role="alert">{viewerError}</p>}
+      {showError && <p className="loc-alert" role="alert">3D preview unavailable. Use the 2D editor or retry the preview.</p>}
       {showFallback && <FloorGeometryFallback scene={scene} />}
       <div className="loc-model-viewer" ref={host} hidden={showFallback} role="img" aria-label="Read-only 3D location preview. Move tables, seats, and sensors in the 2D editor. Use the camera controls to orbit and zoom." data-testid="location-model-viewer" data-preview-canvas="true" />
     </div>
@@ -119,10 +121,10 @@ export function ModelPreview({ draft, document, scene, capability, retry, stale,
       <button type="button" className="btn btn-secondary" data-testid="location-model-zoom-in" disabled={!viewerReady || showFallback} onClick={() => viewer.current?.zoomIn()}>Zoom in</button>
       <button type="button" className="btn btn-secondary" data-testid="location-model-zoom-out" disabled={!viewerReady || showFallback} onClick={() => viewer.current?.zoomOut()}>Zoom out</button>
       <span data-testid="location-room-reset-view"><button type="button" className="btn btn-secondary" data-testid="location-model-reset-view" disabled={!viewerReady || showFallback} onClick={() => viewer.current?.resetCamera()}>Reset view</button></span>
-      {(state === 'error' || stale) && <span data-testid="location-room-preview-retry"><button type="button" className="btn btn-ghost" data-testid="location-model-preview-retry" onClick={onRetry}>Retry preview</button></span>}
-      {viewerError && <span data-testid="location-room-preview-viewer-retry"><button type="button" className="btn btn-ghost" data-testid="location-model-viewer-retry" onClick={retryViewer}>Retry viewer</button></span>}
+      {state === 'error' && <span data-testid="location-room-preview-retry"><button type="button" className="btn btn-ghost" data-testid="location-model-preview-retry" onClick={() => viewerError ? retryViewer() : onRetry()}>Retry 3D preview</button></span>}
+      {showError && <span data-testid="location-room-preview-use-2d"><button type="button" className="btn btn-secondary" data-testid="location-model-use-2d" onClick={onUse2d}>Use 2D editor</button></span>}
     </div>
-    <p className={`loc-model-preview-status ${state === 'error' || stale ? 'is-error' : ''}`} role={state === 'error' || stale ? 'alert' : 'status'} aria-live="polite" data-testid="location-room-preview-status">{status}</p>
+    <p className={`loc-model-preview-status ${state === 'error' || stale || empty ? 'is-error' : ''}`} role={state === 'error' || stale || empty ? 'alert' : 'status'} aria-live="polite" data-testid="location-room-preview-status">{status}</p>
     <SceneLegend scene={scene} />
   </section>;
 }
