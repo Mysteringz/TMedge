@@ -19,7 +19,7 @@ export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [
   const svg = useRef<SVGSVGElement>(null);
   const drag = useRef<DragStart | null>(null);
   const sensorDrag = useRef<string | null>(null);
-  const pan = useRef<{ clientX: number; clientY: number; x: number; y: number; width: number; height: number } | null>(null);
+  const pan = useRef<{ clientX: number; clientY: number; x: number; y: number; width: number; height: number; a: number; b: number; c: number; d: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [view, setView] = useState({ x: 0, y: 0, width: document.widthCm, height: document.heightCm });
   const [keyboardCursor, setKeyboardCursor] = useState<Point>([document.widthCm / 2, document.heightCm / 2]);
@@ -52,12 +52,14 @@ export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [
   const pointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     if (sensorDrag.current) { onSensorMove?.(sensorDrag.current, ...toFloor(event.clientX, event.clientY)); return; }
     if (drag.current) { onDragTo(toFloor(event.clientX, event.clientY)); return; }
-    const started = pan.current, element = svg.current;
-    const bounds = element?.getBoundingClientRect();
-    if (!started || !bounds || !element) return;
-    const x = clampView(started.x - (event.clientX - started.clientX) / bounds.width * started.width, document.widthCm - started.width);
-    const y = clampView(started.y - (event.clientY - started.clientY) / bounds.height * started.height, document.heightCm - started.height);
-    setView({ ...view, x, y });
+    const started = pan.current;
+    if (!started) return;
+    const deltaX = event.clientX - started.clientX, deltaY = event.clientY - started.clientY;
+    const floorDeltaX = started.a * deltaX + started.c * deltaY;
+    const floorDeltaY = started.b * deltaX + started.d * deltaY;
+    const x = clampView(started.x - floorDeltaX, document.widthCm - started.width);
+    const y = clampView(started.y - floorDeltaY, document.heightCm - started.height);
+    setView((current) => ({ ...current, x, y }));
   };
   const pointerUp = (event: React.PointerEvent<SVGSVGElement>) => {
     sensorDrag.current = null;
@@ -67,9 +69,10 @@ export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [
   };
   const pointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
     if (drawing || (event.target as Element).closest('[data-drag-kind]')) return;
-    const bounds = svg.current?.getBoundingClientRect(); if (!bounds) return;
+    const matrix = svg.current?.getScreenCTM(); if (!matrix) return;
+    const screenToFloor = matrix.inverse();
     event.preventDefault();
-    pan.current = { clientX: event.clientX, clientY: event.clientY, ...view };
+    pan.current = { clientX: event.clientX, clientY: event.clientY, ...view, a: screenToFloor.a, b: screenToFloor.b, c: screenToFloor.c, d: screenToFloor.d };
     svg.current?.setPointerCapture(event.pointerId);
   };
   const clickCanvas = (event: React.MouseEvent<SVGSVGElement>) => {
@@ -119,7 +122,7 @@ export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [
       <button type="button" className="btn btn-secondary" data-testid="location-canvas-zoom-in" aria-label="Zoom in" disabled={zoom >= 5} onClick={() => zoomBy(1.25)}>+</button>
       <button type="button" className="btn btn-ghost" data-testid="location-canvas-reset" onClick={() => { setZoom(1); setView({ x: 0, y: 0, width: document.widthCm, height: document.heightCm }); }}>Reset view</button>
     </div>
-    <svg ref={svg} className="loc-canvas" data-testid="location-floor-canvas" data-location-field="floor.outline" viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} role="application" aria-label={selectedSensorUid ? 'Sensor placement map. Use arrow keys to move the selected sensor; hold Shift for larger steps.' : 'Floor plan editor. Use the arrow keys to adjust the selected item. Drag the blank canvas to pan.'} tabIndex={0}
+    <svg ref={svg} className="loc-canvas" data-testid="location-floor-canvas" data-location-field="floor.outline" viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} preserveAspectRatio="xMidYMid meet" role="application" aria-label={selectedSensorUid ? 'Sensor placement map. Use arrow keys to move the selected sensor; hold Shift for larger steps.' : 'Floor plan editor. Use the arrow keys to adjust the selected item. Drag the blank canvas to pan.'} tabIndex={0}
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onClick={clickCanvas} onKeyDown={keyDown}>
       <rect width={document.widthCm} height={document.heightCm} className="loc-floor" />
       {planUrl && <image href={planUrl} x="0" y="0" width={document.widthCm} height={document.heightCm} preserveAspectRatio="none" className="loc-plan" />}
