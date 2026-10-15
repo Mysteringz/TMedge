@@ -83,7 +83,8 @@ def run(model_path: str, why: str, mapping_path: str = 'data/ml/mapping/2ccf670b
     frames, seen = [], 0
     for day in DAYS:
         f = load_features(features_root, UID, day) if background == 'fixed' else None
-        ids = read_shard(shards_root, UID, day).ids
+        shard = read_shard(shards_root, UID, day)
+        ids = shard.ids
         for i, tid in enumerate(ids):
             name = tid[:16]
             if name not in labels:
@@ -96,7 +97,7 @@ def run(model_path: str, why: str, mapping_path: str = 'data/ml/mapping/2ccf670b
             hm, off = forward_np(model, inputs_i)
             pred = [(x, y) for (x, y, _c) in decode(hm, off, model['threshold']) if inside_photo(m, x, y)]
             tp, fp, fn, dists = match(truth, pred, RADIUS)
-            frames.append(Frame(int(f['at'][i]), len(truth), len(pred), tp, fp, fn, dists))
+            frames.append(Frame(int(shard.at[i]), len(truth), len(pred), tp, fp, fn, dists))
     if seen != len(labels):
         raise SystemExit(f'only {seen} of {len(labels)} hand-labelled frames were found')
     if frames_out is not None:
