@@ -53,6 +53,7 @@ before(async () => {
   const accounts = new AlgoUsers(users);
   await accounts.add('engineer', PASSWORD, 'engineer', undefined, ['firmware', 'hardware']);
   await accounts.add('viewer', PASSWORD, 'viewer');
+  await accounts.add('admin', PASSWORD, 'admin');
   handle = startAlgo(runtime, 0, '127.0.0.1', loadAlgoAuthConfig({
     DATA_DIR: directory, ALGO_USERS_FILE: users, SESSION_SECRET: 'local-only-test-secret'.repeat(3),
   }, config.adminPassword), createConsole(runtime), { firmwareRelease: new GitHubReleaseSource(undefined, github.fetch),
@@ -109,6 +110,60 @@ async function fits(page, width, scope = '.cx') {
   assert.deepEqual(layout.clipped, [], 'controls must stay reachable');
   assert.deepEqual(layout.small, [], 'touch controls must be at least 44px high');
 }
+
+test('chromium: hamburger groups expand independently and reveal the current page', { timeout: 60_000 }, async () => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  const { context, page, errors } = await open(browser, 'admin', '/', { width: 390, height: 844 });
+  try {
+    const toggle = page.getByRole('button', { name: 'Navigation menu', exact: true });
+    await toggle.click();
+    const menu = page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
+    assert.deepEqual(await menu.locator(':scope > a, :scope > .cx-mobile-nav-group > button').evaluateAll(rows => rows.map(row => [
+      row.querySelector('.cx-mobile-nav-number').textContent,
+      row.querySelector('.cx-mobile-nav-label')?.textContent ?? row.textContent.replace(row.querySelector('.cx-mobile-nav-number').textContent, '').trim(),
+    ])), [['01', 'Home'], ['02', 'Algorithm flow'], ['03', 'ML'], ['04', 'Debug console'], ['05', 'Devices'], ['06', 'Analytics'], ['07', 'Locations'], ['08', 'Accounts']]);
+    const ml = menu.getByRole('button', { name: 'ML', exact: true });
+    const devices = menu.getByRole('button', { name: 'Devices', exact: true });
+    assert.equal(await ml.getAttribute('aria-expanded'), 'false');
+    assert.equal(await devices.getAttribute('aria-expanded'), 'false');
+    assert.equal(await menu.getByRole('link', { name: 'ML job', exact: true }).count(), 0);
+    await ml.click();
+    await devices.click();
+    assert.equal(await ml.getAttribute('aria-expanded'), 'true');
+    assert.equal(await devices.getAttribute('aria-expanded'), 'true');
+    assert.deepEqual(await menu.locator('.cx-mobile-nav-group a:visible').allTextContents(), ['ML job', 'ML data', 'Updates', 'Adoption', 'TMflash Web', 'TMflash Download']);
+    await shot(page, 'grouped-hamburger-phone');
+    await ml.click();
+    assert.equal(await ml.getAttribute('aria-expanded'), 'false');
+    assert.equal(await devices.getAttribute('aria-expanded'), 'true');
+    await ml.click();
+    await menu.getByRole('link', { name: 'ML data', exact: true }).click();
+    await page.waitForURL(`${base}/ml-data`);
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    await toggle.click();
+    assert.equal(await ml.getAttribute('aria-expanded'), 'true');
+    assert.equal(await menu.getByRole('link', { name: 'ML data', exact: true }).getAttribute('aria-current'), 'page');
+    await page.keyboard.press('Escape');
+    assert.equal(await toggle.evaluate(button => button === document.activeElement), true);
+    await page.setViewportSize({ width: 667, height: 375 });
+    await toggle.click();
+    await devices.click();
+    await menu.getByRole('link', { name: 'TMflash Download', exact: true }).scrollIntoViewIfNeeded();
+    const bounds = await menu.boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 668 && bounds.y + bounds.height <= 375, 'expanded navigation fits landscape');
+    await shot(page, 'grouped-hamburger-landscape');
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); await browser.close(); }
+  const restrictedBrowser = await chromium.launch({ headless: true, channel: 'chrome' });
+  const restricted = await open(restrictedBrowser, 'engineer', '/', { width: 390, height: 844 });
+  try {
+    await restricted.page.getByRole('button', { name: 'Navigation menu', exact: true }).click();
+    const menu = restricted.page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
+    assert.equal(await menu.getByRole('link', { name: 'Locations', exact: true }).count(), 0);
+    assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0);
+    assert.equal(await menu.getByRole('link', { name: 'Analytics', exact: true }).locator('.cx-mobile-nav-number').textContent(), '06');
+  } finally { await restricted.context.close(); await restrictedBrowser.close(); }
+});
 
 test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is still its own', { timeout: 60_000 }, async () => {
   const browser = await chromium.launch({ headless: true });

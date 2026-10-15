@@ -61,13 +61,11 @@ Rules that are never broken:
 
 ## The console, algo.hkumyseat.com
 
-On phones/tablets the navigation button opens Home and every module,
-including both ML pages. Accounts appears only for named accounts with
-account-management access. The current page is highlighted; selecting,
-tapping outside or Escape closes the menu. The wide header has Algorithm
-flow, ML (ML job, ML data), Debug console, Devices (Updates, Adoption,
-TMflash web, TMflash download) and Analytics. Each page has its own address
-and landing-page card.
+Mobile: 01 Home, 02 Algorithm flow, 03 ML, 04 Debug console, 05 Devices,
+06 Analytics, 07 Locations, 08 Accounts. ML groups ML job/data; Devices groups
+Updates, Adoption and TMflash Web/Download. Groups toggle independently;
+opening expands the current group. Locations requires locations.manage;
+Accounts requires named accounts with accounts.manage.
 
 At the right of the header are the notifications bell and an account icon.
 The account icon opens a menu with the person's username and access role,
@@ -178,6 +176,8 @@ Modules:
   Included firmware works offline; account adoption needs internet.
   Unnotarized builds have Apple's Open Anyway instructions. GitHub outages
   label the last checked build; invalid newest releases are refused.
+- 09 Locations, /locations. Admin/Operator private layout, sensor and 3D drafts;
+  publish to activate.
 - Accounts, /accounts (admins only). Create accounts, set access roles and
   team roles, reset passwords, revoke sessions.
 - Account settings, /account (everyone, for their own account only; opened

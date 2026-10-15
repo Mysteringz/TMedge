@@ -810,20 +810,30 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
           assert.ok(button.width >= 44 && button.height >= 44, 'navigation has a touch-sized target');
           await toggle.tap();
           assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
-          assert.equal(await menu.getByRole('link').count(), 10, 'Home and all nine module pages are available');
+          for (const name of ['ML', 'Devices']) {
+            const group = menu.getByRole('button', { name, exact: true });
+            if (await group.getAttribute('aria-expanded') === 'false') await group.tap();
+          }
+          assert.equal(await menu.getByRole('link').count(), 11, 'Home and all ten module pages, including Locations, are available');
           assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0, 'non-admins have no Accounts link');
           const bounds = await menu.boundingBox();
           assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1 && bounds.y + bounds.height <= viewport.height, 'open navigation fits even in landscape');
           await fits(page, viewport.width);
-          await menu.getByRole('link', { name: 'TMflash download', exact: true }).scrollIntoViewIfNeeded();
+          await menu.getByRole('link', { name: 'TMflash Download', exact: true }).scrollIntoViewIfNeeded();
           await shot(page, engine, `navigation-${scheme}-${viewport.width}`);
           await toggle.tap();
         }
       }
 
       await page.setViewportSize({ width: 390, height: 844 });
-      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Debug console', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['TMflash web', '/flash'], ['TMflash download', '/tmflash-download'], ['Home', '/']]) {
+      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Debug console', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['TMflash Web', '/flash'], ['TMflash Download', '/tmflash-download'], ['Home', '/']]) {
         await toggle.tap();
+        const groupName = ['/train', '/ml-data'].includes(path) ? 'ML'
+          : ['/updates', '/adoption', '/flash', '/tmflash-download'].includes(path) ? 'Devices' : null;
+        if (groupName) {
+          const group = menu.getByRole('button', { name: groupName, exact: true });
+          if (await group.getAttribute('aria-expanded') === 'false') await group.tap();
+        }
         await menu.getByRole('link', { name, exact: true }).tap();
         await page.waitForURL(`${base}${path}`);
         assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'selecting a module closes navigation');

@@ -147,8 +147,10 @@ function AccountMenu({ user, path, onSignOut }: { user: string; path: string; on
   </div>;
 }
 
+/** Hamburger navigation uses its own section numbers; module cards keep their existing numbers. */
 function MobileNavigation({ path, modules, canManageAccounts }: { path: string; modules: ConsoleModule[]; canManageAccounts: boolean }) {
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState<Record<'ML' | 'Devices', boolean>>({ ML: false, Devices: false });
   const root = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const id = useId();
@@ -167,23 +169,54 @@ function MobileNavigation({ path, modules, canManageAccounts }: { path: string; 
     window.addEventListener('blur', blur);
     return () => { document.removeEventListener('pointerdown', outside); desktop.removeEventListener('change', resize); window.removeEventListener('blur', blur); };
   }, [open]);
-  const links = [
-    { title: 'Home', path: '/', n: '' },
-    ...modules,
-    ...(canManageAccounts ? [{ title: 'Accounts', path: '/accounts', n: '' }] : []),
+  type Entry = { title: string; path: string; n: string; children?: never }
+    | { title: 'ML' | 'Devices'; n: string; children: ConsoleModule[]; path?: never };
+  const links: Entry[] = [
+    { title: 'Home', path: '/', n: '01' },
+    { title: 'Algorithm flow', path: '/flow', n: '02' },
+    { title: 'ML', n: '03', children: modules.filter(module => groupOf(module) === 'ML') },
+    { title: 'Debug console', path: '/console', n: '04' },
+    { title: 'Devices', n: '05', children: modules.filter(module => groupOf(module) === 'Devices') },
+    { title: 'Analytics', path: '/analytics', n: '06' },
+    { title: 'Locations', path: '/locations', n: '07' },
+    { title: 'Accounts', path: '/accounts', n: '08' },
   ];
+  const visibleLinks = links.filter(link => link.children ? link.children.length > 0
+    : link.path === '/' || (link.path === '/accounts' ? canManageAccounts : modules.some(module => module.path === link.path)));
+  // Each opening reveals the current page without coupling the two group toggles.
+  const toggleMenu = () => {
+    if (!open) setExpanded({
+      ML: modules.some(module => groupOf(module) === 'ML' && screenOf(module.path) === screen),
+      Devices: modules.some(module => groupOf(module) === 'Devices' && screenOf(module.path) === screen),
+    });
+    setOpen(value => !value);
+  };
   const menu = usePresence(open);
   return <div className="cx-mobile-nav" ref={root}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setOpen(false); toggle.current?.focus(); } }}>
     <button ref={toggle} className="cx-header-action cx-nav-toggle" aria-label="Navigation menu" title="Navigation menu"
-      aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}>
+      aria-expanded={open} aria-controls={open ? id : undefined} onClick={toggleMenu}>
       {open ? <XMark /> : <Menu />}
     </button>
     {menu && <nav id={id} className="cx-mobile-dropdown" aria-label="Mobile navigation" data-state={menu} inert={menu === 'leaving'}>
-      {links.map(link => <a key={link.path} href={link.path} data-testid={link.path === '/locations' ? 'location-nav-mobile' : undefined} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
+      {visibleLinks.map(link => link.children ? <div className="cx-mobile-nav-group" key={link.title}>
+        <button type="button" id={`${id}-${link.title}-toggle`} className="cx-mobile-group-toggle"
+          aria-expanded={expanded[link.title]} aria-controls={`${id}-${link.title}`}
+          data-active={link.children.some(module => screenOf(module.path) === screen) || undefined}
+          onClick={() => setExpanded(value => ({ ...value, [link.title]: !value[link.title] }))}>
+          <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span><span className="cx-mobile-nav-label">{link.title}</span>
+          <span className="cx-mobile-nav-chevron" aria-hidden="true">{expanded[link.title] ? '▾' : '▸'}</span>
+        </button>
+        <div id={`${id}-${link.title}`} role="group" aria-labelledby={`${id}-${link.title}-toggle`} hidden={!expanded[link.title]}>
+          {link.children.map(child => <a key={child.path} href={child.path} className="cx-mobile-nav-child" aria-current={screenOf(child.path) === screen ? 'page' : undefined}
+            onClick={event => { event.preventDefault(); setOpen(false); navigate(child.path); }}>
+            {child.path === '/flash' ? 'TMflash Web' : child.path === '/tmflash-download' ? 'TMflash Download' : child.title}
+          </a>)}
+        </div>
+      </div> : <a key={link.path} href={link.path} data-testid={link.path === '/locations' ? 'location-nav-mobile' : undefined} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
         onClick={event => { event.preventDefault(); setOpen(false); navigate(link.path); }}>
-        <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span>{link.title}
+        <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span><span className="cx-mobile-nav-label">{link.title}</span>
       </a>)}
     </nav>}
   </div>;
