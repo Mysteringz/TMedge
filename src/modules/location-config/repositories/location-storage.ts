@@ -14,6 +14,12 @@ export interface DraftWriteOutcome {
   contentSha256: string;
 }
 
+export interface DraftDeletionOutcome {
+  kind: 'deleted';
+  draftId: string;
+  durability: CommitDurability;
+}
+
 export interface RegistryCommitOutcome {
   kind: 'committed';
   durability: CommitDurability;
@@ -31,6 +37,8 @@ export interface LocationDraftRepository {
   /** Same reconciliation path for callers that already hold RegistryMutationCoordinator. */
   getDraftForReadWithinMutation(creatorId: string, draftId: string): Promise<LocationDraft | null>;
   listDrafts(creatorId: string): Promise<LocationDraft[]>;
+  /** Caller holds RegistryMutationCoordinator; delete only the exact revision confirmed by its creator. */
+  deleteDraftWithinMutation(creatorId: string, draftId: string, expectedRevision: number): Promise<DraftDeletionOutcome>;
   saveDraft(creatorId: string, draftId: string, expectedRevision: number, candidate: ValidatedLocationCandidate, updatedAt: number): Promise<DraftWriteOutcome>;
 }
 

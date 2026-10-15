@@ -1,4 +1,5 @@
 import { isPublishedDraft } from '../domain/publication-source.js';
+import { DeleteLocationDraftUseCase } from '../use-cases/delete-location-draft.js';
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import type { AlgoAuth } from '../../../algo/auth.js';
 import { routeParam } from '../../../shared/http.js';
@@ -154,6 +155,14 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     const draft = await requireDraft(dependencies.drafts, actor(req), routeParam(req.params, 'draftId'));
     const outcome = await save.execute({ creatorId: actor(req), draftId: draft.draftId, expectedDraftRevision: body.expectedDraftRevision as number, document: body.document });
     return send(res, 200, await draftWriteDto(outcome.draft, outcome.durability, dependencies));
+  }));
+
+  router.delete('/locations/drafts/:draftId', writeGuard, asyncRoute(async (req, res) => {
+    const body = strictRecord(req.body, ['expectedDraftRevision']);
+    const result = await new DeleteLocationDraftUseCase({ drafts: dependencies.drafts, coordinator: dependencies.coordinator }).execute({
+      creatorId: actor(req), draftId: routeParam(req.params, 'draftId'), expectedDraftRevision: body.expectedDraftRevision as number,
+    });
+    return send(res, 200, result);
   }));
 
   router.get('/locations/drafts/:draftId/sensors', asyncRoute(async (req, res) => {

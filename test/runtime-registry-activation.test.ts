@@ -166,6 +166,7 @@ test('reports received during delayed model acknowledgement survive publication 
     async createDraft() { throw new Error('unused'); },
     async getDraft(owner, id) { draftFetched = true; return owner === draft.creatorId && id === draft.draftId ? draft : null; },
     async getDraftForRead(owner, id) { return owner === draft.creatorId && id === draft.draftId ? draft : null; },
+    async deleteDraftWithinMutation() { throw new Error('unused'); },
     async getDraftForReadWithinMutation(owner, id) { draftFetched = true; return owner === draft.creatorId && id === draft.draftId ? draft : null; },
     async listDrafts() { return []; }, async saveDraft() { throw new Error('unused'); },
   };

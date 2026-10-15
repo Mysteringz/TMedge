@@ -27,6 +27,23 @@
 .cx .loc-list-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .cx .loc-list-actions .cx-muted { font-size: 12px; }
 .cx .tag-outline { display: inline-flex; min-height: 24px; align-items: center; padding: 0 8px; border: 1px solid var(--border-subtle-01); color: var(--text-secondary); font-size: 12px; }
+.cx .loc-draft-remove { display: inline-grid; min-height: 32px; border-radius: 999px; background: transparent; font-family: inherit; cursor: pointer; }
+.cx .loc-draft-remove > span { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.cx .loc-draft-badge-action { visibility: hidden; }
+.cx .loc-draft-badge-action svg { width: 16px; height: 16px; }
+.cx .loc-draft-remove:is(:hover, :focus-visible) { border-color: var(--interactive); color: var(--interactive); }
+.cx .loc-draft-remove:is(:hover, :focus-visible) .loc-draft-badge-default { visibility: hidden; }
+.cx .loc-draft-remove:is(:hover, :focus-visible) .loc-draft-badge-action { visibility: visible; }
+.cx .loc-draft-remove:disabled { cursor: wait; opacity: .6; }
+.cx .loc-remove-dialog { width: min(460px, calc(100vw - 32px)); max-height: 90dvh; overflow: auto; padding: 24px; border: 1px solid var(--border-subtle-01); border-radius: 8px; background: var(--layer-01); color: var(--text-primary); }
+.cx .loc-remove-dialog::backdrop { background: rgb(0 0 0 / 68%); }
+.cx .loc-remove-dialog h2 { margin-top: 0; }
+.cx .loc-remove-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+@media (hover: none), (pointer: coarse) {
+  .cx .loc-draft-remove { min-height: 44px; }
+  .cx .loc-draft-remove .loc-draft-badge-default { visibility: hidden; }
+  .cx .loc-draft-remove .loc-draft-badge-action { visibility: visible; }
+}
 .cx .loc-empty { align-items: flex-start; }
 .cx .loc-load { color: var(--text-secondary); }
 .cx .loc-alert, .cx .loc-validation { padding: 12px 16px; border-left: 3px solid var(--support-error); background: var(--layer-01); color: var(--text-primary); }

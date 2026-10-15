@@ -12,6 +12,7 @@ import { StartLocationEditDraftUseCase } from '../src/modules/location-config/us
 import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
 import { UploadLocationAssetUseCase } from '../src/modules/location-config/use-cases/upload-location-asset.js';
 import { PublishLocationUseCase } from '../src/modules/location-config/use-cases/publish-location.js';
+import { DeleteLocationDraftUseCase } from '../src/modules/location-config/use-cases/delete-location-draft.js';
 import { exposeAuthoredLocationCandidate } from '../src/modules/location-config/domain/location-candidate.js';
 import { isPublishedDraft } from '../src/modules/location-config/domain/publication-source.js';
 import { TrackLocationPublicationSource1792108800000 } from '../src/infrastructure/postgres/migrations/1792108800000-TrackLocationPublicationSource.js';
@@ -68,6 +69,15 @@ test('PostgreSQL commits exact draft receipts and restores historical inherited 
     assert.deepEqual(winner.sourceDraft, { draftId: older.draft.draftId, draftRevision: 1, basePublishedRevision: 1 });
     assert.equal(isPublishedDraft(older.draft, state.history), true);
     assert.deepEqual(state.history.map(row => row.revision), [1, 2, 3]);
+    const remover = new DeleteLocationDraftUseCase({ drafts, coordinator });
+    await assert.rejects(remover.execute({ creatorId: 'other-manager', draftId: first.draft.draftId, expectedDraftRevision: uploaded.outcome.draft.draftRevision }), /not found/i);
+    await assert.rejects(remover.execute({ creatorId: 'uploader', draftId: first.draft.draftId, expectedDraftRevision: 1 }), /draft changed/i);
+    const removal = await remover.execute({ creatorId: 'uploader', draftId: first.draft.draftId, expectedDraftRevision: uploaded.outcome.draft.draftRevision });
+    assert.equal(removal.kind, 'deleted');
+    assert.equal(await drafts.getDraft('uploader', first.draft.draftId), null);
+    assert.equal((await reopened.getActive(first.draft.locationId))?.activeRevision, 3);
+    assert.equal((await reopened.getActive(first.draft.locationId))?.history.at(-1)?.document.planAssetId, uploaded.metadata.assetId);
+    assert.ok(await assets.read('uploader', uploaded.metadata.assetId), 'removing the source draft preserves referenced asset bytes');
     const runner = source.createQueryRunner();
     try { await runner.connect(); await assert.rejects(new TrackLocationPublicationSource1792108800000().down(runner), /older draft bases/); }
     finally { await runner.release(); }

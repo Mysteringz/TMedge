@@ -15,6 +15,7 @@ import { exposeAuthoredLocationCandidate, parseLocationCandidate } from '../src/
 import { CreateLocationDraftUseCase } from '../src/modules/location-config/use-cases/create-location-draft.js';
 import { StartLocationEditDraftUseCase } from '../src/modules/location-config/use-cases/start-location-edit-draft.js';
 import { SaveLocationDraftUseCase } from '../src/modules/location-config/use-cases/save-location-draft.js';
+import { DeleteLocationDraftUseCase } from '../src/modules/location-config/use-cases/delete-location-draft.js';
 import { UploadLocationAssetUseCase } from '../src/modules/location-config/use-cases/upload-location-asset.js';
 import { ReadLocationDraftAssetUseCase } from '../src/modules/location-config/use-cases/read-location-draft-asset.js';
 import { PublishLocationUseCase } from '../src/modules/location-config/use-cases/publish-location.js';
@@ -422,6 +423,13 @@ test('file asset provenance survives manager A upload then B/C exact-base publis
     assert.equal(winner.assetProvenance?.modelAssetId?.kind === 'upload' ? winner.assetProvenance.modelAssetId.ownerId : null, 'manager-a');
     assert.deepEqual(winner.sourceDraft, { draftId: managerBDraft.draft.draftId, draftRevision: savedB.draft.draftRevision, basePublishedRevision: 1 });
     assert.equal((await persistence.published.listHistory(locationId)).length, 5, 'old winners remain immutable history');
+    await new DeleteLocationDraftUseCase({ drafts: persistence.drafts, coordinator: persistence.coordinator }).execute({ creatorId: 'manager-b', draftId: managerBDraft.draft.draftId, expectedDraftRevision: savedB.draft.draftRevision });
+    persistence.close();
+    persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDirectory);
+    assert.equal(await persistence.drafts.getDraftForRead('manager-b', managerBDraft.draft.draftId), null);
+    assert.equal((await persistence.published.getActive(locationId))?.activeRevision, 5);
+    assert.equal((await persistence.published.listHistory(locationId)).length, 5);
+    assert.ok(await persistence.assets.read('manager-a', model.metadata.assetId), 'deleting a source draft preserves published asset bytes');
   } finally {
     persistence?.close();
     rmSync(directory, { recursive: true, force: true });

@@ -23,6 +23,11 @@ async function jsonRequest<T>(path: string, method = 'GET', body?: unknown): Pro
 
 export function listLocations(): Promise<LocationList> { return jsonRequest('/api/locations'); }
 
+/** Remove only the creator-owned draft revision explicitly confirmed in the dialog. */
+export function removeLocationDraft(draft: DraftSummary): Promise<{ kind: 'deleted'; draftId: string; durability: 'confirmed' | 'unconfirmed' }> {
+  return jsonRequest(`/api/locations/drafts/${encodeURIComponent(draft.draftId)}`, 'DELETE', { expectedDraftRevision: draft.draftRevision });
+}
+
 export function listFurnitureLibrary(filter: { type?: FurnitureType; q?: string } = {}): Promise<{ items: FurnitureLibraryItem[] }> {
   const query = new URLSearchParams();
   if (filter.type) query.set('type', filter.type);

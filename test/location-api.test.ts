@@ -47,7 +47,7 @@ test('published draft receipts hide only completed work and old drafts can repla
     const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
     const request = async (method: string, path: string, body?: unknown) => {
       const response = await fetch(`${base}/api${path}`, { method, headers: { cookie, origin: base, 'x-tm-algo': '1', 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-      return { status: response.status, ...(await response.json() as { data: any; error: unknown }) };
+      return { status: response.status, ...(await response.json().catch(() => ({ data: null, error: null })) as { data: any; error: unknown }) };
     };
     const created = await request('POST', '/locations/drafts', { name: 'Original', building: 'Test', widthCm: 400, heightCm: 300 });
     assert.equal(created.status, 201);
@@ -79,6 +79,15 @@ test('published draft receipts hide only completed work and old drafts can repla
     assert.equal((await request('GET', '/locations')).data.drafts.length, 1, 'new edits are not hidden by an older receipt');
     const initialEdit = await request('PUT', `/locations/drafts/${id}`, { expectedDraftRevision: 1, document: { ...created.data.document, name: 'Edited original draft' } });
     assert.equal(initialEdit.status, 200, 'an original creation draft remains editable after the location has been published');
+    assert.equal((await request('DELETE', `/locations/drafts/${id}`, { expectedDraftRevision: 1 })).status, 409, 'a stale confirmation cannot delete newer edits');
+    assert.equal((await request('GET', `/locations/drafts/${id}`)).status, 200);
+    const removed = await request('DELETE', `/locations/drafts/${id}`, { expectedDraftRevision: 2 });
+    assert.equal(removed.status, 200);
+    assert.deepEqual(removed.data, { kind: 'deleted', draftId: id, durability: 'confirmed' });
+    assert.equal((await request('GET', `/locations/drafts/${id}`)).status, 404);
+    const afterRemoval = (await request('GET', '/locations')).data;
+    assert.equal(afterRemoval.drafts.length, 1, 'another private draft remains');
+    assert.equal(afterRemoval.published[0].activeRevision, 3, 'removing a source draft does not change the published location');
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -148,6 +157,12 @@ test('location routes enforce capability, write guard, ownership and immutable u
     assert.equal(Object.hasOwn(createdBody.data.document, 'visibility'), false, 'authored requests and document DTOs omit server-managed visibility');
     assert.equal(createdBody.data.document.proceduralRoom, 'simple-rectangle-v1', 'new rectangular drafts start with the built-in source');
     assert.equal((await fetch(`${base}/api/locations/drafts/${draftId}`, { headers: { cookie: secondOperatorCookie } })).status, 404);
+    assert.equal((await json('DELETE', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 1 }, secondOperatorCookie)).status, 404);
+    assert.equal((await json('DELETE', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 1 }, viewerCookie)).status, 403);
+    assert.equal((await json('DELETE', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 1 }, engineerCookie)).status, 403);
+    assert.equal((await json('DELETE', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 1 }, operatorCookie, { 'x-tm-algo': '' })).status, 403);
+    assert.equal((await json('DELETE', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 0 })).status, 422);
+    assert.equal((await json('DELETE', `/api/locations/drafts/${draftId}`, { expectedDraftRevision: 1, creatorId: 'someone-else' })).status, 422);
     const secondList = await json('GET', '/api/locations', undefined, secondOperatorCookie);
     assert.equal(((await secondList.json()) as { data: { drafts: unknown[] } }).data.drafts.length, 0,
       'another manager cannot list this private draft');
@@ -602,6 +617,13 @@ function makePersistence(directory: string) {
     },
     async getDraftForRead(creatorId, draftId) {
       return this.getDraft(creatorId, draftId);
+    },
+    async deleteDraftWithinMutation(creatorId, draftId, expectedRevision) {
+      const draft = draftsById.get(draftId);
+      if (!draft || draft.creatorId !== creatorId) throw new Error('draft not found');
+      if (draft.draftRevision !== expectedRevision) throw new LocationConflictError();
+      draftsById.delete(draftId);
+      return { kind: 'deleted', draftId, durability: 'confirmed' };
     },
     async getDraftForReadWithinMutation(creatorId, draftId) {
       return this.getDraft(creatorId, draftId);

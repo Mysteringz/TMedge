@@ -61,9 +61,8 @@ Rules that are never broken:
 
 ## The console, algo.hkumyseat.com
 
-Mobile sections: 01 Home, 02 Algorithm flow, 03 ML, 04 Debug console,
-05 Devices, 06 Analytics, 07 Locations, 08 Accounts. ML and Devices expand
-independently; opening reveals the current group.
+Menu: 01 Home, 02 Algorithm flow, 03 ML, 04 Debug console,
+05 Devices, 06 Analytics, 07 Locations, 08 Accounts. ML/Devices expand independently; the current group opens.
 
 At the right of the header are the notifications bell and an account icon.
 The account icon opens a menu with the person's username and access role,
@@ -174,10 +173,10 @@ Modules:
   Included firmware works offline; account adoption needs internet.
   Unnotarized builds have Apple's Open Anyway instructions. GitHub outages
   label the last checked build; invalid newest releases are refused.
-- 09 Locations, /locations. Admin/Operator private layout, sensor and 3D drafts.
-  Valid drafts replace the active layout as a new revision;
-  concurrent changes still conflict. Published draft revisions leave Your drafts.
-  Other drafts remain private and available.
+- 09 Locations, /locations. Admin/Operator layout/sensor/3D drafts.
+  Valid drafts publish as new layout revisions; concurrent changes conflict.
+  Published drafts leave Your drafts. Hover/focus the badge for Remove
+  (always shown on touch). Confirm permanent removal; published data/assets remain.
 - Accounts, /accounts (admins only). Create accounts, set access roles and
   team roles, reset passwords, revoke sessions.
 - Account settings, /account (everyone, for their own account only; opened

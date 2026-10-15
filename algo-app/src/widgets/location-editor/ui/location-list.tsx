@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
-import { createLocationDraft, listLocations, LocationApiError, startLocationEdit } from '../../../entities/location-config/api/index.ts';
+import { useEffect, useRef, useState } from 'react';
+import { createLocationDraft, listLocations, LocationApiError, removeLocationDraft, startLocationEdit } from '../../../entities/location-config/api/index.ts';
 import type { DraftSummary, LocationList } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
+import { Trash } from '../../../console/icons.tsx';
+import { DraftRemovalDialog } from './draft-removal-dialog.tsx';
 import './location-editor.css';
 
 /** Render the manager's published locations and creator-private drafts; use inside the capability-guarded LocationWizard route. */
@@ -16,6 +18,10 @@ export function LocationListPage() {
   const [width, setWidth] = useState('10');
   const [height, setHeight] = useState('8');
   const [revisionError, setRevisionError] = useState('');
+  const [pendingRemoval, setPendingRemoval] = useState<DraftSummary | null>(null);
+  const [removalError, setRemovalError] = useState('');
+  const [notice, setNotice] = useState('');
+  const draftsHeading = useRef<HTMLHeadingElement>(null);
 
   const refresh = async () => {
     setLoading(true); setError('');
@@ -24,6 +30,30 @@ export function LocationListPage() {
     finally { setLoading(false); }
   };
   useEffect(() => { void refresh(); }, []);
+
+  /** Close the modal before reloading; the removed badge can no longer receive focus. */
+  const reloadAfterRemoval = async () => {
+    setPendingRemoval(null);
+    await refresh();
+    requestAnimationFrame(() => draftsHeading.current?.focus());
+  };
+
+  const remove = async () => {
+    if (!pendingRemoval || busyId) return;
+    setBusyId(pendingRemoval.draftId); setRemovalError(''); setRevisionError(''); setNotice('');
+    try {
+      const result = await removeLocationDraft(pendingRemoval);
+      if (result.durability === 'unconfirmed') setRevisionError('Draft removal was applied, but storage durability could not be confirmed. Reload the list before continuing.');
+      else setNotice('Draft removed.');
+      await reloadAfterRemoval();
+    } catch (cause) {
+      setRemovalError(cause instanceof LocationApiError && cause.status === 409
+        ? 'The draft changed. Reload the list and review it before removing it.'
+        : cause instanceof LocationApiError && cause.status === 404
+          ? 'This draft no longer exists. Reload the list.'
+          : 'Removal could not be confirmed. Reload the list before trying again.');
+    } finally { setBusyId(''); }
+  };
 
   const create = async (event: React.FormEvent) => {
     event.preventDefault(); setRevisionError(''); setBusyId('create');
@@ -56,6 +86,7 @@ export function LocationListPage() {
     </header>
 
     {revisionError && <p className="loc-alert" role="alert">{revisionError}</p>}
+    {notice && <p role="status">{notice}</p>}
     {creating && <form className="card loc-create-form" onSubmit={create} aria-label="Create a location draft">
       <h2>New private draft</h2>
       <Field label="Location name" testId="location-create-name" value={name} onChange={setName} />
@@ -83,17 +114,23 @@ export function LocationListPage() {
             </ul> : <div className="card loc-empty"><p>No locations yet.</p><button type="button" className="btn btn-secondary" data-testid="location-create-empty" onClick={() => setCreating(true)}>Add location</button></div>}
           </section>
           <section className="loc-list-section" aria-labelledby="loc-drafts-title">
-            <div className="loc-section-heading"><h2 id="loc-drafts-title">Your drafts</h2><span>{data?.drafts.length ?? 0}</span></div>
+            <div className="loc-section-heading"><h2 id="loc-drafts-title" ref={draftsHeading} tabIndex={-1}>Your drafts</h2><span>{data?.drafts.length ?? 0}</span></div>
             {data?.drafts.length ? <ul className="loc-list" data-testid="location-draft-list">
               {data.drafts.map((draft) => <li className="card loc-list-card" key={draft.draftId}>
                 <div><h3>{draft.name}</h3><p className="cx-muted">{draft.building} · draft revision {draft.draftRevision} · {draft.basePublishedRevision === null ? 'new location' : `based on revision ${draft.basePublishedRevision}`}</p></div>
-                <div className="loc-list-actions"><span className="tag tag-outline">Draft · private</span><span className="cx-muted">{draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'}</span>
+                <div className="loc-list-actions"><button type="button" className="tag tag-outline loc-draft-remove" data-testid={`location-remove-${draft.draftId}`} aria-label={`Remove draft ${draft.name}`} disabled={busyId !== ''}
+                  onClick={() => { setRemovalError(''); setPendingRemoval(draft); }}>
+                  <span className="loc-draft-badge-default" aria-hidden="true">Draft · private</span>
+                  <span className="loc-draft-badge-action" aria-hidden="true"><Trash />Remove</span>
+                </button><span className="cx-muted">{draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'}</span>
                   <button className="btn btn-secondary" type="button" data-testid={`location-continue-${testToken(draft.draftId)}`} onClick={() => continueDraft(draft)}>Continue draft</button>
                 </div>
               </li>)}
             </ul> : <div className="card loc-empty"><p>You have no private drafts.</p></div>}
           </section>
         </>}
+    <DraftRemovalDialog draft={pendingRemoval} busy={busyId !== ''} error={removalError}
+      onCancel={() => setPendingRemoval(null)} onConfirm={() => void remove()} onReload={() => void reloadAfterRemoval()} />
   </main>;
 }
 

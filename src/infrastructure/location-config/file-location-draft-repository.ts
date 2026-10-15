@@ -5,7 +5,7 @@ import { InvalidLocationDocumentError, parseLocationDocument, isLocationId, type
 import { parseLegacySpatialProvenance, type ValidatedLocationCandidate } from '../../modules/location-config/domain/location-candidate.js';
 import { parseLocationAssetProvenance } from '../../modules/location-config/domain/location-assets.js';
 import { LocationConflictError, LocationDraftNotFoundError, LocationStorageUnavailableError, type LocationDraft } from '../../modules/location-config/domain/location-records.js';
-import type { DraftWriteOutcome, LocationDraftRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
+import type { DraftDeletionOutcome, DraftWriteOutcome, LocationDraftRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
 import { atomicReplaceFile, fileSha256, verifyAndSyncFile, type AtomicFileOperations } from './atomic-file-write.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -104,6 +104,25 @@ export class FileLocationDraftRepository implements LocationDraftRepository {
         this.recordWrite(path, write.durability, write.sha256);
         return { kind: 'committed', durability: write.durability, draft: structuredClone(saved), contentSha256: write.sha256 };
       });
+    } catch (error) { throw draftStorageError(error); }
+  }
+
+  /** Atomically replace the owner's draft collection; no assets or other drafts are removed. */
+  async deleteDraftWithinMutation(creatorId: string, draftId: string, expectedRevision: number): Promise<DraftDeletionOutcome> {
+    this.coordinator.assertHealthy();
+    validateCreator(creatorId);
+    if (!UUID_RE.test(draftId)) throw new LocationDraftNotFoundError();
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new TypeError('Draft revision is invalid.');
+    try {
+      const path = this.pathFor(creatorId);
+      this.recoverCurrent(path, creatorId);
+      const rows = readRows(path, creatorId);
+      const current = rows.find(row => row.draftId === draftId.toLowerCase());
+      if (!current) throw new LocationDraftNotFoundError();
+      if (current.draftRevision !== expectedRevision) throw new LocationConflictError();
+      const write = writeRows(path, rows.filter(row => row.draftId !== current.draftId), this.writeOperations);
+      this.recordWrite(path, write.durability, write.sha256);
+      return { kind: 'deleted', draftId: current.draftId, durability: write.durability };
     } catch (error) { throw draftStorageError(error); }
   }
 

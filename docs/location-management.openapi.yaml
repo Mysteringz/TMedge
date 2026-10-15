@@ -265,6 +265,57 @@ paths:
         '422': { $ref: '#/components/responses/ConsoleValidation' }
         '503': { $ref: '#/components/responses/ConsoleUnavailable' }
 
+
+    delete:
+      tags: [Location management]
+      summary: Permanently remove a caller-owned draft
+      description: >-
+        Requires confirmation of the observed draft revision. Serializes with
+        publication; newer draft edits return 409. Foreign and missing drafts
+        both return 404. Only the private draft record is removed; published
+        locations, history and immutable asset bytes remain. There is no undo.
+        File writes may return applied removal with durability unconfirmed.
+      security:
+        - algoCookie: []
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedDraftRevision]
+              properties:
+                expectedDraftRevision: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: The private draft was removed; durability distinguishes confirmed from applied-but-unconfirmed file removal.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  data:
+                    type: object
+                    required: [kind, draftId, durability]
+                    properties:
+                      kind: { type: string, enum: [deleted] }
+                      draftId: { type: string, format: uuid }
+                      durability: { type: string, enum: [confirmed, unconfirmed] }
+                  error: { type: object, nullable: true, description: Always null on success. }
+        '400': { $ref: '#/components/responses/ConsoleMalformedRequest' }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '404': { $ref: '#/components/responses/ConsoleNotFound' }
+        '409': { $ref: '#/components/responses/ConsoleConflict' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
   /api/locations/drafts/{draftId}/sensors:
     get:
       tags: [Location management]

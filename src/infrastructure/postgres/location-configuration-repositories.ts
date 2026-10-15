@@ -9,7 +9,7 @@ import {
   type FurnitureType, type LocationAssetMetadata, type LocationDraft, type PublishedLocationRevision, type PublishedLocationState,
 } from '../../modules/location-config/domain/location-records.js';
 import type {
-  FurnitureLibraryMetadata, FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, PublishedLocationRepository, RegistryMutationCoordinator,
+  DraftDeletionOutcome, FurnitureLibraryMetadata, FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, PublishedLocationRepository, RegistryMutationCoordinator,
   DraftWriteOutcome, RegistryCommitOutcome,
 } from '../../modules/location-config/repositories/location-storage.js';
 import { DEFAULT_IMAGE_LIMIT, DEFAULT_MODEL_LIMIT, FileLocationAssetStore, validateAsset } from '../location-config/file-location-asset-store.js';
@@ -108,6 +108,31 @@ export class PostgresLocationDraftRepository implements LocationDraftRepository 
         return committedDraftOutcome(mapDraft(savedRows[0]));
       });
     } catch (error) { throw storageError(error); }
+  }
+
+  /** A revision-checked DELETE cannot consume an edit saved after the confirmation was opened. */
+  async deleteDraftWithinMutation(creatorId: string, draftId: string, expectedRevision: number): Promise<DraftDeletionOutcome> {
+    validateCreatorId(creatorId);
+    if (!UUID_RE.test(draftId)) throw new LocationDraftNotFoundError();
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new TypeError('Draft revision is invalid.');
+    try {
+      const result: unknown = await this.source.query(
+        'DELETE FROM public.location_drafts WHERE creator_id = $1 AND draft_id = $2 AND draft_revision = $3 RETURNING draft_id',
+        [creatorId, draftId, expectedRevision],
+      );
+      if (!queryRows<{ draft_id: string }>(result)[0]) {
+        if (!await this.getDraft(creatorId, draftId)) throw new LocationDraftNotFoundError();
+        throw new LocationConflictError();
+      }
+      return { kind: 'deleted', draftId: draftId.toLowerCase(), durability: 'confirmed' };
+    } catch (error) {
+      if (error instanceof LocationConflictError || error instanceof LocationDraftNotFoundError) throw error;
+      // A lost DELETE acknowledgement is successful only after an authoritative read confirms absence.
+      try {
+        if (!await this.getDraft(creatorId, draftId)) return { kind: 'deleted', draftId: draftId.toLowerCase(), durability: 'confirmed' };
+      } catch { /* Unavailable readback cannot prove deletion. */ }
+      throw new LocationStorageUnavailableError();
+    }
   }
 }
 

@@ -100,6 +100,7 @@ function harness(options: {
     async createDraft() { throw new Error('unused'); },
     async getDraft(owner, id) { assert.equal(locked, true); events.push('draft'); return owner === draft.creatorId && id === draftId ? draft : null; },
     async getDraftForRead(owner, id) { return owner === draft.creatorId && id === draftId ? draft : null; },
+    async deleteDraftWithinMutation() { throw new Error('unused'); },
     async getDraftForReadWithinMutation(owner, id) { assert.equal(locked, true); events.push('draft'); return owner === draft.creatorId && id === draftId ? draft : null; },
     async listDrafts() { return []; }, async saveDraft() { throw new Error('unused'); },
   };
