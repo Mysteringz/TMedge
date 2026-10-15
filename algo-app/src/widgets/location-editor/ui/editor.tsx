@@ -290,7 +290,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
       const fieldset = element.querySelector<HTMLElement>('.loc-editor-fieldset');
       const details = fieldset?.querySelector<HTMLDetailsElement>('[data-testid="location-room-settings"]');
       const summaryHeight = details?.querySelector('summary')?.getBoundingClientRect().height ?? 0;
-      const inspectorMinimum = 200;
+      const inspectorMinimum = 260;
       const footerHeight = fieldset?.querySelector<HTMLElement>(':scope > .loc-footer')?.getBoundingClientRect().height ?? 0;
       const validationHeight = fieldset?.querySelector<HTMLElement>(':scope > .loc-validation')?.getBoundingClientRect().height ?? 0;
       const fieldsetGap = fieldset ? Number.parseFloat(getComputedStyle(fieldset).rowGap) || 0 : 0;
