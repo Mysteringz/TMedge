@@ -390,6 +390,30 @@ model ships, so it must measure the way a sensor runs.
 - **Uses of the hand test** go in the same ledger as job 2's
   (`data/ml/job2/reports/handtest-ledger.jsonl`).
 
+**Results (measured 2026-10-15).** The hand test is the 182 frames with a
+live background, the same frames as the edge detector's 0.693:
+
+| Model | 10 Oct F1 [95%] (fixed scoring) | Hand test F1 [95%] | Precision | Recall | Count error |
+|---|---|---|---|---|---|
+| Today's edge detector | 0.194 | **0.693** [0.624, 0.781] | 0.636 | 0.762 | 0.379 |
+| Recipe 1, best of 3 (run 2) | 0.805 [0.748, 0.856] | 0.290 [0.132, 0.494] | 0.679 | 0.184 | 0.901 |
+| Recipe 2, best of 3 (run 2) | 0.799 [0.736, 0.856] | 0.482 [0.323, 0.584] | 0.714 | 0.364 | 0.643 |
+| Final: recipe 2 on 6, 7, 10, 11 Oct | n/a | 0.479 [0.380, 0.633] | 0.841 | 0.335 | 0.725 |
+
+- **Recipe 2 minus recipe 1:** +0.192 [+0.006, +0.288], paired over 27
+  ten-minute blocks. By the rule, recipe 2 is better. On 10 Oct the two are
+  level.
+- **For the record, the old rule** (fixed background, 400 frames): recipe 1
+  0.390, recipe 2 0.427, final 0.363.
+- **Nothing ships.** The best model scores 0.48 against the edge detector's
+  0.69 on the same frames. It reports people more reliably (precision 0.71–0.84
+  against 0.64), but on these busy September evenings it finds only about a
+  third of them (recall 0.34–0.36 against 0.76). On the rig's October check
+  day it is far ahead: 0.80 against 0.19.
+- **The hand test has now been consulted 9 times** on this ledger, plus the
+  bake-off and job 1's ledger on iw-g2. A fresh hand-labelled set from other
+  days is needed before it decides much more.
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 
