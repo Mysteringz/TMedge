@@ -1,3 +1,4 @@
+import { RemoveLocationUseCase } from '../use-cases/remove-location.js';
 import { isPublishedDraft } from '../domain/publication-source.js';
 import { DeleteLocationDraftUseCase } from '../use-cases/delete-location-draft.js';
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
@@ -36,7 +37,7 @@ export interface LocationRouterDependencies {
   furnitureLibrary: FurnitureLibraryStore;
   assetMetadata: LocationAssetMetadataRepository;
   coordinator: RegistryMutationCoordinator;
-  runtime: import('../repositories/location-storage.js').PreparedLocationRuntime<PreparedRuntimeGeneration>;
+  runtime: import('../repositories/location-storage.js').PreparedLocationRuntime<PreparedRuntimeGeneration> & import('../repositories/location-storage.js').PreparedLocationRemovalRuntime<PreparedRuntimeGeneration>;
   modelDistributor?: PublishedModelDistributor;
   suggestCoverage: SuggestLocationCoverage;
   now?: () => number;
@@ -116,7 +117,7 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     const creatorId = actor(req);
     const snapshot = await dependencies.snapshots.readSnapshot();
     const drafts = await dependencies.drafts.listDrafts(creatorId);
-    const published = snapshot.locations.map((state) => {
+    const published = snapshot.locations.filter(state => !state.removal).map((state) => {
       const active = state.history.find((revision) => revision.revision === state.activeRevision);
       if (!active) throw new LocationStorageUnavailableError();
       return {
@@ -134,6 +135,14 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     const body = strictRecord(req.body, ['name', 'building', 'widthCm', 'heightCm']);
     const outcome = await create.execute({ creatorId: actor(req), name: body.name as string, building: body.building as string, widthCm: body.widthCm as number, heightCm: body.heightCm as number });
     return send(res, 201, await draftWriteDto(outcome.draft, outcome.durability, dependencies));
+  }));
+
+  router.delete('/locations/:locationId', writeGuard, asyncRoute(async (req, res) => {
+    const body = strictRecord(req.body, ['expectedPublishedRevision']);
+    const result = await new RemoveLocationUseCase({ published: dependencies.published, snapshots: dependencies.snapshots, coordinator: dependencies.coordinator, runtime: dependencies.runtime, now: dependencies.now }).execute({
+      creatorId: actor(req), locationId: routeParam(req.params, 'locationId'), expectedPublishedRevision: body.expectedPublishedRevision as number,
+    });
+    return send(res, 200, result);
   }));
 
   router.post('/locations/:locationId/drafts', writeGuard, asyncRoute(async (req, res) => {
@@ -364,10 +373,12 @@ async function draftWriteDto(
 ) {
   const base = resolvedBase === undefined ? await pinnedBase(draft, dependencies) : resolvedBase;
   const candidate = revalidateLocationCandidate(draft.document, draft.legacySpatial, base, draft.basePublishedRevision);
+  const state = await dependencies.published.getActive(draft.locationId);
   return {
     draftId: draft.draftId, locationId: draft.locationId,
     draftRevision: draft.draftRevision, basePublishedRevision: draft.basePublishedRevision,
-    currentPublishedRevision: (await dependencies.published.getActive(draft.locationId))?.activeRevision ?? null,
+    currentPublishedRevision: state?.activeRevision ?? null,
+    locationRemoved: !!state?.removal,
     visibility: draft.document.visibility,
     durability,
     document: exposeAuthoredLocationCandidate(candidate.document, candidate.legacySpatial),

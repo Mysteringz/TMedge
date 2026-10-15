@@ -45,8 +45,23 @@ export class EdgeLocationPublicationRuntime implements PreparedLocationRuntime<P
         ...(node.floorId && node.pose ? { floor: node.floorId, pose: node.pose } : {}),
         owns: node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector,
       })),
-    }, documents, legacySpatialByLocation, modelDispositionByLocation);
+    }, documents, legacySpatialByLocation, modelDispositionByLocation, new Set(snapshot.locations.filter(row => row.removal).map(row => row.locationId)));
     return this.runtime.prepareGeneration(registry);
+  }
+
+  /** Prepare a complete generation without the removed floor and with its sensors unplaced. */
+  prepareRemoval(snapshot: LocationRegistrySnapshot, locationId: string): PreparedRuntimeGeneration {
+    const remaining = snapshot.locations.filter(row => row.locationId !== locationId && !row.removal);
+    const documents = remaining.flatMap(state => state.activeRevision === 0 ? [] : [parseLocationDocument(state.history.find(row => row.revision === state.activeRevision)!.document)]);
+    const legacy = new Map(remaining.flatMap(state => {
+      const active = state.history.find(row => row.revision === state.activeRevision);
+      return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
+    }));
+    const nodes = snapshot.nodes.map(node => ({ uid: node.uid, label: node.label,
+      ...(node.floorId && node.floorId !== locationId && node.pose ? { floor: node.floorId, pose: node.pose } : {}),
+      owns: node.floorId === locationId ? [] : node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector }));
+    const removed = new Set([...snapshot.locations.filter(row => row.removal).map(row => row.locationId), locationId]);
+    return this.runtime.prepareGeneration(buildRegistryFromLocationDocuments(this.siteSeed, { nodes }, documents, legacy, activeLocationModelDispositions(remaining), removed));
   }
 
   refresh(prepared: PreparedRuntimeGeneration): PreparedRuntimeGeneration {
@@ -74,6 +89,7 @@ function activeDocuments(
   const legacySpatialByLocation = new Map<string, LegacySpatialProvenance>();
   const modelDispositionByLocation = activeLocationModelDispositions(locations);
   const documents = locations.flatMap((state) => {
+    if (state.removal) return [];
     const revision = state.history.find((item) => item.revision === state.activeRevision);
     if (!revision) return [];
     if (state.activeRevision !== 0 && revision.legacySpatial) legacySpatialByLocation.set(revision.locationId, revision.legacySpatial);

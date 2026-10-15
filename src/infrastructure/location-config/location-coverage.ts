@@ -35,7 +35,7 @@ export function computeLocationCoverageSuggestions(
     };
   });
   const documents = snapshot.locations.flatMap((state) => {
-    if (state.locationId === parsed.locationId || state.activeRevision === 0) return [];
+    if (state.removal || state.locationId === parsed.locationId || state.activeRevision === 0) return [];
     const active = state.history.find((item) => item.revision === state.activeRevision);
     return active ? [parseLocationDocument(active.document)] : [];
   });
@@ -46,7 +46,7 @@ export function computeLocationCoverageSuggestions(
     return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
   }));
   if (candidateLegacySpatial) legacySpatial.set(parsed.locationId, candidateLegacySpatial);
-  const registry = buildRegistryFromLocationDocuments(siteSeed, { nodes }, documents, legacySpatial);
+  const registry = buildRegistryFromLocationDocuments(siteSeed, { nodes }, documents, legacySpatial, new Map(), new Set(snapshot.locations.filter(row => row.removal && row.locationId !== parsed.locationId).map(row => row.locationId)));
   const floor = registry.floors.find((item) => item.id === parsed.locationId);
   if (!floor) throw new Error('The candidate location could not be assembled.');
   const proposedIds = new Set(proposed.map((item) => item.uid.toLowerCase()));
@@ -82,7 +82,7 @@ export function activeLocationDocuments(snapshot: LocationRegistrySnapshot): {
 } {
   const legacySpatialByLocation = new Map<string, NonNullable<LocationRegistrySnapshot['locations'][number]['history'][number]['legacySpatial']>>();
   const documents = snapshot.locations.flatMap((state) => {
-    if (state.activeRevision === 0) return [];
+    if (state.removal || state.activeRevision === 0) return [];
     const active = state.history.find((item) => item.revision === state.activeRevision);
     return active ? [parseLocationDocument(active.document)] : [];
   });

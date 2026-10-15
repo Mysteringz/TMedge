@@ -187,6 +187,7 @@ function buildRegistryCore(
   nodesJson: unknown,
   trustedLegacySeats: ReadonlyMap<string, { x: number; y: number }> = new Map(),
   locationFurnitureFloors: ReadonlySet<string> = new Set(),
+  allowEmptyFloors = false,
 ): Registry {
   const root = obj(siteJson, 'site.json');
   only(root, 'site.json', ['site', 'floors']);
@@ -194,7 +195,7 @@ function buildRegistryCore(
   only(siteObj, 'site', ['id', 'name']);
   const site = { id: str(siteObj, 'id', 'site'), name: str(siteObj, 'name', 'site') };
 
-  if (!Array.isArray(root.floors) || root.floors.length === 0) throw new ConfigError('site.json.floors: expected a non-empty array');
+  if (!Array.isArray(root.floors) || (!allowEmptyFloors && root.floors.length === 0)) throw new ConfigError('site.json.floors: expected a non-empty array');
   const floors: FloorDef[] = [];
   const tables = new Map<string, TableDef>();
   const seatIndex = new Map<string, { seat: SeatSpec; table: TableDef }>();
@@ -411,6 +412,7 @@ export function buildRegistryFromLocationDocuments(
   documents: readonly LocationDocument[],
   legacySpatialByLocation: ReadonlyMap<string, LegacySpatialProvenance> = new Map(),
   modelDispositionByLocation: ReadonlyMap<string, LocationModelPresentationDisposition> = new Map(),
+  removedLocationIds: ReadonlySet<string> = new Set(),
 ): Registry {
   const root = obj(siteJson, 'site.json');
   if (!Array.isArray(root.floors)) throw new ConfigError('site.json.floors: expected a non-empty array');
@@ -419,6 +421,7 @@ export function buildRegistryFromLocationDocuments(
   let hasPublicFurniture = false;
   for (const input of documents) {
     const document = parseLocationDocument(input);
+    if (removedLocationIds.has(document.locationId)) continue;
     if (replacements.has(document.locationId)) throw new ConfigError(`duplicate published location "${document.locationId}"`);
     replacements.set(document.locationId, document);
     if (document.proceduralRoom) proceduralRooms.set(document.locationId, document.proceduralRoom);
@@ -433,6 +436,7 @@ export function buildRegistryFromLocationDocuments(
     replacements.delete(replacement.locationId);
     return locationDocumentFloor(replacement, legacySpatialByLocation.get(replacement.locationId), modelDispositionByLocation.get(replacement.locationId));
   });
+  for (let i = floors.length - 1; i >= 0; i--) if (removedLocationIds.has((floors[i] as { id: string }).id)) floors.splice(i, 1);
   for (const document of replacements.values()) {
     floors.push(locationDocumentFloor(document, legacySpatialByLocation.get(document.locationId), modelDispositionByLocation.get(document.locationId)));
   }
@@ -446,7 +450,7 @@ export function buildRegistryFromLocationDocuments(
   // coordinates, and its allow-list comes from exact-base validated storage
   // provenance. The registry computes ownership and coverage from the real
   // inherited positions rather than temporary placeholders.
-  const registry = buildRegistryCore({ ...root, floors }, nodesJson, trustedLegacySeats, new Set(documents.map((document) => document.locationId)));
+  const registry = buildRegistryCore({ ...root, floors }, nodesJson, trustedLegacySeats, new Set(documents.map((document) => document.locationId)), true);
   for (const floor of registry.floors) {
     const proceduralRoom = proceduralRooms.get(floor.id);
     if (proceduralRoom) floor.proceduralRoom = proceduralRoom;

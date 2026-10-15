@@ -38,6 +38,57 @@ paths:
         '403': { $ref: '#/components/responses/ConsoleForbidden' }
         '503': { $ref: '#/components/responses/ConsoleUnavailable' }
 
+  /api/locations/{locationId}:
+    delete:
+      tags: [Location management]
+      summary: Remove a published location while retaining history and private drafts
+      description: >-
+        Requires locations.manage and the exact observed published revision. Atomically
+        marks the location removed, releases sensor placements/owners and advances the
+        registry revision before runtime activation. Removed IDs stay reserved and
+        retained drafts cannot republish them. There is no restore operation.
+      security: [{ algoCookie: [] }]
+      parameters:
+        - name: locationId
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/TmAlgoWriteHeader'
+        - $ref: '#/components/parameters/SameOrigin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedPublishedRevision]
+              properties:
+                expectedPublishedRevision: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Removed from live configuration; history, private drafts and assets retained.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { nullable: true }
+                  data:
+                    type: object
+                    required: [kind, locationId, registryRevision, durability, acknowledgement]
+                    properties:
+                      kind: { type: string, enum: [removed] }
+                      locationId: { type: string }
+                      registryRevision: { type: integer, minimum: 1 }
+                      durability: { type: string, enum: [confirmed, unconfirmed] }
+                      acknowledgement: { type: string, enum: [received, reconciled] }
+        '401': { $ref: '#/components/responses/ConsoleUnauthenticated' }
+        '403': { $ref: '#/components/responses/ConsoleForbidden' }
+        '409': { $ref: '#/components/responses/ConsoleConflict' }
+        '422': { $ref: '#/components/responses/ConsoleValidation' }
+        '503': { $ref: '#/components/responses/ConsoleUnavailable' }
+
   /api/furniture-library:
     get:
       tags: [Location management]
@@ -1070,12 +1121,15 @@ components:
         updatedAt: { type: integer }
     DraftWrite:
       type: object
-      required: [draftId, locationId, draftRevision, basePublishedRevision, currentPublishedRevision, durability, document]
+      required: [draftId, locationId, draftRevision, basePublishedRevision, currentPublishedRevision, locationRemoved, durability, document]
       properties:
         draftId: { type: string, format: uuid }
         locationId: { type: string }
         draftRevision: { type: integer, minimum: 1 }
         basePublishedRevision: { type: integer, minimum: 0, nullable: true }
+        locationRemoved:
+          type: boolean
+          description: Removed locations retain their private drafts for reference, but those drafts cannot be published.
         currentPublishedRevision:
           type: integer
           minimum: 0

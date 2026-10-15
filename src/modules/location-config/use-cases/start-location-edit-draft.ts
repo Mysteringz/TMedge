@@ -29,6 +29,7 @@ export class StartLocationEditDraftUseCase {
       const snapshot = await this.dependencies.snapshots.readSnapshot();
       return snapshot.locations.find((location) => location.locationId === input.locationId) ?? null;
     });
+    if (state?.removal) throw new LocationConflictError('This location has been removed.');
     if (!state || state.activeRevision !== input.expectedPublishedRevision) throw new LocationConflictError('The published location changed; reload it before editing.');
     const base = state.history.find((revision) => revision.revision === state.activeRevision);
     if (!base) throw new LocationConflictError('The active location revision is unavailable.');

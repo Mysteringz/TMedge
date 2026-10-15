@@ -812,7 +812,8 @@ function Review({ document, draft, dirty, busy, mustReload, furnitureItems, furn
     <FurnitureReviewSummary document={document} items={furnitureItems} source={furnitureSource} />
     <ModelReviewSummary draft={draft} document={document} onEdit={onEditModel} />
     <SensorCoverageSummary draft={draft} document={document} onEdit={onEditCoverage} />
-    {draft.currentPublishedRevision !== undefined && draft.currentPublishedRevision !== draft.basePublishedRevision && draft.currentPublishedRevision !== null &&
+    {draft.locationRemoved && <p className="loc-alert" role="alert">This location has been removed. This private draft is retained for reference and cannot be published.</p>}
+    {!draft.locationRemoved && draft.currentPublishedRevision !== undefined && draft.currentPublishedRevision !== draft.basePublishedRevision && draft.currentPublishedRevision !== null &&
       <p className="loc-review-note" data-testid="location-review-replacement">This draft {draft.basePublishedRevision === null ? 'was created before the first publication' : `is based on revision ${draft.basePublishedRevision}`}.
         {' '}Publishing replaces current revision {draft.currentPublishedRevision} with this draft’s complete layout as revision {draft.currentPublishedRevision + 1}.</p>}
     <p className="loc-review-note">{draft.visibility === 'public'
@@ -820,7 +821,7 @@ function Review({ document, draft, dirty, busy, mustReload, furnitureItems, furn
       : 'This draft is private. Publishing applies the console configuration; this location remains hidden from students.'}</p>
     <footer className="loc-footer"><button type="button" className="btn btn-ghost" data-testid="location-review-back" disabled={busy !== ''} onClick={onBack}>Back</button><span>{dirty ? 'Unsaved local changes' : `Draft revision ${draft.draftRevision} · private`}</span>
       <button type="button" className="btn btn-secondary" data-testid="location-review-save-draft" disabled={busy !== '' || mustReload} onClick={onSave}>Save draft</button>
-      <button type="button" className="btn btn-primary" data-testid="location-publish" disabled={busy !== '' || dirty || mustReload} onClick={onPublish}>{busy === 'publish' ? 'Publishing…' : 'Publish location'}</button>
+      <button type="button" className="btn btn-primary" data-testid="location-publish" disabled={busy !== '' || dirty || mustReload || draft.locationRemoved} onClick={onPublish}>{busy === 'publish' ? 'Publishing…' : 'Publish location'}</button>
     </footer>
   </section>;
 }

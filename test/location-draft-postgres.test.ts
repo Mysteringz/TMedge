@@ -1,3 +1,5 @@
+import { RemoveLocationUseCase } from '../src/modules/location-config/use-cases/remove-location.js';
+import { TrackLocationRemoval1792195200000 } from '../src/infrastructure/postgres/migrations/1792195200000-TrackLocationRemoval.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -44,7 +46,7 @@ test('PostgreSQL commits exact draft receipts and restores historical inherited 
     const first = await new CreateLocationDraftUseCase({ edgeId: 'draft-pg', drafts, published, snapshots, coordinator }).execute({ creatorId: 'uploader', name: 'Original layout', building: 'Test', widthCm: 400, heightCm: 300 });
     const uploaded = await new UploadLocationAssetUseCase({ drafts, assets, saveDraft: save }).execute({ creatorId: 'uploader', draftId: first.draft.draftId, expectedDraftRevision: 1,
       purpose: 'floor-plan', mediaType: 'image/png', bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) });
-    const runtime = { prepare: () => 'ready', refresh: (value: string) => value, activate: () => undefined, quarantine: () => undefined };
+    const runtime = { prepareRemoval: () => 'removed', prepare: () => 'ready', refresh: (value: string) => value, activate: () => undefined, quarantine: () => undefined };
     const publisher = new PublishLocationUseCase({ drafts, published, snapshots, mutationCoordinator: coordinator, runtime, assetMetadata });
     await publisher.execute({ creatorId: 'uploader', draftId: first.draft.draftId, expectedDraftRevision: uploaded.outcome.draft.draftRevision, expectedPublishedRevision: null });
     const start = new StartLocationEditDraftUseCase({ drafts, snapshots, mutationCoordinator: coordinator });
@@ -78,8 +80,31 @@ test('PostgreSQL commits exact draft receipts and restores historical inherited 
     assert.equal((await reopened.getActive(first.draft.locationId))?.activeRevision, 3);
     assert.equal((await reopened.getActive(first.draft.locationId))?.history.at(-1)?.document.planAssetId, uploaded.metadata.assetId);
     assert.ok(await assets.read('uploader', uploaded.metadata.assetId), 'removing the source draft preserves referenced asset bytes');
+    // A committed removal with a lost acknowledgement is reconciled from exact
+    // registry revision + marker + released placements; immutable data survives.
+    await source.query("INSERT INTO public.registered_nodes (uid, label, simulated, rgb, detector) VALUES ('aa:bb:cc:dd:ee:01', 'Reusable', false, false, 'node')");
+    await source.query("INSERT INTO public.node_placements (uid, floor_id, x, y, height_cm, yaw_deg, mirror) VALUES ('aa:bb:cc:dd:ee:01', $1, 100, 100, 350, 0, false)", [first.draft.locationId]);
+    await source.query("INSERT INTO public.node_table_owners (table_id, uid) VALUES ('old-table', 'aa:bb:cc:dd:ee:01')");
+    const lostAck = new PostgresPublishedLocationRepository(source, new Set(), coordinator, async work => {
+      await source.transaction(work);
+      throw new Error('lost COMMIT acknowledgement');
+    });
+    const removeLocation = new RemoveLocationUseCase({ published: lostAck, snapshots, coordinator, runtime, now: () => 999 });
+    await assert.rejects(removeLocation.execute({ creatorId: 'manager', locationId: first.draft.locationId, expectedPublishedRevision: 2 }), /changed/i);
+    assert.equal((await removeLocation.execute({ creatorId: 'manager', locationId: first.draft.locationId, expectedPublishedRevision: 3 })).acknowledgement, 'reconciled');
+    assert.deepEqual((await reopened.getActive(first.draft.locationId))?.removal, { removedAt: 999, removedBy: 'manager' });
+    assert.equal((await reopened.listHistory(first.draft.locationId)).length, 3);
+    assert.equal((await source.query('SELECT * FROM public.node_placements')).length, 0);
+    assert.equal((await source.query('SELECT * FROM public.node_table_owners')).length, 0);
+    assert.equal((await source.query('SELECT * FROM public.registered_nodes')).length, 1);
+    assert.ok(await drafts.getDraft('manager-c', newer.draft.draftId));
+    assert.ok(await assets.read('uploader', uploaded.metadata.assetId));
+    await assert.rejects(publisher.execute({ creatorId: 'manager-c', draftId: newer.draft.draftId, expectedDraftRevision: changed.draft.draftRevision, expectedPublishedRevision: 3 }), /removed/i);
+    await assert.rejects(start.execute({ creatorId: 'manager-c', locationId: first.draft.locationId, expectedPublishedRevision: 3 }), /removed/i);
+    await source.destroy(); await source.initialize();
+    assert.equal((await published.getActive(first.draft.locationId))?.removal?.removedAt, 999);
     const runner = source.createQueryRunner();
-    try { await runner.connect(); await assert.rejects(new TrackLocationPublicationSource1792108800000().down(runner), /older draft bases/); }
+    try { await runner.connect(); await assert.rejects(new TrackLocationRemoval1792195200000().down(runner), /removal markers/); await assert.rejects(new TrackLocationPublicationSource1792108800000().down(runner), /older draft bases/); }
     finally { await runner.release(); }
   } finally {
     if (source.isInitialized) await source.destroy();

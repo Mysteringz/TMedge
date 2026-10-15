@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { createLocationDraft, listLocations, LocationApiError, removeLocationDraft, startLocationEdit } from '../../../entities/location-config/api/index.ts';
-import type { DraftSummary, LocationList } from '../../../entities/location-config/model/types.ts';
+import { createLocationDraft, listLocations, LocationApiError, removeLocationDraft, removePublishedLocation, startLocationEdit } from '../../../entities/location-config/api/index.ts';
+import type { DraftSummary, LocationList, PublishedSummary } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
 import { Trash } from '../../../console/icons.tsx';
+import { LocationRemovalDialog } from './location-removal-dialog.tsx';
 import { DraftRemovalDialog } from './draft-removal-dialog.tsx';
 import './location-editor.css';
 
@@ -21,6 +22,9 @@ export function LocationListPage() {
   const [pendingRemoval, setPendingRemoval] = useState<DraftSummary | null>(null);
   const [removalError, setRemovalError] = useState('');
   const [notice, setNotice] = useState('');
+  const [pendingLocationRemoval, setPendingLocationRemoval] = useState<PublishedSummary | null>(null);
+  const [locationRemovalError, setLocationRemovalError] = useState('');
+  const publishedHeading = useRef<HTMLHeadingElement>(null);
   const draftsHeading = useRef<HTMLHeadingElement>(null);
 
   const refresh = async () => {
@@ -52,6 +56,28 @@ export function LocationListPage() {
         : cause instanceof LocationApiError && cause.status === 404
           ? 'This draft no longer exists. Reload the list.'
           : 'Removal could not be confirmed. Reload the list before trying again.');
+    } finally { setBusyId(''); }
+  };
+
+  /** Refresh after removing the published row and move focus to the surviving section heading. */
+  const reloadAfterLocationRemoval = async () => {
+    setPendingLocationRemoval(null);
+    await refresh();
+    requestAnimationFrame(() => publishedHeading.current?.focus());
+  };
+
+  const removeLocation = async () => {
+    if (!pendingLocationRemoval || busyId) return;
+    setBusyId(pendingLocationRemoval.locationId); setLocationRemovalError(''); setRevisionError(''); setNotice('');
+    try {
+      const result = await removePublishedLocation(pendingLocationRemoval);
+      if (result.durability === 'unconfirmed') setRevisionError('Location removal was applied, but storage durability could not be confirmed. Reload the list before continuing.');
+      else setNotice('Location removed. Its sensors are available for other locations.');
+      await reloadAfterLocationRemoval();
+    } catch (cause) {
+      setLocationRemovalError(cause instanceof LocationApiError && cause.status === 409
+        ? 'The location changed or was removed. Reload the list and review it before removing it.'
+        : 'Removal could not be confirmed. Reload the list before trying again.');
     } finally { setBusyId(''); }
   };
 
@@ -103,12 +129,14 @@ export function LocationListPage() {
         : error ? <section className="card loc-empty" role="alert"><p>{error}</p><div className="loc-inline-actions"><button className="btn btn-secondary" type="button" data-testid="location-list-retry" onClick={() => void refresh()}>Retry</button>{error.includes('permission') && <button className="btn btn-ghost" type="button" data-testid="location-list-return" onClick={() => navigate('/')}>Return to workspace</button>}</div></section>
         : <>
           <section className="loc-list-section" aria-labelledby="loc-published-title">
-            <div className="loc-section-heading"><h2 id="loc-published-title">Published locations</h2><span>{data?.published.length ?? 0}</span></div>
+            <div className="loc-section-heading"><h2 id="loc-published-title" ref={publishedHeading} tabIndex={-1}>Published locations</h2><span>{data?.published.length ?? 0}</span></div>
             {data?.published.length ? <ul className="loc-list" data-testid="location-published-list">
               {data.published.map((item) => <li className="card loc-list-card" key={item.locationId}>
                 <div><h3>{item.name}</h3><p className="cx-muted">{item.building} · revision {item.activeRevision}</p></div>
                 <div className="loc-list-actions"><span className="tag tag-neutral">{item.visibility === 'public' ? 'Student-visible · public' : 'Console-only · not shown to students'}</span>
-                  <button className="btn btn-secondary" type="button" data-testid={`location-edit-${testToken(item.locationId)}`} disabled={busyId === item.locationId} onClick={() => void edit(item.locationId, item.activeRevision)}>{busyId === item.locationId ? 'Starting…' : 'Edit'}</button>
+                  <button className="btn btn-secondary" type="button" data-testid={`location-edit-${testToken(item.locationId)}`} disabled={busyId !== ''} onClick={() => void edit(item.locationId, item.activeRevision)}>{busyId === item.locationId ? 'Starting…' : 'Edit'}</button>
+                  <button className="btn btn-ghost" type="button" data-testid={`location-remove-published-${testToken(item.locationId)}`} aria-label={`Remove location ${item.name}`} disabled={busyId !== ''}
+                    onClick={() => { setLocationRemovalError(''); setPendingLocationRemoval(item); }}><Trash /> Remove</button>
                 </div>
               </li>)}
             </ul> : <div className="card loc-empty"><p>No locations yet.</p><button type="button" className="btn btn-secondary" data-testid="location-create-empty" onClick={() => setCreating(true)}>Add location</button></div>}
@@ -129,6 +157,8 @@ export function LocationListPage() {
             </ul> : <div className="card loc-empty"><p>You have no private drafts.</p></div>}
           </section>
         </>}
+    <LocationRemovalDialog location={pendingLocationRemoval} busy={busyId !== ''} error={locationRemovalError}
+      onCancel={() => setPendingLocationRemoval(null)} onConfirm={() => void removeLocation()} onReload={() => void reloadAfterLocationRemoval()} />
     <DraftRemovalDialog draft={pendingRemoval} busy={busyId !== ''} error={removalError}
       onCancel={() => setPendingRemoval(null)} onConfirm={() => void remove()} onReload={() => void reloadAfterRemoval()} />
   </main>;

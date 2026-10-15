@@ -1,4 +1,4 @@
-import type { FurnitureType, LocationAssetMetadata, LocationDraft, PublishedLocationRevision, PublishedLocationState } from '../domain/location-records.js';
+import type { LocationRemoval, FurnitureType, LocationAssetMetadata, LocationDraft, PublishedLocationRevision, PublishedLocationState } from '../domain/location-records.js';
 import type { LocationDocument, LocationSensorAssignment } from '../domain/location-document.js';
 import type { ValidatedLocationCandidate } from '../domain/location-candidate.js';
 import type { LegacySpatialProvenance } from '../domain/location-candidate.js';
@@ -42,7 +42,17 @@ export interface LocationDraftRepository {
   saveDraft(creatorId: string, draftId: string, expectedRevision: number, candidate: ValidatedLocationCandidate, updatedAt: number): Promise<DraftWriteOutcome>;
 }
 
+export interface LocationRemovalInput {
+  locationId: string; creatorId: string; expectedPublishedRevision: number;
+  expectedRegistryRevision: number; removal: LocationRemoval;
+}
+export interface LocationRemovalOutcome {
+  kind: 'removed'; locationId: string; registryRevision: number;
+  durability: CommitDurability; acknowledgement: 'received' | 'reconciled';
+}
 export interface PublishedLocationRepository {
+  /** Retain history and reserve the ID; atomically release sensors and mark removal. Caller owns the registry lock. */
+  removeWithinMutation(input: LocationRemovalInput): Promise<LocationRemovalOutcome>;
   assertLocationIdAvailable(locationId: string): Promise<void>;
   getActive(locationId: string): Promise<PublishedLocationState | null>;
   listActive(): Promise<PublishedLocationState[]>;
@@ -90,6 +100,10 @@ export interface PreparedLocationRuntime<Prepared> {
   refresh(prepared: Prepared): Prepared;
   activate(prepared: Prepared): void;
   quarantine(reason: unknown): void;
+}
+
+export interface PreparedLocationRemovalRuntime<Prepared> extends Pick<PreparedLocationRuntime<Prepared>, 'refresh' | 'activate' | 'quarantine'> {
+  prepareRemoval(snapshot: LocationRegistrySnapshot, locationId: string): Prepared;
 }
 
 export interface PublishedModelDistributionRequest {

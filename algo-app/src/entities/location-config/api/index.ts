@@ -28,6 +28,11 @@ export function removeLocationDraft(draft: DraftSummary): Promise<{ kind: 'delet
   return jsonRequest(`/api/locations/drafts/${encodeURIComponent(draft.draftId)}`, 'DELETE', { expectedDraftRevision: draft.draftRevision });
 }
 
+/** Remove the exact published revision confirmed by the manager; history and drafts are retained. */
+export function removePublishedLocation(location: PublishedSummary): Promise<{ kind: 'removed'; locationId: string; durability: 'confirmed' | 'unconfirmed' }> {
+  return jsonRequest(`/api/locations/${encodeURIComponent(location.locationId)}`, 'DELETE', { expectedPublishedRevision: location.activeRevision });
+}
+
 export function listFurnitureLibrary(filter: { type?: FurnitureType; q?: string } = {}): Promise<{ items: FurnitureLibraryItem[] }> {
   const query = new URLSearchParams();
   if (filter.type) query.set('type', filter.type);

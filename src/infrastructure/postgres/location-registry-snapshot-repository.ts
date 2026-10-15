@@ -27,7 +27,7 @@ export class PostgresLocationRegistrySnapshotRepository implements LocationRegis
       owns: node.owns, simulated: node.simulated, rgb: node.rgb, detector: node.detector,
     })) };
     const authoredDocuments = locations.flatMap((state) => {
-      if (state.activeRevision === 0) return [];
+      if (state.removal || state.activeRevision === 0) return [];
       const active = state.history.find((item) => item.revision === state.activeRevision);
       return active ? [parseLocationDocument(active.document)] : [];
     });
@@ -36,7 +36,7 @@ export class PostgresLocationRegistrySnapshotRepository implements LocationRegis
       return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
     }));
     const modelDispositionByLocation = activeLocationModelDispositions(locations);
-    const currentRegistry: Registry = buildRegistryFromLocationDocuments(this.siteSeed, nodeInput, authoredDocuments, legacySpatialByLocation, modelDispositionByLocation);
+    const currentRegistry: Registry = buildRegistryFromLocationDocuments(this.siteSeed, nodeInput, authoredDocuments, legacySpatialByLocation, modelDispositionByLocation, new Set(locations.filter(row => row.removal).map(row => row.locationId)));
     const withCurrentLegacyAssignments = locations.map((state) => {
       if (state.activeRevision !== 0) return state;
       const floor = currentRegistry.floors.find((item) => item.id === state.locationId);

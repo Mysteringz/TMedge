@@ -173,10 +173,10 @@ Modules:
   Included firmware works offline; account adoption needs internet.
   Unnotarized builds have Apple's Open Anyway instructions. GitHub outages
   label the last checked build; invalid newest releases are refused.
-- 09 Locations, /locations. Admin/Operator layout/sensor/3D drafts.
-  Valid drafts publish as new layout revisions; concurrent changes conflict.
-  Published drafts leave Your drafts. Hover/focus the badge for Remove
-  (always shown on touch). Confirm permanent removal; published data/assets remain.
+- 09 Locations, /locations. Admin/Operator drafts replace layouts on publish;
+  conflicts require reload. Published drafts leave the list. Badge Remove
+  deletes private drafts. Published Remove releases sensors, hides the location
+  on both webs, keeps history/assets/drafts; blocks republication.
 - Accounts, /accounts (admins only). Create accounts, set access roles and
   team roles, reset passwords, revoke sessions.
 - Account settings, /account (everyone, for their own account only; opened

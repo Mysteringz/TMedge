@@ -49,7 +49,10 @@ export interface LocationAssetMetadata {
   createdAt: number;
 }
 
+export interface LocationRemoval { removedAt: number; removedBy: string; }
+
 export interface PublishedLocationState {
+  removal?: LocationRemoval;
   locationId: string;
   activeRevision: number;
   history: PublishedLocationRevision[];

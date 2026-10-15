@@ -22,6 +22,16 @@ Managers can permanently remove their own private drafts from the list badge aft
 
 File mode stores receipts in `NODES_CONFIG` history. PostgreSQL mode requires the explicit `TrackLocationPublicationSource1792108800000` migration before starting this build; it adds nullable `source_draft` JSONB to immutable published revisions. Receipt writes and publication activation pointers share the publication transaction. Receipt-free history remains readable. Keep a compatible edge parser when history includes receipts, especially publications based on non-current revisions; the migration refuses rollback when history relies on an older pinned base. These private receipts are not sent to student clients.
 
+## Removing a published location
+
+Managers can select **Remove** beside Edit and confirm the named location. `DELETE /api/locations/:locationId` requires `expectedPublishedRevision`, the manager capability and the normal same-origin write headers. Removal serializes with publication and registration, prepares a detached runtime, atomically records the removal and releases every sensor placement/table owner, then activates the prepared generation. Concurrent publication returns 409 and requires reload/reconfirmation.
+
+Removal hides the location from the console published list and subsequent public/student snapshots. Registered sensor identities remain available for reuse. Immutable history, asset bytes and creator-private drafts remain; removed IDs stay reserved. Draft reads return `locationRemoved: true`, Review disables publication, and the server rejects publication or new edit drafts against removed locations regardless of the requested revision. Existing private drafts remain editable for reference. No restore operation is provided.
+
+File mode stores `locationRemovals` metadata alongside the unchanged published history in `NODES_CONFIG` schema 2; older files without the optional field remain valid. PostgreSQL requires **TrackLocationRemoval1792195200000** before starting this build; it adds `removed_at`/`removed_by` to the active revision pointer without changing immutable revisions. File rename failures leave the old registry live; applied-but-unconfirmed directory sync is reported honestly and recovered before the next mutation. PostgreSQL lost commit acknowledgements require exact marker/revision/placement readback or quarantine. A migration rollback is refused while any removal marker exists. Keep a compatible edge build after removal: older code cannot interpret file removal markers or suppress PostgreSQL removed pointers safely.
+
+Every registry assembly path suppresses removed seed and authored floors, including startup, file registry/provisioning validation and coverage previews. Removing the last location is allowed and produces an empty runtime site; the immutable source seed remains unchanged. User-web updates follow the existing edge snapshot delivery interval. Historical data/assets remain on disk, but the current student snapshot no longer authorizes the removed location's model delivery.
+
 ## Storage ownership
 
 - `SITE_CONFIG` is the read-only legacy seed. It supplies existing floors and their geometry.

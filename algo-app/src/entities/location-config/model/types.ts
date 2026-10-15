@@ -62,6 +62,7 @@ export interface AssetCapability {
 export interface DraftWriteResult {
   draftId: string; locationId: string; draftRevision: number; basePublishedRevision: number | null;
   currentPublishedRevision?: number | null;
+  locationRemoved?: boolean;
   visibility: 'public' | 'console'; durability: 'confirmed' | 'unconfirmed';
   legacyBaseAvailable: boolean; document: LocationDocument;
 }

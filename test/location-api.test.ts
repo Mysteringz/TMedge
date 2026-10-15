@@ -644,6 +644,7 @@ function makePersistence(directory: string) {
     },
   };
   const published: PublishedLocationRepository = {
+    async removeWithinMutation() { throw new Error('unused removal'); },
     async assertLocationIdAvailable(locationId) { if (locationsById.has(locationId)) throw new LocationConflictError(); },
     async getActive(locationId) { const state = locationsById.get(locationId); return state ? structuredClone(state) : null; },
     async listActive() { return [...locationsById.values()].map((state) => structuredClone(state)); },

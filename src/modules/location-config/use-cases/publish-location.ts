@@ -68,6 +68,7 @@ export class PublishLocationUseCase<Prepared> {
     if (!draft) throw new LocationDraftNotFoundError();
     if (draft.draftRevision !== input.expectedDraftRevision) throw new LocationConflictError('The draft changed; reload it before publishing.');
     const state = snapshot.locations.find((location) => location.locationId === draft.locationId) ?? null;
+    if (state?.removal) throw new LocationConflictError('This location has been removed and cannot be republished.');
     const activeRevision = state?.activeRevision ?? null;
     if (activeRevision !== input.expectedPublishedRevision) {
       throw new LocationConflictError('The published location changed; reload it before publishing.');

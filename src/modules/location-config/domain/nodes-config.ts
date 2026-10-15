@@ -1,3 +1,4 @@
+import type { LocationRemoval } from './location-records.js';
 import { parseLocationDocument, type LocationDocument } from './location-document.js';
 import { parseLegacySpatialProvenance, type LegacySpatialProvenance } from './location-candidate.js';
 import { parseLocationAssetProvenance, type LocationAssetProvenance } from './location-assets.js';
@@ -23,6 +24,7 @@ export interface NodesConfigV2 {
   revision: number;
   nodes: unknown[];
   publishedLocations: PublishedLocationRecord[];
+  locationRemovals?: Array<LocationRemoval & { locationId: string }>;
 }
 
 export type ParsedNodesConfig =
@@ -45,16 +47,27 @@ export function parseNodesConfig(value: unknown): ParsedNodesConfig {
     return { kind: 'legacy', nodes: root.nodes };
   }
 
-  only(root, 'nodes.json', ['schemaVersion', 'revision', 'nodes', 'publishedLocations']);
+  only(root, 'nodes.json', ['schemaVersion', 'revision', 'nodes', 'publishedLocations', 'locationRemovals']);
   if (root.schemaVersion !== 2) invalid('nodes.json.schemaVersion: expected 2');
   const revision = integer(root.revision, 'nodes.json.revision', 0, Number.MAX_SAFE_INTEGER);
   if (!Array.isArray(root.nodes) || !Array.isArray(root.publishedLocations)) invalid('nodes.json.nodes and publishedLocations must be arrays');
   const publishedLocations = root.publishedLocations.map((item, index) => parsePublishedLocation(item, index));
   unique(publishedLocations.map((item) => item.locationId), 'published location IDs');
 
+  if (root.locationRemovals !== undefined && !Array.isArray(root.locationRemovals)) invalid('nodes.json.locationRemovals: expected an array');
+  const locationRemovals = (root.locationRemovals as unknown[] | undefined)?.map((value, index) => {
+    const where = `nodes.json.locationRemovals[${index}]`;
+    const row = object(value, where);
+    only(row, where, ['locationId', 'removedAt', 'removedBy']);
+    if (typeof row.removedBy !== 'string' || !row.removedBy.trim() || row.removedBy.length > 256) invalid(`${where}.removedBy: invalid identity`);
+    return { locationId: safeId(row.locationId, where), removedAt: integer(row.removedAt, where, 0, Number.MAX_SAFE_INTEGER), removedBy: row.removedBy };
+  });
+  unique(locationRemovals?.map(row => row.locationId) ?? [], 'removed location IDs');
+  const removedIds = new Set(locationRemovals?.map(row => row.locationId));
   const seenTableIds = new Set<string>();
   const seenSeatIds = new Set<string>();
   for (const location of publishedLocations) {
+    if (removedIds.has(location.locationId)) continue;
     const active = location.revisions.find((history) => history.revision === location.activeRevision)!;
     for (const table of active.document.tables) {
       if (seenTableIds.has(table.id)) invalid(`nodes.json: duplicate table ID "${table.id}" across published locations`);
@@ -65,7 +78,7 @@ export function parseNodesConfig(value: unknown): ParsedNodesConfig {
       }
     }
   }
-  return { kind: 'v2', document: { schemaVersion: 2, revision, nodes: root.nodes, publishedLocations } };
+  return { kind: 'v2', document: { schemaVersion: 2, revision, nodes: root.nodes, publishedLocations, ...(locationRemovals ? { locationRemovals } : {}) } };
 }
 
 export function nodesArrayForRegistry(value: unknown): unknown[] {

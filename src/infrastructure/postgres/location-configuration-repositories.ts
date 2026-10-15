@@ -1,3 +1,4 @@
+import type { LocationRemovalInput, LocationRemovalOutcome } from '../../modules/location-config/repositories/location-storage.js';
 import { parsePublicationSource, publicationBaseRevision } from '../../modules/location-config/domain/publication-source.js';
 import { createHash } from 'node:crypto';
 import type { DataSource, EntityManager } from 'typeorm';
@@ -23,7 +24,7 @@ interface DraftRow {
   created_at: number | string; updated_at: number | string; document: unknown; legacy_spatial?: unknown; asset_provenance?: unknown;
 }
 interface PublishedRow { location_id: string; revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial?: unknown; asset_provenance?: unknown; source_draft?: unknown; }
-interface ActivePublishedRow extends PublishedRow { active_revision: number | string; }
+interface ActivePublishedRow extends PublishedRow { active_revision: number | string; removed_at?: number | string | null; removed_by?: string | null; }
 interface AssetRow { asset_id: string; creator_id: string; purpose: LocationAssetMetadata['purpose']; media_type: LocationAssetMetadata['mediaType']; display_name?: string | null; furniture_type?: FurnitureType | null; sha256: string; byte_length: number | string; created_at: number | string; }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -264,7 +265,7 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
     this.coordinator.assertHealthy();
     try {
       const rows = await this.source.query(
-        `SELECT a.revision AS active_revision, r.location_id, r.revision, r.created_by, r.created_at, r.document, r.legacy_spatial, r.asset_provenance, r.source_draft
+        `SELECT a.revision AS active_revision, a.removed_at, a.removed_by, r.location_id, r.revision, r.created_by, r.created_at, r.document, r.legacy_spatial, r.asset_provenance, r.source_draft
          FROM public.location_active_revisions a
          JOIN public.location_published_revisions r ON r.location_id = a.location_id
          WHERE a.location_id = $1 ORDER BY r.revision`, [locationId],
@@ -274,7 +275,7 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
       const history = rows.map(mapPublished);
       if (!history.some((item) => item.revision === activeRevision)) throw new LocationStorageUnavailableError();
       validatePublishedHistory(history);
-      return { locationId, activeRevision, history };
+      return { locationId, activeRevision, history, ...removalFromRow(rows[0]!) };
     } catch (error) { throw storageError(error); }
   }
 
@@ -282,23 +283,23 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
     this.coordinator.assertHealthy();
     try {
       const rows = await this.source.query(
-        `SELECT a.revision AS active_revision, r.location_id, r.revision, r.created_by, r.created_at, r.document, r.legacy_spatial, r.asset_provenance, r.source_draft
+        `SELECT a.revision AS active_revision, a.removed_at, a.removed_by, r.location_id, r.revision, r.created_by, r.created_at, r.document, r.legacy_spatial, r.asset_provenance, r.source_draft
          FROM public.location_active_revisions a
          JOIN public.location_published_revisions r ON r.location_id = a.location_id
          ORDER BY r.location_id, r.revision`,
       ) as ActivePublishedRow[];
-      const grouped = new Map<string, { activeRevision: number; history: PublishedLocationRevision[] }>();
+      const grouped = new Map<string, { activeRevision: number; history: PublishedLocationRevision[]; removal?: { removedAt: number; removedBy: string } }>();
       for (const row of rows) {
         const activeRevision = toSafeInteger(row.active_revision, 'active revision');
         const group = grouped.get(row.location_id);
         if (group && group.activeRevision !== activeRevision) throw new LocationStorageUnavailableError();
         if (group) group.history.push(mapPublished(row));
-        else grouped.set(row.location_id, { activeRevision, history: [mapPublished(row)] });
+        else grouped.set(row.location_id, { activeRevision, history: [mapPublished(row)], ...removalFromRow(row) });
       }
-      return [...grouped].map(([locationId, { activeRevision, history }]) => {
+      return [...grouped].map(([locationId, { activeRevision, history, removal }]) => {
         if (!history.some((item) => item.revision === activeRevision)) throw new LocationStorageUnavailableError();
         validatePublishedHistory(history);
-        return { locationId, activeRevision, history };
+        return { locationId, activeRevision, history, ...(removal ? { removal } : {}) };
       });
     } catch (error) { throw storageError(error); }
   }
@@ -340,10 +341,11 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
           throw new TypeError('Published revision metadata or assignments are invalid.');
         }
         const activeRows = await manager.query(
-          `SELECT a.revision, r.created_by, r.created_at, r.document, r.legacy_spatial, r.asset_provenance FROM public.location_active_revisions a
+          `SELECT a.revision, a.removed_at, r.created_by, r.created_at, r.document, r.legacy_spatial, r.asset_provenance FROM public.location_active_revisions a
            JOIN public.location_published_revisions r ON r.location_id = a.location_id AND r.revision = a.revision
            WHERE a.location_id = $1 FOR UPDATE OF a`, [input.revision.locationId],
-        ) as Array<{ revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial: unknown; asset_provenance: unknown; source_draft?: unknown }>;
+        ) as Array<{ removed_at?: number | string | null; revision: number | string; created_by: string; created_at: number | string; document: unknown; legacy_spatial: unknown; asset_provenance: unknown; source_draft?: unknown }>;
+        if (activeRows[0]?.removed_at != null) throw new LocationConflictError('This location has been removed and cannot be republished.');
         const active = activeRows[0] ? toSafeInteger(activeRows[0].revision, 'active revision') : null;
         if (active !== input.expectedPublishedRevision) throw new LocationConflictError('The published location changed; reload before publishing.');
         if (active === null && this.seedLocationIds.has(input.revision.locationId)) {
@@ -436,6 +438,43 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
     }
   }
 
+  /** Marker, sensor release and registry revision commit together; retain every immutable revision. */
+  async removeWithinMutation(input: LocationRemovalInput): Promise<LocationRemovalOutcome> {
+    this.coordinator.assertHealthy();
+    const candidateRevision = input.expectedRegistryRevision + 1;
+    try {
+      const registryRevision = await this.runTransaction(async manager => {
+        if (await lockRegistryRevision(manager) !== input.expectedRegistryRevision) throw new LocationConflictError('The registry changed; reload before removing it.');
+        const rows = await manager.query('SELECT revision, removed_at FROM public.location_active_revisions WHERE location_id = $1 FOR UPDATE', [input.locationId]) as Array<{ revision: number | string; removed_at: number | string | null }>;
+        if (rows[0]?.removed_at != null) throw new LocationConflictError('This location has been removed.');
+        if (!rows[0] || Number(rows[0].revision) !== input.expectedPublishedRevision) throw new LocationConflictError('The published location changed; reload before removing it.');
+        await manager.query('DELETE FROM public.node_table_owners WHERE uid IN (SELECT uid FROM public.node_placements WHERE floor_id = $1)', [input.locationId]);
+        await manager.query('DELETE FROM public.node_placements WHERE floor_id = $1', [input.locationId]);
+        await manager.query('UPDATE public.location_active_revisions SET removed_at = $2, removed_by = $3 WHERE location_id = $1', [input.locationId, input.removal.removedAt, input.removal.removedBy]);
+        return incrementLocationRegistryRevision(manager);
+      });
+      return { kind: 'removed', locationId: input.locationId, registryRevision, durability: 'confirmed', acknowledgement: 'received' };
+    } catch (error) {
+      if (isDeterministicLocationFailure(error)) throw storageError(error);
+      // Exact readback is required after a lost COMMIT acknowledgement.
+      try {
+        const revision = await readLocationRegistryRevision(this.source.manager);
+        const state = await this.getActive(input.locationId);
+        const placements = await this.source.query('SELECT uid FROM public.node_placements WHERE floor_id = $1', [input.locationId]) as unknown[];
+        if (revision === candidateRevision && state?.activeRevision === input.expectedPublishedRevision
+          && state.removal?.removedAt === input.removal.removedAt && state.removal.removedBy === input.removal.removedBy && placements.length === 0) {
+          return { kind: 'removed', locationId: input.locationId, registryRevision: revision, durability: 'confirmed', acknowledgement: 'reconciled' };
+        }
+        if (revision === input.expectedRegistryRevision && state?.activeRevision === input.expectedPublishedRevision && !state.removal) throw new LocationConflictError('Removal was not committed; reload before trying again.');
+      } catch (readbackError) {
+        if (readbackError instanceof LocationConflictError) throw readbackError;
+      }
+      const unknown = new UnknownRegistryCommitOutcomeError(input.expectedRegistryRevision, candidateRevision, input.locationId);
+      this.coordinator.quarantine(unknown);
+      throw unknown;
+    }
+  }
+
   async registryRevision(): Promise<number> {
     this.coordinator.assertHealthy();
     try {
@@ -491,7 +530,7 @@ async function validateGlobalTableIds(manager: EntityManager, locationId: string
     `SELECT r.location_id, r.revision, r.document
      FROM public.location_active_revisions a
      JOIN public.location_published_revisions r USING (location_id, revision)
-     WHERE a.location_id <> $1`, [locationId],
+     WHERE a.location_id <> $1 AND a.removed_at IS NULL`, [locationId],
   ) as Array<{ location_id: string; revision: number | string; document: unknown }>;
   const used = new Set<string>();
   const usedSeats = new Set<string>();
@@ -684,4 +723,11 @@ function storageError(error: unknown): Error {
   return error instanceof LocationConflictError || error instanceof LocationDraftNotFoundError || error instanceof TypeError
     || error instanceof RangeError || error instanceof InvalidLocationDocumentError
     ? error : new LocationStorageUnavailableError();
+}
+
+/** Map optional removal metadata without changing immutable published history. */
+function removalFromRow(row: ActivePublishedRow): { removal?: { removedAt: number; removedBy: string } } {
+  if (row.removed_at == null) return {};
+  if (typeof row.removed_by !== 'string' || !row.removed_by.trim()) throw new LocationStorageUnavailableError();
+  return { removal: { removedAt: toSafeInteger(row.removed_at, 'removal time'), removedBy: row.removed_by } };
 }

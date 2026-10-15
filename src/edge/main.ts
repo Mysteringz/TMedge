@@ -117,7 +117,7 @@ async function loadConfiguration(): Promise<{
     const assetMetadata = new PostgresLocationAssetMetadataRepository(source);
     const initialSnapshot = await mutationCoordinator.withMutationLock(() => snapshots.readSnapshot());
     const active = activeDocuments(initialSnapshot);
-    const registry = buildRegistryFromLocationDocuments(site, nodesConfigFor(initialSnapshot), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation);
+    const registry = buildRegistryFromLocationDocuments(site, nodesConfigFor(initialSnapshot), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation, new Set(initialSnapshot.locations.filter(row => row.removal).map(row => row.locationId)));
     const provisioningRepository = new PostgresProvisioningRepository(source);
     return { cfg, registry, source, provisioningRepository,
       registryMutationCoordinator: mutationCoordinator,
@@ -159,7 +159,7 @@ function activeDocuments(snapshot: LocationRegistrySnapshot) {
   const documents = snapshot.locations.flatMap((state) => {
     const active = state.history.find((revision) => revision.revision === state.activeRevision);
     if (!active) return [];
-    if (state.activeRevision === 0) return [];
+    if (state.removal || state.activeRevision === 0) return [];
     return [parseLocationDocument(active.document)];
   });
   return { documents, legacySpatialByLocation, modelDispositionByLocation };

@@ -172,6 +172,7 @@ test('reports received during delayed model acknowledgement survive publication 
   };
   const snapshots: LocationRegistrySnapshotRepository = { async readSnapshot() { return snapshot; } };
   const published: PublishedLocationRepository = {
+    async removeWithinMutation() { throw new Error('unused removal'); },
     async assertLocationIdAvailable() {}, async getActive() { return null; }, async listActive() { return []; },
     async listHistory() { return []; }, async registryRevision() { return 0; },
     async commitWithinMutation(input) {

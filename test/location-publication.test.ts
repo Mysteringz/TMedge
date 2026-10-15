@@ -108,6 +108,7 @@ function harness(options: {
     async readSnapshot() { assert.equal(locked, true); events.push('read'); return snapshot; },
   };
   const published: PublishedLocationRepository = {
+    async removeWithinMutation() { throw new Error('unused removal'); },
     async assertLocationIdAvailable() { assert.equal(locked, true); events.push('available'); },
     async getActive() { return state; }, async listActive() { return state ? [state] : []; }, async listHistory() { return state?.history ?? []; }, async registryRevision() { return 0; },
     async commitWithinMutation(input) {

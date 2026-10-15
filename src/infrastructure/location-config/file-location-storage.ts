@@ -5,7 +5,7 @@ import { activeLocationModelDispositions, legacyStaticModelProvenance, locationM
 import { legacyFloorToBaseline } from './legacy-location-mapper.js';
 import { parseNodesConfig, type NodesConfigV2 } from '../../modules/location-config/domain/nodes-config.js';
 import { LocationConflictError, type PublishedLocationRevision, type PublishedLocationState } from '../../modules/location-config/domain/location-records.js';
-import type { FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, LocationRegistrySnapshot, LocationRegistrySnapshotRepository, PublishedLocationRepository, RegistryMutationCoordinator } from '../../modules/location-config/repositories/location-storage.js';
+import type { FurnitureLibraryStore, LocationAssetMetadataRepository, LocationAssetStore, LocationDraftRepository, LocationRegistrySnapshot, LocationRegistrySnapshotRepository, PublishedLocationRepository, RegistryMutationCoordinator, LocationRemovalInput, LocationRemovalOutcome } from '../../modules/location-config/repositories/location-storage.js';
 import { buildRegistry, buildRegistryFromLocationDocuments, type FloorDef, type Registry } from '../../edge/registry.js';
 import { FileLocationAssetStore } from './file-location-asset-store.js';
 import { FileLocationDraftRepository } from './file-location-draft-repository.js';
@@ -62,7 +62,7 @@ export function initializeFileLocationPersistence(sitePath: string, nodesPath: s
   const snapshots = new FileLocationRegistrySnapshotRepository(siteJson, nodesPath, seedRegistry, published);
   const initial = snapshots.readSnapshotSync();
   const active = activeDocuments(initial);
-  const registry = buildRegistryFromLocationDocuments(siteJson, nodesConfigFor(initial), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation);
+  const registry = buildRegistryFromLocationDocuments(siteJson, nodesConfigFor(initial), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation, new Set(initial.locations.filter(row => row.removal).map(row => row.locationId)));
   return {
     siteSeed: siteJson, registry, coordinator, drafts, published, snapshots, assets: assetStore, furnitureLibrary: assetStore, assetMetadata: assetStore,
     close: () => coordinator.close(),
@@ -82,7 +82,9 @@ export function buildFileRegistry(siteJson: unknown, nodesJson: unknown): Regist
   if (parsed.kind === 'legacy') return buildRegistry(siteJson, { nodes: parsed.nodes });
   const seed = buildRegistry(siteJson, { nodes: [] });
   validatePublishedAgainstSeed(seed, parsed.document);
+  const removedIds = new Set(parsed.document.locationRemovals?.map(row => row.locationId));
   const active = parsed.document.publishedLocations.flatMap((location) => {
+    if (removedIds.has(location.locationId)) return [];
     const active = location.revisions.find((revision) => revision.revision === location.activeRevision);
     if (!active) throw new LocationConflictError(`Published location ${location.locationId} has no active document.`);
     return [active];
@@ -91,7 +93,7 @@ export function buildFileRegistry(siteJson: unknown, nodesJson: unknown): Regist
     const disposition = locationModelPresentationDisposition(revision.document, revision.assetProvenance, revision.revision);
     return disposition ? [[revision.locationId, disposition] as const] : [];
   }));
-  return buildRegistryFromLocationDocuments(siteJson, parsed.document, active.map((revision) => revision.document), new Map(active.flatMap((revision) => revision.legacySpatial ? [[revision.locationId, revision.legacySpatial] as const] : [])), modelDispositionByLocation);
+  return buildRegistryFromLocationDocuments(siteJson, parsed.document, active.map((revision) => revision.document), new Map(active.flatMap((revision) => revision.legacySpatial ? [[revision.locationId, revision.legacySpatial] as const] : [])), modelDispositionByLocation, removedIds);
 }
 
 export class FilePublishedLocationRepository implements PublishedLocationRepository {
@@ -106,6 +108,7 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
     if (!isLocationId(locationId)) throw new TypeError('Location ID is invalid.');
     const state = this.readNodes();
     if (this.seedRegistry.floors.some((floor) => floor.id === locationId)
+      || state.locationRemovals?.some(item => item.locationId === locationId)
       || state.publishedLocations.some((item) => item.locationId === locationId)) {
       throw new LocationConflictError('The location ID is already in use.');
     }
@@ -134,6 +137,8 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
   }
 
   private activeFromConfig(locationId: string, config: NodesConfigV2): PublishedLocationState | null {
+    const removed = config.locationRemovals?.find(row => row.locationId === locationId);
+    const removal = removed ? { removal: { removedAt: removed.removedAt, removedBy: removed.removedBy } } : {};
     const override = config.publishedLocations.find((item) => item.locationId === locationId);
     if (override) {
       const baseline = this.seedRegistry.floors.find((floor) => floor.id === locationId);
@@ -141,12 +146,12 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
         ...(baseline ? [legacyRevision(baseline, this.seedRegistry)] : []),
         ...override.revisions,
       ];
-      return { locationId, activeRevision: override.activeRevision, history };
+      return { locationId, activeRevision: override.activeRevision, history, ...removal };
     }
     const floor = this.seedRegistry.floors.find((item) => item.id === locationId);
     if (!floor) return null;
     const revision = legacyRevision(floor, this.seedRegistry);
-    return { locationId, activeRevision: 0, history: [revision] };
+    return { locationId, activeRevision: 0, history: [revision], ...removal };
   }
 
   async commitWithinMutation(input: {
@@ -157,6 +162,7 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
   }): Promise<{ kind: 'committed'; durability: 'confirmed' | 'unconfirmed'; acknowledgement: 'received'; registryRevision: number; activeRevision: number; contentSha256: string }> {
     const config = this.readNodes();
     if (config.revision !== input.expectedRegistryRevision) throw new LocationConflictError('The registry changed; reload before publishing.');
+    if (config.locationRemovals?.some(row => row.locationId === input.revision.locationId)) throw new LocationConflictError('This location has been removed and cannot be republished.');
     const document = parseLocationDocument(input.revision.document);
     if (document.locationId !== input.revision.locationId || !Number.isSafeInteger(input.revision.createdAt) || input.revision.createdAt < 0) {
       throw new TypeError('Published revision metadata is invalid.');
@@ -225,6 +231,24 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
     };
   }
 
+  /** One atomic registry replacement reserves the removed ID and releases every sensor. */
+  async removeWithinMutation(input: LocationRemovalInput): Promise<LocationRemovalOutcome> {
+    const config = this.readNodes();
+    const state = this.activeFromConfig(input.locationId, config);
+    if (state?.removal) throw new LocationConflictError('This location has been removed.');
+    if (config.revision !== input.expectedRegistryRevision || !state || state.activeRevision !== input.expectedPublishedRevision) throw new LocationConflictError('The published location changed; reload before removing it.');
+    const nodes = structuredClone(config.nodes);
+    applyAssignments(nodes, input.locationId, [], 'public');
+    const candidate: NodesConfigV2 = { ...config, revision: config.revision + 1, nodes,
+      locationRemovals: [...(config.locationRemovals ?? []), { locationId: input.locationId, ...input.removal }] };
+    const checked = parseNodesConfig(candidate);
+    if (checked.kind !== 'v2') throw new TypeError('Invalid registry schema.');
+    validatePublishedAgainstSeed(this.seedRegistry, checked.document);
+    const outcome = atomicWriteNodesConfig(this.nodesPath, checked.document, this.writeOperations);
+    if (outcome.durability === 'unconfirmed') this.coordinator.latchDurabilityRecovery?.(() => recoverNodesConfig(this.nodesPath, outcome.revision, outcome.contentSha256, this.writeOperations));
+    return { kind: 'removed', locationId: input.locationId, registryRevision: outcome.revision, durability: outcome.durability, acknowledgement: 'received' };
+  }
+
   async registryRevision(): Promise<number> { return this.readNodes().revision; }
 
   private readNodes(): NodesConfigV2 {
@@ -236,10 +260,12 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
   private async assertNoGlobalGeometryCollision(config: NodesConfigV2, document: LocationDocument): Promise<void> {
     const newTableIds = new Set(document.tables.map((table) => table.id));
     const newSeatIds = new Set(document.tables.flatMap((table) => table.seats.map((seat) => seat.id)));
-    const activeOverrides = new Map(config.publishedLocations.map((item) => [item.locationId, item.revisions.find((row) => row.revision === item.activeRevision)!.document]));
+    const removedIds = new Set(config.locationRemovals?.map(row => row.locationId));
+    const activeOverrides = new Map(config.publishedLocations.filter(row => !removedIds.has(row.locationId)).map((item) => [item.locationId, item.revisions.find((row) => row.revision === item.activeRevision)!.document]));
     const used = new Set<string>();
     const usedSeats = new Set<string>();
     for (const floor of this.seedRegistry.floors) {
+      if (removedIds.has(floor.id)) continue;
       const active = floor.id === document.locationId ? document : activeOverrides.get(floor.id) ?? legacyFloorToBaseline(floor, this.seedRegistry.nodes.values());
       if (floor.id !== document.locationId) for (const table of active.tables) {
         used.add(table.id);
@@ -274,7 +300,7 @@ export class FileLocationRegistrySnapshotRepository implements LocationRegistryS
     validatePublishedAgainstSeed(this.seedRegistry, config);
     const states = this.published.activeStatesFromConfig(config);
     const activeOverrides = states.flatMap((state) => {
-      if (state.activeRevision === 0) return [];
+      if (state.removal || state.activeRevision === 0) return [];
       const active = state.history.find((revision) => revision.revision === state.activeRevision);
       return active ? [parseLocationDocument(active.document)] : [];
     });
@@ -283,7 +309,7 @@ export class FileLocationRegistrySnapshotRepository implements LocationRegistryS
       return state.activeRevision !== 0 && active?.legacySpatial ? [[state.locationId, active.legacySpatial] as const] : [];
     }));
     const modelDispositionByLocation = activeLocationModelDispositions(states);
-    const current = buildRegistryFromLocationDocuments(this.siteSeed, config, activeOverrides, provenance, modelDispositionByLocation);
+    const current = buildRegistryFromLocationDocuments(this.siteSeed, config, activeOverrides, provenance, modelDispositionByLocation, new Set(states.filter(row => row.removal).map(row => row.locationId)));
     const locations = states.map((state) => {
       if (state.activeRevision !== 0) return state;
       const floor = current.floors.find((item) => item.id === state.locationId);
@@ -315,6 +341,7 @@ function activeDocuments(snapshot: LocationRegistrySnapshot): {
   const legacySpatialByLocation = new Map<string, LegacySpatialProvenance>();
   const modelDispositionByLocation = activeLocationModelDispositions(snapshot.locations);
   const documents = snapshot.locations.flatMap((state) => {
+    if (state.removal) return [];
     const active = state.history.find((revision) => revision.revision === state.activeRevision);
     if (!active) return [];
     if (state.activeRevision !== 0 && active.legacySpatial) legacySpatialByLocation.set(active.locationId, active.legacySpatial);
@@ -397,6 +424,9 @@ function sameAssignments(a: readonly LocationSensorAssignment[], b: readonly Loc
 
 function validatePublishedAgainstSeed(registry: Registry, document: NodesConfigV2): void {
   const floorIds = new Set(registry.floors.map((floor) => floor.id));
+  for (const removal of document.locationRemovals ?? []) {
+    if (!floorIds.has(removal.locationId) && !document.publishedLocations.some(row => row.locationId === removal.locationId)) throw new LocationConflictError('Removed location has no retained history.');
+  }
   const seedById = new Map(registry.floors.map((floor) => [floor.id, legacyRevision(floor, registry)]));
   for (const override of document.publishedLocations) {
     let base = seedById.get(override.locationId) ?? null;
@@ -433,9 +463,11 @@ function validatePublishedAgainstSeed(registry: Registry, document: NodesConfigV
       history.set(revision.revision, revision);
     }
   }
+  const removedIds = new Set(document.locationRemovals?.map(row => row.locationId));
   const tableIds = new Set<string>();
   const seatIds = new Set<string>();
   for (const floor of registry.floors) {
+    if (removedIds.has(floor.id)) continue;
     const override = document.publishedLocations.find((item) => item.locationId === floor.id);
     const active = override?.revisions.find((row) => row.revision === override.activeRevision)?.document;
     for (const table of active?.tables ?? floor.tables) {
@@ -448,7 +480,7 @@ function validatePublishedAgainstSeed(registry: Registry, document: NodesConfigV
     }
   }
   for (const override of document.publishedLocations) {
-    if (floorIds.has(override.locationId)) continue;
+    if (floorIds.has(override.locationId) || removedIds.has(override.locationId)) continue;
     const active = override.revisions.find((row) => row.revision === override.activeRevision)!.document;
     for (const table of active.tables) {
       if (tableIds.has(table.id)) throw new LocationConflictError(`Duplicate table ID "${table.id}" across active locations.`);
