@@ -443,6 +443,71 @@ class Comparison(unittest.TestCase):
                 hpc_job.ROOT = old
 
 
+class NightlyLoop(unittest.TestCase):
+    """Each night: test on a day nothing trained on, and keep what is live unless the challenger is measurably better."""
+
+    def test_a_day_ends_at_four_in_the_morning_hong_kong_time(self) -> None:
+        from datetime import datetime
+        from tools.thermalml.nightly import HKT, yesterday
+        self.assertEqual(yesterday(datetime(2026, 10, 16, 4, 30, tzinfo=HKT)), '2026-10-15')
+        self.assertEqual(yesterday(datetime(2026, 10, 16, 3, 30, tzinfo=HKT)), '2026-10-14')    # the 15th is not over yet
+
+    def test_the_test_day_never_trains_and_the_check_day_is_the_latest_with_people(self) -> None:
+        from tools.thermalml.nightly import plan
+        people = {'2026-10-06': 4391, '2026-10-07': 644, '2026-10-09': 0, '2026-10-10': 4845, '2026-10-11': 193}
+        p = plan(people, '2026-10-11')
+        self.assertEqual((p['check'], p['train']), ('2026-10-10', ['2026-10-06', '2026-10-07', '2026-10-09']))
+        self.assertEqual(plan(people, '2026-10-10')['check'], '2026-10-07')          # 9 Oct has nobody to check on
+        self.assertIn('no labelled frames', plan(people, '2026-10-12')['why'])
+        self.assertIn('locked', plan({**people, '2026-09-29': 9}, '2026-09-29')['why'])
+        self.assertIsNotNone(plan({'2026-10-06': 4391, '2026-10-07': 644}, '2026-10-07')['why'])
+
+    @staticmethod
+    def scored(people_frames: int, false_empty: float, busy_f1: float) -> dict:
+        return {'slices': {'peopleFrames': people_frames, 'falsePerEmptyFrame': false_empty, 'busyF1': busy_f1}}
+
+    def test_a_challenger_is_promoted_only_when_measurably_better_and_no_worse_on_empty_or_busy_frames(self) -> None:
+        from tools.thermalml.nightly import decide, g2
+        live = self.scored(5000, 0.05, 0.70)
+        better = {'f1': 0.04, 'f1ci95': [0.01, 0.07]}
+        self.assertTrue(g2(self.scored(5000, 0.05, 0.71), live, 'champion', better).passed)
+        self.assertFalse(g2(self.scored(5000, 0.05, 0.71), live, 'champion', {'f1': 0.04, 'f1ci95': [-0.01, 0.09]}).passed)   # could be luck
+        self.assertFalse(g2(self.scored(5000, 0.09, 0.71), live, 'champion', better).passed)      # empty rooms fill with false people
+        self.assertFalse(g2(self.scored(5000, 0.05, 0.60), live, 'champion', better).passed)      # worse when it is busy
+        self.assertIsNone(g2(self.scored(193, 0.05, 0.71), live, 'champion', better).passed)      # too few people to tell
+        self.assertIsNone(g2(self.scored(5000, 0.05, 0.71), None, None, None).passed)            # nothing live to compare with
+        self.assertTrue(decide([]).startswith('shadow candidate'))
+        self.assertTrue(decide([g2(self.scored(193, 0.05, 0.71), live, 'champion', better)]).startswith('kept what is live'))
+
+    def test_a_champion_that_trained_or_chose_on_the_test_day_is_not_a_fair_opponent(self) -> None:
+        from tools.thermalml.nightly import saw
+        champion = {'trainDays': ['2026-10-06', '2026-10-11'], 'valDays': ['2026-10-10']}
+        self.assertTrue(saw(champion, '2026-10-11'))
+        self.assertTrue(saw(champion, '2026-10-10'))
+        self.assertFalse(saw(champion, '2026-10-12'))
+        self.assertFalse(saw({}, '2026-10-12'))
+
+    def test_the_registry_never_rewrites_a_model_and_remembers_the_previous_champion(self) -> None:
+        from tools.thermalml.nightly import Registry
+        with tempfile.TemporaryDirectory() as t:
+            for k in ('a', 'b'):
+                json.dump({'id': k, 'threshold': 0.5}, open(os.path.join(t, f'{k}.json'), 'w'))
+            r = Registry(os.path.join(t, 'registry'))
+            r.set('milestone', champion=r.add(os.path.join(t, 'a.json')))
+            r.set('milestone', champion=r.add(os.path.join(t, 'b.json')))
+            json.dump({'id': 'b', 'threshold': 0.9}, open(os.path.join(t, 'b.json'), 'w'))
+            r.add(os.path.join(t, 'b.json'))
+            self.assertEqual(json.load(open(r.path('b')))['threshold'], 0.5)                     # the first copy stands
+            a = r.active()
+            self.assertEqual((a['champion'], a['previous'], len(a['history'])), ('b', 'a', 2))
+
+    def test_the_report_says_not_measured_where_nothing_was_measured(self) -> None:
+        from tools.thermalml.nightly import NOT_BUILT, report_md
+        md = report_md({'day': '2026-10-12', 'decision': 'nothing to do: no labelled frames', 'notBuilt': NOT_BUILT}, [])
+        self.assertIn('nothing to do', md)
+        self.assertIn('shadow day', md)
+
+
 class CameraCheck(unittest.TestCase):
     """A day is labelled with a period's mapping only if both cameras are where they were."""
 

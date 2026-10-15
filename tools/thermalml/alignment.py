@@ -67,7 +67,13 @@ def thermal_shift(ref: np.ndarray, bg: np.ndarray) -> tuple[float, float]:
 def same_place(ref_day: str, day: str, rgb_root: str, shards_root: str, uid: str) -> tuple[bool, str]:
     """Whether both cameras on `day` are where they were on `ref_day`, and the measurement that says so."""
     sdir = uid.replace(':', '')
-    a, b = median_photo(os.path.join(rgb_root, sdir, ref_day)), median_photo(os.path.join(rgb_root, sdir, day))
+    return same_place_as(median_photo(os.path.join(rgb_root, sdir, ref_day)), ref_day, day, rgb_root, shards_root, uid)
+
+
+def same_place_as(ref_photo: np.ndarray | None, ref_day: str, day: str, rgb_root: str, shards_root: str,
+                  uid: str) -> tuple[bool, str]:
+    """same_place, against a reference median photo kept from before the reference day's photos were deleted."""
+    a, b = ref_photo, median_photo(os.path.join(rgb_root, uid.replace(':', ''), day))
     if a is None or b is None:
         return False, 'no photos to compare'
     p = photo_shift(a, b)

@@ -4,6 +4,7 @@ The thermal people detector's labelling and training, as one SLURM job (module 0
     hpc_job.py --stage check | stage | label | train | all      (uploaded data, 1-in-5 photos)
     hpc_job.py --stage full                                       (every photo, fetched with a download key)
     hpc_job.py --stage compare [--job job3]                       (jobs 2 and 3: two recipes on the same teacher boxes)
+    hpc_job.py --stage nightly [--day YYYY-MM-DD]                 (each night: new days in, a challenger out; nightly.py)
 
 `full` needs nothing uploaded but this code: it fetches the newest export of
 training.frames and training.pairs from the edge with the download key saved
@@ -212,7 +213,7 @@ def ensure_torch() -> None:
         import numpy  # noqa: F401
         import torch  # noqa: F401
         import torchvision  # noqa: F401
-        if STAGE in ('full', 'compare'):
+        if STAGE in ('full', 'compare', 'nightly'):
             import cv2  # noqa: F401
             import ultralytics  # noqa: F401
         return
@@ -242,14 +243,15 @@ def ensure_torch() -> None:
                 break
         else:
             raise SystemExit('no PyTorch ROCm build installed; set THERMALML_TORCH_INDEX to a wheel index from pytorch.org')
-    if STAGE in ('full', 'compare'):
+    if STAGE in ('full', 'compare', 'nightly'):
         # Ultralytics pulls in opencv-python, whose GUI build needs libGL that a
         # server may not have; the headless build is the same library without it.
         subprocess.run([py, '-m', 'pip', 'install', '--quiet', 'ultralytics'], check=True)
         subprocess.run([py, '-m', 'pip', 'uninstall', '--quiet', '-y', 'opencv-python'], check=False)
         subprocess.run([py, '-m', 'pip', 'install', '--quiet', '--force-reinstall', '--no-deps', 'opencv-python-headless'], check=True)
     log('re-running in ~/thermalml/venv')
-    os.execv(py, [py, '-u', os.path.abspath(__file__), '--stage', STAGE, '--job', JOB] + (['--quick'] if QUICK else []))
+    os.execv(py, [py, '-u', os.path.abspath(__file__), '--stage', STAGE, '--job', JOB] + (['--day', DAY] if DAY else [])
+             + (['--quick'] if QUICK else []))
 
 
 def device() -> str:
@@ -271,6 +273,11 @@ def device() -> str:
                          'THERMALML_ALLOW_CPU=1 runs on the CPU anyway.')
     log(f'no usable GPU: running on {cpus} CPU threads')
     return 'cpu'
+
+
+def teacher_batch(model: str, dev: str) -> str:
+    """Photos per batch: Faster R-CNN on a Mac's shared GPU memory runs out at 16 (seen: 5.9 GB at the cap)."""
+    return '2' if dev == 'mps' and model.startswith('fasterrcnn') else '16'
 
 
 # --- label: Faster R-CNN on the staged photos --------------------------------
@@ -296,7 +303,7 @@ def stage_label() -> None:
     dev = device()
     log(f'Faster R-CNN on {", ".join(day_list)} with {dev}')
     args = ['--model', 'fasterrcnn_v2', '--rgb', rgb, '--out', os.path.join(p['stage'], 'teachers'), '--device', dev,
-            '--batch', '8']
+            '--batch', '2' if dev == 'mps' else '8']
     for d in day_list:
         args += ['--day', d]
     teachers.main(args)
@@ -402,7 +409,7 @@ def other_downloads() -> list[int]:
         except OSError:
             continue
         if int(pid) != os.getpid() and any(a.endswith(b'hpc_job.py') for a in argv) and \
-                any(a in (b'fetch', b'full', b'compare') for a in argv):
+                any(a in (b'fetch', b'full', b'compare', b'nightly') for a in argv):
             found.append(int(pid))
     return found
 
@@ -535,7 +542,7 @@ def prepare(w: str, more_days: bool = False) -> tuple[dict[str, str], str, list[
         for model in TEACHER:
             log(f'teacher {model} on every October photo ({dev})')
             # Every photo (THERMALML_EVERY is only for rehearsals on a laptop).
-            teachers.main(['--model', model, '--rgb', d['rgb'], '--out', d['teachers'], '--device', dev, '--batch', '16',
+            teachers.main(['--model', model, '--rgb', d['rgb'], '--out', d['teachers'], '--device', dev, '--batch', teacher_batch(model, dev),
                            '--every', os.environ.get('THERMALML_EVERY', '1')]
                           + [x for day in chosen for x in ('--day', day)])
         log('labels: fused teacher, lit photos only, unknown outside the photo')
@@ -620,6 +627,8 @@ RECIPES = {
 JOBS = {'job2': ('recipe1', 'recipe2'), 'job3': ('recipe1', 'recipe2'), 'job4': ('recipe2', 'recipe4')}
 SEEDS = (0, 1, 2)
 JOB = 'job2'
+NIGHTLY_RECIPE = 'recipe2'      # the hand test's choice in job 3 (docs/THERMAL_ML.md)
+DAY = None                      # --day for --stage nightly
 
 
 def title(name: str) -> str:
@@ -786,16 +795,136 @@ def print_compare(report: dict, fin: dict | None = None) -> None:
         print(f'  ({fin["caveat"]})')
 
 
+# --- nightly: new days in, a challenger out ---------------------------------
+
+def ingest(w: str) -> list[str]:
+    """Bring the newest export in and label every rig day not labelled yet; the days labelled now.
+
+    A day is labelled only if both cameras are where they were on the
+    period's first day (alignment.same_place_as, against a median photo kept
+    for the purpose, since the photos themselves are deleted after labelling).
+    A day left out is tried again on later nights: a later export may hold
+    more of it. A day the export may not hold all of -- nothing in it was
+    recorded after the day ended -- waits, so it is never labelled half done.
+    """
+    import numpy as np
+    from tools.thermalml import __main__ as tm, alignment, dataset, labels, teachers
+    from tools.thermalml import days as daymod
+    from tools.thermalml.shards import list_shards, shard_paths
+    zips = stage_fetch()
+    d = {k: os.path.join(w, k) for k in ('shards', 'rgb', 'features', 'teachers', 'labels', 'labels-voted')}
+    for v in d.values():
+        os.makedirs(v, exist_ok=True)
+    state_file = os.path.join(w, 'ingest.json')
+    state = json.load(open(state_file)) if os.path.exists(state_file) else {}
+
+    def save() -> None:
+        with open(state_file + '.tmp', 'w') as f:
+            json.dump(state, f, indent=1)
+        os.replace(state_file + '.tmp', state_file)
+
+    export = os.path.basename(zips['training.frames'])
+    if state.get('export') != export:
+        log(f'new export {export}: shards and inputs for every frame')
+        tm.main(['shards', '--dump', zips['training.frames'], '--out', d['shards']])
+        dataset.main(['--shards', d['shards'], '--out', d['features']])
+        state['export'] = export
+        save()                                  # a night that fails later does not redo this
+    folder = os.path.join(d['labels'], SENSOR)
+    done = {f[:-5] for f in os.listdir(folder) if f.endswith('.json')} if os.path.isdir(folder) else set()
+    shards = list_shards(d['shards'])
+    latest = max((json.load(open(shard_paths(d['shards'], u, x)[1]))['at'][-1] for u, x in shards), default=0)
+    new, state['waiting'] = [], {}
+    for uid, day in shards:
+        if uid != UID or day in done or day < OCT_DAYS[0]:
+            continue
+        if daymod.day_start_ms(day) + 86_400_000 > latest:
+            state['waiting'][day] = 'the export may not hold all of it: nothing in it was recorded after the day ended'
+            log(f'{day}: waits, {state["waiting"][day]}')
+            continue
+        new.append(day)
+    chosen: list[str] = []
+    if new:
+        # The camera check compares with a median photo of the period's earliest day that still has photos in
+        # the export (photos are deleted after labelling, and the database keeps them 14 days); kept once made.
+        ref_file, ref_meta = os.path.join(w, 'reference-photo.npy'), os.path.join(w, 'reference-photo.json')
+        want = new + ([] if os.path.exists(ref_file) else [x for x in OCT_DAYS if x in done])
+        tm.main(['rgb', '--dump', zips['training.frames'], '--pairs', zips['training.pairs'], '--shards', d['shards'],
+                 '--out', d['rgb']] + [x for day in want for x in ('--day', day)])
+        if not os.path.exists(ref_file):
+            for cand in [x for x in OCT_DAYS if x in done]:
+                photo = alignment.median_photo(os.path.join(d['rgb'], SENSOR, cand))
+                if photo is not None:
+                    np.save(ref_file, photo)
+                    json.dump({'day': cand}, open(ref_meta, 'w'))
+                    break
+            else:
+                raise SystemExit('no photos of any labelled October day in the export: the camera check has nothing to compare with')
+        ref = json.load(open(ref_meta))['day']
+        minimum = int(os.environ.get('THERMALML_MIN_DAY_PHOTOS', '500'))
+        state['leftOut'] = {}
+        for day in new:
+            day_dir = os.path.join(d['rgb'], SENSOR, day)
+            n = len(os.listdir(day_dir)) if os.path.isdir(day_dir) else 0
+            ok, said = (False, f'{n} photos') if n < minimum else \
+                alignment.same_place_as(np.load(ref_file), ref, day, d['rgb'], d['shards'], UID)
+            log(f'{day}: {said}')
+            (chosen.append(day) if ok else state['leftOut'].__setitem__(day, said))
+        if chosen:
+            dev = device()
+            for model in TEACHER:
+                teachers.main(['--model', model, '--rgb', d['rgb'], '--out', d['teachers'], '--device', dev,
+                               '--batch', teacher_batch(model, dev),
+                               '--every', os.environ.get('THERMALML_EVERY', '1')]      # every photo (n-th only in rehearsals)
+                              + [x for day in chosen for x in ('--day', day)])
+            labels.main(['--teacher', d['teachers'], '--models', '+'.join(TEACHER), '--mapping', 'data/ml/mapping/2ccf670bc094-oct.json',
+                         '--rgb', d['rgb'], '--out', d['labels']] + [x for day in chosen for x in ('--day', day)])
+            for line in labels.vote_build(d['labels'], d['shards'], UID, chosen, d['labels-voted']):
+                log(line)
+        shutil.rmtree(d['rgb'], ignore_errors=True)      # the photos were only ever needed to make labels
+        log('photos deleted: the labels are kept')
+    save()
+    log(f'labelled tonight: {", ".join(chosen) or "nothing new"}')
+    return chosen
+
+
+def stage_nightly() -> None:
+    os.environ.setdefault('YOLO_CONFIG_DIR', os.path.join(ROOT, 'ultralytics'))
+    os.makedirs(os.environ['YOLO_CONFIG_DIR'], exist_ok=True)
+    ensure_torch()
+    sys.path.insert(0, CODE)
+    os.chdir(CODE)
+    import fcntl
+    from tools.thermalml import nightly
+    w = os.path.join(ROOT, 'job2')            # every labelled day so far (job 2 labelled 6-11 Oct)
+    out = os.path.join(ROOT, 'nightly')
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, 'lock'), 'w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)    # one night at a time
+        except BlockingIOError:
+            raise SystemExit('another night is still running')
+        if not os.environ.get('THERMALML_NO_INGEST'):
+            ingest(w)
+        r = nightly.run(DAY or nightly.yesterday(),
+                        {'shards': os.path.join(w, 'shards'), 'features': os.path.join(w, 'features'), 'replay': 'data/ml/replay',
+                         'labels': {'labels': os.path.join(w, 'labels'), 'labels-voted': os.path.join(w, 'labels-voted')}},
+                        out, nightly.Registry(os.path.join(out, 'registry')), RECIPES[NIGHTLY_RECIPE], device(), quick=QUICK)
+    log(f'NIGHT OF {r["day"]}: {r["decision"]}')
+    log(f'report: {os.path.join(out, "nights", r["day"], "report.md")}')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--stage', required=True, choices=('check', 'stage', 'label', 'train', 'all', 'fetch', 'full', 'compare'))
+    ap.add_argument('--stage', required=True, choices=('check', 'stage', 'label', 'train', 'all', 'fetch', 'full', 'compare', 'nightly'))
     ap.add_argument('--quick', action='store_true', help='rehearsal: one short training epoch')
     ap.add_argument('--job', default='job2', choices=sorted(JOBS), help='with --stage compare: which comparison')
+    ap.add_argument('--day', help='with --stage nightly: the test day (default: the last finished day)')
     a = ap.parse_args()
-    global STAGE, QUICK, JOB
-    STAGE, QUICK, JOB = a.stage, a.quick, a.job
+    global STAGE, QUICK, JOB, DAY
+    STAGE, QUICK, JOB, DAY = a.stage, a.quick, a.job, a.day
     t0 = time.time()
-    if a.stage in ('check', 'all', 'full', 'compare'):
+    if a.stage in ('check', 'all', 'full', 'compare', 'nightly'):
         stage_check()
     if a.stage == 'fetch':
         stage_fetch()
@@ -803,6 +932,8 @@ def main() -> int:
         stage_full()
     if a.stage == 'compare':
         stage_compare()
+    if a.stage == 'nightly':
+        stage_nightly()
     if a.stage == 'stage':
         stage_stage()
     if a.stage in ('label', 'all'):

@@ -30,13 +30,16 @@ from .shards import sensor_dir
 from .train import RADIUS, finite, load_day, scorable
 
 
-def score(d: dict, predict) -> dict:
+def score(d: dict, predict, frames_out: list | None = None) -> dict:
+    """Scores of predict(i) over d's frames; frames_out, if given, receives the per-frame results."""
     frames = []
     for i in range(len(d['at'])):
         truth = [(p[0], p[1]) for p in d['pts'][i]]
         pred = scorable(predict(i), d['footprint'], truth, d['ign'][i])
         tp, fp, fn, dist = match(truth, pred, RADIUS)
         frames.append(Frame(int(d['at'][i]), len(truth), len(pred), tp, fp, fn, dist))
+    if frames_out is not None:
+        frames_out.extend(frames)
     return {'all': score_frames(frames), 'byTrueCount': by_true_count(frames), 'confusion': confusion(frames), 'ci95': bootstrap(frames)}
 
 

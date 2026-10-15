@@ -473,6 +473,79 @@ finds; the model is job 3's recipe 2 pick.
   people to empty rooms, which makes a free seat look taken, is barely
   penalised. The next hand-labelled set should include empty periods.
 
+## The nightly loop (draft, 2026-10-15)
+
+`tools/thermalml/nightly.py`, run on the training machine as `hpc_job.py
+--stage nightly`. It covers the offline half of the daily-learning plan. The
+edge half is not built.
+
+**Each night, for the last finished day d** (days run 04:00–04:00 HKT):
+1. **Ingest** (`hpc_job.ingest`):
+   - Fetch the newest export, and rebuild shards and inputs when it is a new one.
+   - Label every rig day that isn't labelled yet with the three teachers and
+     the voted labels, then delete its photos.
+   - Skip a day if a camera moved (`alignment.same_place_as`) or it has
+     fewer than 500 photos. Wait on a day if nothing in the export was
+     recorded after it ended, so no day is labelled half done.
+   - The camera check compares with a median photo of the period's earliest
+     labelled day still in the export, saved once.
+2. **Plan** (`nightly.plan`):
+   - d is the test day: no model trains on it or chooses with it.
+   - The latest earlier day with at least 300 usable frames with people is
+     the check day (epoch, threshold, the best of three runs).
+   - Every other earlier day trains. Locked days never take part.
+3. **Train** a challenger from scratch: three runs of the configured recipe
+   (`NIGHTLY_RECIPE`, now recipe 2, the hand test's choice in job 3).
+4. **Test on d:**
+   - the challenger;
+   - the champion from the registry;
+   - today's edge detector, when a replay of it for d exists.
+5. **Gates:**
+   - **G1 data:** no locked day in play, and every day labelled.
+   - **G2 better than what is live on d**, all of these together:
+     - the paired 95% interval of the F1 difference is above 0;
+     - false people per empty frame rise by at most 0.02;
+     - F1 with 2+ people falls by at most 0.03;
+     - d has at least 2,000 usable frames with people.
+
+     With fewer, it says it can't tell yet. A champion that trained on d or
+     chose with it is not a fair opponent, so G2 waits.
+   - **G3** (the edge computes the same) and **G4** (a 24-hour shadow day,
+     then switching) are not built. The best a night can do is name a shadow
+     candidate in the registry.
+6. **Report:**
+   - `nightly/nights/<d>/report.json` and `report.md`, measured numbers only,
+     with a night-by-night table.
+   - `nightly/registry/`: every challenger's model (never rewritten) and
+     `active.json` (champion, shadow, previous, history).
+
+**The first champion is set by hand at a milestone**, after the hand test:
+`python3 -m tools.thermalml.nightly --set-champion <model.json> --why "..."`.
+
+**Rehearsed on the Mac:**
+- The rules have unit tests.
+- Two nights ran with deliberately undertrained challengers. On 10 Oct G2
+  failed and the champion was kept, as it should be. On 11 Oct G2 was "not
+  decided: 193 frames with people".
+
+**Scheduling.** On the training machine, as its own user, `crontab -e`:
+
+```
+30 4 * * * cd ~/thermalml/job && python3 -u hpc_job.py --stage nightly >> ~/thermalml/nightly.log 2>&1
+```
+
+**Not built yet:**
+- The edge's ML detector mode, the shadow day, automatic switching, and the
+  48-hour rollback watchdog (milestones M4 and M5).
+- Data arriving without a person:
+  - An export exists only when someone prepares one on the ML Data page.
+  - A download key lasts at most 7 days.
+
+  Unattended nights need a scheduled export, or read-only database access
+  for the training machine (`python3 -m tools.thermalml shards --db` already
+  reads the database). Until then, a night with nothing new reports "nothing to
+  do".
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 

@@ -46,7 +46,7 @@ src/infrastructure/tmflash-release/  module 08's latest native app: verified Git
 src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
-tools/thermalml/         offline thermal ML data: day shards from the frames export, locked test days, staticbg port (docs/THERMAL_ML.md)
+tools/thermalml/         offline thermal ML: day shards, locked test days, staticbg port, teacher labels, training, the hand test, cluster/PC jobs (hpc_job.py), the nightly loop (nightly.py) (docs/THERMAL_ML.md)
 src/tools/replay.ts      today's edge detector replayed over day shards: the baseline a new model has to beat
 ```
 
