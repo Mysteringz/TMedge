@@ -7,8 +7,9 @@ Today's detector and a trained model, scored on the same frames by the same rule
 A new model only ships if it beats what the edge already does. Both are
 scored here on exactly the same frames -- labelled, with a ready background,
 away from day boundaries -- against the teacher's labels, with train.py's
-rules: people matched within 2 thermal px, nothing counted where the photo
-could not see or where the teacher was unsure. The edge detector's points
+rules (train.scorable): people matched within 2 thermal px; every sure
+person counts, near the photo's edge too; a prediction that matches nobody
+counts only where the photo could see and the teacher was sure. The edge detector's points
 come from the real EdgeDetector (src/tools/replay.ts output); the model's
 from the exported file, run with numpy exactly as the edge would.
 
@@ -19,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 
 import numpy as np
@@ -27,19 +27,14 @@ import numpy as np
 from .heatnet import decode, forward_np
 from .metrics import Frame, bootstrap, by_true_count, confusion, match, score_frames
 from .shards import sensor_dir
-from .train import H, RADIUS, W, finite, load_day
-
-
-def _keep(points, known: np.ndarray, ign: list) -> list[tuple[float, float]]:
-    return [(x, y) for (x, y) in points if 0 <= int(y) < H and 0 <= int(x) < W and known[int(y), int(x)] >= 0.5
-            and not any(math.hypot(x - q[0], y - q[1]) <= RADIUS for q in ign)]
+from .train import RADIUS, finite, load_day, scorable
 
 
 def score(d: dict, predict) -> dict:
     frames = []
     for i in range(len(d['at'])):
-        pred = _keep(predict(i), d['footprint'], d['ign'][i])
         truth = [(p[0], p[1]) for p in d['pts'][i]]
+        pred = scorable(predict(i), d['footprint'], truth, d['ign'][i])
         tp, fp, fn, dist = match(truth, pred, RADIUS)
         frames.append(Frame(int(d['at'][i]), len(truth), len(pred), tp, fp, fn, dist))
     return {'all': score_frames(frames), 'byTrueCount': by_true_count(frames), 'confusion': confusion(frames), 'ci95': bootstrap(frames)}

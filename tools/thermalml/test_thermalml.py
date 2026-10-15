@@ -360,6 +360,20 @@ class VotedLabels(unittest.TestCase):
         self.assertEqual(n['unvoted'], 1)
 
 
+class CheckDayScoring(unittest.TestCase):
+    """People count wherever the photo shows them; an empty spot counts only where the photo could see."""
+
+    def test_a_sure_person_outside_the_known_region_is_still_a_person(self) -> None:
+        from tools.thermalml.train import scorable
+        known = np.zeros((24, 32), dtype=np.float32)
+        known[8:16, 8:24] = 1
+        truth = [(2.5, 2.5)]                                      # near the photo's edge, outside the known region
+        self.assertEqual(scorable([(2.8, 2.2)], known, truth, []), [(2.8, 2.2)])      # found: a hit
+        self.assertEqual(scorable([(28.0, 2.0)], known, truth, []), [])              # nobody near, unknown ground: not judged
+        self.assertEqual(scorable([(12.0, 12.0)], known, truth, []), [(12.0, 12.0)])  # nobody near, known ground: a false person
+        self.assertEqual(scorable([(12.0, 12.0)], known, [], [(12.5, 12.0)]), [])    # near a set-aside person: not judged
+
+
 class Comparison(unittest.TestCase):
     """Two models on the same frames are compared by their difference, resampled together."""
 

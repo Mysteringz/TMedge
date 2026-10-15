@@ -3,7 +3,7 @@ The thermal people detector's labelling and training, as one SLURM job (module 0
 
     hpc_job.py --stage check | stage | label | train | all      (uploaded data, 1-in-5 photos)
     hpc_job.py --stage full                                       (every photo, fetched with a download key)
-    hpc_job.py --stage compare                                    (job 2: two recipes on the same teacher boxes)
+    hpc_job.py --stage compare [--job job3]                       (jobs 2 and 3: two recipes on the same teacher boxes)
 
 `full` needs nothing uploaded but this code: it fetches the newest export of
 training.frames and training.pairs from the edge with the download key saved
@@ -249,7 +249,7 @@ def ensure_torch() -> None:
         subprocess.run([py, '-m', 'pip', 'uninstall', '--quiet', '-y', 'opencv-python'], check=False)
         subprocess.run([py, '-m', 'pip', 'install', '--quiet', '--force-reinstall', '--no-deps', 'opencv-python-headless'], check=True)
     log('re-running in ~/thermalml/venv')
-    os.execv(py, [py, '-u', os.path.abspath(__file__), '--stage', STAGE] + (['--quick'] if QUICK else []))
+    os.execv(py, [py, '-u', os.path.abspath(__file__), '--stage', STAGE, '--job', JOB] + (['--quick'] if QUICK else []))
 
 
 def device() -> str:
@@ -259,6 +259,9 @@ def device() -> str:
     if torch.cuda.is_available():
         log(f'GPU: {torch.cuda.get_device_name(0)}')
         return 'cuda'
+    if torch.backends.mps.is_available():           # a Mac: training this small network needs no more
+        log('GPU: Apple (MPS)')
+        return 'mps'
     if os.path.exists('/dev/kfd') and not os.environ.get('THERMALML_ALLOW_CPU'):
         # An AMD GPU PyTorch cannot open would leave Faster R-CNN on the CPU for
         # a day; nobody is watching overnight, so stop and say why instead.
@@ -595,63 +598,80 @@ def stage_full() -> None:
     log(f'everything is in {w}: model/model.json, reports/validation.json, reports/handtest.json')
 
 
-# --- compare: job 2, two recipes on the same teacher boxes ------------------
+# --- compare: jobs 2 and 3, two recipes on the same teacher boxes ----------
 
 # Decided with Kevin on 2026-10-14: recipe 2 changes two things at once, so a
 # win says the pair helped, not which half; the teacher boxes stay here, so
 # telling the halves apart is a training run, not another labelling.
+# Job 3 (2026-10-15) is job 2 measured correctly: the check-day scoring no
+# longer drops people near the photo's edge, and the hand test uses the
+# background a deployed sensor computes (handtest.py); job 2's verdict and
+# final model were chosen under both faults.
 RECIPES = {
-    'recipe1': {'what': "today's recipe (job 1)", 'labels': 'labels', 'widths': '12,24,32'},
+    'recipe1': {'what': "today's recipe (job 1)", 'labels': 'labels', 'widths': '12,24,32', 'args': []},
     'recipe2': {'what': 'about twice the weights, labels voted on by the photos within 3 s',
-                'labels': 'labels-voted', 'widths': '16,32,48'},
+                'labels': 'labels-voted', 'widths': '16,32,48', 'args': []},
 }
+JOBS = {'job2': ('recipe1', 'recipe2'), 'job3': ('recipe1', 'recipe2')}
 SEEDS = (0, 1, 2)
+JOB = 'job2'
 
 
-def verdict(diff: dict) -> str:
+def title(name: str) -> str:
+    return name.replace('recipe', 'recipe ')
+
+
+def verdict(diff: dict, a: str = 'recipe1', b: str = 'recipe2') -> str:
     """The rule in docs/THERMAL_ML.md: only an interval that excludes 0 names a winner."""
     lo, hi = diff['f1ci95']
     if lo is None or hi is None or lo != lo or hi != hi:
         return 'not measured'
-    return ('recipe 2 is better on the hand test' if lo > 0 else 'recipe 1 is better on the hand test' if hi < 0
+    return (f'{title(b)} is better on the hand test' if lo > 0 else f'{title(a)} is better on the hand test' if hi < 0
             else 'no measurable difference on the 400 hand-labelled frames')
 
 
 def stage_compare() -> None:
-    w = os.path.join(ROOT, 'job2')
-    d, dev, labelled_days = prepare(w, more_days=True)
+    a, b = JOBS[JOB]
+    data = os.path.join(ROOT, 'job2')                 # job 2 labelled every photo; later jobs only train
+    w = os.path.join(ROOT, JOB)
+    d, dev, labelled_days = prepare(data, more_days=True)
     from tools.thermalml import evaluate, handtest, labels, train
     from tools.thermalml.metrics import paired_bootstrap
-    compared, final = os.path.join(d['reports'], 'compare.json'), os.path.join(d['reports'], 'final.json')
+    reports, models = os.path.join(w, 'reports'), os.path.join(w, 'models')
+    os.makedirs(reports, exist_ok=True)
+    compared, final = os.path.join(reports, 'compare.json'), os.path.join(reports, 'final.json')
     if os.path.exists(final):           # finished: say what it found, and leave the locked test alone
         print_compare(json.load(open(compared)), json.load(open(final)))
         return
-    d['labels-voted'] = os.path.join(w, 'labels-voted')
-    if not all(os.path.exists(os.path.join(d['labels-voted'], SENSOR, f'{day}.json')) for day in labelled_days):
+    used = {RECIPES[x]['labels'] for x in (a, b)} | {'labels'}
+    d['labels-voted'] = os.path.join(data, 'labels-voted')
+    if 'labels-voted' in used and not all(os.path.exists(os.path.join(d['labels-voted'], SENSOR, f'{day}.json')) for day in labelled_days):
         log('labels voted on by the photos within 3 s (recipe 2)')
         window = float(os.environ.get('THERMALML_VOTE_S', labels.VOTE_WINDOW_S))   # wider only in rehearsals on every n-th photo
         for line in labels.vote_build(d['labels'], d['shards'], UID, labelled_days, d['labels-voted'], window):
             log(line)
     # Days after 11 Oct that passed the camera check train both recipes; 10 Oct stays the check day.
     train_days = TRAIN_DAYS + [x for x in labelled_days if x not in OCT_DAYS]
-    handtest.LEDGER = os.path.join(d['reports'], 'handtest-ledger.jsonl')
+    handtest.LEDGER = os.path.join(data, 'reports', 'handtest-ledger.jsonl')     # one ledger for every job on this machine
     ht = dict(mapping_path='data/ml/mapping/2ccf670bc094-sept.json', labels_root='data/ml/handlabels/v1',
-              features_root=d['features'], shards_root=d['shards'])
+              features_root=d['features'], shards_root=d['shards'], background='live',
+              inputs=handtest.live_inputs(d['shards']))      # the same for every model: computed once
 
     if os.path.exists(compared):
         report = json.load(open(compared))
     else:
         runs: dict[str, list[dict]] = {}
-        for name, r in RECIPES.items():
+        for name in (a, b):
+            r = RECIPES[name]
             runs[name] = []
             for seed in SEEDS:
-                out = os.path.join(w, 'models', name, f'seed{seed}')
+                out = os.path.join(models, name, f'seed{seed}')
                 model_json = os.path.join(out, 'model.json')
                 if not os.path.exists(model_json):
                     log(f'{name} ({r["what"]}), run {seed + 1} of {len(SEEDS)} ({dev})')
                     t0 = time.time()
                     train.main(['--labels', d[r['labels']], '--features', d['features'], '--shards', d['shards'], '--device', dev,
-                                '--out', out, '--widths', r['widths'], '--seed', str(seed)]
+                                '--out', out, '--widths', r['widths'], '--seed', str(seed)] + r['args']
                                + (['--epochs', '1', '--samples', '512'] if QUICK else [])
                                + [x for day in train_days for x in ('--train-day', day)] + [x for day in VAL_DAYS for x in ('--val-day', day)])
                     log(f'{name} run {seed + 1}: {(time.time() - t0) / 60:.1f} min')
@@ -662,24 +682,30 @@ def stage_compare() -> None:
 
         # Each recipe keeps the run its own validation day prefers, as it would in production.
         pick = {name: max(rs, key=lambda x: x['validationF1'] if x['validationF1'] is not None else -1) for name, rs in runs.items()}
-        report = {'recipes': {}, 'trainDays': train_days, 'valDays': VAL_DAYS, 'rule': 'docs/THERMAL_ML.md#job-2-two-recipes-compared'}
-        for name, r in RECIPES.items():
-            p = pick[name]
+        report = {'job': JOB, 'pair': [a, b], 'recipes': {}, 'trainDays': train_days, 'valDays': VAL_DAYS,
+                  'rule': 'docs/THERMAL_ML.md#job-2-two-recipes-compared'}
+        for name in (a, b):
+            r, p = RECIPES[name], pick[name]
             row = {'what': r['what'], 'widths': r['widths'], 'weights': p['weights'], 'runs': runs[name], 'picked': p, 'validation': {}}
-            # Scored against both label sets: each recipe is favoured by its own, so neither alone decides.
-            for lab in ('labels', 'labels-voted'):
-                dest = os.path.join(d['reports'], f'validation-{name}-on-{lab}.json')
+            # Scored against every label set in play: each recipe is favoured by its own, so neither alone decides.
+            for lab in sorted(used):
+                dest = os.path.join(reports, f'validation-{name}-on-{lab}.json')
                 evaluate.main(['--labels', d[lab], '--model', p['model'], '--features', d['features'], '--shards', d['shards'],
                                '--replay', 'data/ml/replay', '--out', dest] + [x for day in VAL_DAYS for x in ('--day', day)])
                 row['validation'][lab] = json.load(open(dest))['days']
             report['recipes'][name] = row
         frames = {}
-        for name in RECIPES:
+        for name in (a, b):
             frames[name] = []
-            out = handtest.run(pick[name]['model'], f'job 2: {name}, the run its validation day picked', frames_out=frames[name], **ht)
+            why = f'{JOB}: {name}, the run its validation day picked'
+            out = handtest.run(pick[name]['model'], why, frames_out=frames[name], **ht)
             report['recipes'][name]['handTest'] = out['result']
-        report['handTestDifference'] = paired_bootstrap(frames['recipe1'], frames['recipe2'])
-        report['verdict'] = verdict(report['handTestDifference'])
+            # The rule before 2026-10-15, for the record only: it decides nothing.
+            report['recipes'][name]['handTestFixedBackground'] = handtest.run(pick[name]['model'], why + ' (fixed background, for the record)',
+                                                                              **{**ht, 'background': 'fixed'})['result']
+        report['handTestBackground'] = handtest.BACKGROUNDS['live']
+        report['handTestDifference'] = paired_bootstrap(frames[a], frames[b])
+        report['verdict'] = verdict(report['handTestDifference'], a, b)
         with open(compared + '.tmp', 'w') as f:
             json.dump(train.finite(report), f, indent=1, allow_nan=False)
         os.replace(compared + '.tmp', compared)
@@ -687,23 +713,27 @@ def stage_compare() -> None:
 
     # The most accurate model the data allows: the winner, retrained on every labelled
     # day (10 Oct included), kept at the epoch and threshold its validation chose.
-    # Without a measurable winner the smaller recipe 1 goes on: it costs the edge half as much.
-    winner = 'recipe2' if (report.get('verdict') or verdict(report['handTestDifference'])).startswith('recipe 2') else 'recipe1'
+    # Without a measurable winner recipe 1 goes on: the change has to earn its place.
+    a, b = report.get('pair', ['recipe1', 'recipe2'])
+    said = report.get('verdict') or verdict(report['handTestDifference'], a, b)
+    winner = b if said.startswith(title(b)) else a
     p, r = report['recipes'][winner]['picked'], RECIPES[winner]
     all_days = [x for x in labelled_days if x in TRAIN_DAYS + VAL_DAYS or x not in OCT_DAYS]
-    out = os.path.join(w, 'models', 'final')
+    out = os.path.join(models, 'final')
     if not os.path.exists(os.path.join(out, 'model.json')):
         log(f'final model: {winner} retrained on {", ".join(all_days)}, kept at epoch {p["epoch"]}, threshold {p["threshold"]} ({dev})')
         t0 = time.time()
         train.main(['--labels', d[r['labels']], '--features', d['features'], '--shards', d['shards'], '--device', dev, '--out', out,
                     '--widths', r['widths'], '--seed', str(p['seed']), '--keep-epoch', str(p['epoch']), '--threshold', str(p['threshold'])]
-                   + (['--epochs', '1', '--samples', '512'] if QUICK else ['--epochs', str(p['epochs'] or 25)])
+                   + r.get('args', []) + (['--epochs', '1', '--samples', '512'] if QUICK else ['--epochs', str(p['epochs'] or 25)])
                    + [x for day in all_days for x in ('--train-day', day)])
         log(f'final model: {(time.time() - t0) / 60:.1f} min')
     model_json = os.path.join(out, 'model.json')
-    res = handtest.run(model_json, f'job 2: final model ({winner} on every labelled day); the recipe was chosen with this test', **ht)
-    fin = {'recipe': winner, 'why': report.get('verdict') or verdict(report['handTestDifference']), 'days': all_days, 'model': model_json, 'id': json.load(open(model_json))['id'],
-           'keptEpoch': p['epoch'], 'threshold': p['threshold'], 'handTest': res['result'],
+    why = f'{JOB}: final model ({winner} on every labelled day); the recipe was chosen with this test'
+    res = handtest.run(model_json, why, **ht)
+    fixed = handtest.run(model_json, why + ' (fixed background, for the record)', **{**ht, 'background': 'fixed'})
+    fin = {'recipe': winner, 'why': said, 'days': all_days, 'model': model_json, 'id': json.load(open(model_json))['id'],
+           'keptEpoch': p['epoch'], 'threshold': p['threshold'], 'handTest': res['result'], 'handTestFixedBackground': fixed['result'],
            'caveat': 'The hand test also chose the recipe, so this score is slightly optimistic; 10 Oct was trained on, so there is no check day left.'}
     with open(final + '.tmp', 'w') as f:
         json.dump(train.finite(fin), f, indent=1, allow_nan=False)
@@ -716,7 +746,8 @@ def print_compare(report: dict, fin: dict | None = None) -> None:
     fmt = lambda v: '-' if v is None or v != v else f'{v:.3f}'
     signed = lambda v: '-' if v is None or v != v else f'{v:+.3f}'
     ci = lambda c: f'[{fmt(c[0])}, {fmt(c[1])}]'
-    log('== JOB 2 RESULTS: two recipes, the same teacher boxes ==')
+    a, b = report.get('pair', ['recipe1', 'recipe2'])
+    log(f'== {report.get("job", "job2").upper()} RESULTS: two recipes, the same teacher boxes ==')
     print(f'trained on {", ".join(report["trainDays"])}; checked on {", ".join(report["valDays"])}')
     for name, row in report['recipes'].items():
         h, hc = row['handTest']['all'], row['handTest']['ci95']
@@ -731,16 +762,22 @@ def print_compare(report: dict, fin: dict | None = None) -> None:
             for day, v in days_.items():
                 print(f'  {day} against {lab}: F1 {fmt(v["model"]["all"]["f1"])} {ci(v["model"]["ci95"]["f1"])}, '
                       f'count error {fmt(v["model"]["all"]["countMAE"])} (edge detector F1 {fmt(v["edge"]["all"]["f1"])})')
-        print(f'  HAND TEST: F1 {fmt(h["f1"])} {ci(hc["f1"])}, precision {fmt(h["precision"])}, recall {fmt(h["recall"])}, '
-              f'count error {fmt(h["countMAE"])}, false people per empty frame {fmt(empty)}')
+        print(f'  HAND TEST ({h["frames"]} frames, {report.get("handTestBackground", "19-Sept empty room")}): F1 {fmt(h["f1"])} {ci(hc["f1"])}, '
+              f'precision {fmt(h["precision"])}, recall {fmt(h["recall"])}, count error {fmt(h["countMAE"])}, false people per empty frame {fmt(empty)}')
+        if row.get('handTestFixedBackground'):
+            g = row['handTestFixedBackground']
+            print(f'  for the record, the old rule ({g["all"]["frames"]} frames, 19-Sept empty room): F1 {fmt(g["all"]["f1"])} {ci(g["ci95"]["f1"])}')
     diff = report['handTestDifference']
-    print(f'recipe 2 minus recipe 1 on the hand test: F1 {signed(diff["f1"])} {ci(diff["f1ci95"])}, '
+    print(f'{title(b)} minus {title(a)} on the hand test: F1 {signed(diff["f1"])} {ci(diff["f1ci95"])}, '
           f'count error {signed(diff["countMAE"])} {ci(diff["countMAEci95"])} (paired, {diff["blocks"]} ten-minute blocks)')
-    log(f'VERDICT: {report.get("verdict") or verdict(diff)}')
+    log(f'VERDICT: {report.get("verdict") or verdict(diff, a, b)}')
     if fin:
         h, hc = fin['handTest']['all'], fin['handTest']['ci95']
-        log(f'FINAL MODEL ({fin["recipe"]} on {", ".join(fin["days"])}): HAND TEST F1 {fmt(h["f1"])} {ci(hc["f1"])}, '
+        log(f'FINAL MODEL ({fin["recipe"]} on {", ".join(fin["days"])}): HAND TEST ({h["frames"]} frames) F1 {fmt(h["f1"])} {ci(hc["f1"])}, '
             f'precision {fmt(h["precision"])}, recall {fmt(h["recall"])}, count error {fmt(h["countMAE"])}')
+        if fin.get('handTestFixedBackground'):
+            g = fin['handTestFixedBackground']
+            print(f'  for the record, the old rule ({g["all"]["frames"]} frames, 19-Sept empty room): F1 {fmt(g["all"]["f1"])} {ci(g["ci95"]["f1"])}')
         print(f'  ({fin["caveat"]})')
 
 
@@ -748,9 +785,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--stage', required=True, choices=('check', 'stage', 'label', 'train', 'all', 'fetch', 'full', 'compare'))
     ap.add_argument('--quick', action='store_true', help='rehearsal: one short training epoch')
+    ap.add_argument('--job', default='job2', choices=sorted(JOBS), help='with --stage compare: which comparison')
     a = ap.parse_args()
-    global STAGE, QUICK
-    STAGE, QUICK = a.stage, a.quick
+    global STAGE, QUICK, JOB
+    STAGE, QUICK, JOB = a.stage, a.quick, a.job
     t0 = time.time()
     if a.stage in ('check', 'all', 'full', 'compare'):
         stage_check()

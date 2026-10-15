@@ -291,6 +291,105 @@ t3.micro is not measured yet; that comes before anything ships.
     second away;
   - the bench board, which has no labels.
 
+## Jobs 1 and 2: results (measured 2026-10-15)
+
+On the 400 hand-labelled frames, scored the same way for every row:
+
+| Model | Trained on | Hand test F1 [95%] | Recall |
+|---|---|---|---|
+| Today's edge detector (19-Sept background) | n/a | 0.558 [0.491, 0.616] | 0.771 |
+| Job 1: recipe 1 (iw-g2) | 6, 7, 11 Oct | 0.384 [0.282, 0.486] | 0.350 |
+| Job 2: recipe 1, best of 3 | 6, 7, 11 Oct | 0.367 [0.271, 0.453] | 0.347 |
+| Job 2: recipe 2, best of 3 | 6, 7, 11 Oct | 0.305 [0.172, 0.416] | 0.243 |
+| Job 2: final (recipe 1) | 6, 7, 10, 11 Oct | 0.283 [0.150, 0.395] | 0.183 |
+
+- **Recipe 1 reproduces** on two machines (0.384 and 0.367), and its three
+  runs agree on 10 Oct (0.407–0.420).
+- **Recipe 2 vs recipe 1:** −0.062 [−0.150, +0.001]. No measurable
+  difference.
+- **No model beats today's detector**, so none ships.
+- **Fitting October better made the hand test worse.** That held for the
+  bigger network, and for adding 10 Oct to training. The intervals overlap,
+  so this is a pattern, not proof. Every run peaked at epoch 4 of 25.
+
+**A scoring fault found on the way.**
+- 42% of 10 Oct's sure people lay in the band between 30 and 60 photo px
+  from the photo's edge. Training used them as people, but the check-day
+  scoring threw away every prediction there, so they could never be
+  matched.
+- This held down every check-day score (the edge detector's too) and the
+  epoch and threshold chosen from it. Rescored, recipe 1 (retrained the
+  same way, seed 0) has 10 Oct F1 **0.798** (precision 0.913, recall 0.708,
+  count error 0.050). The edge detector has 0.194 (precision 0.111, recall
+  0.739, count error 0.896); it reports warm desk equipment as people.
+- Fixed in `train.scorable`: a prediction near a sure person is always
+  judged. One that matches nobody is judged only where the photo could see,
+  because the teacher misses people near the edge.
+- The hand test was unaffected: it scores the whole photo.
+
+## Why the September test failed (diagnosed 2026-10-15)
+
+Every check below avoids the 400 hand-labelled frames.
+
+**Not position.** A first look suggested coverage: the labels only cover
+what the October photo sees (305 of 768 sensor pixels), and only 39% of the
+hand test's people stand inside that region (positions only, no model scored).
+Two checks disproved it:
+- **Moving frames was a flawed test.** It cuts people off at the image's
+  border, and that alone lowers recall.
+- **Pasting real people instead.** 200 isolated people from 10 Oct were
+  pasted into empty 10 Oct frames at 35 positions across the sensor. Recipe
+  1 found 80% of them overall, and 63–94% at every position, including where
+  no label ever was.
+- **Shift augmentation** (each training frame moved up to 8 px) found 74%,
+  and scored 0.725 on 10 Oct against 0.798 without it. It was dropped.
+
+**Frame rate: no effect.** History from one frame per 8 s left recall
+unchanged, and so did no history at all.
+
+**The cause is the test's fixed background.**
+- **Where:** the 6,645 lit September frames that are not hand-labelled,
+  scored against yolo11s (the only teacher that read every September photo;
+  0.782 on the hand labels).
+- **Comparison:** on the 4,372 of those frames where the edge's live
+  background was ready, the fixed 19-Sept background against the live one:
+
+  | | F1 [95%] | Precision | Recall | Count error | False people per frame |
+  |---|---|---|---|---|---|
+  | Model (recipe 1), fixed | 0.061 [0.009, 0.124] | 0.033 | 0.457 | 0.867 | 0.892 |
+  | Model (recipe 1), live | **0.419** [0.272, 0.502] | 0.375 | 0.474 | **0.070** | **0.052** |
+  | Edge detector, fixed | 0.114 [0.034, 0.180] | 0.062 | 0.727 | 0.714 | 0.728 |
+  | Edge detector, live | 0.290 [0.096, 0.430] | 0.181 | 0.727 | 0.217 | 0.217 |
+
+- **Why:** the room on 26 and 29 Sept was not as it had been on 19 Sept, so
+  against the fixed reference every leftover warm spot looked like a person.
+  The model, trained only on live backgrounds, suffered most.
+- **Positions are fine:** where the model finds a person, it is a median 1.15
+  px from yolo11s's point, with no systematic offset.
+- **What remains:** in September it finds about half the people (recall 0.47)
+  against the edge detector's 0.73.
+
+**The hand test now uses the live background** (decided 2026-10-15). Kevin
+asked which choice gives the most accurate model. The test chooses which
+model ships, so it must measure the way a sensor runs.
+- **Which frames:** the hand-labelled frames where the edge's background
+  is ready. In the bake-off that was 182 of the 400 (edge detector: 0.693).
+  The others come from the first hour of a recording, when a sensor
+  reports not-ready.
+- **The old rule** (fixed background, all 400) is still run for the record
+  and decides nothing. Ledger entries say which background was used.
+
+## Job 3: job 2 again, measured correctly (2026-10-15)
+
+- **Job 2's verdict and final model were chosen under both faults**: the
+  check-day scoring and the hand test's background.
+- **Job 3 re-runs it on the Mac.** It uses the same labels, recipes 1 and 2,
+  three runs each, and the same comparison rule (paired difference in hand
+  test F1, now with the live background). Training this network needs no
+  big GPU: a run takes about 2.5 minutes on the M4.
+- **Uses of the hand test** go in the same ledger as job 2's
+  (`data/ml/job2/reports/handtest-ledger.jsonl`).
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 

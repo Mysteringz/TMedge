@@ -206,8 +206,22 @@ def focal(logits, target, weight, pos):
     return -((pos_l + neg_l) * weight).sum() / pos.sum().clamp(min=1)
 
 
+def scorable(points, known: np.ndarray, truth: list, ign: list) -> list[tuple[float, float]]:
+    """The predictions that can be judged, the same way the loss treats the labels.
+
+    A prediction near a sure person is always judged: people are people
+    wherever the photo shows them, near its edge too, so finding one is a hit
+    and missing one a miss. A prediction near a set-aside person, or on an
+    unknown pixel with nobody near, is not judged: the teacher misses people
+    near the photo's edge, so no box there does not mean nobody is there.
+    """
+    near = lambda x, y, qs: any(math.hypot(x - q[0], y - q[1]) <= RADIUS for q in qs)
+    return [(x, y) for (x, y) in points
+            if near(x, y, truth) or (not near(x, y, ign) and 0 <= int(y) < H and 0 <= int(x) < W and known[int(y), int(x)] >= 0.5)]
+
+
 def evaluate(model, d: dict, every: int = 3) -> dict[float, dict]:
-    """Validation F1 per threshold. Predictions on unknown pixels or on a set-aside person do not count."""
+    """Validation F1 per threshold, judging predictions the way scorable() says."""
     import torch
     model.eval()
     idx = list(range(0, len(d['at']), every))
@@ -223,9 +237,7 @@ def evaluate(model, d: dict, every: int = 3) -> dict[float, dict]:
                 truth = [(p[0], p[1]) for p in d['pts'][i]]
                 cand = decode(hm[k], off[k], min(THRESHOLDS))
                 for t in THRESHOLDS:
-                    pred = [(x, y) for (x, y, c) in cand if c >= t and 0 <= int(y) < H and 0 <= int(x) < W
-                            and known[int(y), int(x)] >= 0.5
-                            and not any(math.hypot(x - q[0], y - q[1]) <= RADIUS for q in d['ign'][i])]
+                    pred = scorable([(x, y) for (x, y, c) in cand if c >= t], known, truth, d['ign'][i])
                     tp, fp, fn, dist = match(truth, pred, RADIUS)
                     frames[t].append(Frame(int(d['at'][i]), len(truth), len(pred), tp, fp, fn, dist))
     return {t: score_frames(f) for t, f in frames.items()}
