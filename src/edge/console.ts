@@ -255,7 +255,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     },
     executeCommand: new ExecuteNodeCommand((command, authorized, issuer) =>
       rt.commandReceipts.send(command, { issuer: issuer ?? 'legacy:console', authorized: authorized ?? (() => true) })),
-    resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursor(uid)),
+    resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursorAsync(uid)),
     mutating,
   }));
 
@@ -401,7 +401,7 @@ export function startConsole(rt: EdgeRuntime, optionsOrCore: ConsoleOptions | Co
       const to = moved(req).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
       return res.status(200).set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'").type('html').send(
         `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${to}">`
-        + `<title>The console moved</title><p>The console is now module 03 of the algo console: <a href="${to}">${to}</a></p>`,
+        + `<title>The console moved</title><p>The console is now the Debug console page of the algo console: <a href="${to}">${to}</a></p>`,
       );
     });
   } else {

@@ -13,20 +13,24 @@ import { usePresence } from './motion.tsx';
 
 
 // `group`: modules that belong together share one dropdown in the header,
-// under that name. Each keeps its own number, page and card on the landing
-// page; only the header is shorter for it.
+// under that name. Each keeps its own page and its place on the landing page;
+// only the header is shorter for it.
+//
+// A module's number (01 to 08, in this order; both ML pages are 02) is how
+// the documentation and the comments refer to it. No page shows one: a person
+// finds a place by its name.
 export const MODULES = [
 
-  { n: '01', title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
+  { title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
 
-  { n: '02', title: 'ML job', path: '/train', group: 'ML', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
-  { n: '02', title: 'ML data', path: '/ml-data', group: 'ML', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
-  { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
-  { n: '04', title: 'Updates', path: '/updates', group: 'Devices', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
-  { n: '05', title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
-  { n: '06', title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
-  { n: '07', title: 'TMflash web', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
-  { n: '08', title: 'TMflash download', path: '/tmflash-download', group: 'Devices', desc: 'Download the latest self-contained Mac app, with firmware, flashing tools and installation instructions.' },
+  { title: 'ML job', path: '/train', group: 'ML', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
+  { title: 'ML data', path: '/ml-data', group: 'ML', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
+  { title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
+  { title: 'Updates', path: '/updates', group: 'Devices', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
+  { title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
+  { title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
+  { title: 'TMflash web', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
+  { title: 'TMflash download', path: '/tmflash-download', group: 'Devices', desc: 'Download the latest self-contained Mac app, with firmware, flashing tools and installation instructions.' },
 ] as const;
 
 type ConsoleModule = typeof MODULES[number];
@@ -162,9 +166,9 @@ function MobileNavigation({ path, canManageAccounts }: { path: string; canManage
     return () => { document.removeEventListener('pointerdown', outside); desktop.removeEventListener('change', resize); window.removeEventListener('blur', blur); };
   }, [open]);
   const links = [
-    { title: 'Home', path: '/', n: '' },
+    { title: 'Home', path: '/' },
     ...MODULES,
-    ...(canManageAccounts ? [{ title: 'Accounts', path: '/accounts', n: '' }] : []),
+    ...(canManageAccounts ? [{ title: 'Accounts', path: '/accounts' }] : []),
   ];
   const menu = usePresence(open);
   return <div className="cx-mobile-nav" ref={root}
@@ -176,9 +180,7 @@ function MobileNavigation({ path, canManageAccounts }: { path: string; canManage
     </button>
     {menu && <nav id={id} className="cx-mobile-dropdown" aria-label="Mobile navigation" data-state={menu} inert={menu === 'leaving'}>
       {links.map(link => <a key={link.path} href={link.path} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
-        onClick={event => { event.preventDefault(); setOpen(false); navigate(link.path); }}>
-        <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span>{link.title}
-      </a>)}
+        onClick={event => { event.preventDefault(); setOpen(false); navigate(link.path); }}>{link.title}</a>)}
     </nav>}
   </div>;
 }

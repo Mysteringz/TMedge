@@ -481,7 +481,7 @@ export function Train() {
       <main className="cx-train">
       {!canWrite && <p role="status">Read-only access. An operator or engineer can change parameters and run training.</p>}
         <Head status="—" hpc={null} />
-        <section className="card elev-sm cx-card"><div className="cx-error">! module 02 could not load: {loadError}</div></section>
+        <section className="card elev-sm cx-card"><div className="cx-error">! ML job could not load: {loadError}</div></section>
       </main>
     );
   }
@@ -805,7 +805,6 @@ function Head({ status, hpc }: { status: string; hpc: HpcState | null }) {
   return (
     <header className="cx-train-head">
       <div>
-        <div className="cx-kicker">Module 02 · Training</div>
         <h2 className="cx-h2">ML job</h2>
       </div>
       <div className="cx-job">

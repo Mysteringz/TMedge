@@ -5,7 +5,7 @@
 .cx-data-diagram-image { display: block; background: white; overflow: auto; max-height: 720px; }
 .cx-data-diagram-image img { display: block; width: 100%; height: auto; }
 .cx-data-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 32px; }
-.cx-data-heading .tag { flex: none; margin-top: 32px; }
+.cx-data-heading .tag { flex: none; margin-top: 13px; }
 .cx-data-lede { color: var(--text-secondary); max-width: 650px; margin-top: 16px !important; }
 .cx .cx-data-online { background: var(--support-success); color: var(--background); }
 .cx-data-tabs { display: flex; border-bottom: 1px solid var(--border-subtle-01); margin-bottom: 24px; }

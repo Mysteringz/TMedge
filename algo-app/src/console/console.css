@@ -145,7 +145,6 @@
 }
 .cx-mobile-dropdown a:hover { background: var(--background-hover); }
 .cx-mobile-dropdown a[aria-current="page"] { background: var(--background-hover); color: var(--interactive); border-left-color: var(--interactive); }
-.cx-mobile-nav-number { width: 24px; flex: none; font: 400 12px var(--font-mono); color: var(--text-helper); }
 
 /* — eyebrows, labels — */
 .cx-eyebrow, .cx-kicker { font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px; color: var(--interactive); margin: 0 0 16px; }
@@ -250,7 +249,6 @@
    when its close button is near the top of a short phone screen. */
 .cx-train:has(.cx-modal-back) { z-index: 30; }
 .cx-train-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; padding-bottom: 24px; border-bottom: 1px solid var(--border-subtle-00); }
-.cx-train-head .cx-kicker { margin-bottom: 8px; }
 .cx-h2 { font: 300 42px/1.19 var(--font-sans) !important; letter-spacing: 0; white-space: nowrap; }
 .cx-job { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; letter-spacing: .32px; color: var(--text-helper); }
 .cx .cx-tag-px { font-size: 12px; }

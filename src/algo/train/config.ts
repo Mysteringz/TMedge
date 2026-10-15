@@ -224,7 +224,7 @@ export function parseHpcConfig(raw: unknown, where = 'hpc.json'): HpcConfig {
 }
 
 export function loadHpcConfig(path: string): HpcConfig {
-  if (!existsSync(path)) throw new ConfigError(`${path}: not found (module 02 needs it; see config/hpc.json)`);
+  if (!existsSync(path)) throw new ConfigError(`${path}: not found (ML training needs it; see config/hpc.json)`);
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));

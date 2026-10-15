@@ -1,7 +1,9 @@
 # TMedge on AWS EC2
 
-The live system, since 2026-09-21. It replaces the Proxmox VM described in
-`proxmox-vm.md`, which is kept installed and stopped as a rollback.
+The primary system since 2026-09-21. The Proxmox VM is now an active student
+website standby with a separate tunnel and read-only database replica; see
+[backup/README.md](backup/README.md). Public console and sensor routes remain
+on AWS. Historical machine-clone recovery notes below still require care.
 
 ```
 host      ec2-13-251-45-51.ap-southeast-1.compute.amazonaws.com  (Singapore)

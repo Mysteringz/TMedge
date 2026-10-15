@@ -62,7 +62,6 @@ export function Analytics() {
     <main className="cx-train an">
       <header className="cx-train-head">
         <div>
-          <div className="cx-kicker">Module 05 · Usage and infrastructure</div>
           <h1 className="cx-h2">Analytics</h1>
         </div>
         <div className="an-head-tools">

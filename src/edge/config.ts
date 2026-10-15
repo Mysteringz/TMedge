@@ -7,6 +7,7 @@ import { loadPostgresConnectionConfig, PostgresConfigError, type PostgresConnect
 import { DeviceKeys, GatewayKeys } from './secure.js';
 import { DEFAULT_ANALYTICS_TIMEZONE, isTimeZone } from '../shared/analytics.js';
 import { DEFAULT_UNITS, isUnitName } from '../infrastructure/analytics/systemd-probe.js';
+import { loadSiteLeaseConfig, SiteLeadershipError, type SiteLeaseConfig } from '../infrastructure/postgres/site-leadership.js';
 export type PersistenceMode = 'file' | 'postgres';
 
 export interface EdgeConfig {
@@ -21,6 +22,8 @@ export interface EdgeConfig {
   /** Explicit source of truth for registrations and provisioning. */
   persistenceMode?: PersistenceMode;
   postgres?: PostgresConnectionConfig | null;
+  /** Shared-database fencing for active/passive multi-origin operation. */
+  failover?: SiteLeaseConfig | null;
   dataDir: string;
   recordRaw: boolean;
   consolePort: number;
@@ -110,6 +113,14 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
       throw error;
     }
   }
+  let failover: SiteLeaseConfig | null;
+  try {
+    failover = loadSiteLeaseConfig(env);
+  } catch (error) {
+    if (error instanceof SiteLeadershipError) throw new EnvError(error.message);
+    throw error;
+  }
+  if (failover && persistenceMode !== 'postgres') throw new EnvError('FAILOVER_SITE_ID requires PERSISTENCE_MODE=postgres');
   const devices = env.DEVICE_KEYS_FILE ? DeviceKeys.fromFile(env.DEVICE_KEYS_FILE) : undefined;
   const key = env.TM_KEY ?? '';
   const allowUnsigned = env.ALLOW_UNSIGNED === '1';
@@ -176,6 +187,7 @@ export function loadEdgeConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig
     nodesPath: env.NODES_CONFIG || 'config/nodes.json',
     persistenceMode,
     postgres,
+    failover,
     dataDir: env.DATA_DIR || 'data',
     recordRaw: env.RECORD_RAW === '1',
     consolePort: int(env, 'CONSOLE_PORT', 8090, 1, 65535),

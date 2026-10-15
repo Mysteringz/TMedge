@@ -28,7 +28,7 @@ src/infrastructure/email/  Amazon SES sender: SigV4 by hand, the EC2 instance ro
 src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports, download keys for training jobs (docs/ML_DATA.md)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, Devices dropdown (04 /updates, 06 /adoption, 07 /flash), 05 /analytics; account icon -> /account
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, Devices dropdown (04 /updates, 06 /adoption, 07 /flash, 08 /tmflash-download), 05 /analytics; account icon -> /account. The numbers are for documents and comments: no page shows one
 algo-app/src/console/motion.css  how every control in the console moves (Bluegrid's durations and curves, one reduced-motion rule); motion.tsx: exits (usePresence, Presence) and the travelling fill/line (Switcher, TabList)
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report

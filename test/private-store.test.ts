@@ -10,7 +10,7 @@ import { UserStore, Sessions, AuthBusyError } from '../src/web/auth.js';
 import { SnapshotPublishers } from '../src/web/publishers.js';
 import { withPrivateFileLock, FileBusyError } from '../src/shared/private-file.js';
 import { GatewayKeys } from '../src/edge/secure.js';
-import { HelloReplayStore } from '../src/edge/hello-replay.js';
+import { HelloReplayStore, readHelloReplaySnapshot } from '../src/edge/hello-replay.js';
 
 const directory = () => mkdtempSync(join(tmpdir(), 'auth-commits-'));
 
@@ -79,4 +79,12 @@ test('gateway HELLO proofs stay spent across restart, reject clock rollback, and
   assert.equal(new HelloReplayStore(path).accept('gw1', 'nonce1', 61000, 1001), false);
   assert.equal(new HelloReplayStore(path).accept('gw1', 'nonce2', 60999, 999), false);
   writeFileSync(path, '{'); assert.throws(() => new HelloReplayStore(path));
+});
+
+test('the cutover HELLO reader validates without rewriting its source', () => {
+  const path = join(directory(), 'hello-import.json');
+  const source = JSON.stringify({ version: 1, highWater: 1000, nonces: [['gw1|nonce1', 61000]] });
+  writeFileSync(path, source);
+  assert.deepEqual(readHelloReplaySnapshot(path), { highWater: 1000, nonces: [['gw1|nonce1', 61000]] });
+  assert.equal(readFileSync(path, 'utf8'), source);
 });

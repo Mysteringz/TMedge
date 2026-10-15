@@ -99,7 +99,7 @@ export function createTrain(opts: TrainOptions): { router: Router; error: string
     cfg = loadHpcConfig(opts.configPath);
   } catch (err) {
     if (!(err instanceof ConfigError)) throw err;
-    error = `module 02 is off: ${err.message}`;
+    error = `ML training is off: ${err.message}`;
   }
   // A broken module 02 must not take the sensors' console down with it: the
   // rest of the algo console starts, and this answers 503 with the reason.
