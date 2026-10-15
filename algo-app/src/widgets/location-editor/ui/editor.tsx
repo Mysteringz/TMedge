@@ -812,6 +812,9 @@ function Review({ document, draft, dirty, busy, mustReload, furnitureItems, furn
     <FurnitureReviewSummary document={document} items={furnitureItems} source={furnitureSource} />
     <ModelReviewSummary draft={draft} document={document} onEdit={onEditModel} />
     <SensorCoverageSummary draft={draft} document={document} onEdit={onEditCoverage} />
+    {draft.currentPublishedRevision !== undefined && draft.currentPublishedRevision !== draft.basePublishedRevision && draft.currentPublishedRevision !== null &&
+      <p className="loc-review-note" data-testid="location-review-replacement">This draft {draft.basePublishedRevision === null ? 'was created before the first publication' : `is based on revision ${draft.basePublishedRevision}`}.
+        {' '}Publishing replaces current revision {draft.currentPublishedRevision} with this draft’s complete layout as revision {draft.currentPublishedRevision + 1}.</p>}
     <p className="loc-review-note">{draft.visibility === 'public'
       ? 'This draft is private. Students continue to see the current published version until you publish these changes.'
       : 'This draft is private. Publishing applies the console configuration; this location remains hidden from students.'}</p>

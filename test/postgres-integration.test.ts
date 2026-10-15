@@ -77,6 +77,7 @@ const migrations = [
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791763200000-PersistLocationSpatialProvenance.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791849600000-PersistLocationAssetProvenance.js'),
   join(testDirectory, '../src/infrastructure/postgres/migrations/1791936000000-AddLocationAssetDisplayName.js'),
+  join(testDirectory, '../src/infrastructure/postgres/migrations/1792108800000-TrackLocationPublicationSource.js'),
 ];
 
 function postgresStorageTestDocument(locationId: string, tableId: string, seatId: string, sensorUid?: string) {
@@ -223,7 +224,7 @@ test('registration schema and provisioning repository enforce persistence invari
     await migrator.initialize();
     assert.deepEqual(await postgresAvailability(migrator), { available: true });
     appliedMigrations = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(appliedMigrations, 11, 'foundation, registration, build, rollout, command, occupancy, detector, location storage, spatial provenance, asset provenance and optional model display-name migrations all run');
+    assert.equal(appliedMigrations, migrations.length, 'foundation, registration, build, rollout, command, occupancy, detector, location storage, spatial provenance, asset provenance and optional model display-name migrations all run');
     assert.equal((await migrator.query("SELECT to_regclass('public.location_published_revisions') AS table_name"))[0].table_name, 'location_published_revisions');
     await assertPostgresBuildLogBoundary(runtime);
     assert.equal(

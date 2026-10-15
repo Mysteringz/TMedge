@@ -237,6 +237,16 @@ test('file legacy edits preserve exact-base geometry through a second publish an
     assert.deepEqual(reopenedActive?.legacySpatial, active?.legacySpatial);
     assert.equal(reopenedActive?.document.name, 'Legacy floor edited twice');
     assert.deepEqual(reopenedActive?.legacySpatial?.outline, legacyBridgeOutline());
+    await new PublishLocationUseCase({ drafts: persistence.drafts, published: persistence.published, snapshots: persistence.snapshots,
+      mutationCoordinator: persistence.coordinator, runtime, now: () => 60,
+    }).execute({ creatorId: 'legacy-editor', draftId: first.draft.draftId, expectedDraftRevision: savedFirst.draft.draftRevision, expectedPublishedRevision: 2 });
+    persistence.close();
+    persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDir);
+    const restoredLegacy = (await persistence.published.getActive('seed-floor'))!.history.at(-1)!;
+    assert.equal(restoredLegacy.revision, 3);
+    assert.equal(restoredLegacy.document.name, 'Legacy floor edited');
+    assert.equal(restoredLegacy.legacySpatial?.basePublishedRevision, 0, 'restoration validates against the original legacy baseline');
+    assert.deepEqual(restoredLegacy.legacySpatial?.outline, legacyBridgeOutline());
   } finally {
     persistence?.close();
     rmSync(directory, { recursive: true, force: true });
@@ -396,6 +406,22 @@ test('file asset provenance survives manager A upload then B/C exact-base publis
       creatorId: 'manager-c', draftId: managerCDraft.draft.draftId, assetId: unrelatedPrivate.assetId,
     }), /asset/i);
     assert.equal((await persistence.published.getActive(locationId))?.history.at(-1)?.document.name, 'Edited by manager C');
+    const removal = await startEdit('manager-c', 3, '00000000-0000-4000-8000-000000000094');
+    const withoutAssets = exposeAuthoredLocationCandidate(removal.draft.document, removal.draft.legacySpatial);
+    delete withoutAssets.planAssetId;
+    delete withoutAssets.modelAssetId;
+    delete withoutAssets.modelTransform;
+    const savedRemoval = await save().execute({ creatorId: 'manager-c', draftId: removal.draft.draftId, expectedDraftRevision: 1, document: withoutAssets });
+    await publisher().execute({ creatorId: 'manager-c', draftId: removal.draft.draftId, expectedDraftRevision: savedRemoval.draft.draftRevision, expectedPublishedRevision: 3 });
+    const restored = await publisher().execute({ creatorId: 'manager-b', draftId: managerBDraft.draft.draftId, expectedDraftRevision: savedB.draft.draftRevision, expectedPublishedRevision: 4 });
+    assert.equal(restored.publishedRevision, 5, 'the older layout replaces the winner as a new revision');
+    persistence.close();
+    persistence = initializeFileLocationPersistence(sitePath, nodesPath, dataDirectory);
+    const winner = (await persistence.published.getActive(locationId))!.history.at(-1)!;
+    assert.equal(winner.document.modelAssetId, model.metadata.assetId);
+    assert.equal(winner.assetProvenance?.modelAssetId?.kind === 'upload' ? winner.assetProvenance.modelAssetId.ownerId : null, 'manager-a');
+    assert.deepEqual(winner.sourceDraft, { draftId: managerBDraft.draft.draftId, draftRevision: savedB.draft.draftRevision, basePublishedRevision: 1 });
+    assert.equal((await persistence.published.listHistory(locationId)).length, 5, 'old winners remain immutable history');
   } finally {
     persistence?.close();
     rmSync(directory, { recursive: true, force: true });

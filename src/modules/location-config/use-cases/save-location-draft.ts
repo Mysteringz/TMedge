@@ -33,7 +33,6 @@ export class SaveLocationDraftUseCase {
     const state = await this.dependencies.published.getActive(draft.locationId);
     const base = draft.basePublishedRevision === null ? null : state?.history.find((revision) => revision.revision === draft.basePublishedRevision) ?? null;
     if (draft.basePublishedRevision !== null && !base) throw new LocationConflictError('The pinned base location revision is unavailable.');
-    if (draft.basePublishedRevision === null && state) throw new LocationConflictError('A location was published after this draft was created.');
     const authored = authoredDocument(input.document);
     const candidate = parseLocationCandidate(
       {

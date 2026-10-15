@@ -12,6 +12,7 @@ import { FileLocationDraftRepository } from './file-location-draft-repository.js
 import { FileRegistryMutationCoordinator } from './file-registry-mutation-coordinator.js';
 import { atomicWriteNodesConfig, readNodesConfig, recoverNodesConfig } from './file-nodes-config.js';
 import { fileSha256, type AtomicFileOperations } from './atomic-file-write.js';
+import { parsePublicationSource, publicationBaseRevision } from '../../modules/location-config/domain/publication-source.js';
 
 export interface FileLocationPersistence {
   siteSeed: unknown;
@@ -169,19 +170,24 @@ export class FilePublishedLocationRepository implements PublishedLocationReposit
     const activeRow = existing?.revisions.find((row) => row.revision === activeRevision) ?? null;
     const activeDocument = activeRow?.document
       ?? (seedFloor ? legacyFloorToBaseline(seedFloor, this.seedRegistry.nodes.values()) : null);
-    const baseRevision: PublishedLocationRevision | null = activeDocument ? {
+    const sourceDraft = parsePublicationSource(input.revision.sourceDraft, input.revision.revision);
+    const pinned = sourceDraft ? sourceDraft.basePublishedRevision : activeRevision;
+    const baseRow = pinned === null ? null : existing?.revisions.find(row => row.revision === pinned) ?? null;
+    const baseDocument = baseRow?.document ?? (pinned === 0 && seedFloor ? legacyFloorToBaseline(seedFloor, this.seedRegistry.nodes.values()) : null);
+    if (pinned !== null && !baseDocument) throw new LocationConflictError('The pinned location revision is unavailable.');
+    const baseRevision: PublishedLocationRevision | null = baseDocument ? {
       locationId: input.revision.locationId,
-      revision: activeRevision!,
-      createdBy: activeRow?.createdBy ?? 'system-bootstrap',
-      createdAt: activeRow?.createdAt ?? 0,
-      document: activeDocument,
-      legacySpatial: activeRow?.legacySpatial ?? null,
-      assetProvenance: activeRow?.assetProvenance ?? (activeRevision === 0 ? legacyStaticModelProvenance(activeDocument as ReturnType<typeof legacyFloorToBaseline>) : {}),
+      revision: pinned!,
+      createdBy: baseRow?.createdBy ?? 'system-bootstrap',
+      createdAt: baseRow?.createdAt ?? 0,
+      document: baseDocument,
+      legacySpatial: baseRow?.legacySpatial ?? null,
+      assetProvenance: baseRow?.assetProvenance ?? (pinned === 0 ? legacyStaticModelProvenance(baseDocument as ReturnType<typeof legacyFloorToBaseline>) : {}),
     } : null;
     const validatedCandidate = revalidateLocationCandidate(
       document, input.revision.legacySpatial, baseRevision ? {
         revision: baseRevision.revision, document: baseRevision.document, legacySpatial: baseRevision.legacySpatial,
-      } : null, activeRevision,
+      } : null, pinned,
     );
     const assetProvenance = validateLocationAssetProvenanceTransition(
       validatedCandidate.document, input.revision.assetProvenance, input.revision.createdBy,
@@ -344,6 +350,7 @@ function upsertPublished(
     document: parseLocationDocument(revision.document),
     legacySpatial: revision.legacySpatial ?? null,
     assetProvenance: revision.assetProvenance ?? {},
+    ...(revision.sourceDraft ? { sourceDraft: revision.sourceDraft } : {}),
   };
   if (existing) {
     existing.revisions.push(serialized);
@@ -393,7 +400,11 @@ function validatePublishedAgainstSeed(registry: Registry, document: NodesConfigV
   const seedById = new Map(registry.floors.map((floor) => [floor.id, legacyRevision(floor, registry)]));
   for (const override of document.publishedLocations) {
     let base = seedById.get(override.locationId) ?? null;
+    const history = new Map<number, PublishedLocationRevision>(base ? [[base.revision, base]] : []);
     for (const revision of override.revisions) {
+      const pinned = publicationBaseRevision(revision);
+      base = pinned === null ? null : history.get(pinned) ?? null;
+      if (pinned !== null && !base && (revision.sourceDraft || revision.revision > 1)) throw new LocationConflictError('Published history has no matching pinned base revision.');
       // Older Task 2.2 files have no asset provenance field. The only safe
       // migration is copying an exact reference from its trusted prior row;
       // new/unrelated IDs fail closed.
@@ -419,6 +430,7 @@ function validatePublishedAgainstSeed(registry: Registry, document: NodesConfigV
         } catch { throw new LocationConflictError('Legacy spatial provenance does not match its immutable base revision.'); }
       }
       base = revision;
+      history.set(revision.revision, revision);
     }
   }
   const tableIds = new Set<string>();

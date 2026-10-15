@@ -69,7 +69,7 @@ export class PublishLocationUseCase<Prepared> {
     if (draft.draftRevision !== input.expectedDraftRevision) throw new LocationConflictError('The draft changed; reload it before publishing.');
     const state = snapshot.locations.find((location) => location.locationId === draft.locationId) ?? null;
     const activeRevision = state?.activeRevision ?? null;
-    if (activeRevision !== input.expectedPublishedRevision || draft.basePublishedRevision !== activeRevision) {
+    if (activeRevision !== input.expectedPublishedRevision) {
       throw new LocationConflictError('The published location changed; reload it before publishing.');
     }
     const basePublishedRevision = draft.basePublishedRevision === null
@@ -122,6 +122,7 @@ export class PublishLocationUseCase<Prepared> {
       document,
       legacySpatial: validated.legacySpatial,
       assetProvenance,
+      sourceDraft: { draftId: draft.draftId, draftRevision: draft.draftRevision, basePublishedRevision: draft.basePublishedRevision },
     };
     const modelProvenance = assetProvenance.modelAssetId;
     const runtimeDocument = modelProvenance?.kind === 'legacy-static'

@@ -1,3 +1,4 @@
+import { isPublishedDraft } from '../domain/publication-source.js';
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import type { AlgoAuth } from '../../../algo/auth.js';
 import { routeParam } from '../../../shared/http.js';
@@ -124,7 +125,7 @@ export function createLocationRouter(dependencies: LocationRouterDependencies): 
     });
     return send(res, 200, {
       published,
-      drafts: drafts.map((draft) => draftSummary(draft)),
+      drafts: drafts.filter(draft => !isPublishedDraft(draft, snapshot.locations.find(state => state.locationId === draft.locationId)?.history ?? [])).map((draft) => draftSummary(draft)),
     });
   }));
 
@@ -357,6 +358,7 @@ async function draftWriteDto(
   return {
     draftId: draft.draftId, locationId: draft.locationId,
     draftRevision: draft.draftRevision, basePublishedRevision: draft.basePublishedRevision,
+    currentPublishedRevision: (await dependencies.published.getActive(draft.locationId))?.activeRevision ?? null,
     visibility: draft.document.visibility,
     durability,
     document: exposeAuthoredLocationCandidate(candidate.document, candidate.legacySpatial),

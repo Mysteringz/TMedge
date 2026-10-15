@@ -150,7 +150,8 @@ export async function readDraftModel(draftId: string, assetId: string, signal?: 
 
 export function publishLocationDraft(draft: DraftDetail): Promise<PublicationResult> {
   return jsonRequest(`/api/locations/drafts/${encodeURIComponent(draft.draftId)}/publications`, 'POST', {
-    expectedDraftRevision: draft.draftRevision, expectedPublishedRevision: draft.basePublishedRevision,
+    expectedDraftRevision: draft.draftRevision,
+    expectedPublishedRevision: draft.currentPublishedRevision !== undefined ? draft.currentPublishedRevision : draft.basePublishedRevision,
   });
 }
 

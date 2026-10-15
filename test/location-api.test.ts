@@ -27,6 +27,61 @@ import { siteJson } from './fixtures.js';
 const GLB = makeGlb({ asset: { version: '2.0' }, buffers: [] });
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+test('published draft receipts hide only completed work and old drafts can replace a newer winner', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'draft-publication-api-'));
+  const persistence = makePersistence(directory);
+  const users = new AlgoUsers(join(directory, 'users.json'));
+  await users.add('manager', 'correct horse battery', 'operator');
+  const auth = createAlgoAuth(loadAlgoAuthConfig({ SESSION_SECRET: 's'.repeat(40), ALGO_USERS_FILE: users.path }, 'local-test'));
+  const app = express();
+  app.use('/api', createLocationRouter({ auth, edgeId: 'draft-api', siteSeed: siteJson(), ...persistence,
+    assets: persistence.assets, furnitureLibrary: persistence.assets, assetMetadata: persistence.assets,
+    runtime: fakeRuntime as unknown as import('../src/modules/location-config/routes/location-router.js').LocationRouterDependencies['runtime'],
+    suggestCoverage: computeLocationCoverageSuggestions }));
+  app.use(auth.router);
+  const server = createServer(app);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const login = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'manager', password: 'correct horse battery' }) });
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`${base}/api${path}`, { method, headers: { cookie, origin: base, 'x-tm-algo': '1', 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      return { status: response.status, ...(await response.json() as { data: any; error: unknown }) };
+    };
+    const created = await request('POST', '/locations/drafts', { name: 'Original', building: 'Test', widthCm: 400, heightCm: 300 });
+    assert.equal(created.status, 201);
+    const id = created.data.draftId;
+    assert.equal(created.data.currentPublishedRevision, null);
+    assert.equal((await request('POST', `/locations/drafts/${id}/publications`, { expectedDraftRevision: 1, expectedPublishedRevision: null })).status, 200);
+    assert.deepEqual((await request('GET', '/locations')).data.drafts, []);
+    const older = (await request('POST', `/locations/${created.data.locationId}/drafts`, { expectedPublishedRevision: 1 })).data;
+    const newer = (await request('POST', `/locations/${created.data.locationId}/drafts`, { expectedPublishedRevision: 1 })).data;
+    const updated = await request('PUT', `/locations/drafts/${newer.draftId}`, { expectedDraftRevision: 1, document: { ...newer.document, name: 'New winner' } });
+    assert.equal(updated.status, 200);
+    assert.equal((await request('POST', `/locations/drafts/${newer.draftId}/publications`, { expectedDraftRevision: 2, expectedPublishedRevision: 1 })).status, 200);
+    assert.deepEqual((await request('GET', '/locations')).data.drafts.map((draft: { draftId: string }) => draft.draftId), [older.draftId]);
+    assert.equal((await request('POST', `/locations/drafts/${older.draftId}/publications`, { expectedDraftRevision: 1, expectedPublishedRevision: 1 })).status, 409);
+    assert.equal((await request('GET', '/locations')).data.drafts.length, 1, 'failed publications stay available');
+    const reloaded = await request('GET', `/locations/drafts/${older.draftId}`);
+    assert.equal(reloaded.data.basePublishedRevision, 1);
+    assert.equal(reloaded.data.currentPublishedRevision, 2);
+    const restored = await request('POST', `/locations/drafts/${older.draftId}/publications`, { expectedDraftRevision: 1, expectedPublishedRevision: 2 });
+    assert.equal(restored.status, 200);
+    assert.equal(restored.data.publishedRevision, 3);
+    const list = (await request('GET', '/locations')).data;
+    assert.deepEqual(list.drafts, []);
+    assert.equal(list.published[0].name, 'Original');
+    assert.equal(list.published[0].activeRevision, 3);
+    assert.equal((await request('GET', `/locations/drafts/${older.draftId}`)).status, 200, 'source drafts remain available for provenance and recovery');
+    const edited = await request('PUT', `/locations/drafts/${older.draftId}`, { expectedDraftRevision: 1, document: { ...older.document, name: 'Another edit' } });
+    assert.equal(edited.status, 200);
+    assert.equal((await request('GET', '/locations')).data.drafts.length, 1, 'new edits are not hidden by an older receipt');
+    const initialEdit = await request('PUT', `/locations/drafts/${id}`, { expectedDraftRevision: 1, document: { ...created.data.document, name: 'Edited original draft' } });
+    assert.equal(initialEdit.status, 200, 'an original creation draft remains editable after the location has been published');
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('location routes enforce capability, write guard, ownership and immutable upload preview boundaries', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'location-api-'));
   const app = express();

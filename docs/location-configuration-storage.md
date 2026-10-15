@@ -12,6 +12,14 @@ New rectangular drafts use the explicit `proceduralRoom: "simple-rectangle-v1"` 
 
 Deploy compatible student validators and viewers to every configured web target before allowing the edge to publish this discriminator. Existing strict v2 web validators reject the new floor key. If restoring an older student build after publication, first republish affected locations using supported custom GLB or explicit 2D sources and verify the current snapshots no longer carry `proceduralRoom`. Retain edge builds that can parse stored drafts and history containing the field.
 
+## Draft publication lifecycle
+
+A valid creator-owned draft can publish over a newer active location revision. Its complete layout replaces the active layout as the next revision; layouts are not merged. `basePublishedRevision` remains the immutable original base for inherited geometry and assets. Management draft reads also return `currentPublishedRevision`, which the client sends as `expectedPublishedRevision`. A publication that races with another active-revision change still returns a conflict and requires a fresh read.
+
+New publications store a private `sourceDraft` receipt containing the draft ID, exact draft revision and original base revision alongside the immutable publication. The management list excludes only draft revisions named by committed receipts. Failed publications and other drafts stay visible; direct source-draft reads remain available for recovery. Editing a retained source draft creates a new draft revision that is visible again. History written before receipts existed is retained without guessing which draft produced it.
+
+File mode stores receipts in `NODES_CONFIG` history. PostgreSQL mode requires the explicit `TrackLocationPublicationSource1792108800000` migration before starting this build; it adds nullable `source_draft` JSONB to immutable published revisions. Receipt writes and publication activation pointers share the publication transaction. Receipt-free history remains readable. Keep a compatible edge parser when history includes receipts, especially publications based on non-current revisions; the migration refuses rollback when history relies on an older pinned base. These private receipts are not sent to student clients.
+
 ## Storage ownership
 
 - `SITE_CONFIG` is the read-only legacy seed. It supplies existing floors and their geometry.

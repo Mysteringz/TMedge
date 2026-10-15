@@ -1,6 +1,7 @@
 import type { LocationDocument, TrustedLegacyLocationBaseline } from './location-document.js';
 import type { LegacySpatialProvenance } from './location-candidate.js';
 import type { LocationAssetProvenance } from './location-assets.js';
+import type { SourceDraftPublication } from './publication-source.js';
 
 export interface LocationDraft {
   draftId: string;
@@ -27,6 +28,7 @@ export interface PublishedLocationRevision {
   legacySpatial?: LegacySpatialProvenance | null;
   /** Server-derived immutable provenance for each referenced plan/model asset slot. */
   assetProvenance?: LocationAssetProvenance;
+  sourceDraft?: SourceDraftPublication;
 }
 
 export type LocationAssetPurpose = 'floor-plan' | 'model' | 'furniture';

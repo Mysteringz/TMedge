@@ -435,7 +435,12 @@ paths:
       tags: [Location management]
       summary: Publish the current draft revision
       description: >-
-        Requires both expected revisions. Revalidates the exact base and
+        Requires the expected draft revision and the observed current published
+        revision (currentPublishedRevision from the draft DTO). The original
+        basePublishedRevision may be older: publication replaces the active
+        layout as its next revision without merging. A successful publication
+        hides that exact draft revision from the draft list; failed attempts
+        leave it available. Revalidates the pinned original base and
         assignments under the registry writer lock. For a public candidate
         with an uploaded GLB, every configured web target must durably
         acknowledge the immutable bytes before commit. Console-only and
@@ -1014,12 +1019,17 @@ components:
         updatedAt: { type: integer }
     DraftWrite:
       type: object
-      required: [draftId, locationId, draftRevision, basePublishedRevision, durability, document]
+      required: [draftId, locationId, draftRevision, basePublishedRevision, currentPublishedRevision, durability, document]
       properties:
         draftId: { type: string, format: uuid }
         locationId: { type: string }
         draftRevision: { type: integer, minimum: 1 }
         basePublishedRevision: { type: integer, minimum: 0, nullable: true }
+        currentPublishedRevision:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Active location revision observed when this DTO was read; send as expectedPublishedRevision when publishing.
         durability: { type: string, enum: [confirmed, unconfirmed] }
         document: { $ref: '#/components/schemas/LocationDocumentView' }
     DraftDetail:

@@ -44,6 +44,7 @@ function harness(options: {
   visibility?: 'public' | 'console';
   legacyStatic?: boolean;
   existingBase?: boolean;
+  staleBase?: boolean;
   commitError?: Error;
   durability?: 'confirmed' | 'unconfirmed';
   modelAcknowledgement?: () => Promise<void>;
@@ -79,10 +80,11 @@ function harness(options: {
     : inheritedProvenance;
   const draft: LocationDraft = {
     draftId, creatorId: 'operator-a', locationId: location.locationId, draftRevision: 2,
-    basePublishedRevision: activeRevision, createdAt: 1, updatedAt: 2, document: draftCandidate.document,
+    basePublishedRevision: options.staleBase ? null : activeRevision, createdAt: 1, updatedAt: 2, document: draftCandidate.document,
     legacySpatial: draftCandidate.legacySpatial, assetProvenance: uploadedProvenance,
   };
   let runtimeCandidate: ReturnType<typeof document> | null = null;
+  let committedRevision: PublishedLocationRevision | null = null;
   const snapshot: LocationRegistrySnapshot = { registryRevision: 0, nodes: [], locations: state ? [state] : [] };
   const coordinator: RegistryMutationCoordinator = {
     withMutationLock: async (work) => {
@@ -117,6 +119,7 @@ function harness(options: {
         if (options.commitError instanceof UnknownRegistryCommitOutcomeError) coordinator.quarantine(options.commitError);
         throw options.commitError;
       }
+      committedRevision = structuredClone(input.revision);
       return { kind: 'committed', durability: options.durability ?? 'confirmed', acknowledgement: 'received', registryRevision: 1, activeRevision: (activeRevision ?? 0) + 1 };
     },
   };
@@ -148,8 +151,23 @@ function harness(options: {
     ...(options.modelAcknowledgement ? { modelDistributor: { acknowledge: async () => { events.push('model-ack'); await options.modelAcknowledgement!(); } } } : {}),
     now: () => 100,
   });
-  return { useCase, events, get preparedDocument() { return runtimeCandidate; }, get publishedState() { return state; } };
+  return { useCase, events, get committedRevision() { return committedRevision; }, get preparedDocument() { return runtimeCandidate; }, get publishedState() { return state; } };
 }
+
+test('an older draft publishes its own contents as the next observed revision', async () => {
+  const h = harness({ existingBase: true, staleBase: true });
+  const result = await h.useCase.execute({ creatorId: 'operator-a', draftId, expectedDraftRevision: 2, expectedPublishedRevision: 1 });
+  assert.equal(result.publishedRevision, 2);
+  assert.deepEqual((h.committedRevision as unknown as Record<string, unknown>).sourceDraft,
+    { draftId, draftRevision: 2, basePublishedRevision: null });
+  assert.equal(h.committedRevision?.document.name, 'New room');
+});
+
+test('an older draft still conflicts when the observed active revision changes', async () => {
+  const h = harness({ existingBase: true, staleBase: true });
+  await assert.rejects(h.useCase.execute({ creatorId: 'operator-a', draftId, expectedDraftRevision: 2, expectedPublishedRevision: 0 }), /published location changed/);
+  assert.ok(!h.events.includes('commit'));
+});
 
 test('publication prepares and acknowledges before commit, then activates before unlocking', async () => {
   const { useCase, events } = harness({ withModel: true, modelAcknowledgement: async () => undefined });

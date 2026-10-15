@@ -1,3 +1,4 @@
+import { TrackLocationPublicationSource1792108800000 } from '../src/infrastructure/postgres/migrations/1792108800000-TrackLocationPublicationSource.js';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,6 +38,7 @@ const furnitureMigrations = [
   PersistLocationAssetProvenance1791849600000,
   AddLocationAssetDisplayName1791936000000,
   AddFurnitureLocationAssets1792022400000,
+  TrackLocationPublicationSource1792108800000,
 ];
 
 test('PostgreSQL furniture metadata is shared, authored assignments persist, and rollback fails safely', {
@@ -63,7 +65,7 @@ test('PostgreSQL furniture metadata is shared, authored assignments persist, and
     assert.equal((await migrator.query('SELECT COUNT(*)::int AS count FROM public.migrations'))[0].count, 0,
       'the disposable fixture migration ledger is empty');
     migrationsApplied = (await migrator.runMigrations({ transaction: 'all' })).length;
-    assert.equal(migrationsApplied, 6);
+    assert.equal(migrationsApplied, furnitureMigrations.length);
     context.diagnostic('Disposable migrations applied; opening the runtime-role data source for application operations.');
     application = createPostgresDataSource(config.runtime, furnitureMigrations);
     assert.ok(Number((application.options.extra as { max?: unknown } | undefined)?.max) >= 2,
@@ -203,7 +205,7 @@ test('PostgreSQL furniture metadata is shared, authored assignments persist, and
       migrationsApplied -= 1;
     }
     assert.equal((await migrator.query("SELECT to_regclass('public.location_assets') AS table_name"))[0].table_name, null,
-      'after furniture cleanup, the six required migrations roll back cleanly');
+      'after furniture cleanup, the required migrations roll back cleanly');
     assert.equal((await migrator.query("SELECT to_regclass('public.registered_nodes') AS table_name"))[0].table_name, null,
       'the publication dependency table also returns to its original absent state');
     assert.equal((await migrator.query('SELECT COUNT(*)::int AS count FROM public.migrations'))[0].count, 0);
