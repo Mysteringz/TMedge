@@ -414,6 +414,65 @@ live background, the same frames as the edge detector's 0.693:
   bake-off and job 1's ledger on iw-g2. A fresh hand-labelled set from other
   days is needed before it decides much more.
 
+## Why it misses people in September (diagnosed 2026-10-15)
+
+Measured on September frames outside the hand test (live background,
+yolo11s labels), and on 10 Oct. Recall is the share of people the model
+finds; the model is job 3's recipe 2 pick.
+
+- **Absorbed into the background: 10% of people.** Their difference from the
+  background is under 1 °C (2% in October), and none of them are found.
+- **Not crowding.** 96% of September's people have nobody within 6 px.
+- **Not size or shape.** Median blob area is 16 px against 14 in October;
+  elongation 1.46 against 1.63. They are missed at every size and shape.
+- **Recent change: small.** Switching c2 off moves recall from 0.40 to 0.43.
+- **The swap test:**
+
+  | | Found |
+  |---|---|
+  | September people, in their own frames | 49% |
+  | September people pasted into October's empty frames | 68% (October's own people: 70%) |
+  | October people pasted into September frames | 83% |
+
+  The people look normal, and the room does not suppress other people. It
+  fails when the two come together.
+- **What the frames show.** September's room has a warm band across its
+  lower part, a table edge with warm things on it. Most missed people sit on
+  or against it, and the model gives them 0.45–0.58 against a threshold of
+  0.6. In October it learned that warm things on the desk are not people.
+
+**Recipe 4 tries to fix it.**
+- **What it changes:** recipe 2, but half the training frames with people
+  are pasted into the bench board's room (another house, never labelled).
+  Each person comes with the 7×7 around them, and only that window is known
+  (`train.into_scene`, `--scene-sensor`).
+- **Runs:** three runs scored 0.816, 0.838 and 0.798 on 10 Oct, against
+  recipe 2's 0.699, 0.802 and 0.794.
+- **Best of each recipe, outside the hand test:**
+
+  | | 10 Oct F1 | September F1 [95%] | Precision | Recall |
+  |---|---|---|---|---|
+  | Recipe 2 | 0.799 | 0.214 [0.051, 0.336] | 0.156 | 0.343 |
+  | Recipe 4 | **0.830** | 0.214 [0.059, 0.329] | 0.138 | **0.473** |
+
+  The September labels are both YOLO models fused the way October's are:
+  sure where both see a person, set aside where only one does. yolo11s alone
+  misses 30% of the hand-labelled people, so on its own it would count real
+  people as false.
+- **Result: it finds clearly more of the missed people**, and is better on
+  October. But it reports about as many extra people that neither YOLO saw,
+  so September F1 does not move (−0.000 [−0.061, +0.070]).
+- **Not adopted, and not put to the hand test.** It stays available,
+  switched off by default (job 4 in `hpc_job.py`).
+
+**What the measurements say is still missing.**
+- **Variety.** Every model learns the one room it was trained in. Precision is
+  about 0.9 there and 0.14–0.38 in another room, whichever recipe is used.
+- **A test that weighs empty rooms.** 90% of the hand test's frames have
+  people, but 82% of September's frames are empty. A model that adds false
+  people to empty rooms, which makes a free seat look taken, is barely
+  penalised. The next hand-labelled set should include empty periods.
+
 **Running it.** The RGB photos, the detectors and the bake-off need the ML
 environment (`tools/thermalml/requirements-ml.txt`, in `data/ml/.venv`):
 

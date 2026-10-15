@@ -21,6 +21,8 @@ augmentation, each aimed at a room the rig has not seen:
     zoom 0.65-1.15             higher mounts: a head from 350 cm is ~0.7x its size from 280 cm
     person signal x0.35-1.3    warm rooms, where people stand out less (c1, c2 only)
     pasted people              tables of six; the rig never saw more than ~4
+    people in another room     --scene-sensor: each person, with the 7x7 around them, pasted into
+                               a frame of an unlabelled room, the rest of it unknown
     thinned or no 5-min history  other frame rates, and a node that just started
     sensor noise
 
@@ -135,8 +137,42 @@ def _affine(x: np.ndarray, scale: float, cx: float, cy: float, order: int) -> np
     return out
 
 
+SCENE_WIN = 3          # a person is pasted with this many px around them (7x7)
+
+
+def scene_frames(features_root: str, uid: str, rng: np.random.Generator, n: int = 4000) -> np.ndarray:
+    """Up to n ready frames of another sensor's room, as backgrounds people can be pasted into."""
+    from .dataset import load as load_features
+    folder = os.path.join(features_root, sensor_dir(uid))
+    days_ = sorted(f[:-4] for f in os.listdir(folder) if f.endswith('.npz')) if os.path.isdir(folder) else []
+    days.assert_trainable(days_)
+    frames = [f['x'][f['ready']] for f in (load_features(features_root, uid, day) for day in days_)]
+    pool = np.concatenate(frames) if frames else np.zeros((0, 3, H, W), np.float16)
+    if not len(pool):
+        raise SystemExit(f'no ready frames of {uid} under {features_root} to paste people into')
+    return pool[rng.choice(len(pool), size=min(n, len(pool)), replace=False)].astype(np.float32)
+
+
+def into_scene(x: np.ndarray, pts: list, ign: list, known: np.ndarray, scene: np.ndarray):
+    """The frame's sure people, each with the 7x7 around them, pasted into another room's frame.
+
+    The other room has no labels, so only the pasted windows are known: nothing
+    is claimed about the rest of it. What the person sits next to there --
+    warm furniture, equipment -- is what the rig's one room never showed.
+    """
+    out, k = scene.copy(), np.zeros_like(known)
+    for p in pts:
+        cx, cy = int(p[0]), int(p[1])
+        ys, xs = slice(max(0, cy - SCENE_WIN), min(H, cy + SCENE_WIN + 1)), slice(max(0, cx - SCENE_WIN), min(W, cx + SCENE_WIN + 1))
+        out[:, ys, xs] = x[:, ys, xs]
+        k[ys, xs] = known[ys, xs]
+    inside = lambda q: 0 <= q[0] < W and 0 <= q[1] < H and any(
+        abs(int(q[0]) - int(p[0])) <= SCENE_WIN and abs(int(q[1]) - int(p[1])) <= SCENE_WIN for p in pts)
+    return out, [list(p) for p in pts], [list(q) for q in ign if inside(q)], k
+
+
 def augment(x: np.ndarray, xthin: np.ndarray, pts: list, ign: list, known: np.ndarray, rng: np.random.Generator,
-            donors: list[tuple[np.ndarray, float, float]]):
+            donors: list[tuple[np.ndarray, float, float]], scenes: np.ndarray | None = None, scene_p: float = 0.0):
     x = x.copy()
     r = rng.random()
     if r < 0.2:
@@ -146,6 +182,8 @@ def augment(x: np.ndarray, xthin: np.ndarray, pts: list, ign: list, known: np.nd
     pts = [list(p) for p in pts]
     ign = [list(p) for p in ign]
     known = known.copy()
+    if scenes is not None and len(scenes) and pts and rng.random() < scene_p:
+        x, pts, ign, known = into_scene(x, pts, ign, known, scenes[int(rng.integers(len(scenes)))])
     if rng.random() < 0.5:                    # left-right
         x, known = x[:, :, ::-1].copy(), known[:, ::-1].copy()
         pts = [[W - p[0], p[1], *p[2:]] for p in pts]
@@ -273,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--lr', type=float, default=2e-3)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--widths', default=','.join(map(str, WIDTHS)), help='channels at full, half and quarter resolution')
+    p.add_argument('--scene-sensor', action='append', default=[], help='paste people into this unlabelled sensor\'s frames')
+    p.add_argument('--scene-p', type=float, default=0.5, help='with --scene-sensor: share of frames with people moved there')
     p.add_argument('--out', required=True)
     a = p.parse_args(argv)
 
@@ -288,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     va = concat([load(d) for d in a.val_day]) if a.val_day else None
     with_people = np.array([len(q) > 0 for q in tr['pts']])
     donors = donor_patches(tr, rng)
+    scenes = np.concatenate([scene_frames(a.features, u, rng) for u in a.scene_sensor]) if a.scene_sensor and not a.pack else None
     print(f'train {len(tr["at"])} frames ({int(with_people.sum())} with people), val {len(va["at"]) if va else 0}, donors {len(donors)}', flush=True)
 
     dev = torch.device(a.device)
@@ -307,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         for s in range(0, len(order), a.batch):
             xs, hms, ws, offs, poss = [], [], [], [], []
             for i in order[s:s + a.batch]:
-                x, pts, ign, known = augment(tr['x'][i], tr['xthin'][i], tr['pts'][i], tr['ign'][i], tr['footprint'][i], rng, donors)
+                x, pts, ign, known = augment(tr['x'][i], tr['xthin'][i], tr['pts'][i], tr['ign'][i], tr['footprint'][i], rng, donors, scenes, a.scene_p)
                 hm, w, off, pos = targets(pts, ign, known)
                 xs.append(x); hms.append(hm); ws.append(w); offs.append(off); poss.append(pos)
             X = torch.from_numpy(np.stack(xs)).to(dev)
@@ -345,7 +386,8 @@ def main(argv: list[str] | None = None) -> int:
     meta = {'threshold': best['threshold'], 'trainedAt': int(time.time() * 1000), 'trainDays': a.train_day, 'valDays': a.val_day,
             'labels': os.path.basename(os.path.normpath(a.labels)), 'seed': a.seed, 'epochs': a.epochs,
             'metrics': {'validation': best} if va is not None else {'validation': None, 'keptEpoch': best['epoch']},
-            'widths': list(widths), 'weights': sum(int(t.numel()) for t in model.parameters())}
+            'widths': list(widths), 'weights': sum(int(t.numel()) for t in model.parameters()),
+            'scenes': {'sensors': a.scene_sensor, 'p': a.scene_p} if a.scene_sensor else None}
     doc = finite(export(model, meta))
     with open(os.path.join(a.out, 'model.json'), 'w') as f:
         json.dump(doc, f, separators=(',', ':'), allow_nan=False)

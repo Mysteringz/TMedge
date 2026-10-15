@@ -296,6 +296,21 @@ class TrainingTargets(unittest.TestCase):
             hot = np.unravel_index(int(np.argmax(xa[1])), (24, 32))
             self.assertLess(math.hypot(hot[1] + 0.5 - px, hot[0] + 0.5 - py), 1.5)
 
+    def test_a_person_moved_into_another_room_brings_only_their_own_window_and_claims_nothing_else(self) -> None:
+        from tools.thermalml.train import into_scene
+        x = np.zeros((3, 24, 32), dtype=np.float32)
+        x[1, 10, 20] = 2.0
+        x[1, 2, 2] = 2.0                                                  # far from the person: stays behind
+        scene = np.full((3, 24, 32), 0.5, dtype=np.float32)              # the other room
+        known = np.ones((24, 32), dtype=np.float32)
+        out, pts, ign, k = into_scene(x, [[20.5, 10.5, 0.9]], [[20.0, 12.0], [5.0, 5.0]], known, scene)
+        self.assertEqual(float(out[1, 10, 20]), 2.0)                       # the person
+        self.assertEqual(float(out[1, 2, 2]), 0.5)                         # the other room everywhere else
+        self.assertEqual(pts, [[20.5, 10.5, 0.9]])
+        self.assertEqual(ign, [[20.0, 12.0]])                              # a set-aside person in the window stays set aside
+        self.assertEqual(float(k.sum()), 49.0)                             # only the 7x7 window is known
+        self.assertEqual(float(k[2, 2]), 0.0)
+
     def test_a_model_file_is_json_the_edge_can_parse_even_when_a_metric_is_undefined(self) -> None:
         # Precision with no predictions is NaN; Python would write it as NaN,
         # which JSON.parse refuses -- and the edge would refuse the whole model.

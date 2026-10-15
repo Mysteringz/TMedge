@@ -607,12 +607,17 @@ def stage_full() -> None:
 # longer drops people near the photo's edge, and the hand test uses the
 # background a deployed sensor computes (handtest.py); job 2's verdict and
 # final model were chosen under both faults.
+# Job 4 (2026-10-15): job 3's winner missed September people sitting against
+# warm furniture the rig's one room never had; recipe 4 also pastes training
+# people into the bench board's room (another house, never labelled).
 RECIPES = {
     'recipe1': {'what': "today's recipe (job 1)", 'labels': 'labels', 'widths': '12,24,32', 'args': []},
     'recipe2': {'what': 'about twice the weights, labels voted on by the photos within 3 s',
                 'labels': 'labels-voted', 'widths': '16,32,48', 'args': []},
+    'recipe4': {'what': 'recipe 2, with half the frames with people moved into the bench board\'s room',
+                'labels': 'labels-voted', 'widths': '16,32,48', 'args': ['--scene-sensor', '30:ed:a0:cb:f5:f8', '--scene-p', '0.5']},
 }
-JOBS = {'job2': ('recipe1', 'recipe2'), 'job3': ('recipe1', 'recipe2')}
+JOBS = {'job2': ('recipe1', 'recipe2'), 'job3': ('recipe1', 'recipe2'), 'job4': ('recipe2', 'recipe4')}
 SEEDS = (0, 1, 2)
 JOB = 'job2'
 
