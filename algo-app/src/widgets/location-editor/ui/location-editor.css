@@ -330,9 +330,6 @@
   .cx .loc-shared-viewport .loc-model-viewer, .cx .loc-shared-viewport tm-location-model-viewer { height: 100%; min-height: 0; }
 }
 @media (min-width: 1025px) {
-  .cx .loc-step-layout.is-details .loc-shared-viewport .loc-canvas-panel { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr); }
-  .cx .loc-step-layout.is-details .loc-shared-viewport .loc-canvas-frame { display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; }
-  .cx .loc-step-layout.is-details .loc-shared-viewport .loc-canvas { width: 100%; height: 100%; min-width: 0; min-height: 0; }
   .cx .loc-step-layout.is-details .loc-editor-fieldset { grid-template-rows: auto minmax(260px, 1fr) auto auto; }
   .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-editor > h3 { font-size: 15px; }
   .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-list { gap: 12px; }
@@ -396,6 +393,12 @@
   .cx .loc-footer { margin-inline: -12px; padding-inline: 12px; }
   .cx .loc-footer .btn { min-height: 44px; }
 }
+/* Fit both editing steps to the bounded viewport at every screen size. Reserve
+   controls/captions first so the SVG's meet scaling uses the remaining height. */
+.cx .loc-shared-viewport .loc-sensor-map { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+.cx .loc-shared-viewport .loc-canvas-panel { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.cx .loc-shared-viewport .loc-canvas-frame { display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; }
+.cx .loc-shared-viewport .loc-canvas { width: 100%; height: 100%; min-width: 0; min-height: 0; }
 @media (prefers-reduced-motion: reduce) {
   .cx .loc-canvas, .cx .loc-step { scroll-behavior: auto; }
 }
