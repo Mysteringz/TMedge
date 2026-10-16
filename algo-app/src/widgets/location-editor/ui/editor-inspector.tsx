@@ -1,3 +1,5 @@
+import { Plus, Trash } from '../../../console/icons.tsx';
+import { bottomYMetres, canonicalY } from '../../../features/location-editor/model/display-coordinates.ts';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { FurnitureLibraryItem, FurnitureType, LocationDocument, Point, Table, TableShape, Zone } from '../../../entities/location-config/model/types.ts';
 import { changeShapeKind, cmToMetres, metresToCm, setShape, shapeOf } from '../../../features/location-editor/index.ts';
@@ -18,7 +20,10 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
     : selected?.kind === 'seat' ? document.tables.find((item) => item.seats.some((seat) => seat.id === selected.id)) : undefined;
   const seat = selected?.kind === 'seat' ? table?.seats.find((item) => item.id === selected.id) : undefined;
   return <aside className="loc-inspector">
-    <h2 id="loc-inspector-heading" className="loc-inspector-heading">{table ? `Table details · ${table.name}` : zone ? `Zone details · ${zone.name}` : 'Table details'}</h2>
+    <header className="loc-inspector-header">
+      <h2 id="loc-inspector-heading" className="loc-inspector-heading">{table ? 'Edit table' : zone ? 'Edit zone' : 'Edit layout'}</h2>
+      <p>{zone ? 'Update the zone details and boundary.' : table ? 'Update the table, shape and seats.' : 'Choose a zone or table to edit its details.'}</p>
+    </header>
     <fieldset className="loc-inspector-selection">
       <legend className="loc-sr">Choose a zone or table</legend>
       <label className="loc-field"><span>Zone</span><select className="input" aria-label="Select zone" data-testid="location-inspector-zone-select" value={zone?.id ?? ''}
@@ -32,7 +37,7 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
         {document.tables.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select></label>
     </fieldset>
-    {zone && <ZoneFields key={zone.id} zone={zone} selectedIndex={selected?.kind === 'zone' && selected.id === zone.id ? selected.index : undefined} onTransientValidityChange={onTransientValidityChange}
+    {zone && <ZoneFields key={zone.id} zone={zone} roomHeight={document.heightCm} selectedIndex={selected?.kind === 'zone' && selected.id === zone.id ? selected.index : undefined} onTransientValidityChange={onTransientValidityChange}
       onSelectIndex={(index) => onSelect({ kind: 'zone', id: zone.id, index })} update={update} />}
     {table && <TableFields key={table.id} table={table} document={document} selectedSeat={seat?.id ?? null} onSelect={onSelect} update={update} onTransientValidityChange={onTransientValidityChange}
       furnitureItems={furnitureItems} furnitureSource={furnitureSource} onOpenFurnitureLibrary={onOpenFurnitureLibrary} />}
@@ -59,20 +64,15 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
 }
 
 /** Inspector section for one zone; edits are applied through the parent's immutable document updater. */
-function ZoneFields({ zone, selectedIndex, onSelectIndex, update, onTransientValidityChange }: {
-  zone: Zone; selectedIndex?: number; onSelectIndex(index: number): void;
+function ZoneFields({ zone, roomHeight, selectedIndex, onSelectIndex, update, onTransientValidityChange }: {
+  zone: Zone; roomHeight: number; selectedIndex?: number; onSelectIndex(index: number): void;
   onTransientValidityChange(field: string, invalid: boolean): void;
   update(change: (current: LocationDocument) => LocationDocument): void;
 }) {
-  const verticesDisclosure = useRef<HTMLDetailsElement>(null);
-  useEffect(() => { if (verticesDisclosure.current) verticesDisclosure.current.open = true; }, [zone.id]);
   return <div className="loc-inspector-block loc-inspector-selected-fields">
     <Field label="Zone name" fieldPath={`zone.${zone.id}.name`} value={zone.name} onChange={(value) => update((doc) => ({ ...doc, zones: doc.zones.map((item) => item.id === zone.id ? { ...item, name: value } : item) }))} />
-    <details ref={verticesDisclosure} className="loc-inspector-disclosure">
-      <summary>Zone vertices ({zone.polygon.length})</summary>
-      <VertexFields label={zone.name} fieldPath={`zone.${zone.id}.polygon`} coordinateFieldPath={`zone.${zone.id}`} points={zone.polygon} selectedIndex={selectedIndex} onSelectIndex={onSelectIndex} onTransientValidityChange={onTransientValidityChange}
+      <VertexFields roomHeight={roomHeight} label={zone.name} fieldPath={`zone.${zone.id}.polygon`} coordinateFieldPath={`zone.${zone.id}`} points={zone.polygon} selectedIndex={selectedIndex} onSelectIndex={onSelectIndex} onTransientValidityChange={onTransientValidityChange}
         onChange={(points) => update((doc) => ({ ...doc, zones: doc.zones.map((item) => item.id === zone.id ? { ...item, polygon: points } : item) }))} />
-    </details>
   </div>;
 }
 
@@ -93,7 +93,7 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
   const changeShape = (next: TableShape) => patchTable((item) => setShape(item, next));
   const setNumber = (field: string, value: number) => {
     if (!Number.isFinite(value)) return;
-    const next = { ...shape, [field]: value } as TableShape;
+    const next = { ...shape, [field]: value, ...(shape.type === 'rect' && field === 'height' ? { y: shape.y + shape.height - value } : {}) } as TableShape;
     changeShape(next);
   };
   return <div className="loc-inspector-block loc-inspector-selected-fields">
@@ -110,9 +110,9 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
     <div className="loc-inline-actions"><button type="button" className="btn btn-secondary" data-testid={`location-generate-seats-${testToken(table.id)}`} onClick={() => patchTable((item) => ({ ...item, seats: importSeats(item) }))}>Generate seats</button></div>
     {shape.type === 'polygon' && <details ref={verticesDisclosure} className="loc-inspector-disclosure">
       <summary>Polygon vertices ({shape.points.length})</summary>
-      <ShapeFields shape={shape} fieldPath={`${prefix}.shape`} onNumber={setNumber} onTransientValidityChange={onTransientValidityChange} onPoints={(points) => changeShape({ type: 'polygon', points })} />
+      <ShapeFields roomHeight={document.heightCm} shape={shape} fieldPath={`${prefix}.shape`} onNumber={setNumber} onTransientValidityChange={onTransientValidityChange} onPoints={(points) => changeShape({ type: 'polygon', points })} />
     </details>}
-    {shape.type !== 'polygon' && <ShapeFields shape={shape} fieldPath={`${prefix}.shape`} onNumber={setNumber} onTransientValidityChange={onTransientValidityChange} onPoints={(points) => changeShape({ type: 'polygon', points })} />}
+    {shape.type !== 'polygon' && <ShapeFields roomHeight={document.heightCm} shape={shape} fieldPath={`${prefix}.shape`} onNumber={setNumber} onTransientValidityChange={onTransientValidityChange} onPoints={(points) => changeShape({ type: 'polygon', points })} />}
     <details ref={seatsDisclosure} className="loc-inspector-disclosure">
       <summary>Seats ({table.seats.length})</summary>
       <ul className="loc-seat-list" data-location-field="seats.list" tabIndex={-1}>
@@ -122,8 +122,8 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
             <Field label={`Seat ${index + 1} X (m)`} fieldPath={`seat.${item.id}.x`} type="number" step={0.01} value={String(cmToMetres(item.x))} onTransientInvalid={(invalid) => onTransientValidityChange(`seat.${item.id}.x`, invalid)} onChange={(value) => {
               const x = metresToCm(Number(value)); if (Number.isFinite(x)) patchTable((current) => ({ ...current, seats: current.seats.map((seat) => seat.id === item.id ? { ...seat, x } : seat) }));
             }} />
-            <Field label={`Seat ${index + 1} Y (m)`} fieldPath={`seat.${item.id}.y`} type="number" step={0.01} value={String(cmToMetres(item.y))} onTransientInvalid={(invalid) => onTransientValidityChange(`seat.${item.id}.y`, invalid)} onChange={(value) => {
-              const y = metresToCm(Number(value)); if (Number.isFinite(y)) patchTable((current) => ({ ...current, seats: current.seats.map((seat) => seat.id === item.id ? { ...seat, y } : seat) }));
+            <Field label={`Seat ${index + 1} Y (m)`} fieldPath={`seat.${item.id}.y`} type="number" step={0.01} value={String(bottomYMetres(item.y, document.heightCm))} onTransientInvalid={(invalid) => onTransientValidityChange(`seat.${item.id}.y`, invalid)} onChange={(value) => {
+              const y = canonicalY(Number(value), document.heightCm, item.y); if (Number.isFinite(y)) patchTable((current) => ({ ...current, seats: current.seats.map((seat) => seat.id === item.id ? { ...seat, y } : seat) }));
             }} />
           </div>
         </li>)}
@@ -136,31 +136,31 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
 }
 
 /** Selects the numeric or vertex controls for a tagged table shape; parent callbacks own all document changes. */
-function ShapeFields({ shape, fieldPath, onNumber, onTransientValidityChange, onPoints }: {
-  shape: TableShape; fieldPath: string; onNumber(field: string, value: number): void;
+function ShapeFields({ shape, roomHeight, fieldPath, onNumber, onTransientValidityChange, onPoints }: {
+  shape: TableShape; roomHeight: number; fieldPath: string; onNumber(field: string, value: number): void;
   onTransientValidityChange(field: string, invalid: boolean): void; onPoints(points: Point[]): void;
 }) {
   if (shape.type === 'rect') return <div className="loc-pair-fields">
     <Numeric label="Table X (m)" fieldPath={`${fieldPath}.x`} value={shape.x} onChange={(value) => onNumber('x', value)} onTransientValidityChange={onTransientValidityChange} />
-    <Numeric label="Table Y (m)" fieldPath={`${fieldPath}.y`} value={shape.y} onChange={(value) => onNumber('y', value)} onTransientValidityChange={onTransientValidityChange} />
+    <Numeric label="Table Y (m)" fieldPath={`${fieldPath}.y`} value={shape.y} roomHeight={roomHeight} objectHeight={shape.height} onChange={(value) => onNumber('y', value)} onTransientValidityChange={onTransientValidityChange} />
     <Numeric label="Table width (m)" fieldPath={`${fieldPath}.width`} value={shape.width} onChange={(value) => onNumber('width', value)} onTransientValidityChange={onTransientValidityChange} />
     <Numeric label="Table height (m)" fieldPath={`${fieldPath}.height`} value={shape.height} onChange={(value) => onNumber('height', value)} onTransientValidityChange={onTransientValidityChange} />
   </div>;
   if (shape.type === 'circle') return <div className="loc-pair-fields">
     <Numeric label="Circle center X (m)" fieldPath={`${fieldPath}.cx`} value={shape.cx} onChange={(value) => onNumber('cx', value)} onTransientValidityChange={onTransientValidityChange} />
-    <Numeric label="Circle center Y (m)" fieldPath={`${fieldPath}.cy`} value={shape.cy} onChange={(value) => onNumber('cy', value)} onTransientValidityChange={onTransientValidityChange} />
+    <Numeric label="Circle center Y (m)" fieldPath={`${fieldPath}.cy`} value={shape.cy} roomHeight={roomHeight} onChange={(value) => onNumber('cy', value)} onTransientValidityChange={onTransientValidityChange} />
     <Numeric label="Circle radius (m)" fieldPath={`${fieldPath}.radius`} value={shape.radius} onChange={(value) => onNumber('radius', value)} onTransientValidityChange={onTransientValidityChange} />
   </div>;
-  return <VertexFields label="Table" fieldPath={fieldPath} coordinateFieldPath={fieldPath} points={shape.points} onTransientValidityChange={onTransientValidityChange} onChange={onPoints} />;
+  return <VertexFields roomHeight={roomHeight} label="Table" fieldPath={fieldPath} coordinateFieldPath={fieldPath} points={shape.points} onTransientValidityChange={onTransientValidityChange} onChange={onPoints} />;
 }
 
 /** Shared vertex editor for table/zone polygons, with optional keyboard-selectable vertex navigation. */
-function VertexFields({ label, points, fieldPath, coordinateFieldPath = fieldPath, selectedIndex, onSelectIndex, onChange, onTransientValidityChange }: {
-  label: string; points: Point[]; fieldPath?: string; coordinateFieldPath?: string; selectedIndex?: number; onSelectIndex?(index: number): void; onChange(points: Point[]): void;
+function VertexFields({ label, points, roomHeight, fieldPath, coordinateFieldPath = fieldPath, selectedIndex, onSelectIndex, onChange, onTransientValidityChange }: {
+  label: string; points: Point[]; roomHeight: number; fieldPath?: string; coordinateFieldPath?: string; selectedIndex?: number; onSelectIndex?(index: number): void; onChange(points: Point[]): void;
   onTransientValidityChange(field: string, invalid: boolean): void;
 }) {
   const setPoint = (index: number, axis: 0 | 1, value: string) => {
-    const number = metresToCm(Number(value)); if (!Number.isFinite(number)) return;
+    const number = axis === 1 ? canonicalY(Number(value), roomHeight, points[index]?.[1]) : metresToCm(Number(value)); if (!Number.isFinite(number)) return;
     onChange(points.map((point, i) => i === index ? axis === 0 ? [number, point[1]] : [point[0], number] : [...point]));
   };
   const add = () => {
@@ -169,26 +169,30 @@ function VertexFields({ label, points, fieldPath, coordinateFieldPath = fieldPat
     onChange([...points, [(last[0] + first[0]) / 2, (last[1] + first[1]) / 2]]);
   };
   return <div className="loc-vertex-editor" role="group" aria-label={`${label} vertices`} data-location-field={fieldPath} tabIndex={-1}>
-    <h3>{label === 'Table' ? 'Table vertices (m)' : 'Zone vertices (m)'}</h3>
-    <ol className="loc-vertex-list">
-      {points.map(([x, y], index) => <li key={index}>
-        {onSelectIndex ? <button type="button" className="loc-vertex-select" data-testid={`location-select-vertex-${testToken(`${coordinateFieldPath ?? label}-${index + 1}`)}`} aria-label={`Select ${label} vertex ${index + 1}`}
-          aria-pressed={selectedIndex === index} onClick={() => onSelectIndex(index)}>Vertex {index + 1}</button> : <span>Vertex {index + 1}</span>}
-        <div className="loc-pair-fields">
-          <Field label={`${label} vertex ${index + 1} X (m)`} fieldPath={coordinateFieldPath ? `${coordinateFieldPath}.vertex.${index}.x` : undefined} type="number" step={0.01} value={String(cmToMetres(x))} onTransientInvalid={(invalid) => onTransientValidityChange(`${coordinateFieldPath ?? label}.vertex.${index}.x`, invalid)} onChange={(value) => setPoint(index, 0, value)} />
-          <Field label={`${label} vertex ${index + 1} Y (m)`} fieldPath={coordinateFieldPath ? `${coordinateFieldPath}.vertex.${index}.y` : undefined} type="number" step={0.01} value={String(cmToMetres(y))} onTransientInvalid={(invalid) => onTransientValidityChange(`${coordinateFieldPath ?? label}.vertex.${index}.y`, invalid)} onChange={(value) => setPoint(index, 1, value)} />
-        </div>
-        <button type="button" className="btn btn-ghost" data-testid={`location-remove-vertex-${testToken(`${fieldPath ?? label}-${index + 1}`)}`} disabled={points.length <= 3} onClick={() => onChange(points.filter((_, i) => i !== index))}>Remove vertex {index + 1}</button>
-      </li>)}
-    </ol>
-    <button type="button" className="btn btn-secondary" data-testid={`location-add-vertex-${testToken(fieldPath ?? label)}`} onClick={add}>Add vertex</button>
+    <div className="loc-boundary-heading"><h3>Boundary</h3><span>{points.length} corners</span></div>
+    <p className="loc-boundary-help">Enter coordinates in metres, in order around the boundary.</p>
+    <table className="loc-boundary-table">
+      <caption className="loc-sr">{label} boundary coordinates</caption>
+      <colgroup><col className="loc-boundary-index-col" /><col /><col /><col className="loc-boundary-action-col" /></colgroup>
+      <thead><tr><th scope="col">Corner</th><th scope="col">X (m)</th><th scope="col">Y (m)</th><th scope="col"><span className="loc-sr">Actions</span></th></tr></thead>
+      <tbody>
+        {points.map(([x, y], index) => <tr key={index}>
+          <th scope="row">{onSelectIndex ? <button type="button" className="loc-vertex-select" data-testid={`location-select-vertex-${testToken(`${coordinateFieldPath ?? label}-${index + 1}`)}`} aria-label={`Select ${label} vertex ${index + 1}`}
+            aria-pressed={selectedIndex === index} onClick={() => onSelectIndex(index)}>{index + 1}</button> : <span className="loc-corner-number">{index + 1}</span>}</th>
+          <td><Field hideLabel label={`${label} vertex ${index + 1} X (m)`} fieldPath={coordinateFieldPath ? `${coordinateFieldPath}.vertex.${index}.x` : undefined} type="number" step={0.01} value={String(cmToMetres(x))} onTransientInvalid={(invalid) => onTransientValidityChange(`${coordinateFieldPath ?? label}.vertex.${index}.x`, invalid)} onChange={(value) => setPoint(index, 0, value)} /></td>
+          <td><Field hideLabel label={`${label} vertex ${index + 1} Y (m)`} fieldPath={coordinateFieldPath ? `${coordinateFieldPath}.vertex.${index}.y` : undefined} type="number" step={0.01} value={String(bottomYMetres(y, roomHeight))} onTransientInvalid={(invalid) => onTransientValidityChange(`${coordinateFieldPath ?? label}.vertex.${index}.y`, invalid)} onChange={(value) => setPoint(index, 1, value)} /></td>
+          <td><button type="button" className="btn btn-ghost loc-boundary-remove" aria-label={`Remove corner ${index + 1}`} title={points.length <= 3 ? 'A boundary needs at least three corners' : `Remove corner ${index + 1}`} data-testid={`location-remove-vertex-${testToken(`${fieldPath ?? label}-${index + 1}`)}`} disabled={points.length <= 3} onClick={() => onChange(points.filter((_, i) => i !== index))}><Trash /></button></td>
+        </tr>)}
+      </tbody>
+    </table>
+    <button type="button" className="btn btn-secondary loc-boundary-add" data-testid={`location-add-vertex-${testToken(fieldPath ?? label)}`} onClick={add}><Plus /> Add corner</button>
   </div>;
 }
 
 /** Inspector input; numeric text remains raw during typing and commits through `onChange` on blur. */
-function Field({ label, value, onChange, type = 'text', min, max, step, fieldPath, onTransientInvalid }: {
+function Field({ label, value, onChange, type = 'text', min, max, step, fieldPath, onTransientInvalid, hideLabel = false }: {
   label: string; value: string; onChange(value: string): void; type?: string; min?: number; max?: number; step?: number; fieldPath?: string;
-  onTransientInvalid?(invalid: boolean): void;
+  onTransientInvalid?(invalid: boolean): void; hideLabel?: boolean;
 }) {
   const id = useId();
   const [raw, setRaw] = useState(value);
@@ -203,7 +207,7 @@ function Field({ label, value, onChange, type = 'text', min, max, step, fieldPat
     }
   }, [value, fieldPath]);
   const rawValid = !deferredNumber || validNumberText(raw, min, max, step);
-  return <label className="loc-field"><span>{label}</span><input className="input" aria-label={label} data-testid={`location-field-${testToken(fieldPath ?? label)}`} data-location-field={fieldPath}
+  return <label className="loc-field"><span className={hideLabel ? 'loc-sr' : undefined}>{label}</span><input className="input" aria-label={label} data-testid={`location-field-${testToken(fieldPath ?? label)}`} data-location-field={fieldPath}
     data-local-invalid={fieldError || !rawValid ? 'true' : undefined} aria-invalid={fieldError || !rawValid ? true : undefined} aria-describedby={fieldError ? id : undefined}
     type={deferredNumber ? 'text' : type} inputMode={deferredNumber ? 'decimal' : undefined} value={raw}
     min={deferredNumber ? undefined : min} max={deferredNumber ? undefined : max} step={deferredNumber ? undefined : step}
@@ -226,10 +230,10 @@ function Field({ label, value, onChange, type = 'text', min, max, step, fieldPat
 }
 
 /** Displays a canonical centimetre value in metres and converts it once when the inspector field commits. */
-function Numeric({ label, value, fieldPath, onChange, onTransientValidityChange }: {
-  label: string; value: number; fieldPath: string; onChange(value: number): void; onTransientValidityChange(field: string, invalid: boolean): void;
+function Numeric({ label, value, roomHeight, objectHeight = 0, fieldPath, onChange, onTransientValidityChange }: {
+  label: string; value: number; roomHeight?: number; objectHeight?: number; fieldPath: string; onChange(value: number): void; onTransientValidityChange(field: string, invalid: boolean): void;
 }) {
-  return <Field label={label} fieldPath={fieldPath} type="number" step={0.01} value={String(cmToMetres(value))} onTransientInvalid={(invalid) => onTransientValidityChange(fieldPath, invalid)} onChange={(next) => { const number = metresToCm(Number(next)); if (Number.isFinite(number)) onChange(number); }} />;
+  return <Field label={label} fieldPath={fieldPath} type="number" step={0.01} value={String(roomHeight === undefined ? cmToMetres(value) : bottomYMetres(value, roomHeight, objectHeight))} onTransientInvalid={(invalid) => onTransientValidityChange(fieldPath, invalid)} onChange={(next) => { const number = roomHeight === undefined ? metresToCm(Number(next)) : canonicalY(Number(next), roomHeight, value, objectHeight); if (Number.isFinite(number)) onChange(number); }} />;
 }
 
 function importSeats(table: Table): Table['seats'] {

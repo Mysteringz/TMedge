@@ -73,6 +73,23 @@
 .cx .loc-canvas-controls .btn { min-height: 44px; }
 .cx .loc-canvas { display: block; width: 100%; height: clamp(320px, 58vh, 720px); border: 1px solid var(--border-subtle-01); background: var(--layer-02); touch-action: none; cursor: crosshair; }
 .cx .loc-canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* Rulers occupy their own tracks so room objects remain unobscured. */
+.cx .loc-canvas-surface { display: grid; min-width: 0; min-height: 0; grid-template-columns: 52px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 24px; }
+.cx .loc-canvas-surface .loc-canvas { grid-column: 2; grid-row: 1; min-width: 0; min-height: 0; width: 100%; height: 100%; }
+.cx .loc-ruler-corner, .cx .loc-ruler-x, .cx .loc-ruler-y { position: relative; overflow: hidden; background: transparent; color: var(--text-secondary); font: 11px var(--font-sans); font-variant-numeric: tabular-nums; pointer-events: none; }
+.cx .loc-ruler-corner { display: flex; align-items: center; justify-content: center; grid-column: 1; grid-row: 2; font-size: 10px; }
+.cx .loc-ruler-x { grid-column: 2; grid-row: 2; }
+.cx .loc-ruler-y { grid-column: 1; grid-row: 1; }
+.cx .loc-ruler-x-tick { position: absolute; top: 0; }
+.cx .loc-ruler-y-tick { position: absolute; right: 0; }
+.cx .loc-ruler-x-tick i { position: absolute; top: 0; height: 5px; border-left: 1px solid var(--text-helper); }
+.cx .loc-ruler-y-tick i { position: absolute; right: 0; width: 5px; border-top: 1px solid var(--text-helper); }
+.cx .loc-ruler-x-tick b { position: absolute; top: 7px; transform: translateX(-50%); font-weight: 400; }
+.cx .loc-ruler-y-tick b { position: absolute; right: 9px; transform: translateY(-50%); font-weight: 400; }
+.cx .loc-metric-grid path { fill: none; stroke: var(--text-secondary); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.cx .loc-grid-minor { opacity: .13; }
+.cx .loc-grid-major { opacity: .3; }
+.cx .loc-grid-scale { margin-left: auto; padding-inline: 6px; white-space: nowrap; }
 .cx .loc-floor { fill: var(--layer-02); }
 .cx .loc-plan { opacity: .28; pointer-events: none; }
 .cx .loc-outline { fill: none; stroke: var(--border-strong-01); stroke-width: 3; vector-effect: non-scaling-stroke; }
@@ -91,8 +108,8 @@
 .cx .loc-canvas-caption { margin: 8px 0 0; color: var(--text-helper); font-size: 12px; }
 .cx .loc-canvas-live, .cx .loc-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .cx .loc-inspector { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
-.cx .loc-inspector-heading { position: sticky; top: 0; z-index: 1; padding: 10px 12px; margin: 0; border-bottom: 1px solid var(--border-subtle-01); background: var(--background); }
-.cx .loc-inspector-selection { position: sticky; top: 48px; z-index: 1; display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 8px; margin: 0; border: 0; border-bottom: 1px solid var(--border-subtle-01); background: var(--background); }
+.cx .loc-inspector-heading { position: static; margin: 0; padding: 0; border: 0; font-size: 22px; line-height: 1.3; }
+.cx .loc-inspector-selection { position: static; display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 14px 16px; margin: 0; border: 0; border-bottom: 1px solid var(--border-subtle-01); }
 .cx .loc-inspector-selection .loc-field { gap: 4px; font-size: 12px; }
 .cx .loc-inspector-selection .input { min-width: 0; min-height: 38px; padding-block: 5px; }
 .cx .loc-inspector-block { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding: 16px; background: var(--layer-01); }
@@ -331,20 +348,8 @@
 }
 @media (min-width: 1025px) {
   .cx .loc-step-layout.is-details .loc-editor-fieldset { grid-template-rows: auto minmax(260px, 1fr) auto auto; }
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-editor > h3 { font-size: 15px; }
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-list { gap: 12px; }
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-list > li { gap: 10px; padding: 12px; border: 1px solid var(--border-subtle-01); background: var(--layer-02); }
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-list .loc-field { gap: 5px; font-size: 13px; letter-spacing: normal; }
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-list .loc-pair-fields { gap: 10px; }
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-list .input { min-height: 44px; padding-inline: 10px; font-size: 14px; }
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-list .btn,
-  .cx .loc-step-layout.is-details .loc-inspector-scroll .loc-vertex-editor > .btn { min-height: 44px; }
   .cx .loc-step-layout.has-bounded-room-settings .loc-room-settings-content { max-height: var(--loc-room-settings-max-height); overflow: auto; overscroll-behavior: auto; scrollbar-gutter: stable; }
   .cx .loc-inspector { gap: 8px; }
-  .cx .loc-page .loc-inspector-heading { padding: 4px 8px; font-size: 16px; line-height: 22px; }
-  .cx .loc-inspector-selection { top: 40px; gap: 8px; padding: 4px 8px; }
-  .cx .loc-inspector-selection .loc-field { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px; white-space: nowrap; letter-spacing: normal; }
-  .cx .loc-inspector-selection .input { min-height: 34px; padding-block: 3px; font-size: 13px; }
   .cx .loc-inspector-selected-fields { gap: 8px; padding: 8px 12px; }
   .cx .loc-inspector-selected-fields > .loc-field { gap: 4px; }
 }
@@ -402,3 +407,26 @@
 @media (prefers-reduced-motion: reduce) {
   .cx .loc-canvas, .cx .loc-step { scroll-behavior: auto; }
 }
+
+/* The inspector is one flowing form: headers and selectors scroll with its fields. */
+.cx .loc-inspector-header { display: grid; gap: 6px; padding: 16px 14px 4px; }
+.cx .loc-inspector-header p { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.cx .loc-inspector-selection .loc-field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; white-space: normal; font-size: 13px; }
+.cx .loc-inspector-selection .input { min-height: 44px; }
+.cx .loc-inspector-selected-fields { padding: 14px; }
+.cx .loc-boundary-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border-subtle-01); }
+.cx .loc-boundary-heading h3 { margin: 0; font-size: 17px; }
+.cx .loc-boundary-heading > span { padding: 3px 8px; border: 1px solid var(--border-subtle-01); border-radius: 12px; color: var(--text-secondary); font-size: 11px; }
+.cx .loc-boundary-help { margin: 0; color: var(--text-helper); font-size: 12px; line-height: 1.5; }
+.cx .loc-boundary-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border-subtle-01); border-radius: 6px; font-size: 12px; }
+.cx .loc-boundary-index-col { width: 52px; }
+.cx .loc-boundary-action-col { width: 44px; }
+.cx .loc-boundary-table th, .cx .loc-boundary-table td { padding: 7px 4px; vertical-align: middle; border-bottom: 1px solid var(--border-subtle-01); }
+.cx .loc-boundary-table thead th { color: var(--text-secondary); font-size: 11px; font-weight: 500; text-align: left; }
+.cx .loc-boundary-table .loc-field { min-width: 0; gap: 0; }
+.cx .loc-boundary-table .input { width: 100%; min-width: 0; min-height: 44px; padding-inline: 8px; border: 1px solid var(--border-subtle-01); border-radius: 4px; background: var(--background); font-size: 13px; }
+.cx .loc-boundary-table .loc-vertex-select, .cx .loc-corner-number { display: inline-flex; align-items: center; justify-content: center; width: 44px; min-height: 44px; padding: 0; border-radius: 50%; font-size: 12px; font-weight: 500; }
+.cx .loc-corner-number { background: var(--layer-02); color: var(--text-secondary); }
+.cx .loc-boundary-table .loc-boundary-remove { display: inline-flex; align-items: center; justify-content: center; width: 36px; min-height: 44px; padding: 0; }
+.cx .loc-boundary-remove svg { width: 17px; height: 17px; }
+.cx .loc-boundary-add { align-self: flex-start; min-height: 44px; }

@@ -1,3 +1,4 @@
+import { bottomYMetres, canonicalY } from '../../../features/location-editor/model/display-coordinates.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getEligibleDraftSensors, LocationApiError, suggestDraftCoverage } from '../../../entities/location-config/api/index.ts';
@@ -87,10 +88,10 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
       setPoseInput({ x: '', y: '', height: '', yaw: '0', mirror: false }); setPoseErrors({}); return;
     }
     const pose = assignmentsByUid.get(selectedUid.toLowerCase())?.pose ?? eligibleByUid.get(selectedUid.toLowerCase())?.pose;
-    setPoseInput(pose ? { x: String(pose.x / 100), y: String(pose.y / 100), height: String(pose.heightCm / 100), yaw: String(pose.yawDeg), mirror: pose.mirror }
+    setPoseInput(pose ? { x: String(pose.x / 100), y: String(bottomYMetres(pose.y, document.heightCm)), height: String(pose.heightCm / 100), yaw: String(pose.yawDeg), mirror: pose.mirror }
       : { x: '', y: '', height: '', yaw: '0', mirror: false });
     setPoseErrors({}); setNotice('');
-  }, [selectedUid, assignmentsByUid, eligibleByUid]);
+  }, [selectedUid, assignmentsByUid, eligibleByUid, document.heightCm]);
 
   useEffect(() => {
     if (!active || loadingSensors || sensorError) { setCoverageResult(null); return; }
@@ -115,10 +116,10 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
       return { uid: assignment.uid, label: sensor?.label ?? 'Previously assigned sensor', x: assignment.pose.x, y: assignment.pose.y, stale: !sensor, movable: !!sensor };
     });
     if (selectedUid && selectedSensor && !selectedAssignment && isFiniteInput(poseInput.x) && isFiniteInput(poseInput.y)) {
-      markers.push({ uid: selectedUid, label: selectedSensor.label, x: Number(poseInput.x) * 100, y: Number(poseInput.y) * 100, stale: false, movable: true });
+      markers.push({ uid: selectedUid, label: selectedSensor.label, x: Number(poseInput.x) * 100, y: canonicalY(Number(poseInput.y), document.heightCm), stale: false, movable: true });
     }
     return markers;
-  }, [document.sensorAssignments, eligibleByUid, selectedUid, selectedSensor, selectedAssignment, poseInput.x, poseInput.y]);
+  }, [document.sensorAssignments, eligibleByUid, selectedUid, selectedSensor, selectedAssignment, poseInput.x, poseInput.y, document.heightCm]);
 
   const validation = (field: PoseFieldName, input: string): { value: number; error: string } => {
     if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(input)) return { value: NaN, error: field === 'height' ? 'Enter a mounting height from 1.5 m to 15 m.' : 'Enter a valid number.' };
@@ -136,7 +137,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
     setPoseErrors((current) => ({ ...current, [field]: result.error || undefined }));
     if (selectedUid) onTransientValidityChange(`sensor.${selectedUid}.${field}`, !!result.error);
     if (result.error || !selectedUid || !selectedAssignment) return;
-    const patch = changedPoseField(selectedAssignment.pose, field, result.value);
+    const patch = changedPoseField(selectedAssignment.pose, field, result.value, document.heightCm);
     if (!patch) return;
     onUpdate((current) => patchSensorPose(current, selectedUid, patch));
   };
@@ -147,7 +148,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
     setPoseErrors((current) => ({ ...current, [field]: result.error || undefined }));
     if (selectedUid) onTransientValidityChange(`sensor.${selectedUid}.${field}`, !!result.error);
     if (result.error || !selectedUid || !selectedAssignment) return;
-    const patch = changedPoseField(selectedAssignment.pose, field, result.value);
+    const patch = changedPoseField(selectedAssignment.pose, field, result.value, document.heightCm);
     if (patch) onUpdate((current) => patchSensorPose(current, selectedUid, patch));
   };
 
@@ -155,7 +156,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
     const x = validation('x', poseInput.x), y = validation('y', poseInput.y), height = validation('height', poseInput.height), yaw = validation('yaw', poseInput.yaw);
     setPoseErrors({ x: x.error || undefined, y: y.error || undefined, height: height.error || undefined, yaw: yaw.error || undefined });
     if (x.error || y.error || height.error || yaw.error) return null;
-    return { x: x.value * 100, y: y.value * 100, heightCm: height.value * 100, yawDeg: yaw.value, mirror: poseInput.mirror };
+    return { x: x.value * 100, y: canonicalY(y.value, document.heightCm), heightCm: height.value * 100, yawDeg: yaw.value, mirror: poseInput.mirror };
   };
 
   const addSelectedSensor = () => {
@@ -172,13 +173,13 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
     if (assignmentsByUid.has(uid.toLowerCase())) {
       onUpdate((current) => patchSensorPose(current, uid, { x: boundedX, y: boundedY }));
     } else if (selectedUid?.toLowerCase() === uid.toLowerCase()) {
-      setPoseInput((current) => ({ ...current, x: String(boundedX / 100), y: String(boundedY / 100) }));
+      setPoseInput((current) => ({ ...current, x: String(boundedX / 100), y: String(bottomYMetres(boundedY, document.heightCm)) }));
     }
   };
   const nudgeSelectedSensor = (dx: number, dy: number) => {
     if (!selectedUid) return;
     if (selectedAssignment) moveSensor(selectedUid, selectedAssignment.pose.x + dx, selectedAssignment.pose.y + dy);
-    else if (isFiniteInput(poseInput.x) && isFiniteInput(poseInput.y)) moveSensor(selectedUid, Number(poseInput.x) * 100 + dx, Number(poseInput.y) * 100 + dy);
+    else if (isFiniteInput(poseInput.x) && isFiniteInput(poseInput.y)) moveSensor(selectedUid, Number(poseInput.x) * 100 + dx, canonicalY(Number(poseInput.y), document.heightCm) + dy);
   };
 
   const chooseOwner = (tableId: string, ownerUid: string | null) => {
@@ -279,7 +280,7 @@ export function SensorPlacementStep({ draft, document, onUpdate, onSave, onBack,
           onSensorSelect={setSelectedUid} onSensorMove={moveSensor} onSensorNudge={nudgeSelectedSensor}
           onSelect={() => {}} onSketchPoint={() => {}} onDragStart={() => {}} onDragTo={() => {}} onDragEnd={() => {}} onNudge={() => {}} onFinishDrawing={() => {}} onCancelDrawing={() => {}} />
       </div>
-      <p className="loc-canvas-caption">Top-left origin · position in metres; sensor markers can be selected from the list, dragged, or moved with arrow keys.</p>
+      <p className="loc-canvas-caption">Bottom-left origin · position in metres; sensor markers can be selected from the list, dragged, or moved with arrow keys.</p>
     </section>, canvasTarget)}
 
     <section className="card loc-coverage-section" aria-labelledby="location-coverage-heading">

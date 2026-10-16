@@ -432,16 +432,13 @@ const assertDesktopRoomWorkspace = async (page, width, height, roomSettings) => 
   assert.equal(await inspector.locator('.loc-inspector').evaluate((element) => element.scrollTop), 0,
     'the inspector content does not create a nested scroll area');
   assert.equal(scrollAfterKey.pageScrollY, pageScrollBeforeKey, 'PageDown scrolls the inspector without moving the page');
-  assert.ok(scrollAfterKey.inspectorSelection && scrollAfterKey.inspector
-    && scrollAfterKey.inspectorSelection.y >= scrollAfterKey.inspector.y + 40
-    && scrollAfterKey.inspectorSelection.y <= scrollAfterKey.inspector.y + 60
-    && scrollAfterKey.inspectorSelection.bottom <= scrollAfterKey.inspector.bottom,
-  `zone and table selectors stay visible under the sticky inspector heading after long-list scrolling (${JSON.stringify({ selection: scrollAfterKey.inspectorSelection, inspector: scrollAfterKey.inspector })})`);
+  assert.equal(await tableSwitcher.evaluate(element => getComputedStyle(element.closest('.loc-inspector-selection')).position), 'static',
+    'zone and table selectors scroll normally without covering the boundary fields');
   const headingBounds = await page.locator('#loc-inspector-heading').boundingBox();
-  assert.ok(headingBounds && headingBounds.y >= state.inspector.y - 1 && headingBounds.y < state.inspector.bottom,
-    'the inspector heading stays available while the region scrolls');
+  assert.ok(headingBounds && headingBounds.y < state.inspector.y,
+    'the inspector heading scrolls away with the form');
   assert.equal(await selectedSeat.count(), 1, 'the selected seat context remains active');
-  assert.match(await inspector.locator('#loc-inspector-heading').innerText(), /Table details · East polygon table/);
+  assert.match(await inspector.locator('#loc-inspector-heading').innerText(), /Edit table/);
   await page.screenshot({ path: join(artifacts, `room-editor-${width}x${height}-2d.png`) });
 
   const mode3d = page.getByTestId('location-canvas-mode-3d');
@@ -460,13 +457,13 @@ const assertDesktopRoomWorkspace = async (page, width, height, roomSettings) => 
   const selectedTableBeforeSwitch = await tableSwitcher.inputValue();
   const selectionBeforeSwitch = await readDesktopWorkspace(page);
   await tableSwitcher.selectOption({ label: 'East round table' });
-  assert.match(await inspector.locator('#loc-inspector-heading').innerText(), /Table details · East round table/,
-    'the sticky table selector changes the selected object while 3D is active');
+  assert.match(await inspector.locator('#loc-inspector-heading').innerText(), /Edit table/,
+    'the table selector changes the selected object while 3D is active');
   await tableSwitcher.selectOption({ value: selectedTableBeforeSwitch });
   const polygonSeats = inspector.locator('.loc-inspector-disclosure').filter({ hasText: 'Seats (20)' });
   await setDetailsOpen(polygonSeats, true);
   assert.equal(await polygonSeats.evaluate((element) => element.open), true,
-    'the prior table seat controls can be restored after choosing another table from the sticky selector');
+    'the prior table seat controls can be restored after choosing another table from the selector');
   await inspector.getByRole('button', { name: 'Seat 1', exact: true }).click();
   await assertOnlyCanvasModeVisible(page, '3d');
 
@@ -841,7 +838,7 @@ async function run() {
   await typeSequentially(tableVertexY, polygonVertexY.toFixed(2)); await tableVertexY.press('Tab');
 
   // Long polygon and seat lists stay inside the independently scrolling inspector.
-  for (let index = 0; index < 16; index++) await page.getByRole('button', { name: 'Add vertex' }).last().click();
+  for (let index = 0; index < 16; index++) await page.getByRole('button', { name: 'Add corner' }).last().click();
   await page.getByLabel('Capacity').fill('20'); await page.getByLabel('Capacity').press('Tab');
   await page.getByRole('button', { name: 'Generate seats' }).click();
   const seatsSummary = page.locator('.loc-inspector-disclosure > summary').filter({ hasText: 'Seats (20)' });

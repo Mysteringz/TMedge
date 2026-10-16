@@ -72,3 +72,11 @@ test('seat coverage states distinguish unknown, none, partial and full and repor
   assert.equal(ownerSeatCount(row(4), uidA), 2, 'full union coverage does not imply one sensor is a valid full-seat owner');
   assert.equal(ownerSeatCount(row(2), uidB), null);
 });
+
+
+test('bottom-left sensor Y edits preserve exact poses on blur and convert only the edited field', () => {
+  const pose = { x: 125.5, y: 350.5, heightCm: 400.5, yawDeg: 17, mirror: true };
+  assert.equal(changedPoseField(pose, 'y', 6.495, 1000), null);
+  assert.deepEqual(changedPoseField(pose, 'y', 6, 1000), { y: 400 });
+  assert.deepEqual({ ...pose, ...changedPoseField(pose, 'y', 6, 1000) }, { ...pose, y: 400 });
+});

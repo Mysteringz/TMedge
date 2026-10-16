@@ -1,11 +1,16 @@
+import { canonicalY } from './display-coordinates.ts';
 import type { CoverageSuggestionResponse, EligibleSensor, LocationDocument, ProposedSensor, SensorAssignment, TableCoverageSuggestion } from '../../../entities/location-config/model/types.ts';
 
 export type SeatCoverageState = 'none' | 'partial' | 'full' | 'unknown';
 export type EditablePoseField = 'x' | 'y' | 'height' | 'yaw';
 
 /** Convert one displayed sensor field without rewriting an untouched canonical value. */
-export function changedPoseField(pose: SensorAssignment['pose'], field: EditablePoseField, value: number): Partial<SensorAssignment['pose']> | null {
+export function changedPoseField(pose: SensorAssignment['pose'], field: EditablePoseField, value: number, roomHeightCm?: number): Partial<SensorAssignment['pose']> | null {
   if (field === 'x') return value === pose.x / 100 || value * 100 === pose.x ? null : { x: value * 100 };
+  if (field === 'y' && roomHeightCm !== undefined) {
+    const y = canonicalY(value, roomHeightCm, pose.y);
+    return y === pose.y ? null : { y };
+  }
   if (field === 'y') return value === pose.y / 100 || value * 100 === pose.y ? null : { y: value * 100 };
   if (field === 'height') return value === pose.heightCm / 100 || value * 100 === pose.heightCm ? null : { heightCm: value * 100 };
   return value === pose.yawDeg ? null : { yawDeg: value };

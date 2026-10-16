@@ -1,3 +1,4 @@
+import { bottomYMetres } from '../../../features/location-editor/model/display-coordinates.ts';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getEligibleDraftSensors, getLocationDraft, listFurnitureLibrary, LocationApiError, publishLocationDraft, readDraftPlan, readFurnitureLibraryItem, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
@@ -657,11 +658,11 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   };
   const nudge = (dx: number, dy: number) => {
     if (!document || !selection) return;
-    let spoken = `Selected ${selection.kind} moved ${dx} centimetres horizontally and ${dy} centimetres vertically.`;
+    let spoken = `Selected ${selection.kind} moved ${dx} centimetres horizontally and ${-dy} centimetres vertically.`;
     if (selection.kind === 'zone' && selection.index !== undefined) {
       const zone = document.zones.find((item) => item.id === selection.id);
       const point = zone?.polygon[selection.index];
-      if (point) spoken = `Zone vertex ${selection.index + 1} moved to ${cmToMetres(point[0] + dx)} metres X and ${cmToMetres(point[1] + dy)} metres Y.`;
+      if (point) spoken = `Zone vertex ${selection.index + 1} moved to ${cmToMetres(point[0] + dx)} metres X and ${bottomYMetres(point[1] + dy, document.heightCm)} metres Y.`;
     }
     update((current) => {
       if (selection.kind === 'zone' && selection.index !== undefined) return replaceZonePoint(current, selection.id, selection.index, (point) => [point[0] + dx, point[1] + dy]);

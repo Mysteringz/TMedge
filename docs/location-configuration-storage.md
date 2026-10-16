@@ -6,6 +6,14 @@ The current HTTP contract, including console routes, edge GLB ingress, authentic
 
 For operator steps, see the [location furniture user guide](location-furniture-user-guide.md). For receiver ordering, integrity receipts, and data-based rollback, see [location furniture rollout and rollback](location-furniture-rollout-and-rollback.md).
 
+## Editor coordinates and metric grid
+
+The Details & Layout and Sensors 2D canvases show a bottom-left origin in metres: X increases rightward and Y upward. The X ruler sits below the canvas, the Y ticks to the left; both axes use compact edge labels. The grid fills the entire preview, including the margins outside the room. Reset view fits the room with a margin around every edge. Grid spacing and numbered ruler intervals adapt to zoom and screen size, including letterboxed areas visible during pan/zoom.
+
+The Details & Layout inspector is a single scrolling form: its heading and Zone/Table selectors scroll away with the fields. Zone and polygon boundaries use numbered rows with X/Y metre inputs, add-corner and trash actions; input labels and validation paths remain accessible.
+
+The UI converts displayed Y coordinates to the existing top-left centimetre document/API convention. Saved layouts and sensor poses do not move when opened, and inherited fractional values survive an untouched blur. Rectangle Y identifies its lower-left corner; rectangle height changes preserve that corner. Circle centres, seats, polygon/zone vertices and provisional/assigned sensor positions use the same bottom-left display. Widths, heights, sensor yaw/mirror, 3D scene data and stored coordinate conventions are unchanged; this requires no migration.
+
 ## Generated rectangular room source
 
 New rectangular drafts use the explicit `proceduralRoom: "simple-rectangle-v1"` source. Existing documents without the field keep their current source. The optional field is stored in the same draft and published JSON documents and revision history; it adds no relational column or database migration. Its outline must exactly match the authored floor dimensions. It cannot coexist with model asset references or a public `model` key. A generated room uses fixed 3 m walls and 0.75 m tables derived at the viewers from validated floor, table, and seat data; it creates no GLB and transfers no room bytes. Custom public GLBs still require acknowledgement from every configured web target before publication.

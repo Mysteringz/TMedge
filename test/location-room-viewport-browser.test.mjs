@@ -47,6 +47,27 @@ test('Details and Sensors fit wide and tall rooms inside the shared viewport', {
       return (await response.json()).data;
     };
     const page = await context.newPage();
+    const rulerAlignment = async () => {
+      return await page.locator('.loc-viewport-canvas.is-active .loc-canvas').evaluate(svg => {
+        const matrix = svg.getScreenCTM();
+        const surface = svg.closest('.loc-canvas-surface');
+        const xRuler = surface.querySelector('.loc-ruler-x').getBoundingClientRect();
+        const yRuler = surface.querySelector('.loc-ruler-y').getBoundingClientRect();
+        const xTick = surface.querySelector('.loc-ruler-x-tick');
+        const yTick = surface.querySelector('.loc-ruler-y-tick');
+        const gridBox = svg.querySelector('.loc-metric-grid').getBBox();
+        const gridTopLeft = new DOMPoint(gridBox.x, gridBox.y).matrixTransform(matrix);
+        const gridBottomRight = new DOMPoint(gridBox.x + gridBox.width, gridBox.y + gridBox.height).matrixTransform(matrix);
+        const svgBounds = svg.getBoundingClientRect();
+        const xValue = Number(xTick.querySelector('b').textContent) * 100;
+        const yValue = Number(svg.querySelector('.loc-floor').getAttribute('height')) - Number(yTick.querySelector('b').textContent) * 100;
+        return { xError: Math.abs(xRuler.left + parseFloat(xTick.style.left) - new DOMPoint(xValue, 0).matrixTransform(matrix).x),
+          yError: Math.abs(yRuler.top + parseFloat(yTick.style.top) - new DOMPoint(0, yValue).matrixTransform(matrix).y),
+          gridCoversPreview: Math.abs(gridTopLeft.x - svgBounds.left - 1) < 2 && Math.abs(gridTopLeft.y - svgBounds.top - 1) < 2
+            && Math.abs(gridBottomRight.x - svgBounds.right + 1) < 2 && Math.abs(gridBottomRight.y - svgBounds.bottom + 1) < 2,
+          gridPointerEvents: getComputedStyle(svg.querySelector('.loc-metric-grid')).pointerEvents };
+      });
+    };
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     for (const [widthCm, heightCm] of [[1200, 1000], [2000, 600], [600, 2000]]) {
@@ -74,6 +95,18 @@ test('Details and Sensors fit wide and tall rooms inside the shared viewport', {
               svg: { top: bounds.top, bottom: bounds.bottom, height: bounds.height }, captionBottom: caption.bottom,
               topLeft: { x: topLeft.x, y: topLeft.y }, bottomRight: { x: bottomRight.x, y: bottomRight.y } };
           });
+          assert.equal(await page.getByTestId('location-ruler-x').isVisible(), true, 'X metre ruler is visible in both steps');
+          assert.equal(await page.getByTestId('location-ruler-y').isVisible(), true, 'Y metre ruler is visible in both steps');
+          const xBounds = await page.getByTestId('location-ruler-x').boundingBox();
+          assert.ok(xBounds.y >= fit.svg.bottom - 1, 'X ticks sit along the bottom edge');
+          assert.ok(xBounds.height <= 24, 'X axis uses a compact tick track rather than a ruler panel');
+          assert.ok(fit.topLeft.x > fit.viewport.left + 8 && fit.topLeft.y > fit.svg.top + 8
+            && fit.bottomRight.x < fit.viewport.right - 8 && fit.bottomRight.y < fit.svg.bottom - 8, 'fit view leaves a margin around the room');
+          assert.match(await page.getByTestId('location-grid-scale').innerText(), /Grid · [\d.]+ m/);
+          const alignment = await rulerAlignment();
+          assert.ok(alignment.xError < 2 && alignment.yError < 2, `rulers align with floor coordinates: ${JSON.stringify(alignment)}`);
+          assert.equal(alignment.gridCoversPreview, true, 'grid spans the complete preview including room margins');
+          assert.equal(alignment.gridPointerEvents, 'none', 'grid never intercepts room editing');
           const label = `${step}, ${widthCm}×${heightCm} room, ${viewport.width}×${viewport.height} screen: ${JSON.stringify(fit)}`;
           assert.ok(fit.svg.height > 100 && fit.svg.bottom <= fit.viewport.bottom + 1 && fit.svg.top >= fit.viewport.top - 1, `canvas fits vertically: ${label}`);
           assert.ok(fit.captionBottom <= fit.viewport.bottom + 1, `caption fits below canvas: ${label}`);
@@ -95,6 +128,22 @@ test('Details and Sensors fit wide and tall rooms inside the shared viewport', {
             await page.screenshot({ path: join(process.env.LOCATION_VIEWPORT_SCREENSHOTS, `${step}-${viewport.width}.png`) });
           }
         }
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.getByTestId('location-canvas-reset').click();
+        await page.getByTestId('location-canvas-zoom-in').click();
+        await page.getByTestId('location-canvas-zoom-in').click();
+        const svg = page.locator('.loc-viewport-canvas.is-active .loc-canvas');
+        const beforePan = await svg.getAttribute('viewBox');
+        const bounds = await svg.boundingBox();
+        await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + bounds.height * 0.3);
+        await page.mouse.down();
+        await page.mouse.move(bounds.x + bounds.width * 0.5 + 30, bounds.y + bounds.height * 0.3 + 20, { steps: 4 });
+        await page.mouse.up();
+        assert.notEqual(await svg.getAttribute('viewBox'), beforePan, 'zoomed room can still be panned over the grid');
+        const zoomedAlignment = await rulerAlignment();
+        assert.equal(zoomedAlignment.gridCoversPreview, true, 'grid fills the preview after zoom and pan');
+        assert.ok(zoomedAlignment.xError < 2 && zoomedAlignment.yError < 2, `rulers retain world coordinates after zoom and pan: ${JSON.stringify(zoomedAlignment)}`);
+        await page.getByTestId('location-canvas-reset').click();
       }
     }
     assert.deepEqual(errors, []);

@@ -1,3 +1,5 @@
+import { canvasMetrics, fitCanvasView } from '../../../features/location-editor/model/canvas-metrics.ts';
+import { CanvasGrid, CanvasRulers } from './canvas-rulers.tsx';
 import { useEffect, useRef, useState } from 'react';
 import type { LocationDocument, Point, Table } from '../../../entities/location-config/model/types.ts';
 import { shapeOf } from '../../../features/location-editor/index.ts';
@@ -17,15 +19,29 @@ export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [
   onNudge(dx: number, dy: number): void; onFinishDrawing(): void; onCancelDrawing(): void;
 }) {
   const svg = useRef<SVGSVGElement>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 1, height: 1 });
+  useEffect(() => {
+    const element = svg.current;
+    if (!element) return;
+    // Measure the SVG content box, excluding its border; both rulers and grid
+    // must use the renderer's real aspect-ratio scale after every resize.
+    const measure = () => {
+      const width = Math.max(1, element.clientWidth), height = Math.max(1, element.clientHeight);
+      setCanvasSize(current => current.width === width && current.height === height ? current : { width, height });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(element); measure();
+    return () => observer.disconnect();
+  }, []);
   const drag = useRef<DragStart | null>(null);
   const sensorDrag = useRef<string | null>(null);
   const pan = useRef<{ clientX: number; clientY: number; x: number; y: number; width: number; height: number; a: number; b: number; c: number; d: number } | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [view, setView] = useState({ x: 0, y: 0, width: document.widthCm, height: document.heightCm });
+  const [view, setView] = useState(() => fitCanvasView(document.widthCm, document.heightCm));
   const [keyboardCursor, setKeyboardCursor] = useState<Point>([document.widthCm / 2, document.heightCm / 2]);
   useEffect(() => {
     setZoom(1);
-    setView({ x: 0, y: 0, width: document.widthCm, height: document.heightCm });
+    setView(fitCanvasView(document.widthCm, document.heightCm));
   }, [document.widthCm, document.heightCm]);
   useEffect(() => {
     if (drawing) setKeyboardCursor(drawing.points.at(-1) ?? [document.widthCm / 2, document.heightCm / 2]);
@@ -57,8 +73,9 @@ export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [
     const deltaX = event.clientX - started.clientX, deltaY = event.clientY - started.clientY;
     const floorDeltaX = started.a * deltaX + started.c * deltaY;
     const floorDeltaY = started.b * deltaX + started.d * deltaY;
-    const x = clampView(started.x - floorDeltaX, document.widthCm - started.width);
-    const y = clampView(started.y - floorDeltaY, document.heightCm - started.height);
+    const fit = fitCanvasView(document.widthCm, document.heightCm);
+    const x = Math.max(fit.x, Math.min(fit.x + fit.width - started.width, started.x - floorDeltaX));
+    const y = Math.max(fit.y, Math.min(fit.y + fit.height - started.height, started.y - floorDeltaY));
     setView((current) => ({ ...current, x, y }));
   };
   const pointerUp = (event: React.PointerEvent<SVGSVGElement>) => {
@@ -105,47 +122,54 @@ export function EditorCanvas({ document, selected, drawing, planUrl, sensors = [
     sensorDrag.current = sensor.uid;
     svg.current?.focus(); svg.current?.setPointerCapture(event.pointerId);
   };
+  const metrics = canvasMetrics(view, { width: document.widthCm, height: document.heightCm }, canvasSize);
   const selectedZone = selected?.kind === 'zone' ? document.zones.find((zone) => zone.id === selected.id) : undefined;
   const tableZoneIds = new Set(document.zones.map((zone) => zone.id));
   const drawingPoints = drawing?.points.map(([x, y]) => `${x},${y}`).join(' ') ?? '';
   const zoomBy = (factor: number) => {
     const nextZoom = Math.max(1, Math.min(5, round(zoom * factor)));
-    const width = document.widthCm / nextZoom, height = document.heightCm / nextZoom;
+    const fit = fitCanvasView(document.widthCm, document.heightCm);
+    const width = fit.width / nextZoom, height = fit.height / nextZoom;
     const centerX = view.x + view.width / 2, centerY = view.y + view.height / 2;
     setZoom(nextZoom);
-    setView({ x: clampView(centerX - width / 2, document.widthCm - width), y: clampView(centerY - height / 2, document.heightCm - height), width, height });
+    setView({ x: Math.max(fit.x, Math.min(fit.x + fit.width - width, centerX - width / 2)), y: Math.max(fit.y, Math.min(fit.y + fit.height - height, centerY - height / 2)), width, height });
   };
   return <div className="loc-canvas-frame">
     <div className="loc-canvas-controls" aria-label="Canvas zoom controls">
       <button type="button" className="btn btn-secondary" data-testid="location-canvas-zoom-out" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => zoomBy(1 / 1.25)}>−</button>
       <span aria-live="polite">Zoom {zoom.toFixed(2).replace(/\.00$/, '')}×</span>
       <button type="button" className="btn btn-secondary" data-testid="location-canvas-zoom-in" aria-label="Zoom in" disabled={zoom >= 5} onClick={() => zoomBy(1.25)}>+</button>
-      <button type="button" className="btn btn-ghost" data-testid="location-canvas-reset" onClick={() => { setZoom(1); setView({ x: 0, y: 0, width: document.widthCm, height: document.heightCm }); }}>Reset view</button>
+      <button type="button" className="btn btn-ghost" data-testid="location-canvas-reset" onClick={() => { setZoom(1); setView(fitCanvasView(document.widthCm, document.heightCm)); }}>Reset view</button>
+      <span className="loc-grid-scale" data-testid="location-grid-scale">Grid · {metrics.minorStepCm / 100} m</span>
     </div>
-    <svg ref={svg} className="loc-canvas" data-testid="location-floor-canvas" data-location-field="floor.outline" viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} preserveAspectRatio="xMidYMid meet" role="application" aria-label={selectedSensorUid ? 'Sensor placement map. Use arrow keys to move the selected sensor; hold Shift for larger steps.' : 'Floor plan editor. Use the arrow keys to adjust the selected item. Drag the blank canvas to pan.'} tabIndex={0}
-      onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onClick={clickCanvas} onKeyDown={keyDown}>
-      <rect width={document.widthCm} height={document.heightCm} className="loc-floor" />
-      {planUrl && <image href={planUrl} x="0" y="0" width={document.widthCm} height={document.heightCm} preserveAspectRatio="none" className="loc-plan" />}
-      <polygon points={pointString(document.outline)} className="loc-outline" />
-      {document.zones.map((zone, index) => <g key={zone.id}>
-        <polygon points={pointString(zone.polygon)} className={`loc-zone ${selectedZone?.id === zone.id ? 'is-selected' : ''}`} pointerEvents="none" />
-        <text x={zone.polygon[0]?.[0] ?? 0} y={zone.polygon[0]?.[1] ?? 0} className="loc-zone-label">{zone.name}</text>
-        {selectedZone?.id === zone.id && zone.polygon.map((point, vertex) => <circle key={`${zone.id}-${vertex}`} data-testid={`location-canvas-vertex-${testToken(zone.id)}-${vertex + 1}`} cx={point[0]} cy={point[1]} r={Math.max(12, document.widthCm / 120)} className={`loc-vertex ${selected?.index === vertex ? 'is-selected' : ''}`} data-drag-kind="zone-vertex" data-id={zone.id} data-index={vertex}
-          onPointerDown={(event) => beginDrag(event, 'zone-vertex', zone.id, vertex)}><title>{`${zone.name} vertex ${vertex + 1}`}</title></circle>)}
-      </g>)}
-      {document.tables.map((table) => <TableDrawing key={table.id} table={table} selected={selected?.kind === 'table' && selected.id === table.id} coverageStatus={coverageStatus[table.id]}
-        seatsSelected={selected?.kind === 'seat' && table.seats.some((seat) => seat.id === selected.id)} floorWidth={document.widthCm}
-        zoneExists={tableZoneIds.has(table.zoneId)} onStartTable={(event) => beginDrag(event, 'table', table.id)} onStartSeat={(event, seatId) => beginDrag(event, 'seat', seatId)} onSelectTable={() => onSelect({ kind: 'table', id: table.id })} />)}
-      {sensors.map((sensor) => <circle key={sensor.uid} data-testid={`location-canvas-sensor-${testToken(sensor.uid)}`} data-drag-kind="sensor" cx={sensor.x} cy={sensor.y}
-        r={Math.max(16, document.widthCm / 100)} className={`loc-sensor-marker ${sensor.stale ? 'is-stale' : ''} ${selectedSensorUid?.toLowerCase() === sensor.uid.toLowerCase() ? 'is-selected' : ''}`}
-        onPointerDown={(event) => beginSensorDrag(event, sensor)}><title>{sensor.stale ? 'Previously assigned sensor; no longer eligible' : `${sensor.label} sensor position`}</title></circle>)}
-      {drawing && <g className="loc-sketch" aria-label="Polygon in progress">
-        {drawing.points.length > 1 && <polyline points={drawingPoints} />}
-        {drawing.points.map(([x, y], index) => <circle key={index} cx={x} cy={y} r={Math.max(10, document.widthCm / 150)} />)}
-        <circle className="loc-sketch-cursor" cx={keyboardCursor[0]} cy={keyboardCursor[1]} r={Math.max(12, document.widthCm / 130)} />
-      </g>}
-    </svg>
-    <p className="loc-canvas-caption">Top-left origin · {cmLabel(document.widthCm / 100)} × {cmLabel(document.heightCm / 100)} m · select an item, then drag or edit its labelled coordinates.</p>
+    <div className="loc-canvas-surface">
+      <CanvasRulers metrics={metrics} width={canvasSize.width} height={canvasSize.height} />
+      <svg ref={svg} className="loc-canvas" data-testid="location-floor-canvas" data-location-field="floor.outline" viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} preserveAspectRatio="xMidYMid meet" role="application" aria-label={selectedSensorUid ? 'Sensor placement map. Use arrow keys to move the selected sensor; hold Shift for larger steps.' : 'Floor plan editor. Use the arrow keys to adjust the selected item. Drag the blank canvas to pan.'} tabIndex={0}
+        onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onClick={clickCanvas} onKeyDown={keyDown}>
+        <rect width={document.widthCm} height={document.heightCm} className="loc-floor" />
+        {planUrl && <image href={planUrl} x="0" y="0" width={document.widthCm} height={document.heightCm} preserveAspectRatio="none" className="loc-plan" />}
+        <CanvasGrid metrics={metrics} heightCm={document.heightCm} />
+        <polygon points={pointString(document.outline)} className="loc-outline" />
+        {document.zones.map((zone, index) => <g key={zone.id}>
+          <polygon points={pointString(zone.polygon)} className={`loc-zone ${selectedZone?.id === zone.id ? 'is-selected' : ''}`} pointerEvents="none" />
+          <text x={zone.polygon[0]?.[0] ?? 0} y={zone.polygon[0]?.[1] ?? 0} className="loc-zone-label">{zone.name}</text>
+          {selectedZone?.id === zone.id && zone.polygon.map((point, vertex) => <circle key={`${zone.id}-${vertex}`} data-testid={`location-canvas-vertex-${testToken(zone.id)}-${vertex + 1}`} cx={point[0]} cy={point[1]} r={Math.max(12, document.widthCm / 120)} className={`loc-vertex ${selected?.index === vertex ? 'is-selected' : ''}`} data-drag-kind="zone-vertex" data-id={zone.id} data-index={vertex}
+            onPointerDown={(event) => beginDrag(event, 'zone-vertex', zone.id, vertex)}><title>{`${zone.name} vertex ${vertex + 1}`}</title></circle>)}
+        </g>)}
+        {document.tables.map((table) => <TableDrawing key={table.id} table={table} selected={selected?.kind === 'table' && selected.id === table.id} coverageStatus={coverageStatus[table.id]}
+          seatsSelected={selected?.kind === 'seat' && table.seats.some((seat) => seat.id === selected.id)} floorWidth={document.widthCm}
+          zoneExists={tableZoneIds.has(table.zoneId)} onStartTable={(event) => beginDrag(event, 'table', table.id)} onStartSeat={(event, seatId) => beginDrag(event, 'seat', seatId)} onSelectTable={() => onSelect({ kind: 'table', id: table.id })} />)}
+        {sensors.map((sensor) => <circle key={sensor.uid} data-testid={`location-canvas-sensor-${testToken(sensor.uid)}`} data-drag-kind="sensor" cx={sensor.x} cy={sensor.y}
+          r={Math.max(16, document.widthCm / 100)} className={`loc-sensor-marker ${sensor.stale ? 'is-stale' : ''} ${selectedSensorUid?.toLowerCase() === sensor.uid.toLowerCase() ? 'is-selected' : ''}`}
+          onPointerDown={(event) => beginSensorDrag(event, sensor)}><title>{sensor.stale ? 'Previously assigned sensor; no longer eligible' : `${sensor.label} sensor position`}</title></circle>)}
+        {drawing && <g className="loc-sketch" aria-label="Polygon in progress">
+          {drawing.points.length > 1 && <polyline points={drawingPoints} />}
+          {drawing.points.map(([x, y], index) => <circle key={index} cx={x} cy={y} r={Math.max(10, document.widthCm / 150)} />)}
+          <circle className="loc-sketch-cursor" cx={keyboardCursor[0]} cy={keyboardCursor[1]} r={Math.max(12, document.widthCm / 130)} />
+        </g>}
+      </svg>
+    </div>
+    <p className="loc-canvas-caption">Bottom-left origin · {cmLabel(document.widthCm / 100)} × {cmLabel(document.heightCm / 100)} m · select an item, then drag or edit its labelled coordinates.</p>
     <span className="loc-sr" aria-live="polite">{announceText(selected, drawing)}</span>
   </div>;
 }
