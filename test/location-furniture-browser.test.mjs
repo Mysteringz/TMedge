@@ -257,6 +257,7 @@ try {
 
   await page.getByTestId('location-step-details').click();
   await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
+  await page.getByTestId('location-table-furniture-options').locator('summary').click();
   await page.getByTestId(`location-furniture-mode-${tableId}-table`).selectOption('override');
   assert.equal(await page.getByTestId(`table-${tableId}-table-scale`).inputValue(), '1.25', 'table override starts as a complete copy of the room default');
   await page.getByTestId(`table-${tableId}-table-scale`).fill('2');
@@ -303,6 +304,7 @@ try {
 
   await page.getByTestId('location-step-details').click();
   await page.waitForURL(new RegExp(`/locations/${draftId}/details$`));
+  await page.getByTestId('location-table-furniture-options').locator('summary').click();
   await page.getByTestId(`location-furniture-mode-${tableId}-chair`).selectOption('override');
   assert.equal(await page.getByTestId(`table-${tableId}-chair-scale`).inputValue(), '1', 'chair override also copies the full inherited fit');
   assert.match(await page.locator('[data-testid="location-table-furniture"]').innerText(), /override applies to this table and all of its seats/);

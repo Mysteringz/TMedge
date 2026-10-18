@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { getEligibleDraftSensors, getLocationDraft, listFurnitureLibrary, LocationApiError, publishLocationDraft, readDraftPlan, readFurnitureLibraryItem, saveLocationDraft, uploadDraftModel, uploadFloorPlan } from '../../../entities/location-config/api/index.ts';
 import type { DraftDetail, FurnitureLibraryItem, FurnitureSlots, FurnitureType, LocationDocument, Point, Table, TableShape } from '../../../entities/location-config/model/types.ts';
 import { navigate } from '../../../console/router.ts';
-import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, modelSceneFromDocument, moveShape, newStableId, sameJson, setShape, shapeOf, validateEditorDocument, type EditorValidationIssue } from '../../../features/location-editor/index.ts';
+import { addDefaultZone, cmToMetres, createTable, generateTableSeats, metresToCm, modelSceneFromDocument, moveShape, newStableId, sameJson, shapeOf, translateTable, validateEditorDocument, type EditorValidationIssue } from '../../../features/location-editor/index.ts';
 import { canSelectGeneratedRoom, locationRoomSource, requiresModelClearConfirmation, selectGeneratedRoom, selectTwoDimensional } from '../../../features/location-room-source/index.ts';
 import { EditorCanvas, type DragStart, type Drawing, type Selection } from './editor-canvas.tsx';
 import { EditorInspector } from './editor-inspector.tsx';
@@ -15,9 +15,12 @@ import { ModelPreview, type FurniturePreviewScene } from './model-preview.tsx';
 import { FurnitureLibraryDialog, FurnitureReviewSummary, effectiveFurniture, replaceAssignmentAsset } from '../../../features/location-furniture-models/index.ts';
 import { validateLocationModelBuffer } from '../model-viewer-loader.ts';
 import { SIMPLE_ROOM_TABLE_HEIGHT_M, SIMPLE_ROOM_WALL_HEIGHT_M } from '../../../../../src/shared/simple-room-geometry.ts';
+import { focusEditorInput, invalidEditorInput } from '../model/editor-inputs.ts';
+import { useDraftNavigation } from '../model/use-draft-navigation.ts';
+import { useWizardProgress, type WizardStep } from '../model/use-wizard-progress.ts';
 import './location-editor.css';
 
-type Step = 'details' | 'sensors' | 'model' | 'review';
+type Step = WizardStep;
 type FurnitureDialogTarget = { kind: 'room' } | { kind: 'table'; tableId: string };
 type FurnitureDialogRequest = { type: FurnitureType; target: FurnitureDialogTarget };
 type FurnitureAssetRequest = { controller: AbortController; promise: Promise<ArrayBuffer> };
@@ -200,7 +203,11 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   useEffect(() => { void load(); }, [draftId]);
   useEffect(() => { pendingCanvasModeScroll.current = null; canvasModeScrollVersion.current += 1; setCanvasMode('2d'); }, [draftId]);
   useEffect(() => {
-    if (!loading) wizard.current?.querySelector<HTMLElement>('[data-location-step-heading]')?.focus();
+    if (loading) return;
+    const heading = [...(wizard.current?.querySelectorAll<HTMLElement>('[data-location-step-heading]') ?? [])]
+      .find((element) => !element.closest('[hidden], [aria-hidden="true"], [inert]'));
+    heading?.focus({ preventScroll: true });
+    wizard.current?.querySelector<HTMLElement>('[aria-current="step"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [step, loading]);
 
   useEffect(() => {
@@ -220,6 +227,19 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   }, [draft?.draftId, draft?.document.planAssetId, draft?.assetCapabilities?.planAssetId?.previewAvailable, planRetry]);
 
   const dirty = !!document && !!savedDocument && !sameJson(document, savedDocument);
+  const validateInputs = (): boolean => {
+    const input = invalidEditorInput(wizard.current);
+    if (!input) return true;
+    setProblem('Correct the highlighted field before continuing or saving.');
+    focusEditorInput(input);
+    return false;
+  };
+  useDraftNavigation({
+    draftId,
+    hasUnsavedChanges: () => dirty || !!invalidEditorInput(wizard.current) || !!drawing
+      || modelPreflightBlocked || (!!pendingPlan && !pendingPlan.appliedAssetId),
+    validateStep: validateInputs,
+  });
   const errors = useMemo(() => document ? validateEditorDocument(document, baseDocument) : [], [document, baseDocument]);
   const modelCapability = draft?.assetCapabilities?.modelAssetId;
   const source = document ? locationRoomSource(document, modelCapability) : '2d';
@@ -243,6 +263,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   }, [document, modelCapability, sensorLabels]);
   const generatedEligible = document ? canSelectGeneratedRoom(document) : false;
   const hasTransientInvalid = Object.values(transientInputs).some(Boolean);
+  const visitedSteps = useWizardProgress(draftId, step, !loading && !!draft);
   const previewInvalid = errors.length > 0 || hasTransientInvalid || !candidateScene || (source === 'generated' && !generatedEligible);
   const [lastValidPreview, setLastValidPreview] = useState<{ draftId: string; scene: FurniturePreviewScene } | null>(null);
   useEffect(() => {
@@ -341,14 +362,9 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const save = async (transactionOwnsBusy = false): Promise<DraftDetail | null> => {
     if (!draft || !document || mustReload) return null;
+    if (!validateInputs()) return null;
     if (modelPreflightBlocked && !transactionOwnsBusy) {
       setProblem('Retry or clear the selected GLB before saving this draft.');
-      return null;
-    }
-    const invalidRaw = wizard.current?.querySelector<HTMLElement>('[data-local-invalid="true"]');
-    if (invalidRaw) {
-      setProblem('Correct the highlighted field before saving.');
-      invalidRaw.focus();
       return null;
     }
     const validation = validateEditorDocument(document, baseDocument);
@@ -400,6 +416,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const uploadPlan = async (file: File) => {
     if (!draft || !document) return;
+    if (!validateInputs()) return;
     if (mustReload) { setProblem('Reload the latest saved draft before uploading a plan.'); return; }
     setBusy('upload'); setProblem('');
     let savedBeforeUpload: DraftDetail | null = null;
@@ -408,8 +425,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
       if (!ready) return;
       if (dirty && ready.draftRevision > draft.draftRevision) savedBeforeUpload = ready;
       if (ready.durability === 'unconfirmed') { setProblem('Draft save was applied, but storage durability could not be confirmed. Reload before uploading.'); setMustReload(true); return; }
-      const invalidRaw = wizard.current?.querySelector<HTMLElement>('[data-local-invalid="true"]');
-      if (invalidRaw) { setProblem('Correct the highlighted field before uploading the plan.'); invalidRaw.focus(); return; }
+      if (!validateInputs()) return;
       if (validateEditorDocument(document, baseDocument).length) return;
       const uploaded = await uploadFloorPlan(ready, file);
       const appliedDocument = { ...ready.document, planAssetId: uploaded.assetId };
@@ -452,6 +468,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const uploadModel = async (file: File): Promise<ModelUploadOutcome | null> => {
     if (!draft || !document) return null;
+    if (!validateInputs()) return null;
     if (mustReload) { setProblem('Reload the latest saved draft before uploading a model.'); return null; }
     setBusy('model-upload'); setProblem('');
     let savedBeforeUpload: DraftDetail | null = null;
@@ -519,6 +536,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
 
   const publish = async () => {
     if (!draft) return;
+    if (!validateInputs()) return;
     if (modelPreflightBlocked) { setProblem('Retry or clear the selected GLB before publishing this draft.'); return; }
     if (mustReload) { setProblem('Reload the latest saved draft before publishing.'); return; }
     setBusy('publish'); setProblem('');
@@ -550,6 +568,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   };
 
   const changeStep = async (next: Step) => {
+    if (step !== next && !validateInputs()) return;
     if (modelPreflightBlocked && step !== next) {
       setProblem('Retry or clear the selected GLB before leaving the Room view step.');
       return;
@@ -681,15 +700,18 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
   const stepItems: Array<{ id: Step; label: string }> = [
     { id: 'details', label: 'Details & layout' }, { id: 'sensors', label: 'Sensors' }, { id: 'model', label: 'Room view' }, { id: 'review', label: 'Review' },
   ];
+  const activeStepStatus = hasTransientInvalid ? 'Needs attention' : dirty ? 'Unsaved changes' : 'Current step';
   return <main className="cx-train loc-page" ref={wizard}>
     <header className="cx-train-head loc-editor-head">
-      <div><p className="cx-kicker">{draft.basePublishedRevision === null ? 'New location' : `Editing revision ${draft.basePublishedRevision}`}</p><h1 className="cx-h2" tabIndex={-1} data-location-step-heading>{document.name || 'Location draft'}</h1>
+      <div><p className="cx-kicker">{draft.basePublishedRevision === null ? 'New location' : `Editing revision ${draft.basePublishedRevision}`}</p><h1 className="cx-h2">{document.name || 'Location draft'}</h1>
         <p className="cx-muted">{draft.visibility === 'public' ? 'Public · student-visible' : 'Console-only · not shown to students'} · Visibility is read-only</p></div>
       <button type="button" className="btn btn-secondary" data-testid="location-editor-back" disabled={busy !== '' || modelPreflightBlocked} onClick={() => navigate('/locations')}>Back to locations</button>
     </header>
     <nav className="loc-steps" aria-label="Location wizard steps">
       {stepItems.map((item, index) => <button type="button" key={item.id} data-testid={`location-step-${item.id}`} disabled={busy !== '' || modelPreflightBlocked} className={`loc-step ${step === item.id ? 'is-current' : ''}`} aria-current={step === item.id ? 'step' : undefined}
-        onClick={() => void changeStep(item.id)}><span className="loc-step-number">{index + 1}</span><span>{item.label}<small className="loc-step-state">{item.id === step ? 'Current step' : item.id === 'details' ? dirty ? 'Unsaved changes' : 'Saved draft' : item.id === 'review' ? 'Final check' : 'Not started'}</small></span></button>)}
+        onClick={() => void changeStep(item.id)}><span className="loc-step-number">{index + 1}</span><span>{item.label}<small className="loc-step-state">{item.id === step
+          ? activeStepStatus
+          : visitedSteps.has(item.id) ? 'Visited' : 'Not visited'}</small></span></button>)}
     </nav>
     {problem && <div className="loc-alert" role="alert"><p>{problem}</p>
       {conflict && <div className="loc-inline-actions"><button type="button" className="btn btn-secondary" data-testid="location-reload-conflict" onClick={() => void load()}>Reload latest</button>
@@ -734,6 +756,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
         </section>, viewportMount)}
       </aside>
       <div className="loc-step-main">
+        {step === 'details' && <h2 className="loc-sr" tabIndex={-1} data-location-step-heading>Details &amp; layout</h2>}
         {step === 'details' && <fieldset className="loc-editor-fieldset" disabled={busy !== '' || mustReload} inert={busy !== '' || mustReload} aria-busy={busy !== ''}>
           <details className="loc-room-settings" data-testid="location-room-settings" onToggle={(event) => { roomSettingsOpen.current = event.currentTarget.open; }}>
             <summary id="loc-room-settings-heading">Location details and floor plan</summary>
@@ -763,7 +786,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
             </div>
           </details>
           <div className="loc-inspector-scroll" ref={inspectorScroll} role="region" aria-labelledby="loc-inspector-heading" tabIndex={0} data-testid="location-editor-inspector">
-            <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput}
+            <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput} onShowCanvas={focusCanvas}
               furnitureItems={furnitureItemsById} furnitureSource={source === 'generated' ? 'generated' : source === 'custom' ? 'custom' : 'other'}
               onOpenFurnitureLibrary={(type, tableId) => openFurnitureLibrary(type, { kind: 'table', tableId })} />
           </div>
@@ -780,7 +803,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
             canvasTarget={viewportMount} canvasMode={canvasMode} active={step === 'sensors'}
             onTransientValidityChange={(field, invalid) => reportTransientInput(field, invalid)}
             onSensorLabelsChange={(sensors) => setSensorLabels(new Map(sensors.map((sensor) => [sensor.uid.toLowerCase(), sensor.label])))}
-            onBack={() => onStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
+            onBack={() => void changeStep('details')} onContinue={() => void changeStep('model')} busy={busy} mustReload={mustReload} />
         </div>
         {step === 'model' && <ModelAlignmentStep draft={draft} document={document} busy={busy} mustReload={mustReload} onUpdate={update}
           furnitureItems={furnitureItemsById} onOpenFurnitureLibrary={(type) => openFurnitureLibrary(type, { kind: 'room' })}
@@ -883,8 +906,7 @@ function applyDrag(start: LocationDocument, drag: DragStart, point: Point, dx: n
 function moveTable(document: LocationDocument, table: Table, dx: number, dy: number): LocationDocument {
   const oldShape = shapeOf(table), moved = moveShape(oldShape, dx, dy, document.widthCm, document.heightCm);
   const before = shapeBounds(oldShape), after = shapeBounds(moved), actualX = after.x - before.x, actualY = after.y - before.y;
-  const next = setShape(table, moved);
-  next.seats = table.seats.map((seat) => ({ ...seat, x: seat.x + actualX, y: seat.y + actualY }));
+  const next = translateTable(table, actualX, actualY);
   return { ...document, tables: document.tables.map((item) => item.id === table.id ? next : item) };
 }
 

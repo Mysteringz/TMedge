@@ -26,12 +26,46 @@ export function screenOf(path: string): Screen {
 }
 
 const listeners = new Set<() => void>();
-window.addEventListener('popstate', () => listeners.forEach((f) => f()));
+type NavigationGuard = (to: string) => boolean;
+const navigationGuards = new Set<NavigationGuard>();
+const historyIndex = (state: unknown): number | null => {
+  if (!state || typeof state !== 'object' || !('tmNavigationIndex' in state)) return null;
+  return typeof state.tmNavigationIndex === 'number' && Number.isSafeInteger(state.tmNavigationIndex) ? state.tmNavigationIndex : null;
+};
+let currentIndex = historyIndex(history.state) ?? 0;
+let currentUrl = location.pathname + location.search + location.hash;
+let restoringHistory = false;
+history.replaceState({ ...history.state, tmNavigationIndex: currentIndex }, '', currentUrl);
+const canNavigate = (to: string): boolean => [...navigationGuards].every((guard) => guard(to));
+
+window.addEventListener('popstate', () => {
+  if (restoringHistory) { restoringHistory = false; return; }
+  const to = location.pathname + location.search + location.hash;
+  const targetIndex = historyIndex(history.state);
+  if (!canNavigate(to)) {
+    if (targetIndex !== null && targetIndex !== currentIndex) {
+      restoringHistory = true;
+      history.go(currentIndex - targetIndex);
+    } else history.replaceState({ ...history.state, tmNavigationIndex: currentIndex }, '', currentUrl);
+    return;
+  }
+  currentIndex = targetIndex ?? currentIndex;
+  currentUrl = to;
+  listeners.forEach((f) => f());
+});
+
+/** Register a synchronous leave check shared by app links and browser Back/Forward. */
+export function registerNavigationGuard(guard: NavigationGuard): () => void {
+  navigationGuards.add(guard);
+  return () => { navigationGuards.delete(guard); };
+}
 
 export function navigate(to: string, replace = false): void {
   if (to === location.pathname + location.search) return;
-  if (replace) history.replaceState(null, '', to);
-  else history.pushState(null, '', to);
+  if (!canNavigate(to)) return;
+  if (replace) history.replaceState({ tmNavigationIndex: currentIndex }, '', to);
+  else history.pushState({ tmNavigationIndex: ++currentIndex }, '', to);
+  currentUrl = location.pathname + location.search + location.hash;
   listeners.forEach((f) => f());
 }
 

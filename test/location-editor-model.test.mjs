@@ -28,6 +28,36 @@ const floor = () => ({
 });
 const issueFields = (document, base = null) => model.validateEditorDocument(document, base).map(({ field }) => field);
 
+test('new tables use realistic dimensions and keep generated seats inside small rooms', () => {
+  const rectangle = model.createTable(floor(), 'rect');
+  assert.equal(rectangle.shape.width, 120);
+  assert.equal(rectangle.shape.height, 80);
+  for (const [widthCm, heightCm] of [[100, 100], [100, 800], [1200, 100], [1000, 800]]) {
+    const room = { ...floor(), widthCm, heightCm, outline: [[0, 0], [widthCm, 0], [widthCm, heightCm], [0, heightCm]] };
+    room.zones[0].polygon = room.outline;
+    for (const kind of ['rect', 'circle', 'polygon']) {
+      const table = model.createTable(room, kind);
+      assert.deepEqual(issueFields({ ...room, tables: [table] }), [], `${kind} fits ${widthCm} by ${heightCm} cm with its seats`);
+    }
+  }
+});
+
+test('table translation carries custom seats without regenerating identities or changing the original', () => {
+  for (const kind of ['rect', 'circle', 'polygon']) {
+    const table = model.createTable(floor(), kind);
+    table.seats[0].x += 3.5;
+    const original = structuredClone(table);
+    const moved = model.translateTable(table, 125, -50);
+    assert.deepEqual(table, original, 'the original document remains available to drag and undo callers');
+    assert.deepEqual(moved.seats, original.seats.map(seat => ({ ...seat, x: seat.x + 125, y: seat.y - 50 })));
+    const shape = original.shape;
+    const expectedShape = kind === 'rect' ? { ...shape, x: shape.x + 125, y: shape.y - 50 }
+      : kind === 'circle' ? { ...shape, cx: shape.cx + 125, cy: shape.cy - 50 }
+        : { ...shape, points: shape.points.map(([x, y]) => [x + 125, y - 50]) };
+    assert.deepEqual(moved.shape, expectedShape);
+  }
+});
+
 test('editor model generates table seats for each shape and preserves exact metre/centimetre conversion', () => {
   const document = floor();
   assert.equal(model.cmToMetres(1234), 12.34);

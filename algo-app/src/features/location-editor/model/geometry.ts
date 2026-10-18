@@ -1,4 +1,4 @@
-import { generateSeats } from '../../../../../src/shared/seats.ts';
+import { generateSeats, SEAT_OFFSET_CM } from '../../../../../src/shared/seats.ts';
 import { isValidSimpleBoundedPolygon } from '../../../../../src/shared/location-validation.ts';
 import { tableBounds } from '../../../../../src/shared/table-geometry.ts';
 import type { TableShape, Table, LocationDocument, Point, Zone } from '../../../entities/location-config/model/types.ts';
@@ -26,11 +26,14 @@ export function createTable(document: LocationDocument, kind: ShapeKind): Table 
   if (!zone) return null;
   const width = document.widthCm, height = document.heightCm;
   const centerX = width / 2, centerY = height / 2;
+  // Leave room for generated seats even in the smallest supported rooms.
+  const seatMargin = SEAT_OFFSET_CM + 1;
+  const tableWidth = Math.min(120, width - seatMargin * 2), tableHeight = Math.min(80, height - seatMargin * 2);
   const id = newStableId('TABLE');
   let shape: TableShape;
-  if (kind === 'circle') shape = { type: 'circle', cx: centerX, cy: centerY, radius: Math.max(10, Math.min(50, width / 8, height / 8)) };
-  else if (kind === 'polygon') shape = { type: 'polygon', points: [[centerX - 10, centerY - 10], [centerX + 10, centerY - 10], [centerX + 10, centerY + 10], [centerX - 10, centerY + 10]] };
-  else shape = { type: 'rect', x: centerX - 10, y: centerY - 10, width: 20, height: 20 };
+  if (kind === 'circle') shape = { type: 'circle', cx: centerX, cy: centerY, radius: Math.min(50, width / 2 - seatMargin, height / 2 - seatMargin) };
+  else if (kind === 'polygon') shape = { type: 'polygon', points: [[centerX - tableWidth / 2, centerY - tableHeight / 2], [centerX + tableWidth / 2, centerY - tableHeight / 2], [centerX + tableWidth / 2, centerY + tableHeight / 2], [centerX - tableWidth / 2, centerY + tableHeight / 2]] };
+  else shape = { type: 'rect', x: centerX - tableWidth / 2, y: centerY - tableHeight / 2, width: tableWidth, height: tableHeight };
   const table: Table = { id, name: `Table ${document.tables.length + 1}`, zoneId: zone.id, capacity: 4, shape, seats: [] };
   table.seats = generateSeats(table.id, shape, table.capacity);
   return table;
@@ -44,6 +47,15 @@ export function setShape(table: Table, shape: TableShape): Table {
   const next = { ...table, shape };
   delete next.rect;
   return next;
+}
+
+/** Translate a whole table, preserving custom seat positions and seat identities. */
+export function translateTable(table: Table, dx: number, dy: number): Table {
+  const shape = shapeOf(table);
+  const moved: TableShape = shape.type === 'rect' ? { ...shape, x: shape.x + dx, y: shape.y + dy }
+    : shape.type === 'circle' ? { ...shape, cx: shape.cx + dx, cy: shape.cy + dy }
+      : { ...shape, points: shape.points.map(([x, y]) => [x + dx, y + dy]) };
+  return { ...setShape(table, moved), seats: table.seats.map((seat) => ({ ...seat, x: seat.x + dx, y: seat.y + dy })) };
 }
 
 export function changeShapeKind(table: Table, kind: ShapeKind, floorWidth: number, floorHeight: number): Table {

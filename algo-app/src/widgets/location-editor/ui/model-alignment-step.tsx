@@ -234,7 +234,7 @@ export function ModelReviewSummary({ draft, document, onEdit }: { draft: DraftDe
     {draft.visibility === 'public'
       ? <p>GLB validated on edge · student delivery will be verified during publication.{draft.basePublishedRevision !== null && ' The current published model remains active until this draft is published.'}</p>
       : <p>Console-only · edge preview. This model has no student-delivery state.</p>}
-    <ReadOnlyTransform transform={transform} />
+    <ReadOnlyTransform transform={transform} editable={capability.alignmentEditable} />
     {capability.alignmentEditable && <button type="button" className="btn btn-secondary" data-testid="location-review-adjust-model" onClick={onEdit}>Adjust alignment</button>}
   </section>;
 }
@@ -247,6 +247,7 @@ function ModelNumberField({ label, value, min, max, path, disabled, onValue, onE
   const id = useId();
   const [raw, setRaw] = useState(String(value));
   const [invalid, setInvalid] = useState(false);
+  const rawInvalid = !raw.trim() || !Number.isFinite(Number(raw)) || Number(raw) < min || Number(raw) > max;
   useEffect(() => {
     if (globalThis.document.activeElement?.getAttribute('data-location-model-field') !== path) {
       setRaw(String(value)); setInvalid(false);
@@ -262,7 +263,7 @@ function ModelNumberField({ label, value, min, max, path, disabled, onValue, onE
   };
   return <label className="loc-model-number-field"><span>{label}</span>
     <input className="input" type="text" inputMode="decimal" value={raw} min={min} max={max} disabled={disabled}
-      aria-label={label} aria-invalid={invalid || undefined} aria-describedby={invalid ? id : `${id}-help`}
+      aria-label={label} data-local-invalid={rawInvalid ? 'true' : undefined} aria-invalid={invalid || rawInvalid || undefined} aria-describedby={invalid ? id : `${id}-help`}
       data-testid={`location-model-transform-${path.replace('.', '-')}`} data-location-model-field={path}
       onChange={(event) => {
         const text = event.target.value; setRaw(text); setInvalid(false); onError('');
@@ -275,12 +276,12 @@ function ModelNumberField({ label, value, min, max, path, disabled, onValue, onE
 }
 
 /** Used in legacy-static and Review states to show the exact pinned transform without edit controls. */
-function ReadOnlyTransform({ transform }: { transform: ModelTransform }) {
+function ReadOnlyTransform({ transform, editable = false }: { transform: ModelTransform; editable?: boolean }) {
   return <dl className="loc-model-readonly-transform">
     <dt>Scale</dt><dd>{vectorText(transform.scale)}</dd>
     <dt>Rotation (°)</dt><dd>{vectorText(transform.rotationDeg)}</dd>
     <dt>Position (m)</dt><dd>{vectorText(transform.positionM)}</dd>
-    <dt>Alignment</dt><dd>Read-only · upload a GLB to change alignment.</dd>
+    <dt>Alignment</dt><dd>{editable ? 'Adjust alignment in the Room view step.' : 'Read-only · upload a GLB to change alignment.'}</dd>
   </dl>;
 }
 

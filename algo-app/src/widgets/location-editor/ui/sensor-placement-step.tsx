@@ -334,7 +334,7 @@ function PoseField({ label, name, value, min, max, error, help, testId, disabled
   useEffect(() => { setLocalError(''); }, [value]);
   const errorId = `sensor-${name}-error`;
   const helpId = help ? `sensor-${name}-help` : undefined;
-  return <label className="loc-field"><span>{label}</span><input className="input" type="text" inputMode="decimal" data-testid={testId} aria-label={label} aria-invalid={!!error || !!localError || undefined}
+  return <label className="loc-field"><span>{label}</span><input className="input" type="text" inputMode="decimal" data-testid={testId} aria-label={label} data-local-invalid={error || localError ? 'true' : undefined} aria-invalid={!!error || !!localError || undefined}
     aria-describedby={[helpId, (error || localError) ? errorId : undefined].filter(Boolean).join(' ') || undefined} value={value} disabled={disabled}
     onChange={(event) => { setLocalError(''); onChange(event.target.value); }} onBlur={() => {
       const parsed = value.trim() ? Number(value) : NaN;

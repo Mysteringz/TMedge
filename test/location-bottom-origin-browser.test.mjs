@@ -73,7 +73,7 @@ test('bottom-left coordinate fields preserve geometry and convert edits to canon
     assert.equal(await tableY.inputValue(), '7', 'resizing keeps the lower-left anchor fixed');
     await page.getByText('Seats (1)', { exact: true }).click();
     const seatY = page.getByLabel('Seat 1 Y (m)', { exact: true });
-    assert.equal(await seatY.inputValue(), '8.2');
+    assert.equal(await seatY.inputValue(), '8.7', 'numeric table translation carries its custom seat by the same displacement');
     await seatY.fill('8'); await seatY.press('Tab');
     await page.getByTestId('location-inspector-table-select').selectOption('circle-table');
     const circleY = page.getByLabel('Circle center Y (m)', { exact: true });

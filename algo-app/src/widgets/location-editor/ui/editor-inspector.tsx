@@ -2,18 +2,20 @@ import { Plus, Trash } from '../../../console/icons.tsx';
 import { bottomYMetres, canonicalY } from '../../../features/location-editor/model/display-coordinates.ts';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { FurnitureLibraryItem, FurnitureType, LocationDocument, Point, Table, TableShape, Zone } from '../../../entities/location-config/model/types.ts';
-import { changeShapeKind, cmToMetres, metresToCm, setShape, shapeOf } from '../../../features/location-editor/index.ts';
+import { changeShapeKind, cmToMetres, metresToCm, setShape, shapeOf, translateTable } from '../../../features/location-editor/index.ts';
 import { TableFurnitureOverrides } from '../../../features/location-furniture-models/index.ts';
 import type { Selection } from './editor-canvas.tsx';
 import { generateSeats } from '../../../../../src/shared/seats.ts';
+import { useCompactLayout } from '../model/use-compact-layout.ts';
 
 /** Edit the selected zone, table, or seat; `update` receives immutable document transforms in canonical centimetres. */
-export function EditorInspector({ document, selected, onSelect, update, onTransientValidityChange, furnitureItems, furnitureSource, onOpenFurnitureLibrary }: {
+export function EditorInspector({ document, selected, onSelect, update, onTransientValidityChange, furnitureItems, furnitureSource, onOpenFurnitureLibrary, onShowCanvas }: {
   document: LocationDocument; selected: Selection | null; onSelect(value: Selection): void;
   update(change: (current: LocationDocument) => LocationDocument): void;
   onTransientValidityChange(field: string, invalid: boolean): void;
   furnitureSource: 'generated' | 'custom' | 'other';
   furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; onOpenFurnitureLibrary(type: FurnitureType, tableId: string): void;
+  onShowCanvas(): void;
 }) {
   const zone = selected?.kind === 'zone' ? document.zones.find((item) => item.id === selected.id) : undefined;
   const table = selected?.kind === 'table' ? document.tables.find((item) => item.id === selected.id)
@@ -23,6 +25,7 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
     <header className="loc-inspector-header">
       <h2 id="loc-inspector-heading" className="loc-inspector-heading">{table ? 'Edit table' : zone ? 'Edit zone' : 'Edit layout'}</h2>
       <p>{zone ? 'Update the zone details and boundary.' : table ? 'Update the table, shape and seats.' : 'Choose a zone or table to edit its details.'}</p>
+      <button type="button" className="btn btn-ghost loc-mobile-canvas-link" onClick={onShowCanvas}>Back to canvas</button>
     </header>
     <fieldset className="loc-inspector-selection">
       <legend className="loc-sr">Choose a zone or table</legend>
@@ -42,6 +45,8 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
     {table && <TableFields key={table.id} table={table} document={document} selectedSeat={seat?.id ?? null} onSelect={onSelect} update={update} onTransientValidityChange={onTransientValidityChange}
       furnitureItems={furnitureItems} furnitureSource={furnitureSource} onOpenFurnitureLibrary={onOpenFurnitureLibrary} />}
     {!zone && !table && <p className="cx-muted">Select a zone, table, or seat to edit its labelled coordinates.</p>}
+    <details className="loc-inspector-disclosure" data-testid="location-room-objects">
+      <summary>Room objects · {document.zones.length} {document.zones.length === 1 ? 'zone' : 'zones'}, {document.tables.length} {document.tables.length === 1 ? 'table' : 'tables'}</summary>
     <div className="loc-inspector-block">
       <h2>Zones</h2>
       <ul className="loc-object-list" data-location-field="zones.list" tabIndex={-1}>
@@ -60,6 +65,7 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
         {!document.tables.length && <li className="cx-muted">Add your first table.</li>}
       </ul>
     </div>
+    </details>
   </aside>;
 }
 
@@ -84,6 +90,7 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
   furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; furnitureSource: 'generated' | 'custom' | 'other'; onOpenFurnitureLibrary(type: FurnitureType, tableId: string): void;
 }) {
   const shape = shapeOf(table);
+  const compact = useCompactLayout();
   const prefix = `table.${table.id}`;
   const verticesDisclosure = useRef<HTMLDetailsElement>(null);
   const seatsDisclosure = useRef<HTMLDetailsElement>(null);
@@ -93,10 +100,19 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
   const changeShape = (next: TableShape) => patchTable((item) => setShape(item, next));
   const setNumber = (field: string, value: number) => {
     if (!Number.isFinite(value)) return;
+    if (shape.type === 'rect' && (field === 'x' || field === 'y')) {
+      patchTable((item) => translateTable(item, field === 'x' ? value - shape.x : 0, field === 'y' ? value - shape.y : 0));
+      return;
+    }
+    if (shape.type === 'circle' && (field === 'cx' || field === 'cy')) {
+      patchTable((item) => translateTable(item, field === 'cx' ? value - shape.cx : 0, field === 'cy' ? value - shape.cy : 0));
+      return;
+    }
     const next = { ...shape, [field]: value, ...(shape.type === 'rect' && field === 'height' ? { y: shape.y + shape.height - value } : {}) } as TableShape;
     changeShape(next);
   };
   return <div className="loc-inspector-block loc-inspector-selected-fields">
+    <div className="loc-table-basics">
     <Field label="Table name" fieldPath={`${prefix}.name`} value={table.name} onChange={(value) => patchTable((item) => ({ ...item, name: value }))} />
     <label className="loc-field"><span>Table zone</span><select className="input" aria-label="Table zone" data-testid={`location-field-${testToken(`${prefix}.zone`)}`} data-location-field={`${prefix}.zone`} value={table.zoneId} onChange={(event) => patchTable((item) => ({ ...item, zoneId: event.target.value }))}>
       {document.zones.map((zone) => <option key={zone.id} value={zone.id}>{zone.name}</option>)}
@@ -107,12 +123,16 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
     <Field label="Capacity" fieldPath={`${prefix}.capacity`} type="number" min={1} max={20} step={1} value={String(table.capacity)} onTransientInvalid={(invalid) => onTransientValidityChange(`${prefix}.capacity`, invalid)} onChange={(value) => {
       const capacity = Number(value); if (Number.isInteger(capacity) && capacity >= 1 && capacity <= 20) patchTable((item) => ({ ...item, capacity }));
     }} />
+    </div>
     <div className="loc-inline-actions"><button type="button" className="btn btn-secondary" data-testid={`location-generate-seats-${testToken(table.id)}`} onClick={() => patchTable((item) => ({ ...item, seats: importSeats(item) }))}>Generate seats</button></div>
     {shape.type === 'polygon' && <details ref={verticesDisclosure} className="loc-inspector-disclosure">
       <summary>Polygon vertices ({shape.points.length})</summary>
       <ShapeFields roomHeight={document.heightCm} shape={shape} fieldPath={`${prefix}.shape`} onNumber={setNumber} onTransientValidityChange={onTransientValidityChange} onPoints={(points) => changeShape({ type: 'polygon', points })} />
     </details>}
-    {shape.type !== 'polygon' && <ShapeFields roomHeight={document.heightCm} shape={shape} fieldPath={`${prefix}.shape`} onNumber={setNumber} onTransientValidityChange={onTransientValidityChange} onPoints={(points) => changeShape({ type: 'polygon', points })} />}
+    {shape.type !== 'polygon' && <details className="loc-inspector-disclosure" open={!compact} data-testid="location-table-position">
+      <summary>Position &amp; size</summary>
+      <ShapeFields roomHeight={document.heightCm} shape={shape} fieldPath={`${prefix}.shape`} onNumber={setNumber} onTransientValidityChange={onTransientValidityChange} onPoints={(points) => changeShape({ type: 'polygon', points })} />
+    </details>}
     <details ref={seatsDisclosure} className="loc-inspector-disclosure">
       <summary>Seats ({table.seats.length})</summary>
       <ul className="loc-seat-list" data-location-field="seats.list" tabIndex={-1}>
@@ -130,8 +150,11 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
         {!table.seats.length && <li className="cx-muted">No seats assigned.</li>}
       </ul>
     </details>
-    <TableFurnitureOverrides document={document} table={table} items={furnitureItems} disabled={false} source={furnitureSource} onUpdate={update}
-      onOpenLibrary={(type) => onOpenFurnitureLibrary(type, table.id)} />
+    <details className="loc-inspector-disclosure" data-testid="location-table-furniture-options">
+      <summary>3D furniture · optional</summary>
+      <TableFurnitureOverrides document={document} table={table} items={furnitureItems} disabled={false} source={furnitureSource} onUpdate={update}
+        onOpenLibrary={(type) => onOpenFurnitureLibrary(type, table.id)} />
+    </details>
   </div>;
 }
 

@@ -109,10 +109,12 @@
 .cx .loc-canvas-live, .cx .loc-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .cx .loc-inspector { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
 .cx .loc-inspector-heading { position: static; margin: 0; padding: 0; border: 0; font-size: 22px; line-height: 1.3; }
-.cx .loc-inspector-selection { position: static; display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 14px 16px; margin: 0; border: 0; border-bottom: 1px solid var(--border-subtle-01); }
+.cx .loc-inspector-selection { position: static; display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 0 14px 16px; margin: 0; border: 0; border-bottom: 1px solid var(--border-subtle-01); }
 .cx .loc-inspector-selection .loc-field { gap: 4px; font-size: 12px; }
 .cx .loc-inspector-selection .input { min-width: 0; min-height: 38px; padding-block: 5px; }
 .cx .loc-inspector-block { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding: 16px; background: var(--layer-01); }
+.cx .loc-table-basics { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.cx .loc-mobile-canvas-link { display: none; }
 .cx .loc-inspector-disclosure { min-width: 0; padding: 10px 12px; border: 1px solid var(--border-subtle-01); background: var(--layer-01); }
 .cx .loc-inspector-disclosure > summary { min-height: 40px; padding: 8px 0; color: var(--text-primary); font-weight: 600; cursor: pointer; }
 .cx .loc-inspector-disclosure[open] > summary { margin-bottom: 8px; }
@@ -397,6 +399,28 @@
   .cx .loc-sensor-step { overflow: visible; }
   .cx .loc-footer { margin-inline: -12px; padding-inline: 12px; }
   .cx .loc-footer .btn { min-height: 44px; }
+  .cx .loc-page:has(.loc-step-layout) { gap: 16px; padding-top: 16px; padding-bottom: calc(112px + env(safe-area-inset-bottom)); }
+  .cx .loc-editor-head { gap: 12px; padding-bottom: 16px; }
+  .cx .loc-editor-head .cx-kicker { margin-bottom: 8px; }
+  .cx .loc-editor-head h1 { font-size: 28px; }
+  .cx .loc-steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; overflow: visible; }
+  .cx .loc-step { min-width: 0; gap: 8px; padding: 8px; font-size: 13px; }
+  .cx .loc-step-number { flex: 0 0 24px; }
+  .cx .loc-step-layout { margin-top: 0; }
+  .cx .loc-shared-viewport { height: min(44vh, 360px); }
+  .cx .loc-inspector { gap: 12px; }
+  .cx .loc-table-basics, .cx .loc-inspector-selection { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .cx .loc-inspector .input { min-height: 44px; font-size: 16px; }
+  .cx .loc-inspector-selected-fields { gap: 12px; padding: 12px; }
+  .cx .loc-mobile-canvas-link { display: inline-flex; justify-self: start; min-height: 44px; }
+  .cx .loc-step-layout .loc-footer {
+    position: fixed; inset: auto 0 0; z-index: 20; display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.3fr); gap: 8px;
+    margin: 0; padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border-subtle-01); background: var(--background);
+  }
+  .cx .loc-step-layout .loc-footer > span { grid-column: 1 / -1; grid-row: 1; font-size: 12px; }
+  .cx .loc-step-layout .loc-footer > button { grid-row: 2; padding-inline: 10px; white-space: normal; font-size: 12px; }
 }
 /* Fit both editing steps to the bounded viewport at every screen size. Reserve
    controls/captions first so the SVG's meet scaling uses the remaining height. */

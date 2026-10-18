@@ -117,6 +117,7 @@ function FurnitureNumber({ label, field, value, prefix, disabled, onChange }: { 
   const [raw, setRaw] = useState(String(value));
   const [error, setError] = useState('');
   const limits = FURNITURE_FIT_LIMITS[field];
+  const rawInvalid = !raw.trim() || !Number.isFinite(Number(raw)) || Number(raw) < limits.min || Number(raw) > limits.max;
   useEffect(() => {
     if (input.current !== globalThis.document.activeElement) { setRaw(String(value)); setError(''); }
   }, [value]);
@@ -130,7 +131,7 @@ function FurnitureNumber({ label, field, value, prefix, disabled, onChange }: { 
   };
   return <label className="loc-model-number-field" htmlFor={id}>
     <span>{label}</span><input ref={input} id={id} className="input" type="text" inputMode="decimal" min={limits.min} max={limits.max} step={limits.step} value={raw} disabled={disabled}
-      aria-invalid={error ? true : undefined} aria-describedby={error ? `${id}-error` : `${id}-help`} data-testid={`${prefix}-${field}`}
+      data-local-invalid={rawInvalid ? 'true' : undefined} aria-invalid={error || rawInvalid ? true : undefined} aria-describedby={error ? `${id}-error` : `${id}-help`} data-testid={`${prefix}-${field}`}
       onChange={(event) => {
         const text = event.currentTarget.value; setRaw(text); setError('');
         const next = Number(text);
