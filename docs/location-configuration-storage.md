@@ -12,6 +12,8 @@ The Details & Layout and Sensors 2D canvases show a bottom-left origin in metres
 
 The Details & Layout inspector is a single scrolling form: its heading and Zone/Table selectors scroll away with the fields. Zone and polygon boundaries use numbered rows with X/Y metre inputs, add-corner and trash actions; input labels and validation paths remain accessible.
 
+**Remove table** in the selected table editor asks for confirmation, then removes that table and its seats from the local draft and clears its ownership from every draft sensor. Sensors, zones, other tables and shared furniture assets remain. Save the draft to persist the edit; published tables change only on publication. Cancel and Escape leave the draft unchanged.
+
 The UI converts displayed Y coordinates to the existing top-left centimetre document/API convention. Saved layouts and sensor poses do not move when opened, and inherited fractional values survive an untouched blur. Rectangle Y identifies its lower-left corner; rectangle height changes preserve that corner. Circle centres, seats, polygon/zone vertices and provisional/assigned sensor positions use the same bottom-left display. Widths, heights, sensor yaw/mirror, 3D scene data and stored coordinate conventions are unchanged; this requires no migration.
 
 ## Generated rectangular room source

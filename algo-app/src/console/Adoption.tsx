@@ -58,7 +58,6 @@ export function Adoption() {
   }
   const actionable = canCommission && !!view && !statusError && !busy;
   return <main className="cx-adoption">
-    <p className="cx-eyebrow">Module 06 · Device commissioning</p>
     <h1>Adoption</h1>
     {!canCommission && <p className="dv-hint" role="status">Read-only adoption access. Engineer or Admin access is required to commission devices and authorize TMflash.</p>}
     <p className="dv-lead">Bring a physical sensor online, verify its reports, then place it in the floor plan. No Mac to hand? <a href="/flash" onClick={(event) => { event.preventDefault(); navigate('/flash'); }}>Flash from this browser</a>.</p>

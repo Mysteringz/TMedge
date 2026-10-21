@@ -78,7 +78,6 @@ export default function Login() {
 
       <div className="auth-panel">
         <h2>Student sign in</h2>
-        <p className="sub text-muted">Use your HKUMySeat account to see live seat availability.</p>
         {error && <p className="form-error" role="alert">{error}</p>}
         <form onSubmit={submit}>
           <div className="fields">

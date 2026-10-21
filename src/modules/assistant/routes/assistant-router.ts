@@ -38,12 +38,17 @@ export function createAssistantRouter(auth: Pick<AlgoAuth, 'principalOf'>, servi
   router.use((req, res, next) => { try { askerOf(req); next(); } catch (error) { fail(res, error); } });
   router.use(express.json({ limit: '48kb' }));
 
-  router.get('/', (_req, res) => {
-    const status = assistant?.status() ?? null;
+  router.get('/', async (_req, res) => {
+    const status = assistant ? await assistant.status() : null;
+    // The page asks this as it opens: the earliest sign that somebody may be
+    // about to ask, and time for the model to be loaded before they have.
+    if (status?.knowledgeReady && !answering) assistant?.warm();
     res.json({ data: {
       available: !!status?.knowledgeReady,
       reason: !status ? 'not-configured' : status.knowledgeReady ? null : 'knowledge-unreadable',
       model: status?.model ?? null, knowledgeUpdatedAt: status?.knowledgeUpdatedAt ?? null,
+      // How much of the repository it can look things up in; null when this build has no index.
+      code: status?.code ?? null,
     }, error: null });
   });
 
@@ -57,7 +62,7 @@ export function createAssistantRouter(auth: Pick<AlgoAuth, 'principalOf'>, servi
       const origin = req.get('origin');
       if (req.get('x-tm-algo') !== '1' || (origin && origin !== `${req.protocol}://${req.get('host')}`)) throw new AssistantError('FORBIDDEN', 403, 'Request origin is not permitted.');
       if (!assistant) throw new AssistantError('NOT_CONFIGURED', 503, 'Ask AI is not set up on this server.');
-      const messages = assistant.prepare(asker, req.body);
+      const { messages, sources } = await assistant.prepare(asker, req.body);
       if (!asks.allow(asker.name, now())) throw new AssistantError('RATE_LIMITED', 429, 'Too many questions at once. Try again in a few minutes.');
       if (answering) throw new AssistantError('BUSY', 503, 'The assistant is answering someone else. Try again in a moment.');
       answering = true; held = true;
@@ -71,9 +76,11 @@ export function createAssistantRouter(auth: Pick<AlgoAuth, 'principalOf'>, servi
       res.status(200).set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no' });
       res.flushHeaders();
       const send = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      // Which files it was shown goes first: it is true whatever the model goes on to say.
+      if (sources.length) send('sources', { sources });
       try {
         while (!next.done) { send('delta', { text: next.value }); next = await pieces.next(); }
-        send('done', { model: assistant.status().model });
+        send('done', { model: (await assistant.status()).model });
       } catch {
         // Headers are gone; the only honest thing left to say is that it stopped.
         if (!abort.signal.aborted) send('error', { message: 'The answer was cut short: the model server stopped responding.' });

@@ -60,8 +60,6 @@ export interface PendingChange {
   restoring?: boolean;
 }
 
-export interface ParameterAuditSink { append(entry: AuditEntry): void }
-
 export class ParamBroker {
   private readonly pending = new Map<string, PendingChange>();
   private readonly audit: AuditEntry[] = [];
@@ -219,9 +217,9 @@ export class ParamBroker {
    * parameters take effect on the next frame.
    */
   async apply(opts: {
-    uid: string; nodeId: string; param: string; binding: ParamBinding; value: number; by: string;
+    uid: string; nodeId: string; binding: ParamBinding; value: number; by: string;
   }): Promise<PendingChange> {
-    const { uid, nodeId, param, binding, value, by } = opts;
+    const { uid, nodeId, binding, value, by } = opts;
     if (this.persisting.has(uid)) throw new Error('wait for the parameter save to finish');
     const now = Date.now();
     let from: number | null = null;

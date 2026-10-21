@@ -46,16 +46,13 @@ import { JsonDocumentStore } from '../infrastructure/workspace/json-document-sto
 import { Board, emptyBoard, parseBoard } from '../modules/workspace/application/board.js';
 import { emptyMail, Mailbox, parseMail } from '../modules/workspace/application/mailbox.js';
 import { createWorkspaceRouter } from '../modules/workspace/routes/workspace-router.js';
+import { CodeIndexFile } from '../infrastructure/assistant/code-index-file.js';
 import { KnowledgeFile } from '../infrastructure/assistant/knowledge-file.js';
 import { OllamaChatModel } from '../infrastructure/assistant/ollama-chat-model.js';
 import { runtimeAnalyticsSource } from '../infrastructure/analytics/runtime-analytics-source.js';
 import { AskAssistant } from '../modules/assistant/application/ask-assistant.js';
 import { loadAssistantConfig } from '../modules/assistant/domain/assistant.js';
 import { createAssistantRouter } from '../modules/assistant/routes/assistant-router.js';
-import { JsonParameterAuditSink } from '../infrastructure/algo/json-parameter-audit-sink.js';
-import { JsonPipelineRepository } from '../infrastructure/algo/json-pipeline-repository.js';
-import { AlgoWebSocketAdapter } from './websocket-adapter.js';
-import { createAlgoRouter } from './routes.js';
 import { defaultPipeline } from './nodes.js';
 import { PairRecorder } from './pairs.js';
 import { TrainingSpool } from './training-spool.js';
@@ -93,7 +90,6 @@ const LOCATION_MODEL_VENDOR_FILES = new Set(['three.module.js', 'GLTFLoader.js',
 
 export interface AlgoServerHandle {
   server: Server;
-  algo: AlgoRuntime;
   dispose(): Promise<void>;
 }
 
@@ -296,7 +292,11 @@ export function startAlgo(
     return lines;
   };
   app.use('/api/assistant', createAssistantRouter(auth, {
-    assistant: assistantConfig ? new AskAssistant(new OllamaChatModel(assistantConfig), new KnowledgeFile(process.env.AI_KNOWLEDGE_FILE || join(ROOT, 'config', 'ai-knowledge.md')), liveFacts) : null,
+    assistant: assistantConfig ? new AskAssistant(new OllamaChatModel(assistantConfig), new KnowledgeFile(process.env.AI_KNOWLEDGE_FILE || join(ROOT, 'config', 'ai-knowledge.md')), liveFacts, {
+      // Built with the release, from the commit that is running (src/tools/code-index.ts).
+      code: new CodeIndexFile(process.env.AI_CODE_INDEX_FILE || join(ROOT, 'dist', 'src', 'code-index.json')),
+      contextTokens: assistantConfig.contextTokens,
+    }) : null,
     teamRolesOf: (name) => teamMembers().find((member) => member.name === name)?.teamRoles ?? [],
   }));
   // Mount before auth.router's legacy 8 KiB JSON parser. This router applies
@@ -308,6 +308,12 @@ export function startAlgo(
   // TMflash is a machine, with its own scoped credential. Mount only its
   // provisioning API before the human sign-in; no imagery or admin writes.
   if (consoleCore) app.use('/api/provision', express.json({ limit: '4kb' }), consoleCore.provisioningTool);
+  // ML data (module 02's ML Data page). A training job on the cluster is a
+  // machine too: its download key may list and fetch its owner's exports and
+  // nothing else (src/algo/ml-data/download-keys.ts), so only that door is
+  // mounted before the human sign-in.
+  const mlData = createMlData(auth, { env: process.env, dataDir });
+  app.use('/api/ml-data/keyed', mlData.keyed);
   app.get(['/login', '/login/'], (req, res) => {
     if (auth.userOf(req)) return res.redirect(safeAlgoNext(req.query.next));
     return sendShell(res);
@@ -397,7 +403,6 @@ export function startAlgo(
   });
   if (train.error) console.warn(`[algo] ${train.error}`);
   app.use('/api/train', train.router);
-  const mlData = createMlData(auth, { env: process.env, dataDir });
   app.use('/api/ml-data', mlData.router);
   app.use('/api/admin/health', createHealthRouter(auth, new ReadOperationalHealth(new RuntimeOperationalQueries({ runtime: rt, broker, listJobs: train.listJobs, firmwareHealth: consoleCore?.firmwareHealth }))));
   const notificationQueries = new RuntimeNotificationQueries(train.listJobs, rt.rolloutService, { nodes: (now) => rt.nodes(now), changes: () => broker.changes(), build: consoleCore?.firmwareHealth });
@@ -538,7 +543,7 @@ export function startAlgo(
     }
     try {
       const change = await broker.apply({
-        uid: body.uid ?? pipeline.uid, nodeId: n.id, param: ps.id,
+        uid: body.uid ?? pipeline.uid, nodeId: n.id,
         binding: ps.binding, value: body.value, by: by(res),
       });
       delete n.params[ps.id];   // it is the live value now, not an edit
@@ -746,7 +751,6 @@ export function startAlgo(
   if (options.listen !== false) server.listen(port, host);
   return {
     server,
-    algo,
     // Release owned feeds and timers once, including during startup rollback.
     dispose: () => {
       if (disposal) return disposal;
@@ -775,14 +779,6 @@ function loadPipeline(dir: string, name: string): Pipeline | null {
     return validate(pipeline).length === 0 ? pipeline : null;
   } catch {
     return null;  }
-}
-
-function sendDashboard(res: Response): void {
-  if (!existsSync(join(PUBLIC, 'index.html'))) {
-    res.status(503).send('the algo dashboard is not built (npm run build)');
-    return;
-  }
-  res.sendFile(join(PUBLIC, 'index.html'));
 }
 
 function safeEqual(actual: string, expected: string): boolean {

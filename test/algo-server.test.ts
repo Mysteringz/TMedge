@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

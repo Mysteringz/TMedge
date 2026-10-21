@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { disconnectedView } from './live.ts';
-import { allocate, floorIsDark, knownFree, largestTableFree, walkOrder, type Allocation } from '../../src/shared/allocate.js';
+import { allocate, floorIsDark, knownFree, walkOrder, type Allocation } from '../../src/shared/allocate.js';
 import { spaceInfo, VENUES, type SpaceInfo, type Venue } from '../../src/shared/venues.js';
 import { resolveCampusFloor } from '../../src/shared/location-identity.js';
 import { parseCampusView } from '../../src/shared/campus-view.js';
@@ -17,7 +17,7 @@ import { SIMPLE_ROOM_SOURCE } from '../../src/shared/simple-room-geometry.js';
 import type { CampusFloor, CampusView, PublishedFloorModel, TableState } from '../../src/shared/types.js';
 
 export type { CampusFloor, CampusView, TableState, Allocation, Venue };
-export { allocate, knownFree, largestTableFree, resolveCampusFloor, spaceInfo, walkOrder, VENUES };
+export { allocate, knownFree, resolveCampusFloor, spaceInfo, walkOrder, VENUES };
 
 export interface Me {
   email: string;
@@ -249,18 +249,6 @@ export function unknownTables(floor: CampusFloor): TableState[] {
 
 export function capacityOf(floor: CampusFloor): number {
   return Math.max(0, ...floor.tables.map((t) => t.capacity));
-}
-
-/**
- * Tables a group of `seats` could take at all, in walking order.
- *
- * No screen calls this yet — Spaces marks the same tables from the live
- * snapshot — but it is the table-level form of the question the seat search
- * asks, so the rule has one home when the next view needs it.
- */
-export function freeTables(floor: CampusFloor, seats: number): TableState[] {
-  if (isDark(floor)) return [];
-  return walkOrder(floor.tables).filter((t) => t.status !== 'unknown' && (t.free ?? 0) >= Math.min(seats, t.capacity));
 }
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

@@ -272,14 +272,20 @@ password prompt. Cloudflare Access still sits in front; behind it:
 
 ## Screens
 
+The module numbers below are how these documents and the comments in the
+source refer to a screen. No page shows one: the header, the phone menu and
+each page's heading use the name.
+
 - `/login` — sign-in.
 - `/` — the landing page: a welcome, one box that searches the site or asks
   the assistant (`/`), the modules this person uses most, six system figures,
   the mailbox, and feature requests and tasks. See [WORKSPACE.md](WORKSPACE.md)
   and [ASSISTANT.md](ASSISTANT.md).
 - `/flow` — module 01, the node-graph debugger described above, unchanged.
-- `/train` — module 02, ML Training: a placeholder until there is a sandboxed
-  job runner to back it.
+- `/train` — module 02, ML job: training scripts run on the university's
+  cluster. See "Module 02: ML Training" above and [hpc/](hpc/).
+- `/ml-data` — also module 02, ML data: the training database. See
+  [ML_DATA.md](ML_DATA.md).
 - `/console` — module 03, the edge's debug console (formerly
   `console.hkumyseat.com`): health, floor fusion, raw frames, node commands,
   admitting TMflash nodes.
@@ -291,6 +297,10 @@ password prompt. Cloudflare Access still sits in front; behind it:
   Read-only, any signed-in role. See [ANALYTICS.md](ANALYTICS.md).
 - `/adoption` — module 06, commissioning physical sensors. See
   [ADOPTION.md](ADOPTION.md).
+- `/flash` — module 07, TMflash web: flashing a board from the browser. See
+  [WEB_FLASHER.md](WEB_FLASHER.md).
+- `/tmflash-download` — module 08, the TMflash Mac app. See
+  [TMFLASH_DOWNLOAD.md](TMFLASH_DOWNLOAD.md).
 
 ### Module 03, the debug console
 
@@ -303,7 +313,7 @@ provisioning queue, the live feed) exists once and is served in two places:
   global stylesheet and a run-once module that would collide with the React
   app. Its CSP allows framing by this origin only (`frame-ancestors 'self'`)
   and `blob:` images (rig RGB). Its writes still need `x-tm-console: 1`, and
-  approvals, uploads and rollouts are recorded as `console:<name>`.
+  approvals, uploads, builds and rollouts are recorded as `algo:<name>`.
 - **`machine`** -- rig RGB uploads (`/api/demo/rgb`), firmware downloads
   (`/fw/<id>.bin`) and TMflash (`/api/provision/request|status`) -- stays on
   CONSOLE_PORT (8090). Those callers are devices with their own

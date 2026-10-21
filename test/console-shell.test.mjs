@@ -3,7 +3,8 @@
  * Three things a person meets before any module: the Devices menu (Updates,
  * Adoption, TMflash), the account icon (who they are, their settings, the way
  * out), and the settings page behind it. And one thing they should never
- * meet: a page an ad blocker has emptied.
+ * meet: a page an ad blocker has emptied. Before all of it, the tab itself:
+ * its icon, and that a place is called by its name and not by a number.
  *
  * Run npm run build and npx playwright install chromium webkit first; it
  * runs with npm run test:algo-mobile.
@@ -118,10 +119,9 @@ test('chromium: hamburger groups expand independently and reveal the current pag
     const toggle = page.getByRole('button', { name: 'Navigation menu', exact: true });
     await toggle.click();
     const menu = page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
-    assert.deepEqual(await menu.locator(':scope > a, :scope > .cx-mobile-nav-group > button').evaluateAll(rows => rows.map(row => [
-      row.querySelector('.cx-mobile-nav-number').textContent,
-      row.querySelector('.cx-mobile-nav-label')?.textContent ?? row.textContent.replace(row.querySelector('.cx-mobile-nav-number').textContent, '').trim(),
-    ])), [['01', 'Home'], ['02', 'Algorithm flow'], ['03', 'ML'], ['04', 'Debug console'], ['05', 'Devices'], ['06', 'Analytics'], ['07', 'Locations'], ['08', 'Accounts']]);
+    assert.deepEqual(await menu.locator(':scope > a, :scope > .cx-mobile-nav-group > button').evaluateAll(rows => rows.map(row =>
+      row.querySelector('.cx-mobile-nav-label').textContent,
+    )), ['Home', 'Algorithm flow', 'ML', 'Debug console', 'Devices', 'Analytics', 'Locations', 'Accounts']);
     const ml = menu.getByRole('button', { name: 'ML', exact: true });
     const devices = menu.getByRole('button', { name: 'Devices', exact: true });
     assert.equal(await ml.getAttribute('aria-expanded'), 'false');
@@ -161,7 +161,7 @@ test('chromium: hamburger groups expand independently and reveal the current pag
     const menu = restricted.page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
     assert.equal(await menu.getByRole('link', { name: 'Locations', exact: true }).count(), 0);
     assert.equal(await menu.getByRole('link', { name: 'Accounts', exact: true }).count(), 0);
-    assert.equal(await menu.getByRole('link', { name: 'Analytics', exact: true }).locator('.cx-mobile-nav-number').textContent(), '06');
+    assert.equal(await menu.getByRole('link', { name: 'Analytics', exact: true }).innerText(), 'Analytics');
   } finally { await restricted.context.close(); await restrictedBrowser.close(); }
 });
 
@@ -205,6 +205,66 @@ test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is st
     assert.equal(await modules.locator('.cx-group-dropdown').count(), 1);
     assert.deepEqual(await modules.locator('.cx-group-dropdown a').allTextContents(), ['Updates', 'Adoption', 'TMflash web', 'TMflash download']);
     assert.deepEqual(errors, []);
+  } finally { await context.close(); await browser.close(); }
+});
+
+test('chromium: every place is called by its name; no page, and not the phone menu, shows a module number', { timeout: 90_000 }, async () => {
+  const browser = await chromium.launch({ headless: true });
+  const { context, page, errors } = await open(browser, 'engineer', '/');
+  try {
+    // The numbers are the documents' and the comments' way of referring to a module (docs/ALGO_DASHBOARD.md).
+    const places = [
+      ['/flow', 'Algorithm flow', () => page.locator('.react-flow').first()],
+      ['/train', 'ML job', () => page.getByRole('heading', { name: 'ML job', exact: true })],
+      ['/ml-data', 'ML data', () => page.getByRole('heading', { name: 'ML database', exact: true })],
+      ['/console', 'Debug console', () => page.locator('iframe[title="Debug console"]')],
+      ['/updates', 'Updates', () => page.getByRole('heading', { name: 'Updates', exact: true, level: 1 })],
+      ['/analytics', 'Analytics', () => page.getByRole('heading', { name: 'Analytics', exact: true, level: 1 })],
+      ['/adoption', 'Adoption', () => page.getByRole('heading', { name: 'Adoption', exact: true, level: 1 })],
+      ['/flash', 'TMflash web', () => page.getByRole('heading', { name: 'TMflash web', exact: true, level: 1 })],
+      ['/tmflash-download', 'TMflash download', () => page.getByRole('heading', { name: 'TMflash download', exact: true, level: 1 })],
+    ];
+    for (const [path, , drawn] of places) {
+      await page.goto(`${base}${path}`);
+      await drawn().waitFor();
+      assert.doesNotMatch(await page.locator('body').innerText(), /\bmodule\s+\d/i, `${path} names no module number`);
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('button', { name: 'Navigation menu', exact: true }).click();
+    const menu = page.getByRole('navigation', { name: 'Mobile navigation', exact: true });
+    for (const group of ['ML', 'Devices']) {
+      const toggle = menu.getByRole('button', { name: group, exact: true });
+      if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+    }
+    // Grouping keeps every page reachable, with names and no numeric prefixes.
+    assert.deepEqual(await menu.getByRole('link').allTextContents(),
+      ['Home', 'Algorithm flow', 'ML job', 'ML data', 'Debug console', 'Updates', 'Adoption', 'TMflash Web', 'TMflash Download', 'Analytics']);
+    assert.equal(await menu.locator('.cx-mobile-nav-number').count(), 0);
+    await shot(page, 'phone-menu-390');
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); await browser.close(); }
+});
+
+test('chromium: the tab shows the console’s own mark, on the sign-in page too', { timeout: 60_000 }, async () => {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  try {
+    // Nobody is signed in: the icon is asked for before the form is filled.
+    const page = await context.newPage();
+    await page.goto(`${base}/login`);
+    const icons = await page.locator('link[rel="icon"]').evaluateAll((links) => links.map((link) => link.getAttribute('href')));
+    assert.deepEqual(icons, ['/favicon.ico', '/favicon.svg'], 'pixels for a browser that draws no SVG icon, then the SVG');
+    for (const href of icons) {
+      const response = await context.request.get(`${base}${href}`);
+      assert.equal(response.status(), 200, `${href} is served without a session`);
+      assert.match(response.headers()['content-type'], /^image\//);
+      // Fetched and decoded by the page itself, so its own content policy has let it through.
+      const size = await page.evaluate(async (source) => { const image = new Image(); image.src = source; await image.decode(); return image.naturalWidth; }, href);
+      assert.ok(size > 0, `${href} is a picture a browser can draw`);
+    }
+    // What a browser asks for by itself where a document names no icon: it is the same file.
+    assert.deepEqual([...(await (await context.request.get(`${base}/favicon.ico`)).body()).subarray(0, 4)], [0, 0, 1, 0], 'an .ico');
   } finally { await context.close(); await browser.close(); }
 });
 

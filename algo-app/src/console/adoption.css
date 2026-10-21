@@ -9,15 +9,12 @@
 .dv-lead, .dv-hint { color: var(--text-secondary); }
 .dv-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 20px 20px 20px 36px; background: var(--layer-01); margin: 24px 0; }
 .dv-panel { padding: 24px; margin: 24px 0; border: 1px solid var(--border-subtle-01); background: var(--layer-01); }
-.dv-token-form, .dv-match { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 20px 0; }
+.dv-match { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 20px 0; }
 .cx-adoption label { display: flex; flex-direction: column; gap: 6px; color: var(--text-secondary); flex: 1 1 180px; }
 .cx-adoption input, .cx-adoption select { width: 100%; min-width: 0; height: 44px; border: 0; border-bottom: 1px solid var(--border-strong-01); background: var(--field-01, var(--layer-02)); color: var(--text-primary); padding: 0 12px; font: inherit; }
 .cx-adoption button { min-height: 44px; border: 1px solid var(--border-strong-01); background: var(--layer-02); color: var(--text-primary); padding: 10px 16px; font: inherit; cursor: pointer; }
 .cx-adoption button.dv-primary { background: var(--interactive); color: var(--text-on-color, #161616); border-color: var(--interactive); }
 .cx-adoption button:disabled { opacity: .45; cursor: default; }
-.dv-issued { padding: 16px; border-left: 3px solid var(--interactive); background: var(--layer-02); }
-.dv-issued > code { display: block; overflow-wrap: anywhere; user-select: all; margin: 12px 0; }
-.dv-issued button { margin: 0 8px 8px 0; }
 .dv-token-list { padding: 0; list-style: none; }
 .dv-token-list li { display: flex; align-items: center; gap: 16px; justify-content: space-between; padding: 16px 0; border-top: 1px solid var(--border-subtle-01); }
 .dv-token-list small { display: block; color: var(--text-secondary); margin-top: 4px; }
@@ -40,7 +37,7 @@
   .dv-panel { padding: 16px; }
   .dv-steps { grid-template-columns: 1fr 1fr; gap: 16px 24px; }
   .dv-devices { grid-template-columns: 1fr; }
-  .dv-token-form, .dv-match { align-items: stretch; }
-  .dv-token-form button, .dv-match button { flex: 1 1 140px; }
+  .dv-match { align-items: stretch; }
+  .dv-match button { flex: 1 1 140px; }
 }
 .cx-adoption a { color: var(--interactive); text-underline-offset: 2px; }

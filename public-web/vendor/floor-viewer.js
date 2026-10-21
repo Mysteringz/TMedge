@@ -239,7 +239,7 @@
       controls.maxPolarAngle = Math.PI * 0.49;
       // Scroll and trackpad pinch both arrive as wheel events, and one notch
       // used to barely move the camera.
-      controls.zoomSpeed = 2.2;
+      controls.zoomSpeed = 3.0;
       controls.zoomToCursor = true;
       scene.add(new THREE.HemisphereLight(0xffffff, 0x9b9797, 2.1));
       const key = new THREE.DirectionalLight(0xffffff, 1.5);

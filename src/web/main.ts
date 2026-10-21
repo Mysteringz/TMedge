@@ -26,9 +26,10 @@ import { safeNext } from './navigation.js';
 import { UsageMeter } from '../modules/analytics/application/usage-meter.js';
 import { createUsageReportRouter } from '../modules/analytics/routes/usage-report-router.js';
 import { DEFAULT_ANALYTICS_TIMEZONE, isTimeZone } from '../shared/analytics.js';
+import { loadSiteIdentity, SiteLeadershipError, type SiteTrafficGuard, type SiteIdentity } from '../infrastructure/postgres/site-leadership.js';
 export { safeNext } from './navigation.js';
 
-export { asEmail } from '../modules/student-auth/routes/student-auth-router.js';
+export { resolveStudentEmail } from '../shared/student-email.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const PUBLIC = join(ROOT, 'public-web');
@@ -51,6 +52,8 @@ export interface WebConfig {
   google?: ReturnType<typeof googleFromEnv>;
   studentPersistenceMode?: 'file' | 'postgres';
   studentPostgres?: PostgresConnectionConfig;
+  /** Origin identity checked against the edge-owned shared database lease. */
+  failover?: SiteIdentity | null;
   activityRetentionDays?: number;
   /** Where usage counts are kept between restarts; unset keeps them in memory only. */
   analyticsDir?: string;
@@ -74,6 +77,14 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
   if (env.SIGNUP_OPEN !== undefined && env.SIGNUP_OPEN !== '0' && env.SIGNUP_OPEN !== '1') throw new Error('SIGNUP_OPEN must be 0 or 1');
   const studentPersistenceMode = env.STUDENT_PERSISTENCE_MODE ?? 'file';
   if (studentPersistenceMode !== 'file' && studentPersistenceMode !== 'postgres') throw new Error('STUDENT_PERSISTENCE_MODE must be file or postgres');
+  let failover: SiteIdentity | null;
+  try {
+    failover = loadSiteIdentity(env);
+  } catch (error) {
+    if (error instanceof SiteLeadershipError) throw new Error(error.message);
+    throw error;
+  }
+  if (failover && studentPersistenceMode !== 'postgres') throw new Error('FAILOVER_SITE_ID requires STUDENT_PERSISTENCE_MODE=postgres');
   const activityRetentionDays = Number(env.STUDENT_ACTIVITY_RETENTION_DAYS ?? 90);
   if (!Number.isSafeInteger(activityRetentionDays) || activityRetentionDays < 1 || activityRetentionDays > 3650) {
     throw new Error('STUDENT_ACTIVITY_RETENTION_DAYS must be an integer 1..3650');
@@ -98,6 +109,7 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
     google: googleFromEnv(env),
     studentPersistenceMode,
     studentPostgres: studentPersistenceMode === 'postgres' ? loadPostgresConnectionConfig('runtime', env) : undefined,
+    failover,
     activityRetentionDays,
     // Beside the account file, like the session revocations: the one
     // directory the web unit is certain to be allowed to write.
@@ -124,16 +136,19 @@ export function createWebApp(cfg: WebConfig, options?: {
   accounts?: JsonStudentAccountRepository;
   activity?: StudentActivityLog;
   closePersistence?: () => Promise<void>;
+  siteTraffic?: SiteTrafficGuard;
 }): WebAppInstance<JsonStudentAccountRepository>;
 export function createWebApp(cfg: WebConfig, options: {
   accounts?: IStudentAccountRepository;
   activity?: StudentActivityLog;
   closePersistence?: () => Promise<void>;
+  siteTraffic?: SiteTrafficGuard;
 }): WebAppInstance<IStudentAccountRepository>;
 export function createWebApp(cfg: WebConfig, options: {
   accounts?: IStudentAccountRepository;
   activity?: StudentActivityLog;
   closePersistence?: () => Promise<void>;
+  siteTraffic?: SiteTrafficGuard;
 } = {}): WebAppInstance<IStudentAccountRepository> {
   if (cfg.studentPersistenceMode === 'postgres' && !options.accounts) throw new Error('PostgreSQL student accounts must be initialized before creating the web app');
   const accounts = options.accounts ?? new JsonStudentAccountRepository(cfg.usersPath, cfg.allowedDomains);
@@ -203,12 +218,22 @@ export function createWebApp(cfg: WebConfig, options: {
   app.get('/healthz', (_req, res) => res.json({ ok: true, edges: store.edges() }));
   app.get('/readyz', async (_req, res) => {
     try {
-      await accounts.count();
-      res.json({ ready: true, accounts: cfg.studentPersistenceMode ?? 'file', activity: options.activity?.stats() ?? null });
+      const [, active] = await Promise.all([accounts.count(), options.siteTraffic?.active() ?? Promise.resolve(true)]);
+      const body = { ready: active, accounts: cfg.studentPersistenceMode ?? 'file', activity: options.activity?.stats() ?? null,
+        ...(options.siteTraffic ? { leadership: { active } } : {}) };
+      res.status(active ? 200 : 503).json(body);
     } catch {
       res.status(503).json({ ready: false, accounts: cfg.studentPersistenceMode ?? 'file', activity: options.activity?.stats() ?? null });
     }
   });
+  const siteTraffic = options.siteTraffic;
+  if (siteTraffic) {
+    app.use(async (_req, res, next) => {
+      if (await siteTraffic.active()) return next();
+      res.set('Cache-Control', 'no-store').set('Retry-After', '2');
+      return res.status(503).json({ error: 'Site failover is in progress. Retry shortly.' });
+    });
+  }
   /**
    * Google sign-in. No Turnstile here: the button is a plain link, nothing is
    * posted, and Google runs its own checks on the person before we ever see
@@ -280,7 +305,8 @@ export function createWebApp(cfg: WebConfig, options: {
   app.use(createStaticAssetRouter());
   app.use(studentHttpErrorHandler(options.activity, meter));
   const server = createServer(app);
-  sockets = new OccupancyWebSocketLifecycle(server, store, sessions, accounts);
+  sockets = new OccupancyWebSocketLifecycle(server, store, sessions, accounts,
+    siteTraffic ? () => siteTraffic.active() : undefined);
   options.activity?.start();
   meter.start();
   let disposal: Promise<void> | null = null;
@@ -300,7 +326,7 @@ export function createWebApp(cfg: WebConfig, options: {
 export async function createConfiguredWebApp(cfg: WebConfig) {
   if (cfg.studentPersistenceMode !== 'postgres') return createWebApp(cfg);
   if (!cfg.studentPostgres) throw new Error('PostgreSQL student configuration is missing');
-  const storage = await openStudentPostgresStorage(cfg.studentPostgres, cfg.allowedDomains, cfg.activityRetentionDays);
+  const storage = await openStudentPostgresStorage(cfg.studentPostgres, cfg.allowedDomains, cfg.activityRetentionDays, cfg.failover ?? null);
   try { return createWebApp(cfg, storage); } catch (error) {
     await storage.activity.dispose();
     await storage.closePersistence();

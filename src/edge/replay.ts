@@ -3,6 +3,19 @@ import { dirname } from 'node:path';
 import { syncDirectory, syncFileDescriptor } from '../shared/directory-sync.js';
 
 export interface Cursor { boot: number; seq: number }
+export interface ReplaySnapshot { cursors: Map<string, Cursor>; commandSeq: number }
+export class ReplayConflictError extends Error {}
+export class ReplayFenceError extends Error {}
+export interface ReplayPersistence {
+  readonly cursors: Map<string, Cursor>;
+  commandSeq: number;
+  accept(uid: string, cursor: Cursor): void;
+  acceptAsync(uid: string, cursor: Cursor, commandSeq?: number): Promise<void>;
+  command(seq: number): void;
+  allocateCommandSeq?(floor: number): Promise<number>;
+  reset(uid: string): boolean;
+  resetAsync?(uid: string): Promise<boolean>;
+}
 const UID = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
 const u32 = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
 const MAX_QUEUED = 10_000;
@@ -14,8 +27,32 @@ interface Pending {
   reject(error: Error): void;
 }
 
+/** Strict, read-only view used by the controlled PostgreSQL cutover import. */
+export function readReplaySnapshot(path: string): ReplaySnapshot {
+  if (statSync(path).size > 8 * 1024 * 1024) throw new Error('replay journal exceeds its limit');
+  const lines = readFileSync(path, 'utf8').split('\n');
+  if (lines.pop() !== '') throw new Error('incomplete replay journal; restore it before starting');
+  const cursors = new Map<string, Cursor>();
+  let commandSeq = 0;
+  for (const line of lines) {
+    const record: unknown = JSON.parse(line);
+    if (!Array.isArray(record)) throw new Error('invalid replay journal');
+    // A STATUS can be queued before a newer command is allocated, then
+    // persisted afterwards: that observation must never lower the cursor.
+    if (record.length === 2 && record[0] === 'cmd' && u32(record[1])) commandSeq = Math.max(commandSeq, record[1]);
+    else if (record.length === 3 && typeof record[0] === 'string' && UID.test(record[0]) &&
+        Number.isInteger(record[1]) && record[1] >= 0 && record[1] <= 0xffffffff && u32(record[2])) {
+      cursors.set(record[0], { boot: record[1], seq: record[2] });
+    } else if (record.length === 2 && typeof record[0] === 'string' && UID.test(record[0]) && record[1] === null) {
+      cursors.delete(record[0]);
+    } else throw new Error('invalid replay journal record');
+  }
+  if (cursors.size > 5000) throw new Error('replay journal node limit exceeded');
+  return { cursors, commandSeq };
+}
+
 /** Durable write-ahead cursors: restarting the edge must not make old signed packets new. */
-export class ReplayStore {
+export class ReplayStore implements ReplayPersistence {
   readonly cursors = new Map<string, Cursor>();
   commandSeq = 0;
   private records = 0;
@@ -31,22 +68,9 @@ export class ReplayStore {
     this.batchMs = opts.batchMs ?? 5;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     if (!existsSync(path)) this.checkpoint();
-    if (statSync(path).size > 8 * 1024 * 1024) throw new Error('replay journal exceeds its limit');
-    const lines = readFileSync(path, 'utf8').split('\n');
-    if (lines.pop() !== '') throw new Error('incomplete replay journal; restore it before starting');
-    for (const line of lines) {
-      const r: unknown = JSON.parse(line);
-      if (!Array.isArray(r)) throw new Error('invalid replay journal');
-      // A STATUS can be queued before a newer command is allocated, then
-      // persisted afterwards: that observation must never lower the cursor.
-      if (r.length === 2 && r[0] === 'cmd' && u32(r[1])) this.commandSeq = Math.max(this.commandSeq, r[1]);
-      else if (r.length === 3 && typeof r[0] === 'string' && UID.test(r[0]) &&
-          Number.isInteger(r[1]) && r[1] >= 0 && r[1] <= 0xffffffff && u32(r[2])) {
-        this.cursors.set(r[0], { boot: r[1], seq: r[2] });
-      } else if (r.length === 2 && typeof r[0] === 'string' && UID.test(r[0]) && r[1] === null) this.cursors.delete(r[0]);
-      else throw new Error('invalid replay journal record');
-    }
-    if (this.cursors.size > 5000) throw new Error('replay journal node limit exceeded');
+    const snapshot = readReplaySnapshot(path);
+    this.commandSeq = snapshot.commandSeq;
+    for (const [uid, cursor] of snapshot.cursors) this.cursors.set(uid, cursor);
     this.checkpoint();
   }
   private readonly batchMs: number;

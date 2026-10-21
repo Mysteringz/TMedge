@@ -1,3 +1,5 @@
+import { removeTable } from '../../../features/location-editor/model/tables.ts';
+import { TableRemovalDialog } from './table-removal-dialog.tsx';
 import { Plus, Trash } from '../../../console/icons.tsx';
 import { bottomYMetres, canonicalY } from '../../../features/location-editor/model/display-coordinates.ts';
 import { useEffect, useId, useRef, useState } from 'react';
@@ -10,13 +12,23 @@ import { useCompactLayout } from '../model/use-compact-layout.ts';
 
 /** Edit the selected zone, table, or seat; `update` receives immutable document transforms in canonical centimetres. */
 export function EditorInspector({ document, selected, onSelect, update, onTransientValidityChange, furnitureItems, furnitureSource, onOpenFurnitureLibrary, onShowCanvas }: {
-  document: LocationDocument; selected: Selection | null; onSelect(value: Selection): void;
+  document: LocationDocument; selected: Selection | null; onSelect(value: Selection | null): void;
   update(change: (current: LocationDocument) => LocationDocument): void;
   onTransientValidityChange(field: string, invalid: boolean): void;
   furnitureSource: 'generated' | 'custom' | 'other';
   furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; onOpenFurnitureLibrary(type: FurnitureType, tableId: string): void;
   onShowCanvas(): void;
 }) {
+  const [pendingTableId, setPendingTableId] = useState<string | null>(null);
+  const tableSelector = useRef<HTMLSelectElement>(null);
+  const pendingTable = document.tables.find(item => item.id === pendingTableId) ?? null;
+  const confirmRemoval = () => {
+    if (!pendingTable) return;
+    update(current => removeTable(current, pendingTable.id));
+    setPendingTableId(null);
+    onSelect(null);
+    requestAnimationFrame(() => tableSelector.current?.focus());
+  };
   const zone = selected?.kind === 'zone' ? document.zones.find((item) => item.id === selected.id) : undefined;
   const table = selected?.kind === 'table' ? document.tables.find((item) => item.id === selected.id)
     : selected?.kind === 'seat' ? document.tables.find((item) => item.seats.some((seat) => seat.id === selected.id)) : undefined;
@@ -34,7 +46,7 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
         <option value="">Choose zone</option>
         {document.zones.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select></label>
-      <label className="loc-field"><span>Table</span><select className="input" aria-label="Select table" data-testid="location-inspector-table-select" value={table?.id ?? ''}
+      <label className="loc-field"><span>Table</span><select ref={tableSelector} className="input" aria-label="Select table" data-testid="location-inspector-table-select" value={table?.id ?? ''}
         onChange={(event) => { if (event.target.value) onSelect({ kind: 'table', id: event.target.value }); }}>
         <option value="">Choose table</option>
         {document.tables.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -43,7 +55,7 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
     {zone && <ZoneFields key={zone.id} zone={zone} roomHeight={document.heightCm} selectedIndex={selected?.kind === 'zone' && selected.id === zone.id ? selected.index : undefined} onTransientValidityChange={onTransientValidityChange}
       onSelectIndex={(index) => onSelect({ kind: 'zone', id: zone.id, index })} update={update} />}
     {table && <TableFields key={table.id} table={table} document={document} selectedSeat={seat?.id ?? null} onSelect={onSelect} update={update} onTransientValidityChange={onTransientValidityChange}
-      furnitureItems={furnitureItems} furnitureSource={furnitureSource} onOpenFurnitureLibrary={onOpenFurnitureLibrary} />}
+      furnitureItems={furnitureItems} furnitureSource={furnitureSource} onOpenFurnitureLibrary={onOpenFurnitureLibrary} onRemove={() => setPendingTableId(table.id)} />}
     {!zone && !table && <p className="cx-muted">Select a zone, table, or seat to edit its labelled coordinates.</p>}
     <details className="loc-inspector-disclosure" data-testid="location-room-objects">
       <summary>Room objects · {document.zones.length} {document.zones.length === 1 ? 'zone' : 'zones'}, {document.tables.length} {document.tables.length === 1 ? 'table' : 'tables'}</summary>
@@ -66,6 +78,7 @@ export function EditorInspector({ document, selected, onSelect, update, onTransi
       </ul>
     </div>
     </details>
+    <TableRemovalDialog table={pendingTable} onCancel={() => setPendingTableId(null)} onConfirm={confirmRemoval} />
   </aside>;
 }
 
@@ -83,11 +96,11 @@ function ZoneFields({ zone, roomHeight, selectedIndex, onSelectIndex, update, on
 }
 
 /** Inspector section for a table and its seats; geometry stays canonical in centimetres until displayed as metres. */
-function TableFields({ table, document, selectedSeat, onSelect, update, onTransientValidityChange, furnitureItems, furnitureSource, onOpenFurnitureLibrary }: {
+function TableFields({ table, document, selectedSeat, onSelect, update, onTransientValidityChange, furnitureItems, furnitureSource, onOpenFurnitureLibrary, onRemove }: {
   table: Table; document: LocationDocument; selectedSeat: string | null; onSelect(value: Selection): void;
   onTransientValidityChange(field: string, invalid: boolean): void;
   update(change: (current: LocationDocument) => LocationDocument): void;
-  furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; furnitureSource: 'generated' | 'custom' | 'other'; onOpenFurnitureLibrary(type: FurnitureType, tableId: string): void;
+  furnitureItems: ReadonlyMap<string, FurnitureLibraryItem>; furnitureSource: 'generated' | 'custom' | 'other'; onOpenFurnitureLibrary(type: FurnitureType, tableId: string): void; onRemove(): void;
 }) {
   const shape = shapeOf(table);
   const compact = useCompactLayout();
@@ -155,6 +168,9 @@ function TableFields({ table, document, selectedSeat, onSelect, update, onTransi
       <TableFurnitureOverrides document={document} table={table} items={furnitureItems} disabled={false} source={furnitureSource} onUpdate={update}
         onOpenLibrary={(type) => onOpenFurnitureLibrary(type, table.id)} />
     </details>
+    <div className="loc-table-removal"><button type="button" className="btn btn-ghost" data-testid="location-table-remove"
+      // Let the click finish before blur validation can reflow the inspector.
+      onPointerDown={event => event.preventDefault()} onClick={event => { event.currentTarget.focus({ preventScroll: true }); onRemove(); }}><Trash /> Remove table</button></div>
   </div>;
 }
 

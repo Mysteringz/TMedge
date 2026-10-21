@@ -7,6 +7,8 @@ import type { StudentActivityLog } from '../application/student-activity-log.js'
 import type { StudentActivityAction, StudentActivityOutcome } from '../repositories/student-activity-repository.js';
 import { createRequireStudent, studentCredential } from './student-request-auth.js';
 import type { UsageEventSink } from '../../analytics/application/usage-meter.js';
+import { resolveStudentEmail } from '../../../shared/student-email.js';
+import { studentSignupEmail } from '../application/student-credentials.js';
 
 export { createRequireStudent } from './student-request-auth.js';
 
@@ -90,9 +92,9 @@ function createLoginHandler(deps: StudentAuthRouterDependencies, limiter: RateLi
       recordActivity(deps, 'login', 'failed');
       return res.status(403).json({ error: 'Please complete the verification challenge.' });
     }
-    const user = await deps.accounts.verify(asEmail(raw, deps.allowedDomains), password);
+    const user = await deps.accounts.verify(resolveStudentEmail(raw), password);
     if (!user) {
-      const known = await findActivityUser(deps, asEmail(raw, deps.allowedDomains));
+      const known = await findActivityUser(deps, resolveStudentEmail(raw));
       recordActivity(deps, 'login', 'failed', known?.id);
       return res.status(401).json({ error: 'That UID and PIN do not match.' });
     }
@@ -128,7 +130,10 @@ function createSignupHandler(deps: StudentAuthRouterDependencies, limiter: RateL
       return res.status(403).json({ error: 'Please complete the verification challenge.' });
     }
     try {
-      const user = await deps.accounts.create(asEmail(raw, deps.allowedDomains), name, password);
+      // The one place the public form's UID shape is enforced: this route
+      // builds the address from the box, so a request that skips the page
+      // cannot invent one.
+      const user = await deps.accounts.create(studentSignupEmail(raw), name, password);
       recordActivity(deps, 'signup', 'succeeded', user.id);
       await setSession(req, res, user.email, deps);
       return res.json({ redirect: safeNext(next) });
@@ -186,10 +191,4 @@ function safeNext(raw: unknown): string {
   if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//')) return '/dashboard/';
   if (raw.startsWith('/login') || raw.startsWith('/signup')) return '/dashboard/';
   return raw;
-}
-
-export function asEmail(raw: string, domains: readonly string[]): string {
-  const uid = raw.trim().toLowerCase();
-  if (!/^u3\d{6,8}$/.test(uid)) return raw;
-  return `${uid}@${domains.find((domain) => domain.startsWith('connect.')) ?? domains[0] ?? 'connect.hku.hk'}`;
 }

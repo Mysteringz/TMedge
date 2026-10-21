@@ -11,7 +11,7 @@
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import { isIP } from 'node:net';
-import { ReplayStore } from './replay.js';
+import { ReplayConflictError, ReplayStore, type ReplayPersistence } from './replay.js';
 import { encryptPacket, encryptPayload, deriveKey, TYPE_ACK } from './secure.js';
 import { randomBytes } from 'node:crypto';
 import {
@@ -46,8 +46,6 @@ export type Route =
   | { kind: 'udp'; address: string }
   | { kind: 'gateway'; address: string }
   | { kind: 'direct'; address: string; session: DirectSession };
-
-export type Transport = Route['kind'];
 
 /** A node's own authenticated WebSocket session (nodelink.ts). */
 export interface DirectSession {
@@ -115,6 +113,8 @@ export interface IngestOptions {
   cursorPath?: string;
   /** Test hook for a delayed/failed asynchronous journal fsync. */
   journalSync?: (fd: number) => Promise<void>;
+  /** Shared PostgreSQL replay state in failover mode. */
+  replayStore?: ReplayPersistence;
   /**
    * Delivers a command to a node heard through an access gateway (address
    * "gw:..."). Returns false if that gateway is not connected.
@@ -145,7 +145,7 @@ export class Ingest extends EventEmitter {
   private bound = false;
   private closed = false;
   private stopPromise: Promise<void> | null = null;
-  private readonly replay: ReplayStore | null;
+  private readonly replay: ReplayPersistence | null;
   private readonly durableTails = new Map<string, Promise<void>>();
   private readonly pendingNewNodes = new Set<string>();
   private durablePackets = 0;
@@ -155,7 +155,8 @@ export class Ingest extends EventEmitter {
   constructor(private readonly opts: IngestOptions) {
     super();
     this.now = opts.now ?? Date.now;
-    this.replay = opts.cursorPath ? new ReplayStore(opts.cursorPath, { sync: opts.journalSync }) : null;
+    if (opts.cursorPath && opts.replayStore) throw new Error('configure one replay store, not both');
+    this.replay = opts.replayStore ?? (opts.cursorPath ? new ReplayStore(opts.cursorPath, { sync: opts.journalSync }) : null);
     this.lastCommandSeq = this.replay?.commandSeq ?? 0;
     this.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     this.socket.on('message', (msg, rinfo) => {
@@ -255,7 +256,10 @@ export class Ingest extends EventEmitter {
         // next command during this packet's asynchronous fsync.
         if (commandSeq !== undefined) this.lastCommandSeq = Math.max(this.lastCommandSeq, commandSeq);
         await this.replay!.acceptAsync(packet.uid, { boot: packet.boot, seq: packet.seq }, commandSeq);
-      } catch { return this.reject(route.address, packet.uid, 'replay journal unavailable'); }
+      } catch (error) {
+        return this.reject(route.address, packet.uid, error instanceof ReplayConflictError
+          ? 'replayed or duplicate sequence' : 'replay journal unavailable');
+      }
       finally { this.pendingNewNodes.delete(packet.uid); }
       return this.commitPacket(prepared);
     });
@@ -424,6 +428,7 @@ export class Ingest extends EventEmitter {
 
   /** The replay counter shared by commands and OTA requests. */
   allocateCommandSeq(): number {
+    if (this.replay?.allocateCommandSeq) throw new Error('shared command sequence allocation must be awaited');
     // Unix seconds, but strictly increasing even for two commands in the same
     // second: the node ignores anything not newer than the last one it applied.
     const seq = Math.max(Math.floor(this.now() / 1000), this.lastCommandSeq + 1);
@@ -435,10 +440,29 @@ export class Ingest extends EventEmitter {
 
   /** Forget a node's replay cursor: for a node whose flash was erased on purpose. */
   resetCursor(uid: string): boolean {
+    if (this.replay?.resetAsync) throw new Error('shared replay cursor reset must be awaited');
     if (this.durablePackets) throw new Error('durable packet writes are pending; retry cursor reset');
     if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(uid)) throw new Error('invalid node uid');
     const saved = this.replay?.reset(uid) ?? false;
     return this.links.delete(uid) || saved;
+  }
+
+  async resetCursorAsync(uid: string): Promise<boolean> {
+    if (this.durablePackets) throw new Error('durable packet writes are pending; retry cursor reset');
+    if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(uid)) throw new Error('invalid node uid');
+    const saved = this.replay?.resetAsync
+      ? await this.replay.resetAsync(uid)
+      : this.replay?.reset(uid) ?? false;
+    return this.links.delete(uid) || saved;
+  }
+
+  private async reserveCommandSeq(): Promise<number> {
+    if (!this.replay?.allocateCommandSeq) return this.allocateCommandSeq();
+    const floor = Math.floor(this.now() / 1000);
+    if (floor > 0xffffffff) throw new Error('command sequence exhausted');
+    const sequence = await this.replay.allocateCommandSeq(floor);
+    this.lastCommandSeq = Math.max(this.lastCommandSeq, sequence);
+    return sequence;
   }
 
   /** Reports per second over the window. */
@@ -479,7 +503,7 @@ export class Ingest extends EventEmitter {
   async sendCommand(uid: string, opcode: number, arg0 = 0, value = 0): Promise<number> {
     const target = this.downlinkTarget(uid, 'receive commands');
     if (target instanceof Error) return Promise.reject(target);
-    const seq = this.allocateCommandSeq();
+    const seq = await this.reserveCommandSeq();
     const cmd: Command = { seq, opcode, arg0, value };
     return this.deliver(uid, target.route, this.protectDownlink(uid, buildCommand(uid, cmd, target.key))).then(() => seq);
   }
@@ -545,7 +569,7 @@ export class Ingest extends EventEmitter {
   async sendOta(uid: string, image: { port: number; size: number; sha256: string; path: string }): Promise<void> {
     const target = this.downlinkTarget(uid, 'be updated');
     if (target instanceof Error) return Promise.reject(target);
-    const seq = this.allocateCommandSeq();
+    const seq = await this.reserveCommandSeq();
     const buf = this.protectDownlink(uid, buildOta(uid, { seq, ...image }, target.key));
     if (target.route.kind === 'direct') {
       // A direct node downloads over HTTPS from its provisioned cloud host,

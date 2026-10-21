@@ -4,14 +4,18 @@
   "private": true,
   "description": "TMedge: occupancy processing for TMnode thermal sensors, debug console, and the student web app",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && npm run build:app && npm run build:algo",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.console.json && node dist/src/tools/code-index.js && npm run build:app && npm run build:algo",
     "db:migrate": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/postgres-migrate.js up",
     "db:revert": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/postgres-migrate.js down",
     "db:registry:export": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/registry-export.js",
     "db:registry:import": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/registry-import.js",
     "db:students": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/student-accounts.js",
+    "failover:rehearse": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/failover-rehearsal.js",
+    "failover:import-replay": "tsc -p tsconfig.json && node --env-file-if-exists=.env dist/src/tools/failover-import-replay.js",
     "students:local:config": "tsc -p tsconfig.json && node dist/src/tools/student-local-config.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.console.json --noEmit && npm --prefix web-app run typecheck && npm --prefix algo-app run typecheck",
     "pretest": "npm run build:app",
@@ -27,9 +31,11 @@
     "algo-user": "node --env-file-if-exists=.env dist/src/tools/algouser.js",
     "hpc-hostkeys": "node --env-file-if-exists=.env dist/src/tools/hpchostkeys.js",
     "hpc-password": "node --env-file-if-exists=.env dist/src/tools/hpcpassword.js",
-    "test:hpc-stack": "tsc -p tsconfig.json && test/hpc-stack/run.sh"
+    "test:hpc-stack": "tsc -p tsconfig.json && test/hpc-stack/run.sh",
+    "dev:all": "concurrently \"npm run web\" \"npm run edge\" \"npm run simulate -- --load 0.5\" \"npm --prefix web-app run dev\""
   },
   "dependencies": {
+    "concurrently": "^10.0.6",
     "express": "^5.2.1",
     "pg": "^8.23.1",
     "typeorm": "^1.1.1",

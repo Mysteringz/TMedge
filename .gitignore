@@ -28,3 +28,4 @@ src/**/* [0-9].*
 test/**/* [0-9].*
 web-app/src/**/* [0-9].*
 algo-app/src/**/* [0-9].*
+web-app/.idea/

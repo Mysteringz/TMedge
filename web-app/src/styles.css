@@ -78,19 +78,28 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
 .auth-copy { max-width: 620px }
 .auth-copy .rule { height: 2px; background: var(--color-accent); width: 96px; margin-bottom: 24px }
 .auth-copy h1 { font-size: clamp(40px, 5.2vw, 72px); line-height: 1.02; margin: 0 0 20px; color: #fff }
-.auth-copy p { font-size: 17px; line-height: 1.5; max-width: 46ch; color: rgba(243,242,242,.82); margin: 0 }
+.auth-copy p { font-size: 17px; line-height: 1.5; max-width: 46ch; color: rgba(243,242,242,.82); margin: 0 4px 80px}
 .auth-foot { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .6 }
 
 .auth-panel {
   position: relative; z-index: 1; background: var(--color-bg);
-  border-left: 2px solid var(--color-text); padding: 40px 36px;
+  border-left: 2px solid var(--color-text); padding: 50% 10%;
   display: flex; flex-direction: column; min-width: 0;
 }
-.auth-panel h2 { font-size: 26px; margin: 0 0 6px }
+.auth-panel h2 { font-size: 26px; margin: 0 0 32px }
 .auth-panel .sub { font-size: 13px; margin: 0 0 24px }
 .fields { display: flex; flex-direction: column; gap: 16px }
 .field-label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 6px }
 .input { border: 2px solid var(--color-text); background: var(--color-bg); min-height: 44px; border-radius: 0; font-size: 16px }
+/* The vendored design system lightens an input's border on hover. This form's
+   language is a black edge on every control, so hovering one must not repaint
+   it: the edge holds, and focus is what turns it green. The focus rule is
+   written here too because focus and hover are both true while the pointer
+   rests on a field being typed into, and the vendored `.input:focus-visible`
+   loses that tie on specificity. */
+.signup-card .input:hover { border-color: var(--color-text) }
+.signup-card .input:focus,
+.signup-card .input:focus-visible { border-color: var(--color-accent) }
 .auth-panel .btn-primary, .signup-card .btn-primary {
   justify-content: flex-start; margin-top: 24px; padding: 14px 16px; width: 100%;
   font-size: 14px; letter-spacing: .04em; text-transform: uppercase; min-height: 52px;
@@ -112,7 +121,7 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
 /* ── create an account: one card, nothing like the split above ─────────── */
 
 .signup {
-  min-height: 100vh; display: grid; place-items: center; padding: 32px 16px;
+  min-height: 100vh; display: grid; place-items: center; padding: 32px 16px 60px;
   background-color: var(--color-surface);
   background-image: var(--texture); background-size: 16px 16px;
 }
@@ -121,10 +130,63 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
   border: 2px solid var(--color-text); padding: 32px;
   display: flex; flex-direction: column; gap: 4px;
 }
-.signup-card h1 { font-size: 30px; margin: 20px 0 6px }
+.signup-card h1 { font-size: 30px; margin: 16px 0 20px }
 .signup-card .sub { font-size: 13px; margin: 0 0 22px }
 .two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 12px }
-.signup-foot { display: flex; justify-content: space-between; align-items: center; font-size: 13px }
+.signup-foot { display: flex; justify-content: flex-end; align-items: center; font-size: 13px; margin-right: 12px }
+
+/* The UID box and the domain it will be given: one control, two halves. The
+   suffix sits outside the typing area but inside the border, so it reads as
+   something the site added rather than something to delete. */
+.input-split {
+  display: flex; align-items: stretch; min-height: 44px;
+  background: var(--color-bg); border: 2px solid var(--color-text);
+}
+.input-split:focus-within { border-color: var(--color-accent) }
+.input-split-field {
+  flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: var(--color-text);
+  font: inherit; font-size: 16px; padding: 6px 10px;
+}
+.input-split-field:focus { outline: none }
+/* The suffix is grey in every state, including while the field is mid-typing
+   and therefore not yet a valid UID. A tint here reads as part of the form's
+   error language -- --color-accent-100 is exactly what .form-error fills
+   with -- so a correct UID looked like a mistake. The box is not the place to
+   congratulate anyone either: the UID's own validity is the checklist's job
+   and the server's. */
+.input-suffix {
+  display: flex; align-items: center; flex: none;
+  padding: 0 12px; border-left: 1px solid var(--color-divider);
+  background: var(--color-surface); color: var(--color-text);
+  font-size: 13px; white-space: nowrap;
+}
+
+/* The password rules, as a checklist that fills itself in. Grey is the norm
+   here, not an error colour: an unmet rule is simply not done yet. */
+.pw-rules {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 4px 16px; margin: 14px 0 0; padding: 0; list-style: none;
+}
+.pw-rules li { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--color-neutral-600) }
+.pw-rules .tick {
+  flex: none; width: 10px; height: 10px; border: 1.5px solid var(--color-neutral-400); margin-left: 3px;
+  transform: translateY(1px);
+}
+/* The tick is a rotated corner -- no icon font, no image to go missing. */
+.pw-rules li.met {
+  color: var(--color-accent-700);
+}
+
+.pw-rules li.met .tick {
+  display: inline-block;           /* Crucial so width/height take effect */
+  width: 5px;                      /* Short leg width */
+  height: 10px;                    /* Long leg height */
+  border: solid var(--color-accent);
+  border-width: 0 2px 2px 0;       /* Only show right and bottom borders (L-shape) */
+  transform: rotate(45deg) translateY(-1px);
+  margin: 0 4px;
+}
+
 
 /* ── app chrome ───────────────────────────────────────────────────────── */
 
@@ -161,20 +223,51 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
 .master-detail { display: grid; grid-template-columns: minmax(280px, 420px) minmax(0, 1fr); gap: 28px; align-items: start }
 .master { min-width: 0 }
 .venues { display: flex; flex-direction: column; gap: 12px; margin-bottom: 28px }
+/*
+ * A venue choice, in four states: idle, ready, chosen, and chosen-and-hovered.
+ * The four are driven by custom properties on the button and painted by
+ * .venue-face, so nothing here can change what a click does.
+ *   idle     white on grey text, gray borders -- lowest priority
+ *   ready    a green borders and black text: it answers the pointer
+ *   chosen   solid green, white text, a heavier green edge -- the most weight
+ *   chosen-  a darker green border, so pressing it again feels like it will undo
+ *   hovered  the choice
+ */
 .venue {
-  text-align: left; cursor: pointer; padding: 16px 18px; border: 2px solid var(--color-text);
-  background: var(--color-surface); color: var(--color-text);
-  display: flex; flex-direction: column; gap: 4px; font-family: var(--font-body); font-size: 15px;
+  --venue-bg: #fff; --venue-fg: var(--color-neutral-600);
+  --venue-edge: 2px solid var(--color-neutral-600);
+  text-align: left; cursor: pointer; padding: 0; border: 0; background: none;
+  font-family: var(--font-body); font-size: 15px;
 }
-.venue:hover:not(:disabled) { background: var(--color-neutral-200); border-color: var(--color-accent) }
+.venue-face {
+  display: flex; flex-direction: column; gap: 4px; padding: 16px 18px;
+  background: var(--venue-bg); color: var(--venue-fg); border: var(--venue-edge);
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
 .venue .kicker { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent-700) }
 .venue .vname { font-family: var(--font-heading); font-weight: 800; font-size: 19px; line-height: 1.15 }
 .venue .meta { font-size: 12px }
-.venue[aria-pressed='true'] { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-bg) }
-.venue[aria-pressed='true'] .kicker { color: var(--color-bg); opacity: .85 }
+.venue:hover:not(:disabled) {
+  --venue-fg: var(--color-text);
+  --venue-edge: 2px solid var(--color-accent);
+}
+.venue[aria-pressed='true'] {
+  --venue-bg: var(--color-accent); --venue-fg: #fff;
+  --venue-edge: 2px solid var(--color-accent);
+}
+.venue[aria-pressed='true']:hover:not(:disabled) { --venue-fg: #fff; --venue-bg: var(--color-accent-2); --venue-edge: 2px solid var(--color-accent-700) }
+/* On the filled box the kicker is white too: green on green is not text. */
+.venue[aria-pressed='true'] .kicker { color: inherit; opacity: .85 }
 .venue[aria-pressed='true'] .meta { color: inherit; opacity: .9 }
-.venue:disabled { border: 2px dashed var(--color-neutral-400); background: transparent; color: var(--color-neutral-600); cursor: not-allowed }
+
+/* A venue with no sensors is not a choice: dashed, flat, and unclickable. */
+.venue:disabled {
+  --venue-bg: transparent; --venue-fg: var(--color-neutral-600);
+  --venue-edge: 2px dashed var(--color-neutral-400);
+  cursor: not-allowed;
+}
 .venue:disabled .kicker { color: inherit }
+.venue:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px }
 
 .seats-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px }
 .stepper { display: flex; align-items: stretch; border: 2px solid var(--color-text); background: var(--color-surface) }
@@ -185,10 +278,13 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); -webkit
 .stepper button:first-child { border-right: 2px solid var(--color-text) }
 .stepper button:last-child { border-left: 2px solid var(--color-text) }
 .seats-input {
-  width: 72px; border: 0; background: transparent; text-align: center;
+  width: 60px; border: 0; background: transparent; text-align: center;
   font-family: var(--font-heading); font-weight: 800; font-size: 22px; color: var(--color-text);
 }
 .seats-input::-webkit-outer-spin-button, .seats-input::-webkit-inner-spin-button { appearance: none; margin: 0 }
+.seats-input {
+  -moz-appearance: textfield;
+}
 .btn-cta { padding: 12px 22px; min-height: 48px; font-size: 14px; letter-spacing: .04em; text-transform: uppercase }
 
 .detail { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0 }

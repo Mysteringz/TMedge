@@ -15,10 +15,7 @@ interface JobRow {
 
 /** Immutable metadata adapter; image bytes remain in the edge artifact store. */
 export class PostgresFirmwareArtifactRepository implements FirmwareArtifactRepository {
-  constructor(
-    private readonly source: DataSource,
-    private readonly artifactContent?: Pick<FirmwareArtifactContentStorage, 'read'>,
-  ) {}
+  constructor(private readonly source: DataSource) {}
 
   async save(artifact: FirmwareArtifact): Promise<void> {
     validateArtifact(artifact);

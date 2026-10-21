@@ -13,21 +13,25 @@ import { usePresence } from './motion.tsx';
 
 
 // `group`: modules that belong together share one dropdown in the header,
-// under that name. Each keeps its own number, page and card on the landing
-// page; only the header is shorter for it.
+// under that name. Each keeps its own page and its place on the landing page;
+// only the header is shorter for it.
+//
+// A module's number (01 to 09, in this order; both ML pages are 02) is how
+// the documentation and the comments refer to it. No page shows one: a person
+// finds a place by its name.
 export const MODULES = [
 
-  { n: '01', title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
+  { title: 'Algorithm flow', path: '/flow', desc: 'Compose and pipe algorithms into the seat-allocation pipeline.' },
 
-  { n: '02', title: 'ML job', path: '/train', group: 'ML', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
-  { n: '02', title: 'ML data', path: '/ml-data', group: 'ML', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
-  { n: '03', title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
-  { n: '04', title: 'Updates', path: '/updates', group: 'Devices', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
-  { n: '05', title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
-  { n: '06', title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
-  { n: '07', title: 'TMflash web', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
-  { n: '08', title: 'TMflash download', path: '/tmflash-download', group: 'Devices', desc: 'Download the latest self-contained Mac app, with firmware, flashing tools and installation instructions.' },
-  { n: '09', title: 'Locations', path: '/locations', desc: 'Create and review private floor-plan drafts before publishing.', capability: 'locations.manage' },
+  { title: 'ML job', path: '/train', group: 'ML', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
+  { title: 'ML data', path: '/ml-data', group: 'ML', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
+  { title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
+  { title: 'Updates', path: '/updates', group: 'Devices', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
+  { title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
+  { title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
+  { title: 'TMflash web', path: '/flash', group: 'Devices', desc: 'Flash a sensor from this browser over USB, set it up and admit it — no app to install.' },
+  { title: 'TMflash download', path: '/tmflash-download', group: 'Devices', desc: 'Download the latest self-contained Mac app, with firmware, flashing tools and installation instructions.' },
+  { title: 'Locations', path: '/locations', desc: 'Create and review private floor-plan drafts before publishing.', capability: 'locations.manage' },
 ] as const;
 
 type ConsoleModule = typeof MODULES[number];
@@ -147,7 +151,7 @@ function AccountMenu({ user, path, onSignOut }: { user: string; path: string; on
   </div>;
 }
 
-/** Hamburger navigation uses its own section numbers; module cards keep their existing numbers. */
+/** Hamburger navigation groups modules and reveals the current page by name. */
 function MobileNavigation({ path, modules, canManageAccounts }: { path: string; modules: ConsoleModule[]; canManageAccounts: boolean }) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<Record<'ML' | 'Devices', boolean>>({ ML: false, Devices: false });
@@ -169,17 +173,17 @@ function MobileNavigation({ path, modules, canManageAccounts }: { path: string; 
     window.addEventListener('blur', blur);
     return () => { document.removeEventListener('pointerdown', outside); desktop.removeEventListener('change', resize); window.removeEventListener('blur', blur); };
   }, [open]);
-  type Entry = { title: string; path: string; n: string; children?: never }
-    | { title: 'ML' | 'Devices'; n: string; children: ConsoleModule[]; path?: never };
+  type Entry = { title: string; path: string; children?: never }
+    | { title: 'ML' | 'Devices'; children: ConsoleModule[]; path?: never };
   const links: Entry[] = [
-    { title: 'Home', path: '/', n: '01' },
-    { title: 'Algorithm flow', path: '/flow', n: '02' },
-    { title: 'ML', n: '03', children: modules.filter(module => groupOf(module) === 'ML') },
-    { title: 'Debug console', path: '/console', n: '04' },
-    { title: 'Devices', n: '05', children: modules.filter(module => groupOf(module) === 'Devices') },
-    { title: 'Analytics', path: '/analytics', n: '06' },
-    { title: 'Locations', path: '/locations', n: '07' },
-    { title: 'Accounts', path: '/accounts', n: '08' },
+    { title: 'Home', path: '/' },
+    { title: 'Algorithm flow', path: '/flow' },
+    { title: 'ML', children: modules.filter(module => groupOf(module) === 'ML') },
+    { title: 'Debug console', path: '/console' },
+    { title: 'Devices', children: modules.filter(module => groupOf(module) === 'Devices') },
+    { title: 'Analytics', path: '/analytics' },
+    { title: 'Locations', path: '/locations' },
+    { title: 'Accounts', path: '/accounts' },
   ];
   const visibleLinks = links.filter(link => link.children ? link.children.length > 0
     : link.path === '/' || (link.path === '/accounts' ? canManageAccounts : modules.some(module => module.path === link.path)));
@@ -205,7 +209,7 @@ function MobileNavigation({ path, modules, canManageAccounts }: { path: string; 
           aria-expanded={expanded[link.title]} aria-controls={`${id}-${link.title}`}
           data-active={link.children.some(module => screenOf(module.path) === screen) || undefined}
           onClick={() => setExpanded(value => ({ ...value, [link.title]: !value[link.title] }))}>
-          <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span><span className="cx-mobile-nav-label">{link.title}</span>
+          <span className="cx-mobile-nav-label">{link.title}</span>
           <span className="cx-mobile-nav-chevron" aria-hidden="true">{expanded[link.title] ? '▾' : '▸'}</span>
         </button>
         <div id={`${id}-${link.title}`} role="group" aria-labelledby={`${id}-${link.title}-toggle`} hidden={!expanded[link.title]}>
@@ -216,7 +220,7 @@ function MobileNavigation({ path, modules, canManageAccounts }: { path: string; 
         </div>
       </div> : <a key={link.path} href={link.path} data-testid={link.path === '/locations' ? 'location-nav-mobile' : undefined} aria-current={screenOf(link.path) === screen ? 'page' : undefined}
         onClick={event => { event.preventDefault(); setOpen(false); navigate(link.path); }}>
-        <span className="cx-mobile-nav-number" aria-hidden="true">{link.n}</span><span className="cx-mobile-nav-label">{link.title}</span>
+        <span className="cx-mobile-nav-label">{link.title}</span>
       </a>)}
     </nav>}
   </div>;

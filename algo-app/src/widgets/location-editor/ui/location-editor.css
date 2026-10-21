@@ -454,3 +454,6 @@
 .cx .loc-boundary-table .loc-boundary-remove { display: inline-flex; align-items: center; justify-content: center; width: 36px; min-height: 44px; padding: 0; }
 .cx .loc-boundary-remove svg { width: 17px; height: 17px; }
 .cx .loc-boundary-add { align-self: flex-start; min-height: 44px; }
+
+.cx .loc-table-removal { padding-top: 12px; border-top: 1px solid var(--border-subtle-01); }
+.cx .loc-table-removal .btn { min-height: 44px; }

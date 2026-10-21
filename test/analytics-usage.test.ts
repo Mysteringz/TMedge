@@ -46,7 +46,7 @@ async function start(t: { after(fn: () => Promise<void>): void }, publishers?: S
 async function signup(base: string): Promise<string> {
   const response = await fetch(`${base}/signup`, {
     method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ email: EMAIL, name: 'Chan Tai Man', password: 'correct horse battery' }),
+    body: new URLSearchParams({ email: EMAIL, name: 'Chan Tai Man', password: 'Correct-Horse-Battery-1' }),
   });
   return (response.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
 }

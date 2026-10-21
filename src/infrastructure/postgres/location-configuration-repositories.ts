@@ -395,7 +395,7 @@ export class PostgresPublishedLocationRepository implements PublishedLocationRep
         await manager.query(
           `INSERT INTO public.location_published_revisions (location_id, revision, created_by, created_at, document, legacy_spatial, asset_provenance, source_draft)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)`,
-          [input.revision.locationId, nextRevision, input.revision.createdBy, input.revision.createdAt, JSON.stringify(checkedCandidate.document), JSON.stringify(checkedCandidate.legacySpatial), JSON.stringify(assetProvenance), JSON.stringify(sourceDraft ?? null)],
+          [input.revision.locationId, nextRevision, input.revision.createdBy, input.revision.createdAt, JSON.stringify(checkedCandidate.document), JSON.stringify(checkedCandidate.legacySpatial), JSON.stringify(assetProvenance), sourceDraft ? JSON.stringify(sourceDraft) : null],
         );
         await manager.query(
           `INSERT INTO public.location_active_revisions (location_id, revision) VALUES ($1, $2)

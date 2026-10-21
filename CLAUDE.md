@@ -25,15 +25,17 @@ src/algo/                algo console: node-graph over the real pipeline (docs/A
 src/algo/auth.ts         its sign-in: per-person accounts, cookie, Turnstile (no Basic auth)
 src/modules/algo-admin/  accounts (admins, /api/admin/accounts) and each person's own account (/api/account: address, password, sessions; docs/algo-admin-roles.md)
 src/infrastructure/email/  Amazon SES sender: SigV4 by hand, the EC2 instance role's keys, EMAIL_* config (docs/EMAIL.md)
-src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports (docs/ML_DATA.md)
+src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports, download keys for training jobs (docs/ML_DATA.md)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, Devices dropdown (04 /updates, 06 /adoption, 07 /flash), 05 /analytics; account icon -> /account
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, Devices dropdown (04 /updates, 06 /adoption, 07 /flash, 08 /tmflash-download), 05 /analytics; account icon -> /account. The numbers are for documents and comments: no page shows one
 algo-app/src/console/motion.css  how every control in the console moves (Bluegrid's durations and curves, one reduced-motion rule); motion.tsx: exits (usePresence, Presence) and the travelling fill/line (Switcher, TabList)
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
 src/modules/workspace/   the landing page's team side: mailbox, feature requests, tasks (docs/WORKSPACE.md); /api/workspace
-src/modules/assistant/   Ask AI: a model on the team's Proxmox cluster, told config/ai-knowledge.md (docs/ASSISTANT.md); /api/assistant
+src/modules/assistant/   Ask AI: a model on the team's Proxmox cluster, told config/ai-knowledge.md and shown matching source (docs/ASSISTANT.md); /api/assistant
+src/modules/assistant/domain/code-index.ts  how Ask AI reads this repository: what may be indexed, redaction, cutting files into pieces, finding the pieces for a question (BM25)
+src/tools/code-index.ts  builds dist/src/code-index.json during npm run build; it ships in the release
 config/ai-knowledge.md   what Ask AI knows about the system -- UPDATE IT WITH EVERY CHANGE TO THE SYSTEM (rule below)
 algo-app/src/widgets/workspace/  the landing page under the welcome: the search/ask box, suggestions, system figures, mailbox, board
 src/algo/flasher-login.ts browser consent + PKCE exchange for account-bound TMflash access
@@ -44,6 +46,8 @@ src/infrastructure/tmflash-release/  module 08's latest native app: verified Git
 src/edge/adoption-credentials.ts private digest store, expiry, account invalidation and revocation
 src/console-client/      admin console UI
 src/tools/simulator.ts   virtual nodes sending real signed packets; --truth for accuracy
+tools/thermalml/         offline thermal ML: day shards, locked test days, staticbg port, teacher labels, training, the hand test, cluster/PC jobs (hpc_job.py), the nightly loop (nightly.py) (docs/THERMAL_ML.md)
+src/tools/replay.ts      today's edge detector replayed over day shards: the baseline a new model has to beat
 ```
 
 ## Commands
@@ -191,10 +195,17 @@ has hidden Linux failures before.
   rest say what somebody works on. No permission check may read them; access
   is the access role and only that.
 - **The assistant answers and never acts.** It is given no tools, and nothing
-  it writes is executed or followed. It is shown the knowledge base and a few
-  figures every member already sees -- never mail, imagery, anything about a
-  student, a machine address or a secret. Its answers are always marked as
-  AI, and a model that is down is said to be down. docs/ASSISTANT.md.
+  it writes is executed or followed. It is shown the knowledge base, a few
+  figures every member already sees, and pieces of this repository's tracked
+  source and documents -- never mail, imagery, anything about a student, a
+  machine address, an email address or a secret. What may be indexed is the
+  allow-list in `domain/code-index.ts` and nothing else: never `config/`,
+  `data/` or a test's fixtures, and addresses are struck out. Its answers are
+  always marked as AI and list the files they were written from, and a model
+  that is down is said to be down. docs/ASSISTANT.md.
+- **This map is how the assistant finds a file.** Each line above is indexed
+  with every piece of the file or folder it names. A new module without a
+  line here is one Ask AI will look for in the wrong place.
 
 ## The assistant's knowledge base -- a rule for every change
 

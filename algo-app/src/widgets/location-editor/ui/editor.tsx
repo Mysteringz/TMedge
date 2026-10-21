@@ -786,7 +786,7 @@ export function LocationEditor({ draftId, step, onStep }: { draftId: string; ste
             </div>
           </details>
           <div className="loc-inspector-scroll" ref={inspectorScroll} role="region" aria-labelledby="loc-inspector-heading" tabIndex={0} data-testid="location-editor-inspector">
-            <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput} onShowCanvas={focusCanvas}
+            <EditorInspector document={document} selected={selection} onSelect={(value) => { setSelection(value); if (value?.kind === 'zone' && value.index !== undefined) focusCanvas(); }} update={update} onTransientValidityChange={reportTransientInput} onShowCanvas={focusCanvas}
               furnitureItems={furnitureItemsById} furnitureSource={source === 'generated' ? 'generated' : source === 'custom' ? 'custom' : 'other'}
               onOpenFurnitureLibrary={(type, tableId) => openFurnitureLibrary(type, { kind: 'table', tableId })} />
           </div>

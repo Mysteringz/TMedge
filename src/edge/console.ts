@@ -155,7 +155,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
   const secret = randomBytes(32);
   const feeds = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false });
   const clients = new Map<WebSocket, { binding: string; valid(): boolean; subscriptions: Set<string> }>();
-  ui.get('/api/ws-token', (req, res) => {
+  ui.get('/api/ws-token', (_req, res) => {
     const binding = String(res.locals.wsBinding ?? 'console');
     const expiresAt = Date.now() + 60_000;
     res.json({ token: `${expiresAt}.${createHmac('sha256', secret).update(`${expiresAt}:${binding}`).digest('hex')}` });
@@ -261,15 +261,22 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     },
     executeCommand: new ExecuteNodeCommand((command, authorized, issuer) =>
       rt.commandReceipts.send(command, { issuer: issuer ?? 'legacy:console', authorized: authorized ?? (() => true) })),
-    resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursor(uid)),
+    resetCursor: new ResetNodeCursor((uid) => rt.ingest.resetCursorAsync(uid)),
     mutating,
   }));
+
+  /**
+   * Who did it, for provisioning, firmware and rollout records: the account
+   * signed in to the algo console. The standalone console has one shared
+   * password and nobody to name, so there it is "console".
+   */
+  const actor = (req: Request) => req.res?.locals.user ? `algo:${String(req.res.locals.user)}` : 'console';
 
   ui.use('/api/provision', createProvisioningAdminRouter({
     service: provisioningService,
     mutating,
     broadcast: (message) => broadcast(message),
-    actor: req => req.res?.locals.user ? `algo:${String(req.res.locals.user)}` : 'console',
+    actor,
   }));
 
   const imageInUse = new RolloutImageUsageQuery(rt.rollouts);
@@ -280,6 +287,7 @@ export function createConsole(rt: EdgeRuntime, options: ConsoleOptions = {}): Co
     rollouts: rt.rolloutService,
     imageInUse,
     mutating,
+    actor,
     buildWorkerConfigured: () => firmwareBuildWorker.configured,
   }));
 
@@ -400,7 +408,7 @@ export function startConsole(rt: EdgeRuntime, optionsOrCore: ConsoleOptions | Co
       const to = moved(req).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
       return res.status(200).set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'").type('html').send(
         `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${to}">`
-        + `<title>The console moved</title><p>The console is now module 03 of the algo console: <a href="${to}">${to}</a></p>`,
+        + `<title>The console moved</title><p>The console is now the Debug console page of the algo console: <a href="${to}">${to}</a></p>`,
       );
     });
   } else {

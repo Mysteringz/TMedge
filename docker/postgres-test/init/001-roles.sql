@@ -9,6 +9,16 @@ GRANT CONNECT ON DATABASE tmedge_test TO tmedge_migrator, tmedge_runtime;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO tmedge_migrator;
 GRANT USAGE ON SCHEMA public TO tmedge_runtime;
+
+-- Create the private TypeORM ledger before application-table default grants.
+-- Runtime accounts must never read or rewrite migration history.
+SET ROLE tmedge_migrator;
+CREATE TABLE public.migrations (
+  id serial PRIMARY KEY,
+  timestamp bigint NOT NULL,
+  name varchar NOT NULL
+);
+RESET ROLE;
 ALTER DEFAULT PRIVILEGES FOR ROLE tmedge_migrator IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO tmedge_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE tmedge_migrator IN SCHEMA public

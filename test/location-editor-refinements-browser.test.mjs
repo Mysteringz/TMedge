@@ -1,6 +1,6 @@
 // Real editing regressions against disposable file storage, without .env or production services.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -138,7 +138,7 @@ test('wizard progress, compact mobile controls, defaults and step focus remain u
 
     // Uploaded-model summaries must send the user to the existing alignment controls.
     const draft = await read();
-    const bytes = readFileSync('../tmp/new-location-add-wizard/task-3-3-qa-preparation/qa-self-contained-textured-triangle.glb');
+    const bytes = makeTriangleGlb();
     const upload = await context.request.put(`${base}/api/locations/drafts/${created.draftId}/assets/model`, {
       headers: { origin: base, 'x-tm-algo': '1', 'if-match': String(draft.draftRevision), 'content-type': 'model/gltf-binary' }, data: bytes,
     });
@@ -162,3 +162,27 @@ test('wizard progress, compact mobile controls, defaults and step focus remain u
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Build a self-contained room-model fixture so this regression runs in any checkout.
+function makeTriangleGlb() {
+  const binary = Buffer.alloc(36);
+  [0, 0, 0, 1, 0, 0, 0, 0, 1].forEach((value, index) => binary.writeFloatLE(value, index * 4));
+  const json = Buffer.from(JSON.stringify({
+    asset: { version: '2.0', generator: 'TMedge Task 4.1 browser fixture' },
+    scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, mode: 4 }] }],
+    buffers: [{ byteLength: binary.byteLength }],
+    bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: binary.byteLength, target: 34962 }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 0, 1] }],
+  }));
+  const jsonLength = align4(json.byteLength), binaryLength = align4(binary.byteLength);
+  const total = 12 + 8 + jsonLength + 8 + binaryLength;
+  const glb = Buffer.alloc(total, 0x20);
+  glb.writeUInt32LE(0x46546c67, 0); glb.writeUInt32LE(2, 4); glb.writeUInt32LE(total, 8);
+  glb.writeUInt32LE(jsonLength, 12); glb.writeUInt32LE(0x4e4f534a, 16); json.copy(glb, 20);
+  const binaryHeader = 20 + jsonLength;
+  glb.writeUInt32LE(binaryLength, binaryHeader); glb.writeUInt32LE(0x004e4942, binaryHeader + 4); binary.copy(glb, binaryHeader + 8);
+  return glb;
+}
+
+function align4(length) { return Math.ceil(length / 4) * 4; }

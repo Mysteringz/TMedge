@@ -71,7 +71,7 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
   // Whether a model is set up is asked once: the box says so instead of offering what cannot answer.
   useEffect(() => {
     const controller = new AbortController();
-    assistantStatus(controller.signal).then(setAssistant).catch(() => { if (!controller.signal.aborted) setAssistant({ available: false, reason: null, model: null, knowledgeUpdatedAt: null }); });
+    assistantStatus(controller.signal).then(setAssistant).catch(() => { if (!controller.signal.aborted) setAssistant({ available: false, reason: null, model: null, knowledgeUpdatedAt: null, code: null }); });
     return () => { controller.abort(); asking.current?.abort(); };
   }, [user]);
 
@@ -128,7 +128,7 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
     setExchanges((all) => [...all.slice(-5), { id, question, answer: '', state: 'waiting' }]);
     const controller = new AbortController();
     asking.current = controller;
-    ask(question, history, controller.signal, (piece) => patch((exchange) => ({ answer: exchange.answer + piece, state: 'writing' })))
+    ask(question, history, controller.signal, (piece) => patch((exchange) => ({ answer: exchange.answer + piece, state: 'writing' })), (sources) => patch({ sources }))
       .then(() => patch({ state: 'done' }))
       .catch((cause) => patch(controller.signal.aborted ? { state: 'stopped' }
         : { state: 'failed', error: cause instanceof AssistantError ? cause.message : 'The assistant could not answer. Try again.' }))
@@ -167,7 +167,7 @@ export function Workspace({ user, flash }: { user: string; flash(message: string
           ))}
         </nav>
         {exchanges.length > 0 && (
-          <AssistantPanel exchanges={exchanges} model={assistant?.model ?? null} onStop={() => asking.current?.abort()}
+          <AssistantPanel exchanges={exchanges} model={assistant?.model ?? null} readsSource={!!assistant?.code} onStop={() => asking.current?.abort()}
             onClear={() => { asking.current?.abort(); setExchanges([]); }} />
         )}
       </div>

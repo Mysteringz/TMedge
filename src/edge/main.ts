@@ -17,6 +17,12 @@ import { PostgresLocationAssetMetadataRepository, PostgresLocationAssetStore, Po
 import { PostgresLocationRegistrySnapshotRepository } from '../infrastructure/postgres/location-registry-snapshot-repository.js';
 import type { LocationRegistrySnapshot, RegistryMutationCoordinator } from '../modules/location-config/repositories/location-storage.js';
 import type { DataSource } from 'typeorm';
+import { PostgresSiteLease } from '../infrastructure/postgres/site-leadership.js';
+import { PostgresReplayStore } from '../infrastructure/postgres/replay-store.js';
+import type { ReplayPersistence } from './replay.js';
+import type { ActiveSiteLease } from '../infrastructure/postgres/site-leadership.js';
+import { PostgresHelloReplayStore } from '../infrastructure/postgres/hello-replay-store.js';
+import type { HelloReplayPersistence } from './hello-replay.js';
 
 function checkNodesWritable(nodesPath: string): void {
   try {
@@ -33,7 +39,7 @@ function checkNodesWritable(nodesPath: string): void {
 async function main(): Promise<void> {
   const loaded = await loadConfiguration();
   if (!loaded) return;
-  const { cfg, registry, source, provisioningRepository, locationPublication } = loaded;
+  const { cfg, registry, source, provisioningRepository, locationPublication, replayStore, helloStore, leadership } = loaded;
   const edge = createEdgeApplication(cfg, registry, {
     provisioningRepository,
     provisioningToken: cfg.flashToken,
@@ -41,6 +47,7 @@ async function main(): Promise<void> {
     locationPublication,
     postgres: source ?? undefined,
     closePersistence: loaded.closePersistence,
+    leadership, replayStore, helloStore,
   });
   const rejectBudgetTimer = installRuntimeLogs(edge.runtime);
   let shuttingDown = false;  const shutdown = async () => {
@@ -80,6 +87,9 @@ async function loadConfiguration(): Promise<{
   locationPublication: NonNullable<NonNullable<Parameters<typeof createEdgeApplication>[2]>['locationPublication']>;
   registryMutationCoordinator: RegistryMutationCoordinator;
   closePersistence: () => Promise<void>;
+  replayStore?: ReplayPersistence;
+  leadership?: ActiveSiteLease;
+  helloStore?: HelloReplayPersistence;
 } | null> {
   let source: DataSource | null = null;
   let filePersistence: ReturnType<typeof initializeFileLocationPersistence> | null = null;
@@ -119,7 +129,10 @@ async function loadConfiguration(): Promise<{
     const active = activeDocuments(initialSnapshot);
     const registry = buildRegistryFromLocationDocuments(site, nodesConfigFor(initialSnapshot), active.documents, active.legacySpatialByLocation, active.modelDispositionByLocation, new Set(initialSnapshot.locations.filter(row => row.removal).map(row => row.locationId)));
     const provisioningRepository = new PostgresProvisioningRepository(source);
-    return { cfg, registry, source, provisioningRepository,
+    const leadership = cfg.failover ? new PostgresSiteLease(source, cfg.failover) : undefined;
+    const replayStore = leadership ? await PostgresReplayStore.open(source, () => leadership.fence()) : undefined;
+    const helloStore = leadership ? new PostgresHelloReplayStore(source, () => leadership.fence()) : undefined;
+    return { cfg, registry, source, provisioningRepository, leadership, replayStore, helloStore,
       registryMutationCoordinator: mutationCoordinator,
       locationPublication: { siteSeed: site, drafts, published, snapshots, assets, assetMetadata },
       closePersistence: () => closePostgres(source!) };

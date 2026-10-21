@@ -1,3 +1,4 @@
+import { TrackLocationRemoval1792195200000 } from '../src/infrastructure/postgres/migrations/1792195200000-TrackLocationRemoval.js';
 import { TrackLocationPublicationSource1792108800000 } from '../src/infrastructure/postgres/migrations/1792108800000-TrackLocationPublicationSource.js';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -39,6 +40,7 @@ const furnitureMigrations = [
   AddLocationAssetDisplayName1791936000000,
   AddFurnitureLocationAssets1792022400000,
   TrackLocationPublicationSource1792108800000,
+  TrackLocationRemoval1792195200000,
 ];
 
 test('PostgreSQL furniture metadata is shared, authored assignments persist, and rollback fails safely', {

@@ -89,7 +89,7 @@ test('parameter dispatch and recovery require dispatched sequence plus newer acc
     ingest: { links: new Map([[UID, { boot: 1 }]]), sendCommand: () => new Promise<number>((resolve) => { resolveSend = resolve; }) },
   } as unknown as EdgeRuntime;
   const broker = new ParamBroker(runtime);
-  const sending = broker.apply({ uid: UID, nodeId: 'bg', param: 'min_contrast', binding: { kind: 'device', param: 'min_contrast' }, value: 60, by: 'test' });
+  const sending = broker.apply({ uid: UID, nodeId: 'bg', binding: { kind: 'device', param: 'min_contrast' }, value: 60, by: 'test' });
   const pending = broker.changes()[0]; assert.ok(pending); statusAt = pending.at;
   assert.equal(pending.cmdSeq, null); assert.equal(broker.changes()[0]?.confirmedAt, null);
   resolveSend(100); await sending; assert.equal(broker.changes()[0]?.confirmedAt, null);

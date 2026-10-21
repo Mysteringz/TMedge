@@ -75,7 +75,7 @@ export function Dialog({ title, label, busy, dirty, submit, cancel = 'Cancel', o
     return () => { if (opener?.isConnected) opener.focus(); };
   }, []);
   const onKey = (event: React.KeyboardEvent) => {
-    // The page behind has shortcuts of its own (module numbers, the search key).
+    // The page behind has shortcuts of its own (the search keys).
     event.stopPropagation();
     if (event.key === 'Escape') { event.preventDefault(); if (!busy) close.current(); return; }
     if (event.key !== 'Tab' || !form.current) return;

@@ -1,0 +1,11 @@
+# Offline training/labelling environment for tools/thermalml (not the edge).
+#   python3 -m venv data/ml/.venv && data/ml/.venv/bin/pip install -r tools/thermalml/requirements-ml.txt
+# The data tools (shards, staticbg, metrics) need only numpy; the rest is for
+# running teachers and training. Ultralytics is AGPL-3.0: an offline labelling
+# tool here, never shipped with the edge.
+numpy==2.5.4
+opencv-python-headless==5.0.0.93
+torch==2.14.1
+torchvision==0.29.1
+ultralytics==8.4.176
+certifi==2026.7.22

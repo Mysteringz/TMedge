@@ -1,7 +1,5 @@
-This is Ask AI's system knowledge, sent before every question. Keep it true
-and update it in the same commit as system changes (CLAUDE.md, "The
-assistant's knowledge base"). Keep it under 16 kB; no secrets, machine
-addresses or information about named people.
+Ask AI's system knowledge. Maintainers: the rules for this file are in
+CLAUDE.md, "The assistant's knowledge base".
 
 ## What the system is
 
@@ -34,6 +32,9 @@ settings and boot counters survive.
   v1 rejects it. Students see public layout/status only; generated rooms fetch
   no assets. Preview sits beside Details/Sensors; valid 2D edits render live,
   invalid edits keep last-valid. Generated rooms use 3 m walls, 0.75 m tables.
+  Removing a table confirms first, removes its seats and sensor ownership
+  references from the draft, and changes the published layout only on publication.
+  Historical publications remain valid without a draft receipt.
 
 ## How a count is made
 
@@ -61,63 +62,46 @@ Rules that are never broken:
 
 ## The console, algo.hkumyseat.com
 
-Menu: 01 Home, 02 Algorithm flow, 03 ML, 04 Debug console,
-05 Devices, 06 Analytics, 07 Locations, 08 Accounts. ML/Devices expand independently; the current group opens.
+Menu: Home, Algorithm flow, ML, Debug console, Devices, Analytics, Locations
+and Accounts. ML/Devices expand independently; the current group opens. Locations requires
+location-management access; Accounts requires account-management access.
+The menu and module cards show names without module numbers.
 
-At the right of the header are the notifications bell and an account icon.
-The account icon opens a menu with the person's username and access role,
-"Account settings", and "Sign out". The username and role are no longer
-written in the header itself.
+Home shows a welcome, search, frequently used modules, six live figures,
+mailbox and board (requests and tasks). Search first finds modules, pages,
+members, your own mail, requests, tasks and sensors. Questions or unmatched
+searches go to Ask AI. Press "/" to focus search.
 
-The landing page has, top to bottom: a welcome line, one search box, quick
-suggestions (the modules this person uses most), six live system figures, the
-mailbox, and the board (feature requests and tasks).
-
-The search box looks things up on the site first: modules, pages, members,
-your own mail, requests, tasks and sensors. A question, or anything the site
-has no match for, goes to Ask AI instead (that is you). Press "/" to focus it.
-
-Modules:
+Modules (docs number them; pages show names):
 - 01 Algorithm flow, /flow. A node graph over the real detection pipeline.
   Change a parameter and see its effect on live or recorded frames. A live
   parameter change reaches the real sensor or engine, and reverts by itself
   after 15 minutes unless it is committed. Every change is written to an
   audit log with the old value. The preview runs the firmware's own detector
   code compiled for the server, so it cannot drift from the sensor.
-- 02 ML job, /train. The ML menu groups ML job and ML data. ML job is the training page. Write a training script, run it on the university's
+- 02 ML job, /train. The training page. Write a training script, run it on the university's
   HPC cluster through SLURM, watch the job, fetch results. Each person signs
   in to the cluster as themselves; credentials are sealed in the browser,
   used once and never stored.
 - 02 ML data, /ml-data. Query the private PostgreSQL training database with a
-  SELECT or WITH statement, inspect table definitions and a SchemaSpy report,
-  and download selected tables as a ZIP containing a SQL dump and a manifest.
-  The console shows at most 200 rows, bounds result sizes and query time, and
-  summarizes binary values as byte counts. Queries cannot change the database. The dedicated reader can read table
-  data and sequence values for exports, but cannot advance or change sequences.
-  Every signed-in access role may query and inspect the schema; Operator,
-  Engineer and Admin may prepare exports. Each export belongs to the account
-  that requested it. With the private worker configured, Proxmox stores the
-  ZIP; the edge keeps account-owned receipts and streams the download without
-  storing the ZIP. Downloads resume and fail on truncation. Existing local ZIPs work.
-  Preparation runs in the background and the page polls
-  for completion; completed ZIPs expire after 24 hours. Active downloads are
-  protected from cleanup. The worker enforces disk and archive limits; raising
-  a quota does not create free space. Restarted unfinished
-  exports fail and can be generated again. The table browser reads the live
-  database; the SchemaSpy report is a separately generated snapshot. SchemaSpy generation
-  runs on Proxmox; the console serves its static output.
-  A Graphviz diagram sits beside the tools, below them on phones. A watcher
-  checks schema and row-write counters every 30 seconds between jobs and
-  regenerates SchemaSpy on Proxmox; changes during generation trigger the
-  next check. The edge privately synchronizes completed snapshots and the
-  page polls every 15 seconds. Failures retain the last diagram and timestamp.
+  read-only SELECT or WITH statement, inspect its schema and download selected
+  tables as an owner-only ZIP. Results are capped at 200 rows, by bytes and by
+  time; binary values appear only as byte counts. Every role may query;
+  Operator, Engineer and Admin may export. Proxmox prepares bounded ZIPs and
+  the edge streams resumable, truncation-checked downloads; jobs run in the
+  background, interrupted jobs fail, and completed ZIPs expire after 24 hours.
+  A revocable, one-time-shown download key lasting 1 hour, 24 hours or 7 days
+  lets a training job list and fetch only its owner's exports, and ends after
+  a password change. The table browser is live. SchemaSpy and its Graphviz
+  diagram are snapshots generated on Proxmox, synchronized to the edge and
+  refreshed after schema or row-write changes; failures keep the last result.
 - 03 Debug console, /console. Live thermal frames, the floor with fused
   occupancy, per-sensor health, and commands to a sensor (set a parameter,
   reset its background, identify, save, reboot).
 - 04 Updates, /updates. Upload firmware source, build an image, roll it out
-  over the air. A rollout always flashes one pilot sensor first and waits for
-  it to report the new version with a working sensor; a failed pilot stops
-  everything.
+  over the air; each records who did it. A rollout always flashes one pilot
+  sensor first; it must report the new version with a working sensor, or
+  everything stops.
 - 05 Analytics, /analytics. How the student site is used (students online,
   searches, sign-ins, traffic) at /analytics/usage, and how the server is
   doing (processor, memory, storage with a fill forecast, services, sensor
@@ -242,9 +226,26 @@ can move its status (to do, in progress, done) whatever their role.
 - Training data (thermal and camera frame pairs from the calibration rig) is
   recorded only when recording is switched on, and is stored privately, apart
   from anything students can reach.
-- Ask AI runs on a model hosted on the team's own cluster, not on a public
-  service. It has read this file and a few live figures. It has no tools and
-  cannot change anything.
+- Ask AI runs on a model on the team's own cluster, not a public service. It
+  is given this file, a few live figures and, when a question names something
+  a file can be found by, a few pieces of this repository's source and
+  documents (tests by title only; never configuration or data). Each answer
+  lists the files it was shown. It sees pieces, not whole files, explains
+  code without writing it out, and has no tools: it cannot change anything.
+  The model is loaded when the landing page opens.
+
+## Availability
+
+Cloudflare normally sends students to AWS and uses the Proxmox website after
+readiness failures. Its database copy is read-only: accounts can sign in, but
+sign-up, activity, sensor and console writes stay on AWS. Occupancy is mirrored
+to both sites; AWS loss makes it unknown, never empty.
+
+Full-site mode is not live. A PostgreSQL lease will authorize one origin for
+sensor, console and student traffic; only its listeners, readiness and input
+health remain active. Replay and command cursors are fenced. Shared console,
+artifact and ML state plus a managed database restore/failover rehearsal are
+required before enabling it. See docs/FAILOVER.md and deploy/backup/README.md.
 
 ## Where to look for more
 
@@ -254,6 +255,6 @@ can move its status (to do, in progress, done) whatever their role.
 - Server health and storage: Analytics, server view.
 - Student usage: Analytics, usage view.
 - A sensor that will not join: Adoption, and docs/ADOPTION.md.
-- Browser flashing: TMflash web (07), docs/WEB_FLASHER.md. Mac app: TMflash download (08), docs/TMFLASH_DOWNLOAD.md.
+- Browser flashing: TMflash web, docs/WEB_FLASHER.md. Mac app: TMflash download, docs/TMFLASH_DOWNLOAD.md.
 - Firmware: Updates. Training: ML job, and docs/hpc/. Database: ML data, and docs/ML_DATA.md.
 - The workspace and this assistant: docs/WORKSPACE.md, docs/ASSISTANT.md.

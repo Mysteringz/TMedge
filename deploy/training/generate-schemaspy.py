@@ -7,7 +7,6 @@ SchemaSpy and PostgreSQL JDBC jars. The web app only serves the resulting files.
 import argparse
 import fcntl
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess

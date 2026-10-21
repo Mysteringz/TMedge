@@ -25,7 +25,7 @@ In pgAdmin, register a server (for example, **TMedge Local Test DB**) and enter:
 | Username | `tmedge_runtime` |
 | Password | `local-test-runtime-only` |
 
-Use the runtime account to browse and run queries. It can use tables but cannot create or alter schema objects. The database has no application tables until a migration creates them. To apply a reviewed migration, use the migration role from a terminal:
+Use the runtime account to browse and run queries. It can use tables but cannot create or alter schema objects. The database has no application tables until a migration creates them. Initialization creates a private TypeORM migration ledger before granting runtime access to future application tables; the runtime account cannot read or change that ledger. To apply a reviewed migration, use the migration role from a terminal:
 
 ```sh
 PGHOST=127.0.0.1 PGPORT=55432 PGDATABASE=tmedge_test \

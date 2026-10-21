@@ -39,7 +39,6 @@ export function TMflashDownload() {
   const fileSize = release ? release.size < 1024 * 1024 ? `${Math.ceil(release.size / 1024)} KB` : `${(release.size / (1024 * 1024)).toFixed(1)} MB` : null;
 
   return <main className="cx-tmflash-download">
-    <p className="cx-eyebrow">Module 08 · The Mac app</p>
     <h1>TMflash download</h1>
     <p className="td-intro">Your TMsense workbench, ready to go.</p>
 

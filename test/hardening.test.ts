@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Ingest } from '../src/edge/ingest.js';
-import { ReplayStore } from '../src/edge/replay.js';
+import { readReplaySnapshot, ReplayStore } from '../src/edge/replay.js';
 import { buildReport, CMD_SAVE_PARAMS, CMD_SET_PARAM, REPORT_BACKGROUND_READY } from '../src/edge/protocol.js';
 import { requestUrl } from '../src/shared/http.js';
 import { FrameStore } from '../src/algo/frames.js';
@@ -37,6 +37,16 @@ test('a damaged replay journal fails closed rather than resetting trust', () => 
   const path = join(mkdtempSync(join(tmpdir(), 'replay-')), 'replay.jsonl');
   writeFileSync(path, '["cmd",1]\n["partial"');
   assert.throws(() => new ReplayStore(path), /incomplete/);
+});
+
+test('the cutover replay reader is strict and does not rewrite its source', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'replay-import-')), 'replay.jsonl');
+  const source = '["cmd",8]\n["30:ed:a0:cb:f5:f8",2,3]\n["cmd",7]\n';
+  writeFileSync(path, source);
+  const snapshot = readReplaySnapshot(path);
+  assert.equal(snapshot.commandSeq, 8);
+  assert.deepEqual(snapshot.cursors.get(UID), { boot: 2, seq: 3 });
+  assert.equal(readFileSync(path, 'utf8'), source);
 });
 
 test('durable admission batches disk sync, keeps the event loop responsive, and rejects concurrent duplicates', async () => {
@@ -128,7 +138,7 @@ test('unreachable parameter reverts remain pending and survive process restart',
     } },
   } as unknown as EdgeRuntime;
   const broker = new ParamBroker(rt);
-  await broker.apply({ uid: UID, nodeId: 'bg-1', param: 'min_contrast', binding: { kind: 'device', param: 'min_contrast' }, value: 90, by: 'test' });
+  await broker.apply({ uid: UID, nodeId: 'bg-1', binding: { kind: 'device', param: 'min_contrast' }, value: 90, by: 'test' });
   offline = true;
   await assert.rejects(broker.revert(UID, 'min_contrast', 'test'), /offline/);
   assert.equal(broker.changes().length, 1);
@@ -170,7 +180,7 @@ test('saving parameters cannot absorb a simultaneous temporary write and revert 
     } },
   } as unknown as EdgeRuntime;
   const broker = new ParamBroker(rt);
-  const change = (value: number) => broker.apply({ uid: UID, nodeId: 'bg-1', param: 'min_contrast',
+  const change = (value: number) => broker.apply({ uid: UID, nodeId: 'bg-1',
     binding: { kind: 'device', param: 'min_contrast' }, value, by: 'test' });
   await change(90);
   const saving = broker.persist(UID, 'test');

@@ -21,6 +21,7 @@ import { FilePublishedModelStore } from '../src/web/published-model-store.js';
 import { findGroup, searchSeats } from '../src/shared/seats.js';
 import type { OccupancySnapshot, TableShape, TableState } from '../src/shared/types.js';
 import { tableBounds } from '../src/shared/table-geometry.js';
+import { PASSWORD_MAX_LENGTH } from '../src/shared/password-rules.js';
 import { makerspace } from './fixtures.js';
 
 const TOKEN = 'edge-token-for-tests-0123456789';
@@ -102,7 +103,7 @@ test('web: uploaded models are immutable and student reads follow only the curre
   let web = createWebApp(cfg);
   await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
-  const cookie = await signup(base, 'model-reader@connect.hku.hk');
+  const cookie = await signup(base, 'u3100401@connect.hku.hk');
   const digest = createHash('sha256').update(bytes).digest('hex');
   try {
     assert.equal((await fetch(`${base}/api/models/${assetId}`, { headers: { cookie } })).status, 404);
@@ -190,7 +191,7 @@ test('web: furniture refs authorize globally keyed bytes only while at least one
   });
   await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
-  const cookie = await signup(base, 'furniture-reader@connect.hku.hk');
+  const cookie = await signup(base, 'u3100402@connect.hku.hk');
   const assetId = '00000000-0000-4000-8000-000000000095';
   const bytes = makeGlb({ asset: { version: '2.0', generator: 'published-shared-furniture' }, buffers: [] });
   const digest = createHash('sha256').update(bytes).digest('hex');
@@ -250,8 +251,8 @@ test('web: legacy published GLBs are inventoried once and receipt loss fails clo
   const changedBytes = makeGlb({ asset: { version: '2.0', generator: 'changed-after-baseline' }, buffers: [] });
   const assetId = '00000000-0000-4000-8000-000000000094';
   const digest = createHash('sha256').update(bytes).digest('hex');
-  mkdirSync(modelsPath, { recursive: true });
-  writeFileSync(join(modelsPath, `${assetId}.glb`), bytes);
+  mkdirSync(modelsPath, { recursive: true, mode: 0o700 });
+  writeFileSync(join(modelsPath, `${assetId}.glb`), bytes, { mode: 0o600 });
   try {
     const firstBoot = new FilePublishedModelStore(modelsPath);
     assert.deepEqual(await firstBoot.read(assetId), { bytes, sha256: digest },
@@ -328,7 +329,7 @@ test('web: model authorization is rechecked after the asynchronous byte read', a
   });
   await new Promise<void>((resolve) => web.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(web.server.address() as AddressInfo).port}`;
-  const cookie = await signup(base, 'winner-race@connect.hku.hk');
+  const cookie = await signup(base, 'u3100403@connect.hku.hk');
   const assetId = '00000000-0000-4000-8000-000000000093';
   const bytes = makeGlb({ asset: { version: '2.0' }, buffers: [] });
   const digest = createHash('sha256').update(bytes).digest('hex');
@@ -424,8 +425,9 @@ async function signup(base: string, email: string): Promise<string> {
   const res = await fetch(`${base}/signup`, {
     method: 'POST', redirect: 'manual',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ email, name: 'Test', password: 'correct horse battery' }),
+    body: new URLSearchParams({ email, name: 'Test', password: 'Correct-Horse-Battery-1' }),
   });
+  assert.equal(res.status, 200, await res.text());
   const cookie = res.headers.get('set-cookie') ?? '';
   return cookie.split(';')[0] ?? '';
 }
@@ -435,7 +437,7 @@ test('web: occupancy is only served to signed-in students', async () => {
   try {
     assert.equal((await fetch(`${w.base}/api/occupancy`)).status, 401);
     assert.equal((await fetch(`${w.base}/`, { redirect: 'manual' })).headers.get('location'), '/login/');
-    const cookie = await signup(w.base, 'a@connect.hku.hk');
+    const cookie = await signup(w.base, 'u3100001@connect.hku.hk');
     assert.ok(cookie.startsWith('tm_session='));
     assert.equal((await fetch(`${w.base}/api/occupancy`, { headers: { cookie } })).status, 200);
     // A forged or tampered session is refused.
@@ -445,20 +447,30 @@ test('web: occupancy is only served to signed-in students', async () => {
   }
 });
 
+/** Posts the sign-up form and reports the status with the server's own sentence. */
+async function attemptSignup(base: string, body: Record<string, string>): Promise<{ status: number; error: string }> {
+  const res = await fetch(`${base}/signup`, {
+    method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ name: 'Test Student', password: 'Correct-Horse-Battery-1', ...body }),
+  });
+  const parsed = await res.json().catch(() => ({})) as { error?: string };
+  return { status: res.status, error: parsed.error ?? '' };
+}
+
 test('web: sign-up is limited to university addresses and strong-enough passwords', async () => {
   const w = await start();
   try {
-    assert.equal(await signup(w.base, 'someone@gmail.com'), '');
+    assert.equal((await attemptSignup(w.base, { email: 'someone@gmail.com' })).status, 400);
     const weak = await fetch(`${w.base}/signup`, {
       method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ email: 'b@connect.hku.hk', password: 'short' }),
     });
     assert.equal(weak.status, 400);
     // Wrong password gets the same answer as an unknown email.
-    await signup(w.base, 'c@connect.hku.hk');
+    await signup(w.base, 'u3100003@connect.hku.hk');
     const bad = await fetch(`${w.base}/login`, {
       method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ email: 'c@connect.hku.hk', password: 'wrong password!!' }),
+      body: new URLSearchParams({ email: 'u3100003@connect.hku.hk', password: 'wrong password!!' }),
     });
     assert.equal(bad.status, 401);
     assert.match(await bad.text(), /do not match/);
@@ -467,10 +479,103 @@ test('web: sign-up is limited to university addresses and strong-enough password
   }
 });
 
+test('web: an account is a UID -- "u" and exactly seven digits -- and the domain is the server\'s to add', async () => {
+  const w = await start();
+  try {
+    // The form sends a bare UID: proof the server joins the domain itself,
+    // rather than trusting an address the browser assembled.
+    const bare = await attemptSignup(w.base, { email: 'u3100005' });
+    assert.deepEqual(bare, { status: 200, error: '' });
+    assert.ok(w.users.get('u3100005@connect.hku.hk'), 'stored under the full address, exactly as before');
+  } finally {
+    await w.close();
+  }
+
+  const second = await start();
+  try {
+    // The full address is accepted too, because that is a valid way to post it.
+    assert.equal((await attemptSignup(second.base, { email: 'u3100006@connect.hku.hk' })).status, 200);
+    assert.ok(second.users.get('u3100006@connect.hku.hk'));
+    for (const uid of ['u310000', 'u31000067', 'u310000x', 'u3100006@hku.hk', 'x3100006', 'someone@gmail.com', '']) {
+      const refused = await attemptSignup(second.base, { email: uid });
+      assert.equal(refused.status, 400, `${uid || '(empty)'} must not open an account`);
+    }
+    assert.equal(second.users.size, 1, 'nothing refused slipped in');
+  } finally {
+    await second.close();
+  }
+});
+
+test('web: an account needs a name you could actually call someone', async () => {
+  const w = await start();
+  try {
+    const missing = await attemptSignup(w.base, { email: 'u3100007', name: '' });
+    assert.equal(missing.status, 400);
+    assert.match(missing.error, /Enter your name\./);
+    const blank = await attemptSignup(w.base, { email: 'u3100007', name: '   ' });
+    assert.equal(blank.status, 400, 'whitespace is not a name');
+    assert.equal(w.users.size, 0, 'no account is made without a name');
+
+    const named = await attemptSignup(w.base, { email: 'u3100007', name: '  Chan Tai Man  ' });
+    assert.equal(named.status, 200);
+    assert.equal(w.users.get('u3100007@connect.hku.hk')?.name, 'Chan Tai Man', 'stored trimmed');
+  } finally {
+    await w.close();
+  }
+});
+
+test('web: the password rules name what is missing, and the server checks every one of them', async () => {
+  const w = await start();
+  try {
+    // Each of these is one requirement short of the one before it. The
+    // expectations are the labels from src/shared/password-rules.ts, because
+    // that is where the refusal's wording comes from.
+    const attempts: [string, RegExp][] = [
+      ['short1!', /at least 8 characters/],
+      ['ALLUPPER1!', /a lowercase letter/],
+      ['alllower1!', /an uppercase letter/],
+      ['NoNumber!!', /a number/],
+      ['NoSymbol11', /one or more symbols/],
+    ];
+    for (const [password, expected] of attempts) {
+      const refused = await attemptSignup(w.base, { email: 'u3100008', password });
+      assert.equal(refused.status, 400, `${password} must be refused`);
+      assert.match(refused.error, expected);
+    }
+    assert.equal(w.users.size, 0, 'a refused password never made an account');
+
+    // A password that meets all five, including one with no ASCII at all.
+    assert.equal((await attemptSignup(w.base, { email: 'u3100008', password: 'Str0ng-Pass!' })).status, 200);
+    assert.equal((await attemptSignup(w.base, { email: 'u3100009', password: 'Pässw0rd-Ünïcode' })).status, 200);
+  } finally {
+    await w.close();
+  }
+});
+
+test('web: a password is refused once it is longer than the ceiling the form shows', async () => {
+  const w = await start();
+  try {
+    // Meets every other requirement, so the only reason to refuse it is its
+    // length. The ceiling is refused before anything is hashed.
+    const tooLong = `Aa1!${'x'.repeat(PASSWORD_MAX_LENGTH)}`;
+    const refused = await attemptSignup(w.base, { email: 'u3100010', password: tooLong });
+    assert.equal(refused.status, 400);
+    assert.match(refused.error, new RegExp(`at most ${PASSWORD_MAX_LENGTH} characters`));
+    assert.equal(w.users.size, 0, 'an oversized password never reaches scrypt, let alone the file');
+
+    // The ceiling itself is allowed: the boundary belongs to the student.
+    const atLimit = `Aa1!${'x'.repeat(PASSWORD_MAX_LENGTH - 4)}`;
+    assert.equal(atLimit.length, PASSWORD_MAX_LENGTH);
+    assert.equal((await attemptSignup(w.base, { email: 'u3100010', password: atLimit })).status, 200);
+  } finally {
+    await w.close();
+  }
+});
+
 test('web: read-only for students -- only an edge with the token can change what others see', async () => {
   const w = await start();
   try {
-    const cookie = await signup(w.base, 'd@connect.hku.hk');
+    const cookie = await signup(w.base, 'u3100004@connect.hku.hk');
     const body = JSON.stringify(snapshot());
     const asStudent = await fetch(`${w.base}/api/edge/snapshot`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body });
     assert.equal(asStudent.status, 401);
@@ -622,12 +727,12 @@ test('web behind Cloudflare Tunnel: the session cookie is Secure over https, and
   const signupVia = (headers: Record<string, string>, email: string) => fetch(`${base}/signup`, {
     method: 'POST', redirect: 'manual',
     headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
-    body: new URLSearchParams({ email, name: 'T', password: 'correct horse battery' }),
+    body: new URLSearchParams({ email, name: 'T', password: 'Correct-Horse-Battery-1' }),
   });
   try {
-    const viaTunnel = await signupVia({ 'x-forwarded-proto': 'https', 'x-forwarded-for': '203.0.113.9' }, 'p@connect.hku.hk');
+    const viaTunnel = await signupVia({ 'x-forwarded-proto': 'https', 'x-forwarded-for': '203.0.113.9' }, 'u3400001@connect.hku.hk');
     assert.match(viaTunnel.headers.get('set-cookie') ?? '', /;\s*Secure/i, 'https via the local proxy -> Secure');
-    const onLan = await signupVia({}, 'q@connect.hku.hk');
+    const onLan = await signupVia({}, 'u3400002@connect.hku.hk');
     assert.doesNotMatch(onLan.headers.get('set-cookie') ?? '', /;\s*Secure/i, 'plain http on the LAN still works');
   } finally {
     await web.dispose();
@@ -652,7 +757,7 @@ test('with Turnstile on, sign-in and sign-up need a token Cloudflare accepted fo
   const post = (path: string, body: Record<string, string>) => fetch(`${base}${path}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
-  const account = { email: 'u3587219', name: 'T', password: 'a-long-enough-pin' };
+  const account = { email: 'u3587219', name: 'T', password: 'A-Long-Enough-Pin-1' };
   try {
     // The browser gets the public key and a CSP that lets Cloudflare's widget load -- never the secret.
     const page = await fetch(`${base}/login/`);
@@ -760,12 +865,12 @@ test('web: malformed credentials, cookies, origins and JSON are refused without 
     method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(value),
   });
   try {
-    for (const body of [[], null, { email: 3, password: 'long-password' }, { email: [], password: 'long-password' },
-      { email: 'a@connect.hku.hk', password: {} }, { email: 'a@connect.hku.hk', password: 'x'.repeat(1025) },
-      { email: 'a@connect.hku.hk', password: 'long-password', name: {} }]) {
+    for (const body of [[], null, { email: 3, password: 'Long-Password-1' }, { email: [], password: 'Long-Password-1' },
+      { email: 'u3100001@connect.hku.hk', password: {} }, { email: 'u3100001@connect.hku.hk', password: 'x'.repeat(1025) },
+      { email: 'u3100001@connect.hku.hk', password: 'Long-Password-1', name: {} }]) {
       for (const path of ['/login', '/signup']) assert.equal((await post(path, body)).status, 400);
     }
-    const account = { email: 'a@connect.hku.hk', password: 'long-password' };
+    const account = { email: 'u3100001@connect.hku.hk', name: 'Test', password: 'Long-Password-1' };
     for (const origin of ['null', 'invalid-url', 'https://127.0.0.1:' + new URL(w.base).port]) {
       assert.equal((await post('/signup', account, { origin })).status, 403);
     }
@@ -783,7 +888,7 @@ test('web: async authentication failures produce an error response and leave the
     w.users.verify = async () => { throw new Error('simulated authentication failure'); };
     const response = await fetch(`${w.base}/login`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'a@connect.hku.hk', password: 'long-password' }),
+      body: JSON.stringify({ email: 'u3100001@connect.hku.hk', password: 'long-password' }),
     });
     assert.equal(response.status, 500);
     assert.ok(!(await response.text()).includes('simulated authentication failure'));
@@ -832,8 +937,8 @@ test('web: concurrent registrations cannot overwrite an account and corrupted fi
   try {
     const users = new UserStore(path, ['connect.hku.hk']);
     const attempts = await Promise.allSettled([
-      users.create('same@connect.hku.hk', 'First', 'first-password'),
-      users.create('same@connect.hku.hk', 'Second', 'second-password'),
+      users.create('u3300001@connect.hku.hk', 'First', 'First-Password-1!'),
+      users.create('u3300001@connect.hku.hk', 'Second', 'Second-Password-1!'),
     ]);
     assert.equal(attempts.filter((v) => v.status === 'fulfilled').length, 1);
     assert.equal(users.size, 1);
@@ -1067,7 +1172,7 @@ test('web: a migrated floor is only counted once and edge identity storage is bo
 test('web: logout revokes a copied cookie and session revocation survives restart', async () => {
   const w = await start();
   try {
-    const cookie = await signup(w.base, 'logout@connect.hku.hk');
+    const cookie = await signup(w.base, 'u3100100@connect.hku.hk');
     assert.equal((await fetch(`${w.base}/api/me`, { headers: { cookie } })).status, 200);
     assert.equal((await fetch(`${w.base}/logout`, { method: 'POST', headers: { cookie } })).status, 200);
     assert.equal((await fetch(`${w.base}/api/me`, { headers: { cookie } })).status, 401);
@@ -1108,7 +1213,7 @@ test('web: WebSocket upgrades validate cookies and browser origins; logout and p
   let ws: WebSocket | null = null;
   try {
     assert.equal(await refusedSocket(w.base, { cookie: 'tm_session=%' }), 401);
-    const cookie = await signup(w.base, 'socket@connect.hku.hk');
+    const cookie = await signup(w.base, 'u3100200@connect.hku.hk');
     assert.equal(await refusedSocket(w.base, { cookie, origin: 'https://evil.example' }), 403);
     assert.equal(await refusedSocket(w.base, { cookie, origin: 'null' }), 403);
     ws = new WebSocket(w.base.replace(/^http/, 'ws') + '/ws', { headers: { cookie, origin: w.base } });
@@ -1118,7 +1223,7 @@ test('web: WebSocket upgrades validate cookies and browser origins; logout and p
     await fetch(`${w.base}/logout`, { method: 'POST', headers: { cookie } });
     await closed;
     assert.equal(await refusedSocket(w.base, { cookie, origin: w.base }), 401);
-    const second = await signup(w.base, 'socket2@connect.hku.hk');
+    const second = await signup(w.base, 'u3100201@connect.hku.hk');
     ws = new WebSocket(w.base.replace(/^http/, 'ws') + '/ws', { headers: { cookie: second, origin: w.base } });
     ws.on('error', () => {});
     await new Promise<void>((resolve, reject) => { ws!.once('message', () => resolve()); ws!.once('error', reject); });
@@ -1132,7 +1237,7 @@ test('web: WebSocket upgrades validate cookies and browser origins; logout and p
 test('web: personalized API responses and raw shell redirects are never cached', async () => {
   const w = await start();
   try {
-    const cookie = await signup(w.base, 'cache@connect.hku.hk');
+    const cookie = await signup(w.base, 'u3100300@connect.hku.hk');
     for (const path of ['/api/me', '/api/occupancy', '/api/search?seats=1', '/index.html']) {
       const response = await fetch(w.base + path, { headers: { cookie }, redirect: 'manual' });
       assert.equal(response.headers.get('cache-control'), 'no-store', path);
@@ -1144,7 +1249,7 @@ test('web: personalized API responses and raw shell redirects are never cached',
 test('web: site-scoped seat search requires the floor ID and resolves duplicate floor IDs by site', async () => {
   const w = await start();
   try {
-    const cookie = await signup(w.base, 'composite-search@connect.hku.hk');
+    const cookie = await signup(w.base, 'u3100404@connect.hku.hk');
     const first = snapshot('edge-search-a');
     const second = snapshot('edge-search-b');
     first.site = { id: 'site-a', name: 'Site A' };

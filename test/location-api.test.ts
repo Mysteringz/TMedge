@@ -793,9 +793,9 @@ test('shared furniture library is role-gated, cross-creator readable, and valida
     const publish = await json('POST', `/api/locations/drafts/${draft.draftId}/publications`, managerCookie, {
       expectedDraftRevision: 2, expectedPublishedRevision: null,
     });
-    assert.equal(publish.status, 422);
-    assert.equal((await publish.json() as { error: { code: string } }).error.code, 'FURNITURE_PUBLICATION_UNAVAILABLE');
-    assert.equal((await persistence.published.listActive()).length, 0, 'the temporary guard does not change public state');
+    assert.equal(publish.status, 503);
+    assert.equal((await publish.json() as { error: { code: string } }).error.code, 'MODEL_DISTRIBUTION_FAILED');
+    assert.equal((await persistence.published.listActive()).length, 0, 'missing model distribution does not change public state');
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -17,7 +17,7 @@ import { makerspace } from './fixtures.js';
 async function start(t: { after(fn: () => Promise<void>): void }, failActivity = false, fileMode = false) {
   const directory = mkdtempSync(join(tmpdir(), 'student-usage-'));
   const accounts = new JsonStudentAccountRepository(join(directory, 'users.json'), ['example.edu']);
-  const user = await accounts.create('known@example.edu', 'Known', 'correct horse battery');
+  const user = await accounts.create('known@example.edu', 'Known', 'Correct-Horse-Battery-1');
   const events: StudentActivityEvent[] = [];
   const activity = new StudentActivityLog({
     record: async (event) => { if (failActivity) throw new Error('private storage connection'); events.push(event); },
@@ -63,7 +63,7 @@ test('student usage is attributed to the verified account with bounded server-de
   assert.ok(web.events.every((event) => event.userId === web.user.id && event.outcome === 'succeeded'));
   assert.equal(new Set(web.events.map((event) => event.requestId)).size, 4);
   assert.deepEqual(web.events[0]?.details, { seats: 2, venueId: 'twf', resultCount: 1, liveData: true });
-  assert.deepEqual(web.events[2]?.details, { seats: 2, floorId: web.floor.id, tableId: web.table.id, liveData: true });
+  assert.deepEqual(web.events[2]?.details, { seats: 2, floorId: web.floor.id, siteId: web.snapshot.site.id, tableId: web.table.id, liveData: true });
   assert.ok(!JSON.stringify(web.events).includes(web.user.email));
 });
 
@@ -100,11 +100,10 @@ test('legacy search logs one valid call, omits unknown floor text, and ignores m
   assert.equal(body.results.length, 1);
   assert.equal((await fetch(`${web.base}/api/search?seats=31`, { headers })).status, 400);
   assert.equal((await fetch(`${web.base}/api/search?seats=2`)).status, 401);
-  assert.equal((await fetch(`${web.base}/api/search?seats=2&floor=private%40example.edu`, { headers })).status, 200);
+  assert.equal((await fetch(`${web.base}/api/search?seats=2&floor=private%40example.edu`, { headers })).status, 400);
   await web.activity.flush();
-  assert.equal(web.events.length, 2);
-  assert.deepEqual(web.events[0]?.details, { seats: 2, resultCount: 1, liveData: true, floorId: web.floor.id });
-  assert.deepEqual(web.events[1]?.details, { seats: 2, resultCount: 0, liveData: false });
+  assert.equal(web.events.length, 1);
+  assert.deepEqual(web.events[0]?.details, { seats: 2, resultCount: 1, liveData: true, floorId: web.floor.id, siteId: web.snapshot.site.id });
   assert.ok(!JSON.stringify(web.events).includes('private@example.edu'));
 });
 

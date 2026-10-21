@@ -16,13 +16,13 @@ test('JSON new accounts retain UUIDs, legacy scrypt credentials, and concurrent 
   const directory = mkdtempSync(join(tmpdir(), 'student-storage-'));
   try {
     const path = join(directory, 'users.json');
-    const legacy = await createStudentUser('legacy@example.edu', 'Legacy', 'existing password');
+    const legacy = await createStudentUser('legacy@example.edu', 'Legacy', 'Existing-Password-1');
     delete legacy.id;
     writeFileSync(path, JSON.stringify([legacy]));
     const accounts = new JsonStudentAccountRepository(path, ['example.edu']);
-    assert.equal((await accounts.verify(legacy.email, 'existing password'))?.id, undefined);
+    assert.equal((await accounts.verify(legacy.email, 'Existing-Password-1'))?.id, undefined);
     const results = await Promise.allSettled([
-      accounts.create(' New@Example.edu ', ' New ', 'strong password'), accounts.create('new@example.edu', 'New', 'strong password'),
+      accounts.create(' New@Example.edu ', ' New ', 'Strong-Password-1'), accounts.create('new@example.edu', 'New', 'Strong-Password-1'),
     ]);
     assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
     assert.equal(accounts.count(), 2);
@@ -46,7 +46,7 @@ test('Google accounts use stable subject identity and never auto-link by email',
     assert.equal(returned.id, first.id);
     assert.equal(returned.email, first.email);
     assert.equal(returned.google, 'google-subject-1');
-    const passwordAccount = await accounts.create('owned@example.edu', 'Owned', 'strong password');
+    const passwordAccount = await accounts.create('owned@example.edu', 'Owned', 'Strong-Password-1');
     assert.ok(passwordAccount.id);
     assert.throws(() => accounts.google({ sub: 'google-subject-2', email: passwordAccount.email, name: 'Other' }, true), AuthError);
     assert.throws(() => accounts.google({ sub: 'google-subject-3', email: 'closed@example.net', name: 'Closed' }, false), AuthError);
@@ -73,7 +73,7 @@ test('student sessions bind to account credentials and persist logout revocation
 });
 
 test('import validates the whole legacy format and normalizes identities without printing credentials', async () => {
-  const user = await createStudentUser('student@example.edu', 'Student', 'strong password');
+  const user = await createStudentUser('student@example.edu', 'Student', 'Strong-Password-1');
   const parsed = validateStudentAccountImport([{ ...user, email: ' STUDENT@EXAMPLE.EDU ' }]);
   assert.equal(parsed[0]?.email, user.email);
   assert.throws(() => validateStudentAccountImport([user, { ...user, id: randomUUID(), email: ' STUDENT@example.edu ' }]), /Duplicate normalized email/);
@@ -98,10 +98,10 @@ test('import validates the whole legacy format and normalizes identities without
 });
 
 test('password verification handles malformed and unknown credentials without throwing', async () => {
-  const user = await createStudentUser('test@example.edu', 'Test', 'strong password');
-  assert.equal(await verifyStudentPassword(user, 'strong password'), true);
-  assert.equal(await verifyStudentPassword({ ...user, hash: 'bad' }, 'strong password'), false);
-  assert.equal(await verifyStudentPassword(undefined, 'strong password'), false);
+  const user = await createStudentUser('test@example.edu', 'Test', 'Strong-Password-1');
+  assert.equal(await verifyStudentPassword(user, 'Strong-Password-1'), true);
+  assert.equal(await verifyStudentPassword({ ...user, hash: 'bad' }, 'Strong-Password-1'), false);
+  assert.equal(await verifyStudentPassword(undefined, 'Strong-Password-1'), false);
 });
 
 test('damaged JSON storage fails closed instead of becoming an empty writable account store', () => {
@@ -122,7 +122,7 @@ test('disconnected PostgreSQL accounts return controlled unavailable errors', as
     password: 'unused', role: 'runtime', synchronize: false, migrationsRun: false });
   const accounts = new PostgresStudentAccountRepository(source);
   for (const operation of [() => accounts.count(), () => accounts.get('student@example.edu'),
-    () => accounts.create('student@example.edu', 'Student', 'strong password'), () => accounts.verify('student@example.edu', 'strong password')]) {
+    () => accounts.create('student@example.edu', 'Student', 'Strong-Password-1'), () => accounts.verify('student@example.edu', 'Strong-Password-1')]) {
     await assert.rejects(operation(), (error: ApplicationError) => error.kind === 'unavailable' && !error.message.includes('unused'));
   }
 });

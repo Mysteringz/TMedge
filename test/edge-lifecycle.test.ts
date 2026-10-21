@@ -12,6 +12,7 @@ import { DEFAULT_NODE_LIMITS, type EdgeConfig } from '../src/edge/config.js';
 import { FirmwareBuildJobs } from '../src/modules/firmware/application/firmware-build-jobs.js';
 import { buildRegistry } from '../src/edge/registry.js';
 import { KEY, nodesJson, siteJson } from './fixtures.js';
+import type { ActiveSiteLease } from '../src/infrastructure/postgres/site-leadership.js';
 
 process.env.SESSION_SECRET = 'x'.repeat(40);
 process.env.ALGO_USERS_FILE = join(mkdtempSync(join(tmpdir(), 'lifecycle-users-')), 'users.json');
@@ -48,6 +49,47 @@ async function availablePort(): Promise<number> {
   await close(server);
   return port;
 }
+
+class TestSiteLease implements ActiveSiteLease {
+  readonly identity = { siteId: 'test-site', originId: 'test-origin' };
+  private lost: (() => void) | null = null;
+  held = false;
+  stops = 0;
+
+  constructor(private readonly available = true) {}
+  async start(onLost: () => void): Promise<boolean> { this.lost = onLost; this.held = this.available; return this.available; }
+  active(): boolean { return this.held; }
+  async stop(): Promise<void> { this.held = false; this.stops += 1; }
+  expire(): void { this.held = false; this.lost?.(); }
+}
+
+async function waitFor(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('condition did not become true');
+}
+
+test('edge binds no listeners when another origin owns the site', async () => {
+  const lease = new TestSiteLease(false);
+  const app = createEdgeApplication(config(), registry(), { leadership: lease });
+  await assert.rejects(app.start(), /another origin holds/);
+  assert.equal(app.consoleServer.listening, false);
+  assert.equal(app.runtime.isStarted, false);
+  assert.equal(lease.stops, 1);
+});
+
+test('losing site leadership closes every stateful listener', async () => {
+  const lease = new TestSiteLease();
+  const app = createEdgeApplication(config(), registry(), { leadership: lease });
+  await app.start();
+  assert.equal(app.consoleServer.listening, true);
+  assert.equal(app.runtime.isStarted, true);
+  lease.expire();
+  await waitFor(() => !app.consoleServer.listening && !app.runtime.isStarted);
+  assert.equal(lease.stops, 1);
+});
 
 test('edge startup bind failure rejects and rolls back already-bound listeners', async () => {
   const occupied = createServer();
