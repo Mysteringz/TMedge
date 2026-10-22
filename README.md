@@ -180,9 +180,11 @@ TMedge/
 │   ├── tools/
 │   └── web/
 ├── test/
-│   ├── golden/train/
+│   ├── golden/
+│   │   ├── heatmodel/
+│   │   └── train/
 │   └── hpc-stack/fake-slurm/
-├── tools/
+├── tools/thermalml/
 ├── web-app/src/pages/
 ├── CLAUDE.md
 ├── docker-compose.postgres-local.yml
