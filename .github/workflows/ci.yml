@@ -197,6 +197,10 @@ jobs:
           python3 deploy/training/test-schemaspy.py
           python3 deploy/training/test-remote-exports.py
 
+      - name: Thermal ML data tools
+        working-directory: TMedge
+        run: python3 -m unittest discover -s tools/thermalml -t . -p 'test_*.py'
+
       - name: Real PostgreSQL schema migration and ingest regressions
         working-directory: TMedge
         env:
