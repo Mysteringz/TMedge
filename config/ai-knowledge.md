@@ -56,7 +56,7 @@ Rules that are never broken:
 On phones/tablets the menu opens Home and every module, including both ML
 pages. Accounts requires account-management access. The current page is
 highlighted; selection, outside taps or Escape close the menu. Wide headers
-show Algorithm flow, ML, Debug console, Devices and Analytics; each page has
+show Algorithm flow, ML, Sensors, Devices and Analytics; each page has
 its own address. Beside the notifications bell, the account menu shows the
 username, access role, Account settings and Sign out.
 
@@ -88,9 +88,12 @@ Modules (docs number them; pages show names):
   a password change. The table browser is live. SchemaSpy and its Graphviz
   diagram are snapshots generated on Proxmox, synchronized to the edge and
   refreshed after schema or row-write changes; failures keep the last result.
-- 03 Debug console, /console. Live thermal frames, the floor with fused
-  occupancy, per-sensor health, and commands to a sensor (set a parameter,
-  reset its background, identify, save, reboot).
+- 03 Sensors, /console. Formerly the debug console. Every sensor's status and
+  readings in a table (or a grid of live thermal tiles), filterable by status,
+  floor, connection, detector and kind, sortable by column. Selecting one opens
+  a drawer: its live thermal view (camera too on an RGB rig), details and
+  detections; under Settings, its parameters and commands (set, reset
+  background, identify, save, reboot). The floor map is no longer here.
 - 04 Updates, /updates. Upload firmware source, build an image, roll it out
   over the air; each records who did it. A rollout always flashes one pilot
   sensor first; it must report the new version with a working sensor, or
@@ -244,7 +247,7 @@ required before enabling it. See docs/FAILOVER.md and deploy/backup/README.md.
 ## Where to look for more
 
 - Detection and parameters: Algorithm flow, and docs/ALGO_DASHBOARD.md.
-- Why a count looks wrong: Debug console for the sensor's live frames and
+- Why a count looks wrong: Sensors for the sensor's live frames and
   health; Analytics, server view, for sensor ingest.
 - Server health and storage: Analytics, server view.
 - Student usage: Analytics, usage view.

@@ -74,7 +74,7 @@ export function buildIndex(input: { modules: readonly SiteModule[]; accounts: bo
   for (const r of snapshot.board.requests) entries.push({ id: `request:${r.id}`, kind: 'request', title: r.title, detail: `${REQUEST_STATUS_LABEL[r.status]} · ${r.votes} ${r.votes === 1 ? 'vote' : 'votes'} · by ${r.author}`, hint: r.id, keywords: `${r.detail} ${r.status} feature`, target: { type: 'request', id: r.id } });
   for (const t of snapshot.board.tasks) entries.push({ id: `task:${t.id}`, kind: 'task', title: t.title, detail: `${TASK_STATUS_LABEL[t.status]} · ${t.assignee ? `assigned to ${t.assignee}` : 'unassigned'}`, hint: t.id, keywords: `${t.detail} ${t.status} ${t.requestId ?? ''}`, target: { type: 'task', id: t.id } });
   for (const m of [...snapshot.mail.inbox, ...snapshot.mail.sent]) entries.push({ id: `message:${m.id}`, kind: 'message', title: m.subject, detail: m.box === 'inbox' ? `From ${m.from} · ${m.preview}` : `To ${m.to.join(', ')} · ${m.preview}`, hint: m.box === 'inbox' ? 'inbox' : 'sent', keywords: `${m.from} ${m.to.join(' ')} mail`, target: { type: 'message', id: m.id } });
-  // A sensor has no page of its own; the debug console is where it is looked at.
+  // A sensor has no page of its own; Sensors is where it is looked at.
   for (const s of input.sensors) entries.push({ id: `sensor:${s.uid}`, kind: 'sensor', title: s.label, detail: `${s.online ? 'Online' : 'Offline'} · ${s.floorId ?? 'not placed on a floor'}${s.simulated ? ' · simulated' : ''}`, hint: s.uid, keywords: 'node device sensor thermal', target: { type: 'navigate', path: '/console' } });
   return entries;
 }

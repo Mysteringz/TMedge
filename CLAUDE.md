@@ -15,7 +15,7 @@ src/edge/occupancy.ts    projection -> authority per table -> seats -> smoothing
 src/edge/staticbg.ts     day-long background: heat present ~80% of 24 h is room, the rest may be people
 src/edge/edgedetect.ts   detection on RAW frames for nodes with "detector": "edge" (docs/EDGE_DETECTION.md)
 src/edge/runtime.ts      wires ingest/occupancy/recorder/publisher; node & edge health
-src/edge/console.ts      debug console core: UI router (module 03 of the algo console) + device endpoints on CONSOLE_PORT
+src/edge/console.ts      Sensors page core (formerly the debug console): UI router (module 03 of the algo console) + device endpoints on CONSOLE_PORT
 src/edge/recorder.ts     daily JSONL logs = Phase 3 calibration data
 src/shared/geometry.ts   110° f-theta pixel <-> floor, height-aware
 src/shared/seats.ts      seat layout + "N seats together" (server and client share it)
@@ -28,7 +28,7 @@ src/infrastructure/email/  Amazon SES sender: SigV4 by hand, the EC2 instance ro
 src/algo/ml-data/        ML data: reader queries, schema, asynchronous ZIP exports, download keys for training jobs (docs/ML_DATA.md)
 src/algo/train/          module 02: HPC2021 training jobs: drafts, uploads, sbatch (docs/hpc/)
 src/algo/train/hpc/      Plan A: sealed credentials, openconnect + ocproxy tunnels, OpenSSH, SLURM (npm run test:hpc-stack)
-algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console, Devices dropdown (04 /updates, 06 /adoption, 07 /flash, 08 /tmflash-download), 05 /analytics; account icon -> /account. The numbers are for documents and comments: no page shows one
+algo-app/                its UI: Bluegrid console shell (Carbon Gray 100, IBM Plex, orange accent; src/console/): 01 /flow, 02 ML dropdown (/train, /ml-data), 03 /console (Sensors), Devices dropdown (04 /updates, 06 /adoption, 07 /flash, 08 /tmflash-download), 05 /analytics; account icon -> /account. The numbers are for documents and comments: no page shows one
 algo-app/src/console/motion.css  how every control in the console moves (Bluegrid's durations and curves, one reduced-motion rule); motion.tsx: exits (usePresence, Presence) and the travelling fill/line (Switcher, TabList)
 src/modules/analytics/   module 05: usage of the student site + host/back-end history, read-only (docs/ANALYTICS.md)
 src/infrastructure/analytics/  its probes: /proc, disks, systemd (read-only), JSONL history, the web tier's usage report
@@ -79,7 +79,7 @@ has hidden Linux failures before.
   accuracy when fixed).
 - **Privacy boundary:** the student web tier receives only `OccupancySnapshot`. Raw frames
   reach a browser only in the signed-in algo console on the edge (its
-  debugger and module 03, the debug console). Training recordings also leave
+  debugger and module 03, Sensors). Training recordings also leave
   through the private training database and authenticated ML data exports,
   as requested by the operator; no student API exposes them.
 - **Students can't write.** The only write on the web tier is the edge's

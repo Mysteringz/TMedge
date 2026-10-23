@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TMedge Console</title>
+  <title>Sensors · TMedge</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23161616'/%3E%3Crect x='8' y='8' width='16' height='16' fill='%23ff832b'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap">
@@ -12,118 +12,160 @@
 </head>
 <body>
   <header class="bar">
-    <strong>TMedge console</strong>
+    <strong>Sensors</strong>
     <span id="edge-id" class="muted"></span>
     <span class="grow"></span>
     <span id="conn" class="chip" role="status" aria-live="polite">Connecting…</span>
   </header>
-  <p id="data-freshness" class="muted">No device data received.</p>
 
-  <section class="health" id="health" aria-label="Edge health"></section>
+  <!-- Laid out like a device list in a network controller: filters, the
+       list, and one sensor's detail in a drawer that does not leave the list. -->
+  <div class="sx" id="sx">
+    <aside class="sx-side" id="side" aria-label="Filters">
+      <div class="sx-side-top">
+        <label class="sx-search">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M15 14.3 10.7 10A5.5 5.5 0 1 0 10 10.7l4.3 4.3zM2 6.5A4.5 4.5 0 1 1 6.5 11 4.5 4.5 0 0 1 2 6.5z"/></svg>
+          <input id="q" type="search" placeholder="Search" autocomplete="off" aria-label="Search sensors">
+        </label>
+        <button class="sx-icon" id="side-collapse" type="button" aria-label="Hide filters" title="Hide filters">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h1v12H2zM8.7 4.7 8 4 4 8l4 4 .7-.7L5.9 8.5H14v-1H5.9z"/></svg>
+        </button>
+      </div>
+      <div class="sx-filters" id="filters"></div>
+      <button class="sx-link" id="clear-filters" type="button">Clear Filters</button>
+    </aside>
 
-  <main class="grid">
-    <section class="panel span2">
-      <div class="panel-head">
-        <h2>Floor fusion</h2>
-        <div class="tabs" id="floor-tabs" role="tablist"></div>
-        <div class="toggles">
-          <label><input type="checkbox" id="t-footprints"> footprints</label>
-          <label><input type="checkbox" id="t-dwell" checked> dwell heatmap</label>
-          <label><input type="checkbox" id="t-dets" checked> detections</label>
+    <main class="sx-main">
+      <div class="sx-toolbar">
+        <button class="sx-icon" id="side-open" type="button" aria-label="Show filters" title="Show filters" hidden>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 2h1v12h-1zM7.3 4.7 8 4l4 4-4 4-.7-.7 2.8-2.8H2v-1h8.1z"/></svg>
+        </button>
+        <span id="count" class="muted small"></span>
+        <span id="data-freshness" class="muted small">No device data received.</span>
+        <span class="grow"></span>
+        <div class="sx-seg" role="group" aria-label="View">
+          <button type="button" id="view-list" aria-pressed="true" aria-label="List view" title="List">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h2v2H2zm4 .5h8v1H6zM2 7h2v2H2zm4 .5h8v1H6zM2 11h2v2H2zm4 .5h8v1H6z"/></svg>
+          </button>
+          <button type="button" id="view-grid" aria-pressed="false" aria-label="Grid view" title="Live grid">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h5v5H2zm1 1v3h3V3zm6-1h5v5H9zm1 1v3h3V3zM2 9h5v5H2zm1 1v3h3v-3zm6-1h5v5H9zm1 1v3h3v-3z"/></svg>
+          </button>
         </div>
       </div>
-      <svg id="fusion"></svg>
-      <div class="demo" id="demo" hidden>
-        <div class="demo-head"><h3 id="demo-title">Verification rig</h3><span class="muted small" id="demo-sub"></span></div>
-        <div class="demo-pair">
-          <figure><img id="demo-rgb" alt="Live RGB from the verification rig"><figcaption>RGB camera <span class="muted" id="demo-rgb-age"></span></figcaption></figure>
-          <figure><canvas id="demo-thermal" width="512" height="384"></canvas><figcaption>Thermal, mirrored to match the camera · blobs: <span class="muted" id="demo-blobs"></span></figcaption></figure>
-        </div>
-        <p class="muted small">RGB exists only for this verification rig. It is kept in memory on the edge, shown only here, never recorded, and never sent to the student site.</p>
+      <div class="sx-scroll">
+        <div class="table-wrap" id="list-view"><table class="nodes" id="nodes"></table></div>
+        <div class="thumbs" id="thumbs" hidden></div>
+        <p class="sx-empty" id="empty" hidden>No sensors match these filters.</p>
+          <!-- firmware:start -->
+          <section class="panel span3" id="firmware">
+            <div class="panel-head">
+              <h2>Firmware</h2>
+              <span class="muted small" id="fw-sub">upload a TMsense PlatformIO folder, build it here, roll it out</span>
+            </div>
+            <div class="cols">
+              <div class="fw-col">
+                <h3>New build</h3>
+                <p class="muted small">Pick the TMsense project folder. It is compiled with the <code>tmflash</code>
+                  environment, which bakes in no Wi-Fi password or key.</p>
+                <input type="file" id="fw-folder" webkitdirectory directory multiple>
+                <div class="row">
+                  <button id="fw-build" disabled>Upload and build</button>
+                  <span class="muted small" id="fw-build-state"></span>
+                </div>
+                <pre class="log" id="fw-log" aria-live="polite"></pre>
+              </div>
+              <div class="fw-col">
+                <h3>Roll out</h3>
+                <div class="row">
+                  <label>Image <select id="fw-build-pick"></select></label>
+                  <label>To <select id="fw-target"></select></label>
+                  <button id="fw-start" disabled>Update</button>
+                  <button id="fw-cancel" hidden>Stop</button>
+                </div>
+                <p class="muted small" id="fw-plan"></p>
+                <div id="fw-progress"></div>
+                <h3>Images on this edge</h3>
+                <table class="fw-table" id="fw-builds"></table>
+              </div>
+            </div>
+          </section>
+          <!-- firmware:end -->
       </div>
-      <p class="legend"><span class="sw counted"></span>counted <span class="sw ignored"></span>seen, not counted (another node is authority) <span class="sw ok"></span>owner counting <span class="sw fallback"></span>fallback node counting <span class="sw unknown"></span>unknown</p>
-    </section>
+    </main>
 
-    <section class="panel" id="detail-panel">
-      <div class="panel-head"><h2 id="detail-title">Select a node</h2><span id="detail-sub" class="muted"></span></div>
-      <div class="thermal-big">
-        <canvas id="big" width="512" height="384"></canvas>
-        <div class="scale"><span id="scale-lo"></span><span class="bar-grad"></span><span id="scale-hi"></span></div>
-        <div class="toggles">
-          <label><input type="radio" name="mode" value="temp" checked> temperature</label>
-          <label><input type="radio" name="mode" value="diff"> minus background</label>
-          <label><input type="checkbox" id="t-overlay" checked> blobs</label>
-        </div>
-        <figure class="rgb-detail" id="rgb-detail" hidden>
-          <img id="rgb-detail-img" alt="Live RGB camera of the selected verification rig">
-          <figcaption>RGB camera (verification rig only) <span class="muted" id="rgb-detail-age"></span></figcaption>
-        </figure>
+    <aside class="sx-drawer" id="drawer" hidden aria-labelledby="detail-title">
+      <div class="sx-drawer-head">
+        <h2 id="detail-title"></h2>
+        <button class="sx-icon" id="drawer-close" type="button" aria-label="Close">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12 4.7 11.3 4 8 7.3 4.7 4 4 4.7 7.3 8 4 11.3l.7.7L8 8.7l3.3 3.3.7-.7L8.7 8z"/></svg>
+        </button>
       </div>
-      <dl class="kv" id="detail-kv"></dl>
-      <div class="controls" id="controls" hidden>
-        <h3>Detector (live, per node)</h3>
-        <div class="params" id="params"></div>
-        <div class="buttons">
-          <button data-op="identify">Identify (blink)</button>
-          <button data-op="reset-bg">Relearn background</button>
-          <button data-op="save">Save params</button>
-          <button data-op="reboot" class="danger">Reboot</button>
-        </div>
+      <div class="sx-tabs" role="tablist" aria-label="Sensor detail">
+        <button type="button" role="tab" id="tab-overview" aria-selected="true" aria-controls="pane-overview" title="Overview">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 6.5a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm9-7a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 7a3 3 0 1 1 0-6 3 3 0 0 1 0 6zM8.5 9h3v1h-3zM4 3h3v3H6V4H4zm9 0h3v1h-2v2h-1z"/></svg>
+        </button>
+        <button type="button" role="tab" id="tab-settings" aria-selected="false" aria-controls="pane-settings" title="Settings">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6zm0 5a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm7.3-3.1-1.6-.3a6 6 0 0 0-.6-1.4l.9-1.4-2.1-2.1-1.4.9a6 6 0 0 0-1.4-.6L10.8 2H9.2l-.3 1.6a6 6 0 0 0-1.4.6l-1.4-.9L4 5.4l.9 1.4a6 6 0 0 0-.6 1.4L2.7 8.5v3l1.6.3a6 6 0 0 0 .6 1.4L4 14.6l2.1 2.1 1.4-.9a6 6 0 0 0 1.4.6l.3 1.6h3l.3-1.6a6 6 0 0 0 1.4-.6l1.4.9 2.1-2.1-.9-1.4a6 6 0 0 0 .6-1.4l1.6-.3zm-1 2.2-1.4.3-.1.3a5 5 0 0 1-.7 1.7l-.2.3.8 1.2-.9.9-1.2-.8-.3.2a5 5 0 0 1-1.7.7l-.3.1-.3 1.4h-1.2l-.3-1.4-.3-.1a5 5 0 0 1-1.7-.7l-.3-.2-1.2.8-.9-.9.8-1.2-.2-.3a5 5 0 0 1-.7-1.7l-.1-.3-1.4-.3V9.4l1.4-.3.1-.3a5 5 0 0 1 .7-1.7l.2-.3-.8-1.2.9-.9 1.2.8.3-.2a5 5 0 0 1 1.7-.7l.3-.1.3-1.4h1.2l.3 1.4.3.1a5 5 0 0 1 1.7.7l.3.2 1.2-.8.9.9-.8 1.2.2.3a5 5 0 0 1 .7 1.7l.1.3 1.4.3z"/></svg>
+        </button>
       </div>
-      <p class="muted small" id="cmd-result"></p>
-      <button id="refresh-command-status" type="button">Refresh status</button>
-    </section>
-
-    <section class="panel span3">
-      <div class="panel-head"><h2>Nodes</h2><span class="muted" id="nodes-sub"></span></div>
-      <div class="table-wrap"><table class="nodes" id="nodes"></table></div>
-    </section>
-
-    <section class="panel span3">
-      <div class="panel-head"><h2>Live thermal, every node</h2><span class="muted">raw 32 × 24 frames · click to inspect</span></div>
-      <div class="thumbs" id="thumbs"></div>
-    </section>
-
-    <!-- firmware:start -->
-    <section class="panel span3" id="firmware">
-      <div class="panel-head">
-        <h2>Firmware</h2>
-        <span class="muted small" id="fw-sub">upload a TMsense PlatformIO folder, build it here, roll it out</span>
-      </div>
-      <div class="cols">
-        <div class="fw-col">
-          <h3>New build</h3>
-          <p class="muted small">Pick the TMsense project folder. It is compiled with the <code>tmflash</code>
-            environment, which bakes in no Wi-Fi password or key.</p>
-          <input type="file" id="fw-folder" webkitdirectory directory multiple>
-          <div class="row">
-            <button id="fw-build" disabled>Upload and build</button>
-            <span class="muted small" id="fw-build-state"></span>
+      <div class="sx-drawer-body">
+        <div role="tabpanel" id="pane-overview" aria-labelledby="tab-overview">
+          <div class="sx-live">
+            <canvas id="big" width="512" height="384"></canvas>
+            <img id="rgb-detail-img" alt="Live RGB camera of the selected verification rig" hidden>
+            <span class="sx-live-tag" id="live-tag">LIVE</span>
+            <span class="sx-live-age" id="live-age"></span>
           </div>
-          <pre class="log" id="fw-log" aria-live="polite"></pre>
-        </div>
-        <div class="fw-col">
-          <h3>Roll out</h3>
-          <div class="row">
-            <label>Image <select id="fw-build-pick"></select></label>
-            <label>To <select id="fw-target"></select></label>
-            <button id="fw-start" disabled>Update</button>
-            <button id="fw-cancel" hidden>Stop</button>
+          <div class="sx-live-bar">
+            <div class="sx-seg" role="group" aria-label="Live view source" id="src-seg" hidden>
+              <button type="button" data-src="thermal" aria-pressed="true">Thermal</button>
+              <button type="button" data-src="rgb" aria-pressed="false">Camera</button>
+            </div>
+            <div class="sx-seg" role="group" aria-label="Thermal view" id="mode-seg">
+              <button type="button" data-mode="temp" aria-pressed="true">Temperature</button>
+              <button type="button" data-mode="diff" aria-pressed="false">Minus background</button>
+            </div>
+            <label class="sx-check"><input type="checkbox" id="t-overlay" checked> Blobs</label>
           </div>
-          <p class="muted small" id="fw-plan"></p>
-          <div id="fw-progress"></div>
-          <h3>Images on this edge</h3>
-          <table class="fw-table" id="fw-builds"></table>
+          <div class="scale" id="scale"><span id="scale-lo"></span><span class="bar-grad"></span><span id="scale-hi"></span></div>
+          <div class="sx-card sx-ident">
+            <span class="sx-type lg" id="detail-icon" aria-hidden="true"></span>
+            <div class="sx-ident-text">
+              <div><b id="detail-name"></b> <span class="sx-badge" id="detail-badge"></span></div>
+              <div class="muted small" id="detail-sub"></div>
+            </div>
+          </div>
+          <div class="sx-card"><dl class="sx-kv" id="detail-kv"></dl></div>
+          <details class="sx-card sx-fold" open>
+            <summary>Detections <span class="muted small" id="dets-sub"></span></summary>
+            <table class="sx-mini" id="detail-dets"></table>
+          </details>
+        </div>
+        <div role="tabpanel" id="pane-settings" aria-labelledby="tab-settings" hidden>
+          <div id="controls">
+            <div class="sx-card">
+              <h3>Detector <span class="muted small">live, per node</span></h3>
+              <div class="params" id="params"></div>
+            </div>
+            <div class="sx-card">
+              <h3>Actions</h3>
+              <div class="sx-actions">
+                <button type="button" data-op="identify">Identify (blink)</button>
+                <button type="button" data-op="reset-bg">Relearn background</button>
+                <button type="button" data-op="save">Save params</button>
+                <button type="button" data-op="reboot" class="danger">Reboot</button>
+              </div>
+            </div>
+          </div>
+          <div class="sx-card">
+            <h3>Command status</h3>
+            <p class="muted small sx-note" id="cmd-result"></p>
+            <button id="refresh-command-status" type="button">Refresh status</button>
+          </div>
         </div>
       </div>
-    </section>
-    <!-- firmware:end -->
-
-    <section class="panel span3">
-      <div class="panel-head"><h2>Edge detail</h2></div>
-      <div class="cols" id="edge-detail"></div>
-    </section>
-  </main>
+    </aside>
+  </div>
 
   <!-- A node TMflash has just flashed, asking to be let in. Modal because
        it is a decision about trust, not a notification to scroll past. -->

@@ -4,6 +4,7 @@
    algo console it sits inside. Gray 100 by default; White on request or
    when the system asks for light. */
 :root {
+  --text-on-color: #ffffff;
   --background: #161616; --layer-01: #262626; --layer-02: #393939; --layer-hover-01: #333333; --layer-hover-02: #474747;
   --layer-selected: #393939; --field: #393939; --border-subtle: #393939; --border-subtle-01: #525252; --border-strong: #6f6f6f;
   --text-primary: #f4f4f4; --text-secondary: #c6c6c6; --text-helper: #a8a8a8; --text-error: #ff8389; --focus: #ffffff;
@@ -35,6 +36,8 @@
   color-scheme: light;
 }
 * { box-sizing: border-box; }
+/* Component display rules (button is inline-flex) would otherwise beat the attribute. */
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--background); color: var(--text-primary); font: 400 14px/1.43 var(--font-sans); letter-spacing: .16px; -webkit-font-smoothing: antialiased; }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
@@ -48,61 +51,11 @@ code { font-family: var(--font-mono); font-size: .92em; }
 .bar .muted { color: #a8a8a8; font-family: var(--font-mono); font-size: 12px; }
 .chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 1rem; background: #525252; color: #f4f4f4; font-size: 12px; letter-spacing: .32px; white-space: nowrap; }
 .chip.good { background: #0e6027; color: #a7f0ba; } .chip.warn { background: #8e6a00; color: #fcf4d6; } .chip.bad { background: #a2191f; color: #ffd7d9; }
-/* Metric tiles in one band. */
-.health { display: flex; flex-wrap: wrap; gap: 1px; margin: 16px; }
-/* Tiles grow to fill their row, so a wrapped band never leaves a hole. */
-.metric { flex: 1 1 140px; background: var(--layer-01); padding: 12px 16px; min-width: 0; }
-.metric b { display: block; font: 300 24px/1.25 var(--font-sans); font-variant-numeric: tabular-nums; }
-.metric span { color: var(--text-helper); font-size: 12px; letter-spacing: .32px; }
-.metric.bad b { color: var(--bad); } .metric.warn b { color: var(--warn); } .metric.good b { color: var(--good); }
-.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 0 16px 24px; align-items: start; }
-.span2 { grid-column: span 2; } .span3 { grid-column: span 3; }
 .panel { background: var(--layer-01); padding: 16px; min-width: 0; }
 .panel-head { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .panel-head h2 { font-size: 20px; line-height: 28px; font-weight: 400; margin: 0; }
-/* Contained tabs. */
-.tabs { display: inline-flex; gap: 1px; }
-.tabs button { border: 0; background: var(--layer-02); min-height: 32px; padding: 0 16px; color: var(--text-secondary); box-shadow: inset 0 -1px 0 var(--border-subtle-01); }
-.tabs button:hover { background: var(--layer-hover-02); color: var(--text-primary); }
-.tabs button[aria-selected="true"] { background: var(--background); color: var(--text-primary); font-weight: 600; box-shadow: inset 0 2px 0 var(--interactive); }
-.demo { margin-top: 16px; }
-.demo-head { display: flex; gap: 12px; align-items: baseline; }
-.demo-head h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
-.demo-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.demo-pair figure { margin: 0; }
-.demo-pair img, .demo-pair canvas { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #000; image-rendering: auto; }
-.demo-pair canvas { image-rendering: pixelated; }
-.demo-pair figcaption { color: var(--text-helper); font-size: 12px; letter-spacing: .32px; margin-top: 6px; }
-.toggles { display: flex; gap: 16px; flex-wrap: wrap; color: var(--text-secondary); }
-.toggles label { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
-.toggles input { accent-color: var(--interactive); width: 16px; height: 16px; margin: 0; }
-#fusion { width: 100%; height: auto; display: block; background: var(--plan); outline: 1px solid var(--border-subtle); }
-#fusion .room { fill: none; stroke: var(--border-subtle-01); stroke-width: 4; }
-#fusion .tbl { stroke-width: 3; fill-opacity: 0.18; }
-#fusion .tbl.ok { stroke: var(--good); fill: var(--good); }
-#fusion .tbl.fallback { stroke: var(--warn); fill: var(--warn); }
-#fusion .tbl.unknown { stroke: var(--text-helper); fill: none; stroke-dasharray: 8 6; }
-#fusion .tlabel { fill: var(--text-primary); font: 600 22px var(--font-sans); text-anchor: middle; }
-#fusion .seat { fill: none; stroke: var(--text-helper); stroke-width: 2; }
-#fusion .seat.taken { fill: var(--text-primary); fill-opacity: 0.6; }
-#fusion .node { fill: var(--interactive); }
-#fusion .node.offline { fill: var(--bad); }
-#fusion .node.sel { stroke: var(--text-primary); stroke-width: 4; }
-#fusion .fp { fill: var(--interactive); fill-opacity: 0.04; stroke: var(--interactive); stroke-opacity: 0.45; stroke-width: 2; stroke-dasharray: 10 6; }
-#fusion .fp.sel { fill-opacity: 0.1; stroke-opacity: 0.9; }
-#fusion .det.counted { fill: var(--counted); stroke: #000; stroke-width: 1.5; }
-#fusion .det.ignored { fill: none; stroke: var(--ignored); stroke-width: 2.5; }
-.legend { color: var(--text-secondary); font-size: 12px; letter-spacing: .32px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0 0; }
-.sw { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: -10px; vertical-align: -1px; }
-.sw.counted { background: var(--counted); } .sw.ignored { border: 2px solid var(--ignored); }
-.sw.ok { background: var(--good); border-radius: 0; } .sw.fallback { background: var(--warn); border-radius: 0; } .sw.unknown { border: 2px dashed var(--text-helper); border-radius: 0; }
-.thermal-big canvas { width: 100%; image-rendering: pixelated; background: #000; display: block; }
 .scale { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; margin: 8px 0; color: var(--text-helper); font: 400 12px var(--font-mono); }
 .bar-grad { height: 8px; background: linear-gradient(90deg, #000004, #420a68, #932667, #dd513a, #fca50a, #fcffa4); }
-.kv { display: grid; grid-template-columns: auto 1fr; gap: 0 16px; margin: 12px 0; }
-.kv dt, .kv dd { padding: 6px 0; border-bottom: 1px solid var(--border-subtle-01); }
-.kv dt { color: var(--text-secondary); } .kv dd { margin: 0; font: 400 13px var(--font-mono); overflow-wrap: anywhere; }
-.controls h3 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
 .params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
 .params label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; letter-spacing: .32px; }
 .params input { width: 100%; min-height: 32px; padding: 0 12px; border: 0; border-bottom: 1px solid var(--border-strong); border-radius: 0; background: var(--field); color: var(--text-primary); font: 400 13px var(--font-mono); }
@@ -141,17 +94,11 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
 .thumb.sel { box-shadow: inset 0 0 0 2px var(--interactive); }
 .thumb canvas { width: 100%; image-rendering: pixelated; display: block; background: #000; }
 .thumb.rgb img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #000; }
-.rgb-detail { margin: 12px 0 0; }
-.rgb-detail img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #000; }
-.rgb-detail figcaption { color: var(--text-helper); font-size: 12px; letter-spacing: .32px; margin-top: 6px; }
 .thumb .cap { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--text-secondary); font-size: 12px; }
 .thumb .cap .info { font-family: var(--font-mono); color: var(--text-helper); }
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 .cols h3 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
 .cols > * { min-width: 0; }
-/* Edge facts can be long unbroken tokens (paths, ids); wrap them in place. */
-.cols ul { margin: 0; padding-left: 16px; color: var(--text-secondary); overflow-wrap: anywhere; }
-@media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } .span2, .span3 { grid-column: auto; } }
 
 /* --- firmware updates --- */
 .fw-col { min-width: 0; display: flex; flex-direction: column; gap: 8px }
@@ -201,15 +148,11 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
 .join-actions button.primary { background: var(--interactive); color: var(--on-interactive); }
 .join-actions button.primary:hover { background: var(--interactive-hover); }
 
-/* The embedded console scrolls within the shell on phones. Its wide node
-   table keeps its own scrollbar, while each instrument fills the panel. */
+/* On phones the wide sensor table keeps its own scrollbar and every
+   control is a touch target. */
 @media (max-width: 900px) {
-  button, .tabs button, .join-actions button, select { min-height: 44px; }
+  button, .join-actions button, select { min-height: 44px; }
   .params input { min-height: 44px; font-size: 16px; min-width: 0; }
-  .toggles label { min-height: 44px; }
-  .toggles input { width: 20px; height: 20px; }
-  .tabs { max-width: 100%; overflow-x: auto; }
-  .tabs button { flex-shrink: 0; }
   .cols { grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); }
   .join-dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
   .join-actions { flex-wrap: wrap; }
@@ -222,13 +165,162 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
   .bar > .grow { display: none; }
   .bar > strong { margin-right: auto; }
   #edge-id { order: 1; flex-basis: 100%; }
-  .metric { flex-basis: calc(50% - 1px); overflow-wrap: anywhere; }
-  .grid { padding: 0 16px max(24px, env(safe-area-inset-bottom)); }
-  .demo-pair { grid-template-columns: minmax(0, 1fr); }
-  .kv { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .join-facts { grid-template-columns: minmax(0, 1fr); }
 }
-.console-access-notice, #data-freshness { margin: 8px 16px; overflow-wrap: anywhere; }
+
+/* --- Sensors: filters | list | drawer -----------------------------------
+   Laid out like a network controller's device list: the list never leaves
+   the screen while one device is open beside it. The page fills the frame
+   the algo console gives it, so each column scrolls on its own instead of
+   the whole document. */
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+.sx { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); position: relative; }
+.sx.has-drawer { grid-template-columns: 280px minmax(0, 1fr) 400px; }
+.sx.side-hidden { grid-template-columns: minmax(0, 1fr); }
+.sx.side-hidden.has-drawer { grid-template-columns: minmax(0, 1fr) 400px; }
+.sx.side-hidden .sx-side { display: none; }
+.sx-side, .sx-scroll, .sx-drawer-body { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+
+.sx-side { background: var(--layer-01); border-right: 1px solid var(--border-subtle); padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+.sx-side-top { display: flex; gap: 8px; }
+.sx-search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; background: var(--field); border-bottom: 1px solid var(--border-strong); }
+.sx-search:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
+.sx-search svg { width: 16px; height: 16px; flex: none; fill: var(--text-helper); }
+.sx-search input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--text-primary); font: inherit; }
+.sx-filters { display: flex; flex-direction: column; }
+.sx-fold { border-bottom: 1px solid var(--border-subtle-01); }
+.sx-fold > summary { list-style: none; display: flex; justify-content: space-between; align-items: center; padding: 12px 0; font-size: 12px; font-weight: 600; letter-spacing: .32px; cursor: pointer; }
+.sx-fold > summary::-webkit-details-marker { display: none; }
+/* A drawn chevron: a native marker cannot be placed on the right. */
+.sx-fold > summary::after { content: ""; width: 7px; height: 7px; margin-right: 4px; border-right: 1.5px solid var(--text-secondary); border-bottom: 1.5px solid var(--text-secondary); transform: translateY(-2px) rotate(45deg); }
+.sx-fold[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
+.sx-side .sx-fold { padding-bottom: 8px; }
+.sx-check { display: flex; align-items: center; gap: 12px; min-height: 32px; color: var(--text-secondary); cursor: pointer; }
+.sx-check:hover { color: var(--text-primary); }
+.sx-check input { accent-color: var(--interactive); width: 16px; height: 16px; margin: 0; flex: none; }
+.sx-check .n { color: var(--text-helper); }
+.sx-link { background: none; padding: 0; min-height: 32px; color: var(--link); justify-content: flex-start; align-self: flex-start; }
+.sx-link:hover { background: none; text-decoration: underline; }
+
+.sx-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--background); }
+.sx-toolbar { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 16px; border-bottom: 1px solid var(--border-subtle); }
+.sx-scroll { flex: 1; padding-bottom: 24px; }
+.sx-scroll > .panel { margin: 16px; }
+.sx-empty { padding: 48px 16px; text-align: center; color: var(--text-helper); }
+.sx-icon { width: 32px; height: 32px; padding: 0; justify-content: center; flex: none; background: transparent; color: var(--text-secondary); }
+.sx-icon:hover { background: var(--layer-hover-01); color: var(--text-primary); }
+.sx-icon svg { width: 16px; height: 16px; fill: currentColor; }
+/* Segmented control: the 1px gap over the border colour is the divider. */
+.sx-seg { display: inline-flex; gap: 1px; background: var(--border-subtle-01); }
+.sx-seg[hidden] { display: none; }
+.sx-seg button { min-height: 32px; padding: 0 12px; background: var(--layer-01); color: var(--text-secondary); font-size: 12px; letter-spacing: .32px; }
+.sx-seg button:hover { background: var(--layer-hover-01); color: var(--text-primary); }
+.sx-seg button[aria-pressed="true"] { background: var(--layer-selected); color: var(--text-primary); box-shadow: inset 0 -2px 0 var(--interactive); }
+.sx-seg svg { width: 16px; height: 16px; fill: currentColor; }
+
+/* The device table: sticky header, sort shown in the link colour. */
+.table-wrap[hidden], .thumbs[hidden], .sx-empty[hidden] { display: none; }
+.nodes th { position: sticky; top: 0; z-index: 1; background: var(--background); font-size: 13px; padding: 10px 16px; border-bottom: 1px solid var(--border-subtle-01); user-select: none; }
+.nodes th[data-sort] { cursor: pointer; }
+.nodes th[data-sort]:hover, .nodes th[aria-sort="ascending"], .nodes th[aria-sort="descending"] { color: var(--link); }
+.nodes th[aria-sort="ascending"]::after { content: " \2191"; }
+.nodes th[aria-sort="descending"]::after { content: " \2193"; }
+.nodes td { padding: 10px 16px; color: var(--text-primary); }
+.nodes th.num, .nodes td.num { text-align: right; }
+/* Offline sensors stay in the list, dimmed: missing is a state worth seeing. */
+.nodes tr.off td { color: var(--text-helper); }
+.sx-type { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 16px; color: var(--text-secondary); vertical-align: middle; }
+.sx-type svg { width: 20px; height: 14px; fill: currentColor; }
+.sx-type.lg { width: 48px; height: 48px; flex: none; background: var(--layer-01); }
+.sx-type.lg svg { width: 32px; height: 24px; }
+.sx-scroll > .thumbs { margin: 16px; }
+.thumb.off { opacity: .6; }
+
+/* --- The drawer ---------------------------------------------------------- */
+.sx-drawer { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--layer-01); border-left: 1px solid var(--border-subtle); }
+.sx-drawer[hidden] { display: none; }
+.sx-drawer-head { display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; min-height: 48px; padding: 8px; }
+.sx-drawer-head h2 { grid-column: 2; margin: 0; text-align: center; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sx-drawer-head .sx-icon { grid-column: 3; }
+.sx-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 1px; margin: 0 16px; background: var(--border-subtle); }
+.sx-tabs button { justify-content: center; min-height: 40px; background: var(--layer-01); color: var(--text-secondary); }
+.sx-tabs button:hover { background: var(--layer-hover-01); color: var(--text-primary); }
+.sx-tabs button[aria-selected="true"] { background: var(--layer-02); color: var(--interactive); box-shadow: inset 0 -2px 0 var(--interactive); }
+.sx-tabs svg { width: 20px; height: 20px; fill: currentColor; }
+.sx-drawer-body { flex: 1; padding: 16px; }
+.sx-drawer-body > [role="tabpanel"], #controls { display: flex; flex-direction: column; gap: 16px; }
+.sx-drawer-body > [role="tabpanel"][hidden], #controls[hidden] { display: none; }
+
+.sx-live { position: relative; aspect-ratio: 4 / 3; background: #000; overflow: hidden; }
+.sx-live canvas, .sx-live img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.sx-live canvas { image-rendering: pixelated; }
+.sx-live [hidden] { display: none; }
+.sx-live-tag { position: absolute; top: 8px; left: 8px; padding: 2px 6px; background: var(--bad); color: var(--text-on-color); font: 600 11px/16px var(--font-mono); letter-spacing: 1px; }
+.sx-live-tag.stale { background: var(--layer-02); color: var(--text-secondary); }
+.sx-live-age { position: absolute; right: 8px; bottom: 8px; padding: 2px 6px; background: var(--overlay); color: var(--text-on-color); font: 400 11px/16px var(--font-mono); }
+.sx-live-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: -8px; }
+.sx-live-bar .sx-check[hidden], .scale[hidden] { display: none; }
+.sx-drawer .scale { margin: -8px 0 0; }
+
+.sx-card { background: var(--layer-02); padding: 16px; }
+.sx-card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+.sx-ident { display: flex; align-items: center; gap: 16px; }
+.sx-ident-text { min-width: 0; overflow-wrap: anywhere; }
+#detail-name { font-weight: 600; }
+.sx-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 8px; margin-left: 8px; border-radius: 1rem; font-size: 12px; letter-spacing: .32px; background: var(--layer-hover-02); color: var(--text-secondary); }
+.sx-badge.good { color: var(--good); background: color-mix(in srgb, var(--good) 18%, transparent); }
+.sx-badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.sx-badge.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.sx-kv { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); margin: 0; }
+.sx-kv dt, .sx-kv dd { padding: 8px 0; border-bottom: 1px solid var(--border-subtle-01); }
+.sx-kv dt:last-of-type, .sx-kv dd:last-of-type { border-bottom: 0; }
+.sx-kv dt { color: var(--text-secondary); }
+.sx-kv dd { margin: 0; padding-left: 16px; text-align: right; font: 400 13px var(--font-mono); overflow-wrap: anywhere; }
+.sx-kv dd.good { color: var(--good); } .sx-kv dd.warn { color: var(--warn); } .sx-kv dd.bad { color: var(--bad); }
+/* Detections are five mono columns; on the narrowest phones they scroll inside the card. */
+.sx-card.sx-fold { padding: 0 16px; border-bottom: 0; overflow-x: auto; }
+.sx-card.sx-fold > summary { padding: 16px 0; font-size: 14px; letter-spacing: .16px; }
+.sx-card.sx-fold > summary .small { margin-left: 8px; margin-right: auto; font-weight: 400; }
+.sx-mini { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; margin-bottom: 16px; }
+.sx-mini th, .sx-mini td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border-subtle-01); }
+.sx-mini th { font-weight: 600; }
+.sx-mini td { font-family: var(--font-mono); }
+.sx-mini td.empty { color: var(--text-helper); font-family: var(--font-sans); }
+.sx-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; }
+.sx-actions button { justify-content: center; }
+.sx-note:empty { display: none; }
+
+/* Below desktop width the drawer floats over the list rather than squeezing
+   a 14-column table into nothing. */
+@media (max-width: 1200px) {
+  .sx.has-drawer { grid-template-columns: 280px minmax(0, 1fr); }
+  .sx.side-hidden.has-drawer { grid-template-columns: minmax(0, 1fr); }
+  .sx-drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(400px, 100%); z-index: 4; border-left-color: var(--border-strong); }
+}
+/* Phones: filters become an overlay, the drawer takes the whole screen. */
+@media (max-width: 900px) {
+  .sx, .sx.has-drawer, .sx.side-hidden, .sx.side-hidden.has-drawer { grid-template-columns: minmax(0, 1fr); }
+  .sx-side, .sx.side-hidden .sx-side { display: none; position: absolute; top: 0; left: 0; bottom: 0; width: min(300px, 85%); z-index: 5; border-right-color: var(--border-strong); }
+  .sx.side-open .sx-side { display: flex; }
+  .sx-drawer { width: 100%; border-left: 0; }
+  .sx button, .sx-check { min-height: 44px; }
+  .sx-icon { width: 44px; height: 44px; }
+  .sx-drawer-head { grid-template-columns: 44px minmax(0, 1fr) 44px; }
+  .sx-search { height: 44px; }
+  .sx-search input { font-size: 16px; }
+}
+@media (max-width: 560px) {
+  .sx-actions { grid-template-columns: minmax(0, 1fr); }
+  .sx-drawer-body { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .sx-live-bar .sx-seg { flex: 1 1 100%; }
+  .sx-live-bar .sx-seg button { flex: 1; justify-content: center; }
+}
+
+.console-access-notice { margin: 8px 16px; overflow-wrap: anywhere; }
+.console-access-notice:empty { display: none; }
+/* In the toolbar beside the count; it gives way first on a narrow screen. */
+#data-freshness { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* --- motion ----------------------------------------------------------------
    The same motion as the algo console this sits inside (its rules are in
@@ -236,27 +328,27 @@ table.nodes { border-collapse: collapse; width: 100%; font-variant-numeric: tabu
    change in 70ms, a tick in 110ms, a dialog in 240ms and out faster. Written
    again here because this page is a document of its own. */
 :root { --ease: cubic-bezier(.2, 0, .38, .9); --ease-entrance: cubic-bezier(0, 0, .38, .9); --ease-exit: cubic-bezier(.2, 0, 1, .9); }
-button, select, input, a, .toggles label, .thumb, .nodes td {
+button, select, input, a, .sx-check, .thumb, .nodes td {
   transition-property: background-color, color, border-color, box-shadow, opacity;
   transition-duration: 70ms; transition-timing-function: var(--ease);
 }
 /* Checkboxes and radios are drawn, so the mark can be drawn in. */
-.toggles input {
+.sx-check input {
   appearance: none; -webkit-appearance: none; display: inline-grid; place-content: center; flex: none;
   border: 1px solid var(--text-secondary); border-radius: 2px; background: transparent; cursor: pointer;
 }
-.toggles input[type="radio"] { border-radius: 50%; }
-.toggles input::after { content: ''; transform: scale(0); transition: transform 110ms var(--ease-entrance); }
-.toggles input[type="checkbox"]::after {
+.sx-check input[type="radio"] { border-radius: 50%; }
+.sx-check input::after { content: ''; transform: scale(0); transition: transform 110ms var(--ease-entrance); }
+.sx-check input[type="checkbox"]::after {
   width: 10px; height: 10px; background: var(--on-interactive); transform-origin: 20% 80%;
   clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0, 43% 62%);
 }
-.toggles input[type="radio"]::after { width: 8px; height: 8px; border-radius: 50%; background: var(--interactive); }
-.toggles input:hover:not(:checked) { border-color: var(--text-primary); }
-.toggles input:checked { border-color: var(--interactive); }
-.toggles input[type="checkbox"]:checked { background: var(--interactive); }
-.toggles input:checked::after { transform: none; }
-.toggles input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.sx-check input[type="radio"]::after { width: 8px; height: 8px; border-radius: 50%; background: var(--interactive); }
+.sx-check input:hover:not(:checked) { border-color: var(--text-primary); }
+.sx-check input:checked { border-color: var(--interactive); }
+.sx-check input[type="checkbox"]:checked { background: var(--interactive); }
+.sx-check input:checked::after { transform: none; }
+.sx-check input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 /* The join dialog comes down onto its scrim, and leaves faster. The browser
    opens it in the top layer, where only a transition can follow it; without
    the two discrete properties it still opens and closes, at once. */

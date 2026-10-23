@@ -25,7 +25,7 @@ export const MODULES = [
 
   { title: 'ML job', path: '/train', group: 'ML', desc: 'Write a training script, run it on collected data, batch-test and export the model.' },
   { title: 'ML data', path: '/ml-data', group: 'ML', desc: 'Query the training database, explore its SchemaSpy documentation and download selected tables as a ZIP.' },
-  { title: 'Debug console', path: '/console', desc: 'Live thermal frames, floor fusion, node health and commands.' },
+  { title: 'Sensors', path: '/console', desc: 'Every sensor\'s status and readings; open one for its live view and commands.' },
   { title: 'Updates', path: '/updates', group: 'Devices', desc: 'Upload firmware source, build an image, and roll it out to nodes one pilot at a time.' },
   { title: 'Analytics', path: '/analytics', desc: 'How HKUMySeat is used, and how the server behind it is doing: students, seats, processor, memory and storage.' },
   { title: 'Adoption', path: '/adoption', group: 'Devices', desc: 'Commission physical sensors, approve matching requests and verify authenticated reports.' },
@@ -121,7 +121,7 @@ function AccountMenu({ user, path, onSignOut }: { user: string; path: string; on
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false); };
-    // The debug console is a document of its own: a click in it never reaches this one.
+    // Sensors is a document of its own: a click in it never reaches this one.
     const blur = () => { if (document.activeElement instanceof HTMLIFrameElement) setOpen(false); };
     document.addEventListener('pointerdown', outside);
     window.addEventListener('blur', blur);
@@ -157,7 +157,7 @@ function MobileNavigation({ path, canManageAccounts }: { path: string; canManage
     const outside = (event: PointerEvent) => { if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false); };
     const desktop = window.matchMedia('(min-width: 1057px)');
     const resize = () => { if (desktop.matches) setOpen(false); };
-    // Pointer events inside the debug console's own document do not bubble
+    // Pointer events inside the Sensors page's own document do not bubble
     // here; its focus change still dismisses the overlaid navigation.
     const blur = () => { if (document.activeElement instanceof HTMLIFrameElement) setOpen(false); };
     document.addEventListener('pointerdown', outside);
