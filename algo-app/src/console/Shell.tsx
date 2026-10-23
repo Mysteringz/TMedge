@@ -1,8 +1,8 @@
 /**
  * The console around everything: sign-in, module select, and the modules.
  * Module 01 is the algo debugger exactly as it was (App.tsx), and module 03
- * the edge's debug console (formerly console.hkumyseat.com), each under the
- * console's top bar. Module 04 owns firmware builds and OTA rollouts, and
+ * Sensors, the edge's console page (formerly console.hkumyseat.com), each
+ * under the console's top bar. Module 04 owns firmware builds and OTA rollouts, and
  * module 05 is analytics: usage of the student site and the state of the
  * server, read-only. Module 07 is TMflash in the browser: it flashes the
  * board on this computer's USB port (Flash.tsx).
@@ -134,7 +134,7 @@ function ShellContent({ session, onSession, flash }: { session: AdminSession | n
         <div className="cx cx-flow-bar"><ShellNavigation user={user} onSignOut={signOut} /></div>
         {/* Its own document: the console's global stylesheet and run-once
             module stay out of this app (see src/algo/server.ts). */}
-        <iframe className="cx-frame" src="/console-app/" title="Debug console" />
+        <iframe className="cx-frame" src="/console-app/" title="Sensors" />
       </div>
     );
   }

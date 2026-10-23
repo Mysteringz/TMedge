@@ -16,9 +16,10 @@ stage; pinch and pan to explore, or use the fit control for an overview.
 Returning to a wider window restores
 the desktop panes and their saved sizes.
 
-Training, Updates, and the embedded Debug console use touch-sized controls
-and responsive forms. Wide job, image, and node tables scroll inside their
-panels; floor tabs scroll to reveal additional floors. Dialogs scroll within
+Training, Updates, and the embedded Sensors page use touch-sized controls
+and responsive forms. Wide job, image, and sensor tables scroll inside their
+panels; on a phone the Sensors filters open as an overlay and a sensor's
+detail drawer fills the screen. Dialogs scroll within
 the available screen height, including in landscape.
 
 ## The departure: half this pipeline runs on the ESP32
@@ -286,9 +287,13 @@ each page's heading use the name.
   cluster. See "Module 02: ML Training" above and [hpc/](hpc/).
 - `/ml-data` — also module 02, ML data: the training database. See
   [ML_DATA.md](ML_DATA.md).
-- `/console` — module 03, the edge's debug console (formerly
-  `console.hkumyseat.com`): health, floor fusion, raw frames, node commands,
-  admitting TMflash nodes.
+- `/console` — module 03, Sensors (formerly the debug console at
+  `console.hkumyseat.com`): every sensor's status and readings in a
+  filterable list; selecting one opens a drawer with its live thermal view
+  (and camera, on an RGB rig), live detections, detector parameters and
+  node commands. Also where TMflash nodes asking to join are admitted.
+  Floor fusion is no longer drawn here; location views move to their own
+  section.
 - `/updates` — module 04, firmware source upload, build output, saved images,
   target selection and pilot-first OTA rollout progress. Uses the console's
   existing `/console-app/api/firmware*` services and `x-tm-console: 1` write guard.
@@ -302,7 +307,7 @@ each page's heading use the name.
 - `/tmflash-download` — module 08, the TMflash Mac app. See
   [TMFLASH_DOWNLOAD.md](TMFLASH_DOWNLOAD.md).
 
-### Module 03, the debug console
+### Module 03, Sensors
 
 `src/edge/console.ts` is one core with two routers, so its state (the
 provisioning queue, the live feed) exists once and is served in two places:
