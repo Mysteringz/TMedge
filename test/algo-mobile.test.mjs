@@ -403,9 +403,12 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
               await page.frameLocator('.cx-frame').locator('#conn.good').waitFor();
               const frame = page.frames().find(frame => frame.url().includes('/console-app/'));
               await fits(frame, viewport.width);
-              // The last floor must be reachable by scrolling the tab strip.
-              await frame.locator('#floor-tabs button').last().tap();
-              assert.equal(await frame.locator('#floor-tabs button').last().getAttribute('aria-selected'), 'true');
+              // A sensor opens at every size, its drawer fits beside or over the list, and it closes again.
+              await frame.locator('#nodes tbody tr').first().tap();
+              await frame.locator('#detail-kv dt').first().waitFor();
+              await fits(frame, viewport.width);
+              await frame.locator('#drawer-close').tap();
+              assert.equal(await frame.locator('#drawer').isHidden(), true);
             }
             if (viewport.width === 390) await shot(page, engine, path.slice(1).replaceAll('/', '-') || 'home');
           }
@@ -454,12 +457,12 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
         });
         await home();
         // The name of something on the site is looked up on the site, and Enter opens it.
-        await box.fill('debug console');
-        await options.filter({ hasText: 'Live thermal frames' }).waitFor();
-        assert.match(await options.first().textContent(), /Debug console/, 'the site comes first for what the site has');
+        await box.fill('sensors');
+        await options.filter({ hasText: 'open one for its live view' }).waitFor();
+        assert.match(await options.first().textContent(), /Sensors/, 'the site comes first for what the site has');
         assert.match(await options.last().textContent(), /Ask AI/, 'and the assistant is still one row away');
         // A question goes to the assistant first, even when the site has matches for its words.
-        await box.fill('how does the debug console work?');
+        await box.fill('how does the sensors page work?');
         await options.filter({ hasText: 'Ask AI' }).waitFor();
         assert.match(await options.first().textContent(), /Ask AI/);
         // So does anything the site has no name for.
@@ -833,7 +836,7 @@ for (const [engine, browserType] of [['chromium', chromium], ['webkit', webkit]]
       }
 
       await page.setViewportSize({ width: 390, height: 844 });
-      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Debug console', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['TMflash web', '/flash'], ['TMflash download', '/tmflash-download'], ['Home', '/']]) {
+      for (const [name, path] of [['Algorithm flow', '/flow'], ['ML job', '/train'], ['ML data', '/ml-data'], ['Sensors', '/console'], ['Updates', '/updates'], ['Analytics', '/analytics'], ['Adoption', '/adoption'], ['TMflash web', '/flash'], ['TMflash download', '/tmflash-download'], ['Home', '/']]) {
         await toggle.tap();
         await menu.getByRole('link', { name, exact: true }).tap();
         await page.waitForURL(`${base}${path}`);

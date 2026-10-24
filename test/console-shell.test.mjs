@@ -117,7 +117,7 @@ test('chromium: Updates, Adoption and TMflash are one Devices menu, and ML is st
   try {
     const modules = page.locator('.cx-header').getByRole('navigation', { name: 'Modules', exact: true });
     assert.deepEqual(await modules.locator(':scope > *').evaluateAll((items) => items.map((item) => item.textContent.replace(/\s*▾$/, ''))),
-      ['Algorithm flow', 'ML', 'Debug console', 'Devices', 'Analytics'], 'five places in the bar, in the order of the modules');
+      ['Algorithm flow', 'ML', 'Sensors', 'Devices', 'Analytics'], 'five places in the bar, in the order of the modules');
     for (const name of ['Updates', 'Adoption', 'TMflash web', 'TMflash download']) assert.equal(await modules.getByRole('link', { name, exact: true }).count(), 0, `${name} is inside the menu, not beside it`);
 
     const devices = modules.getByRole('button', { name: 'Devices', exact: true });
@@ -163,7 +163,7 @@ test('chromium: every place is called by its name; no page, and not the phone me
       ['/flow', 'Algorithm flow', () => page.locator('.react-flow').first()],
       ['/train', 'ML job', () => page.getByRole('heading', { name: 'ML job', exact: true })],
       ['/ml-data', 'ML data', () => page.getByRole('heading', { name: 'ML database', exact: true })],
-      ['/console', 'Debug console', () => page.locator('iframe[title="Debug console"]')],
+      ['/console', 'Sensors', () => page.locator('iframe[title="Sensors"]')],
       ['/updates', 'Updates', () => page.getByRole('heading', { name: 'Updates', exact: true, level: 1 })],
       ['/analytics', 'Analytics', () => page.getByRole('heading', { name: 'Analytics', exact: true, level: 1 })],
       ['/adoption', 'Adoption', () => page.getByRole('heading', { name: 'Adoption', exact: true, level: 1 })],

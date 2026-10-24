@@ -304,7 +304,8 @@ test('signed in, the console page, its API and its live feed all work under /con
   assert.equal(page.status, 200, 'npm test compiles the console client before serving it');
   const html = await page.text();
   assert.ok(!html.includes('id="firmware"'), 'OTA belongs to module 04, not the embedded debug page');
-  assert.ok(html.includes('id="fusion"') && html.includes('id="controls"'), 'debug views and node commands remain');
+  assert.ok(['id="nodes"', 'id="big"', 'id="controls"'].every((id) => html.includes(id)), 'the sensor list, its live view and node commands remain');
+  assert.ok(!html.includes('id="fusion"'), 'where people sit is not drawn on the Sensors page: location views have their own section');
   assert.ok(html.includes('<html lang="en" data-theme="dark">'), 'inside the dark algo console the frame is dark too');
   // The page itself only exists after a build; the headers are the claim here.
   const csp = page.headers.get('content-security-policy') ?? '';
